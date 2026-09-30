@@ -11,6 +11,7 @@ import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { loadAudioParameterGroups, runAudioParameterTool } from "./audio-parameter-tool.js";
 import type { SunoUploadAdapter } from "../audio-services/suno-upload.js";
 import { ChatBridgeCommandOutcomeUnknownError } from "./chat-bridge.js";
+import { audioJobViews, resumeAudioJob } from "./audio-processing.js";
 
 for (const phase of ["before-dispatch", "after-initialize"] as const) test(`manual upload preserves dispatch certainty when receipt storage fails ${phase}`, async (t) => {
   const h = await retrievalHarness(t);
@@ -25,7 +26,7 @@ for (const phase of ["before-dispatch", "after-initialize"] as const) test(`manu
   let savedStage: string | undefined;
   const blockJobWrite = async () => {
     const job = (await listAudioJobs(h.directory, h.session.id)).find((job) => job.operation === "upload_music")!;
-    savedStage = job.upload?.stage;
+    savedStage = job.upload?.pendingStage;
     blockedPath = path.join(directory, `${job.id}.job.json`);
     await fs.rename(blockedPath, `${blockedPath}.backup`);
     await fs.mkdir(blockedPath);
@@ -48,7 +49,7 @@ for (const phase of ["before-dispatch", "after-initialize"] as const) test(`manu
     const original = prototype.writeFile;
     await probe.close();
     t.mock.method(prototype, "writeFile", async function (this: fs.FileHandle, ...args: Parameters<fs.FileHandle["writeFile"]>) {
-      if (typeof args[0] === "string" && args[0].includes('"stage": "creating"')) {
+      if (typeof args[0] === "string" && args[0].includes('"pendingStage": "creating"')) {
         markerWriteFailed = true;
         throw new Error("Synthetic mutation marker write failure");
       }
@@ -78,9 +79,14 @@ for (const phase of ["before-dispatch", "after-initialize"] as const) test(`manu
     assert.doesNotMatch(events[1]!.content, /"status":"unknown"/);
   } else {
     assert.equal(savedStage, "initializing");
-    assert.equal(saved.upload?.stage, "initializing");
+    assert.equal(saved.upload?.stage, "processed");
+    assert.equal(saved.upload?.pendingStage, "initializing");
     assert.equal(saved.upload?.clipId, undefined);
     assert.deepEqual(calls, ["create", "upload", "finish", "initialize"]);
     assert.equal(JSON.parse(events[1]!.content).status, "unknown");
+    assert.equal((await audioJobViews(h.directory, h.session.id)).find((job) => job.id === saved.id)!.resumable, false);
+    await assert.rejects(resumeAudioJob({ ...h.context, sunoUploadAdapter: adapter,
+      withGenerationAuthorization: async (_signal, operation) => operation() }, saved.id), /cannot be sent again/);
+    assert.deepEqual(calls, ["create", "upload", "finish", "initialize"]);
   }
 });

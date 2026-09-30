@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import {
   LEGACY_AUDIO_SERVICE_ID, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
-  MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_SESSION_JOBS, SEPARATION_STEMS, SUNO_STEM_ROLES,
+  MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_SESSION_JOBS, SEPARATION_STEMS, SUNO_STEM_ROLES, SUNO_UPLOAD_MUTATIONS,
   MAX_AUDIO_JOB_TITLE_CHARACTERS,
   type AudioAsset, type AudioJob, type AudioOrigin, type SeparationStem, type SunoUploadReceipt,
 } from "../audio-services/contracts.js";
@@ -161,7 +161,7 @@ export async function updateAudioJob(
       job.upload.sourceSha256 !== current.upload.sourceSha256 ||
       current.upload.uploadId !== undefined && job.upload.uploadId !== current.upload.uploadId ||
       current.upload.clipId !== undefined && job.upload.clipId !== current.upload.clipId ||
-      ![uploadStages.indexOf(current.upload.stage), uploadStages.indexOf(current.upload.stage) + 1].includes(uploadStages.indexOf(job.upload.stage))) ||
+      !validUploadTransition(current, job)) ||
       current.upload && !job.upload) throw new AudioStorageError("The saved upload receipt changed.");
     if (current.expectedOutputs && (current.remoteTaskId !== job.remoteTaskId ||
       !isDeepStrictEqual(current.expectedOutputs, job.expectedOutputs))) {
@@ -269,9 +269,12 @@ function isAudioJob(value: unknown): value is AudioJob {
 function validUploadReceipt(job: Record<string, unknown> & JobConfiguration): boolean {
   const receipt = job.upload;
   if (job.provider !== "suno" || job.operation !== "upload_music" || !isSafeStorageId(job.sourceAssetId) ||
-      !audioRecordHasOnly(receipt, ["stage", "sourceSha256", "rightsConfirmed", "uploadId", "clipId"]) ||
+      !audioRecordHasOnly(receipt, ["stage", "pendingStage", "sourceSha256", "rightsConfirmed", "uploadId", "clipId"]) ||
       !isAudioHash(receipt.sourceSha256) || receipt.rightsConfirmed !== true ||
       !uploadStages.includes(receipt.stage as SunoUploadReceipt["stage"])) return false;
+  if (Object.hasOwn(receipt, "pendingStage") && (typeof receipt.pendingStage !== "string" ||
+      !Object.hasOwn(SUNO_UPLOAD_MUTATIONS, receipt.pendingStage) ||
+      SUNO_UPLOAD_MUTATIONS[receipt.pendingStage as keyof typeof SUNO_UPLOAD_MUTATIONS].from !== receipt.stage)) return false;
   const uuid = (value: unknown) => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(value);
   const hasUploadId = !["prepared", "creating"].includes(receipt.stage as string);
   if (hasUploadId ? !uuid(receipt.uploadId) : receipt.uploadId !== undefined) return false;
@@ -281,6 +284,16 @@ function validUploadReceipt(job: Record<string, unknown> & JobConfiguration): bo
     job.expectedOutputs[0]?.key === receipt.clipId && job.expectedOutputs[0]?.role === "uploaded_audio" &&
     Array.isArray(job.remoteOutputs) && job.remoteOutputs.length === 1 &&
     job.remoteOutputs[0]?.key === receipt.clipId && job.remoteOutputs[0]?.role === "uploaded_audio";
+}
+
+function validUploadTransition(current: AudioJob, next: AudioJob): boolean {
+  const previous = current.upload!, receipt = next.upload!;
+  if (previous.pendingStage) {
+    if (receipt.stage === previous.stage) return receipt.pendingStage === previous.pendingStage ||
+      receipt.pendingStage === undefined && current.status === "submitting" && next.status === "interrupted";
+    return receipt.pendingStage === undefined && receipt.stage === SUNO_UPLOAD_MUTATIONS[previous.pendingStage].to;
+  }
+  return [uploadStages.indexOf(previous.stage), uploadStages.indexOf(previous.stage) + 1].includes(uploadStages.indexOf(receipt.stage));
 }
 
 function validPluginToolIdentity(value: Record<string, unknown> & JobConfiguration): boolean {

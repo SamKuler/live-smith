@@ -219,11 +219,22 @@ export type AudioJobStatus =
   | "preparing" | "submitting" | "running" | "collecting" | "ready"
   | "completed" | "partial" | "failed" | "interrupted" | "unknown" | "cancelled";
 
+export const SUNO_UPLOAD_MUTATIONS = {
+  creating: { from: "prepared", to: "created" },
+  uploading: { from: "created", to: "uploaded" },
+  finishing: { from: "uploaded", to: "processing" },
+  initializing: { from: "processed", to: "complete" },
+} as const;
+export type SunoUploadMutationStage = keyof typeof SUNO_UPLOAD_MUTATIONS;
+
 export interface SunoUploadReceipt {
   sourceSha256: string;
   rightsConfirmed: true;
+  /** Last confirmed stage; legacy mutation markers remain unresolved on recovery. */
   stage: "prepared" | "creating" | "created" | "uploading" | "uploaded" | "finishing" |
     "processing" | "processed" | "initializing" | "complete";
+  /** A durable dispatch intent; only the owning workflow can confirm it never ran. */
+  pendingStage?: SunoUploadMutationStage;
   uploadId?: string;
   clipId?: string;
 }
@@ -305,7 +316,7 @@ export function audioJobView(job: AudioJob): AudioJobView {
 
 export function sunoUploadCanResume(job: Pick<AudioJob, "operation" | "upload" | "status">): boolean {
   return job.operation === "upload_music" && job.status !== "completed" && job.status !== "cancelled" && job.status !== "failed" &&
-    Boolean(job.upload && ["prepared", "uploaded", "processing", "processed"].includes(job.upload.stage));
+    Boolean(job.upload && !job.upload.pendingStage && ["prepared", "uploaded", "processing", "processed"].includes(job.upload.stage));
 }
 
 /** True when another provider status read cannot reveal a new successful output. */

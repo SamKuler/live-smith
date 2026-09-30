@@ -1356,11 +1356,15 @@ original credential fingerprint check before querying the existing task.
 
 Suno uploads use a separate typed receipt in the same job store. The frozen
 source hash, upload ID and initialized clip ID have separate meanings and cannot
-be replaced. Each remote mutation is preceded by a durable stage marker and
-followed by its receipt. Recovery polls or advances only acknowledged safe
-stages; it cannot replay an unconfirmed create, transfer, finish or initialize
+be replaced. `stage` retains the last confirmed step while `pendingStage`
+records the durable intent for the next remote mutation. An acknowledged reply
+advances the confirmed step and clears that intent. Local receipt commits have
+a bounded retry independent of provider calls. The owning workflow may clear
+an intent only when it establishes that no remote request started. Recovery
+polls or advances only acknowledged safe stages; unresolved intents and legacy
+mutation-stage markers cannot replay a create, transfer, finish or initialize
 request. Signed upload locations and form credentials are never persisted or
-projected into Session state.
+projected into Session state, so a receipt at `created` cannot resume transfer.
 
 Task-based generation acknowledges an immutable remote output ID/role mapping
 before collection. Downloads may refresh their URLs, but cannot change the

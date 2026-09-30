@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
-import type { AudioAsset, AudioJob, AudioOrigin, SunoUploadReceipt } from "../audio-services/contracts.js";
-import { MAX_AUDIO_ASSET_DURATION_SECONDS } from "../audio-services/contracts.js";
+import type { AudioAsset, AudioJob, AudioOrigin, SunoUploadMutationStage, SunoUploadReceipt } from "../audio-services/contracts.js";
+import { AudioSubmissionNotStartedError, MAX_AUDIO_ASSET_DURATION_SECONDS, SUNO_UPLOAD_MUTATIONS } from "../audio-services/contracts.js";
 import { createSunoUploadAdapter, type SunoUploadAdapter, type SunoUploadSpec } from "../audio-services/suno-upload.js";
 import { readAudioAsset, saveAudioAsset } from "../storage/audio-assets.js";
 import { createAudioJob, loadAudioJob, updateAudioJob } from "../storage/audio-jobs.js";
@@ -16,7 +16,7 @@ export interface SunoUploadOptions { adapter?: SunoUploadAdapter }
 export class SunoUploadOutcomeUnknownError extends Error {
   constructor() { super("The upload outcome could not be recorded. Check Suno and the saved upload receipt before continuing; do not submit it again automatically."); }
 }
-const pendingMutation = new Set<SunoUploadReceipt["stage"]>(["creating", "uploading", "finishing", "initializing"]);
+const legacyPendingMutation = (stage: SunoUploadReceipt["stage"]) => Object.hasOwn(SUNO_UPLOAD_MUTATIONS, stage);
 
 export async function uploadSunoMusic(
   context: AudioProcessingContext, connectionId: string, rightsConfirmed: boolean,
@@ -62,9 +62,10 @@ export async function resumeSunoUpload(context: AudioProcessingContext, job: Aud
   if (job.status === "failed") throw new Error("Suno rejected this upload; it cannot be resumed.");
   if (job.operation !== "upload_music" || job.provider !== "suno" || !job.upload || !job.sourceAssetId) throw new Error("This upload has no recoverable source receipt.");
   if (job.upload.stage === "complete") return job;
-  if (pendingMutation.has(job.upload.stage) || job.upload.stage === "created") {
+  if (job.upload.pendingStage || legacyPendingMutation(job.upload.stage)) {
     throw new Error("This upload has an unconfirmed remote stage and cannot be sent again. Check Suno before starting a new upload.");
   }
+  if (job.upload.stage === "created") throw new Error("This upload has no saved storage authorization and cannot resume its transfer. Start a new upload.");
   if (!context.withGenerationAuthorization) throw new Error("Audio upload authorization is unavailable.");
   const settings = await connection(context, job.serviceId);
   if (integrationConnectionFingerprint(settings) !== job.connectionFingerprint) throw new Error("This upload belongs to another Suno account.");
@@ -84,37 +85,61 @@ async function ownUpload(context: AudioProcessingContext, initial: AudioJob, set
   let recordingFailure: unknown;
   let unrecordedMutation = false;
   const record = async (next: SunoUploadReceipt, patch: Parameters<typeof updateAudioJob>[3] = {}) => {
+    const update = { upload: next, ...patch };
     try {
-      job = await updateAudioJob(context.storageDirectory, context.sessionId, job.id, { upload: next, ...patch });
+      // Retry only this immutable local receipt, including an uncertain fsync.
+      // A provider operation is never part of either commit attempt.
+      try { job = await updateAudioJob(context.storageDirectory, context.sessionId, job.id, update); }
+      catch { job = await updateAudioJob(context.storageDirectory, context.sessionId, job.id, update); }
       receipt = next;
-      if (!pendingMutation.has(next.stage)) unrecordedMutation = false;
+      recordingFailure = undefined;
+      if (!next.pendingStage && !legacyPendingMutation(next.stage)) unrecordedMutation = false;
     }
     catch (error) { recordingFailure = error; throw error; }
   };
-  const mutate = <T>(stage: SunoUploadReceipt["stage"], operation: () => Promise<T>) => context.withGenerationAuthorization!(context.signal, async () => {
+  const mutate = <T>(stage: SunoUploadMutationStage, operation: () => Promise<T>) => context.withGenerationAuthorization!(context.signal, async () => {
     await resolveIntegrationConnection(context.storageDirectory, settings.id, "upload_music", [settings]);
     throwIfAborted(context.signal);
-    await record({ ...receipt, stage }, { status: "submitting" });
-    throwIfAborted(context.signal);
+    const confirmed = receipt;
+    try {
+      await record({ ...confirmed, pendingStage: stage }, { status: "submitting" });
+      throwIfAborted(context.signal);
+    } catch (error) {
+      // This owner has not entered the remote call, so clearing its intent does
+      // not replay an uncertain mutation or move the confirmed stage backward.
+      await record(confirmed, { status: "interrupted" });
+      throw error;
+    }
     unrecordedMutation = true;
-    return operation();
+    try { return await operation(); }
+    catch (error) {
+      if (error instanceof AudioSubmissionNotStartedError) {
+        unrecordedMutation = false;
+        await record(confirmed, { status: "interrupted" });
+      }
+      throw error;
+    }
   });
+  const completedReceipt = (stage: SunoUploadMutationStage): SunoUploadReceipt => {
+    const { pendingStage: _pending, ...confirmed } = receipt;
+    return { ...confirmed, stage: SUNO_UPLOAD_MUTATIONS[stage].to };
+  };
   try {
     throwIfAborted(context.signal);
     if (receipt.stage === "prepared") {
       spec = await mutate("creating", () => adapter.create(asset.mediaType, context.signal));
-      await record({ ...receipt, stage: "created", uploadId: spec.uploadId }, { status: "running" });
+      await record({ ...completedReceipt("creating"), uploadId: spec.uploadId }, { status: "running" });
     }
     throwIfAborted(context.signal);
     if (receipt.stage === "created" && spec) {
       await context.onProgress?.(m("Uploading audio to Suno"));
       await mutate("uploading", () => adapter.upload(spec!, bytes, asset.mediaType, context.signal));
-      await record({ ...receipt, stage: "uploaded" }, { status: "running" });
+      await record(completedReceipt("uploading"), { status: "running" });
     }
     throwIfAborted(context.signal);
     if (receipt.stage === "uploaded") {
       await mutate("finishing", () => adapter.finish(receipt.uploadId!, asset.mediaType, context.signal));
-      await record({ ...receipt, stage: "processing" }, { status: "running" });
+      await record(completedReceipt("finishing"), { status: "running" });
     }
     if (receipt.stage === "processing") {
       await context.onProgress?.(m("Processing uploaded audio"));
@@ -134,7 +159,7 @@ async function ownUpload(context: AudioProcessingContext, initial: AudioJob, set
     if (receipt.stage === "processed") {
       const clipId = await mutate("initializing", () => adapter.initialize(receipt.uploadId!, context.signal));
       const outputs = [{ key: clipId, role: "uploaded_audio" as const }];
-      await record({ ...receipt, stage: "complete", clipId }, {
+      await record({ ...completedReceipt("initializing"), clipId }, {
         status: "ready", remoteTaskId: clipId, expectedOutputs: outputs, remoteOutputs: outputs,
         message: m("Audio uploaded to Suno. Its Clip can be used by this connection's music tools."),
       });
@@ -144,8 +169,8 @@ async function ownUpload(context: AudioProcessingContext, initial: AudioJob, set
     if (recordingFailure) throw unrecordedMutation ? new SunoUploadOutcomeUnknownError() : recordingFailure;
     try {
       return await updateAudioJob(context.storageDirectory, context.sessionId, job.id, {
-        status: pendingMutation.has(receipt.stage) ? "unknown" : "interrupted",
-        message: pendingMutation.has(receipt.stage)
+        status: receipt.pendingStage || legacyPendingMutation(receipt.stage) ? "unknown" : "interrupted",
+        message: receipt.pendingStage || legacyPendingMutation(receipt.stage)
           ? m("The upload stage is unconfirmed. Check Suno before starting a new upload; this stage will not be sent again.")
           : m("Audio upload was interrupted. Its saved receipt was preserved."),
       });

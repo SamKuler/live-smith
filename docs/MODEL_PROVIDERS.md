@@ -906,8 +906,11 @@ website or policy changes may make it unavailable for an account.
   Arrangement source, plus explicit upload-rights confirmation. The source is
   frozen locally before transfer. The upload checks account duration limits and
   saves a receipt after each confirmed remote stage. Recovery continues only
-  from a safe acknowledged stage; uncertain mutations are never repeated. The
-  completed Suno clip becomes available to this connection's creation tools.
+  from a safe acknowledged stage. Stopping before a remote request starts
+  preserves that stage; uncertain mutations are never repeated. An upload
+  paused after creation but before transfer completes requires a new upload
+  because its temporary storage authorization is not saved. The completed Suno
+  clip becomes available to this connection's creation tools.
 - `add_vocals` and `add_instrumental`: a permitted source, lyrics/styles and
   supported generation controls. The website's source-type and account action
   rules determine which operation is available.

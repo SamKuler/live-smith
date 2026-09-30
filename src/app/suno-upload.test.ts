@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import test from "node:test";
 import { retrievalHarness, connection } from "./audio-retrieval-test-helpers.js";
 import { uploadSunoMusic, resumeSunoUpload } from "./suno-upload.js";
 import type { SunoUploadAdapter } from "../audio-services/suno-upload.js";
-import type { SunoUploadReceipt } from "../audio-services/contracts.js";
+import { AudioSubmissionNotStartedError, SUNO_UPLOAD_MUTATIONS, type SunoUploadMutationStage, type SunoUploadReceipt } from "../audio-services/contracts.js";
 import { listAudioAssets } from "../storage/audio-assets.js";
-import { listAudioJobs, loadAudioJob, updateAudioJob } from "../storage/audio-jobs.js";
+import { bindAudioDirectory, listAudioJobs, loadAudioJob, updateAudioJob } from "../storage/audio-jobs.js";
 import { waveBytes } from "../storage/audio-storage-test-helpers.js";
 import { audioJobViews, resumeAudioJob } from "./audio-processing.js";
 import { createHostAbortController } from "../runtime/host.js";
@@ -15,16 +17,20 @@ const uploadId = "aaaaaaaa-1111-4111-8111-111111111111";
 const clipId = "bbbbbbbb-2222-4222-8222-222222222222";
 const authorize = async <T>(_signal: AbortSignal, operation: () => Promise<T>): Promise<T> => operation();
 const source = () => Promise.resolve({ bytes: waveBytes(6), label: "Arrangement source", origin: { kind: "arrangement" as const, startBeat: 0, endBeat: 16 } });
+const mutationStages: Record<string, SunoUploadMutationStage> = { create: "creating", upload: "uploading", finish: "finishing", initialize: "initializing" };
 
 async function fixture(t: Parameters<typeof retrievalHarness>[0]) {
   const h = await retrievalHarness(t);
   const calls: string[] = [];
-  const mode: { lose?: string; abort?: string; pollOffline?: boolean; pollFailed?: boolean } = {};
-  const stages: Record<string, SunoUploadReceipt["stage"]> = { create: "creating", upload: "uploading", finish: "finishing", initialize: "initializing" };
+  const mode: { lose?: string; abort?: string; notStarted?: string; pollOffline?: boolean; pollFailed?: boolean } = {};
   const entered = async (name: string) => {
-    calls.push(name);
     const jobs = await listAudioJobs(h.directory, h.session.id);
-    if (stages[name]) assert.equal(jobs[0]!.upload?.stage, stages[name], `${name} must commit its start marker first`);
+    if (mutationStages[name]) {
+      assert.equal(jobs[0]!.upload?.pendingStage, mutationStages[name], `${name} must commit its dispatch intent first`);
+      assert.equal(jobs[0]!.upload?.stage, SUNO_UPLOAD_MUTATIONS[mutationStages[name]!].from);
+    }
+    if (mode.notStarted === name) throw new AudioSubmissionNotStartedError("Synthetic pre-dispatch authentication failure");
+    calls.push(name);
     if (mode.lose === name) throw new Error("Synthetic lost reply with private signed storage information");
     if (mode.abort === name) h.controller.abort();
   };
@@ -131,9 +137,119 @@ test("upload storage rejects changed receipts and unknown stages never advertise
     { ...unknown.upload!, uploadId: clipId },
     { ...unknown.upload!, sourceSha256: "0".repeat(64) },
     { ...unknown.upload!, rightsConfirmed: false },
+    { ...unknown.upload!, pendingStage: "creating" },
+    { ...unknown.upload!, pendingStage: undefined },
     { ...unknown.upload!, url: "https://suno-data-uploads.s3.amazonaws.com/" },
   ]) await assert.rejects(updateAudioJob(h.directory, h.session.id, unknown.id, { upload: upload as SunoUploadReceipt }));
   assert.deepEqual((await loadAudioJob(h.directory, h.session.id, unknown.id)).upload, unknown.upload);
+});
+
+async function interruptCommit(
+  t: Parameters<typeof fixture>[0], h: Awaited<ReturnType<typeof fixture>>, stage: SunoUploadMutationStage,
+  mode: "stop" | "sync" | "sync-stop", boundary: "marker" | "receipt" = "marker",
+) {
+  const probe = await fs.open(path.join(h.directory, "commit-probe"), "w");
+  const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
+  const originalWrite = prototype.writeFile, originalSync = prototype.sync;
+  await probe.close();
+  let armed = false, interrupted = false;
+  t.mock.method(prototype, "writeFile", async function (this: fs.FileHandle, ...args: Parameters<fs.FileHandle["writeFile"]>) {
+    const result = await originalWrite.apply(this, args);
+    if (typeof args[0] === "string" && !interrupted) {
+      const value = JSON.parse(args[0]) as { operation?: string; upload?: SunoUploadReceipt };
+      if (value.operation === "upload_music" && (boundary === "marker" ? value.upload?.pendingStage === stage
+        : value.upload?.stage === SUNO_UPLOAD_MUTATIONS[stage].to && value.upload.pendingStage === undefined)) {
+        if (mode === "stop") { interrupted = true; h.controller.abort(); }
+        else armed = true;
+      }
+    }
+    return result;
+  });
+  t.mock.method(prototype, "sync", async function (this: fs.FileHandle) {
+    if (armed && !interrupted && (await this.stat()).isDirectory()) {
+      interrupted = true;
+      if (mode === "sync-stop") h.controller.abort();
+      throw new Error("Synthetic directory sync failure after replacement");
+    }
+    return originalSync.call(this);
+  });
+  return () => interrupted;
+}
+
+function assertOneMutationEach(calls: readonly string[]) {
+  for (const name of Object.keys(mutationStages)) assert.equal(calls.filter((call) => call === name).length, 1, name);
+}
+
+for (const [step, stage] of Object.entries(mutationStages)) {
+  for (const mode of ["stop", "sync-stop"] as const) test(`${mode} during ${step} intent commit keeps the prior confirmed stage`, async (t) => {
+    const h = await fixture(t);
+    const interrupted = await interruptCommit(t, h, stage, mode);
+    const job = await h.run();
+    t.mock.restoreAll();
+    assert.equal(interrupted(), true);
+    assert.equal(job.status, "interrupted");
+    assert.ok(job.upload);
+    assert.equal(job.upload?.stage, SUNO_UPLOAD_MUTATIONS[stage].from);
+    assert.equal(job.upload.pendingStage, undefined);
+    assert.equal(h.calls.includes(step), false);
+    const resumable = job.upload.stage !== "created";
+    assert.equal((await audioJobViews(h.directory, h.session.id))[0]!.resumable, resumable);
+    const before = h.calls.slice();
+    if (!resumable) {
+      await assert.rejects(resumeAudioJob({ ...h.freshContext(), sunoUploadAdapter: h.adapter }, job.id), /cannot resume its transfer/);
+      assert.deepEqual(h.calls, before);
+    } else {
+      const finished = await resumeAudioJob({ ...h.freshContext(), sunoUploadAdapter: h.adapter }, job.id);
+      assert.equal(finished.status, "ready");
+      assertOneMutationEach(h.calls);
+      assert.equal(finished.upload?.uploadId, uploadId);
+      assert.equal(finished.upload?.clipId, clipId);
+    }
+  });
+  for (const boundary of ["marker", "receipt"] as const) test(`one uncertain ${step} ${boundary} commit retries only local persistence`, async (t) => {
+    const h = await fixture(t);
+    const interrupted = await interruptCommit(t, h, stage, "sync", boundary);
+    const job = await h.run();
+    assert.equal(interrupted(), true);
+    assert.equal(job.status, "ready");
+    assert.equal(job.upload?.pendingStage, undefined);
+    assert.deepEqual((await loadAudioJob(h.directory, h.session.id, job.id)).upload, job.upload);
+    assertOneMutationEach(h.calls);
+  });
+  test(`known pre-dispatch ${step} rejection preserves its confirmed receipt`, async (t) => {
+    const h = await fixture(t);
+    h.mode.notStarted = step;
+    const job = await h.run();
+    assert.equal(job.status, "interrupted");
+    assert.ok(job.upload);
+    assert.equal(job.upload.stage, SUNO_UPLOAD_MUTATIONS[stage].from);
+    assert.equal(job.upload.pendingStage, undefined);
+    assert.equal(h.calls.includes(step), false);
+    delete h.mode.notStarted;
+    if (job.upload.stage === "created") {
+      await assert.rejects(resumeAudioJob({ ...h.freshContext(), sunoUploadAdapter: h.adapter }, job.id), /cannot resume its transfer/);
+    } else {
+      assert.equal((await resumeAudioJob({ ...h.freshContext(), sunoUploadAdapter: h.adapter }, job.id)).status, "ready");
+      assertOneMutationEach(h.calls);
+    }
+  });
+}
+
+test("an unresolved legacy upload marker remains readable and cannot be resumed", async (t) => {
+  const h = await fixture(t);
+  h.mode.lose = "initialize";
+  const unknown = await h.run();
+  const { pendingStage: _pending, ...receipt } = unknown.upload!;
+  const bound = await bindAudioDirectory(h.directory, h.session.id);
+  await fs.writeFile(path.join(bound!.directory, `${unknown.id}.job.json`), JSON.stringify({
+    ...unknown, upload: { ...receipt, stage: "initializing" },
+  }));
+  const saved = await loadAudioJob(h.directory, h.session.id, unknown.id);
+  assert.equal(saved.upload?.stage, "initializing");
+  assert.equal((await audioJobViews(h.directory, h.session.id))[0]!.resumable, false);
+  const calls = h.calls.slice();
+  await assert.rejects(resumeAudioJob({ ...h.freshContext(), sunoUploadAdapter: h.adapter }, saved.id), /cannot be sent again/);
+  assert.deepEqual(h.calls, calls);
 });
 
 
