@@ -150,8 +150,11 @@ logs, screenshots, or documentation.
   layers.
 - JSDOM tests cover event and DOM semantics, not rendered geometry. Do not use
   computed-style assertions as proof of visual layout in the Ableton host.
-- Keep test modules below the structural limits enforced by
-  `npm run test:structure`; split shared harnesses from behavior domains.
+- Organize tests under `tests/` by behavior domain; keep reusable harnesses
+  separate from test cases. Keep fixtures only while active tests or runnable
+  examples consume them; remove obsolete scaffolding and unused exports.
+  Do not use static DOM nesting, decorative CSS classes, icon counts or
+  copies of static prose as substitutes for behavior assertions.
 - Keep provider rules canonical across tool schemas, parsing and protocol
   validation. Plugin-owned text invocations use the host's admission and
   authorization boundaries; they do not own Session jobs or Live mutation.

@@ -23,7 +23,7 @@ export const models = [
 ];
 export const catalog = () => ({ query: "catalog" as const, models: models.map((model) => ({ ...model, maxLengths: { title: 80 } })),
   creditsLeft: 123, plan: "Private plan" });
-export type Reader = NonNullable<AgentFlowDependencies["readSunoMusicService"]>;
+type Reader = NonNullable<AgentFlowDependencies["readSunoMusicService"]>;
 
 export async function storageFixture(t: TestContext, enabled = false) {
   const storage = await fs.mkdtemp("/private/tmp/live-smith-suno-models-");
@@ -33,7 +33,7 @@ export async function storageFixture(t: TestContext, enabled = false) {
   return storage;
 }
 
-export function route(url: string, pathname: string) {
+function route(url: string, pathname: string) {
   const endpoint = new URL(url); endpoint.pathname = pathname; return endpoint;
 }
 

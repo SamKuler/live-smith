@@ -64,7 +64,7 @@ export function sequentialNotes(count: number, pitch = 60): number[] {
   return track;
 }
 
-export function variableLength(value: number): number[] {
+function variableLength(value: number): number[] {
   const bytes = [value & 0x7f];
   for (let remaining = value >>> 7; remaining; remaining >>>= 7) bytes.unshift((remaining & 0x7f) | 0x80);
   return bytes;

@@ -11,7 +11,7 @@ export const B = "00000000-0000-4000-8000-000000000002";
 export const C = "00000000-0000-4000-8000-000000000003";
 export const MODEL = "catalog-model-fixture";
 export const accountId = "user_synthetic";
-export const sessionId = "sess_synthetic";
+const sessionId = "sess_synthetic";
 export function token(claims: object) {
   return [JSON.stringify({ alg: "RS256" }), JSON.stringify(claims), "synthetic-signature"]
     .map((part) => Buffer.from(part).toString("base64url")).join(".");

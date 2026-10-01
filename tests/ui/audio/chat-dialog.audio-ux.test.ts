@@ -20,7 +20,6 @@ test("audio connections are visible with status, and editing expands only on exp
     assert.equal(h.document.querySelector<HTMLDetailsElement>("#audioServiceFields")!.open, true);
     assert.equal(h.document.activeElement, row, "selection must not destroy keyboard focus");
     assert.equal(h.document.querySelector<HTMLInputElement>("#audioServiceName")!.value, musicService.name);
-    assert.equal(h.document.querySelector("#audioServiceProvider")?.getAttribute("name"), "audioServiceProvider");
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
@@ -43,10 +42,8 @@ test("API-key audio services use the shared authentication surface", async () =>
     for (const audioService of services) {
       selectAudioService(h, audioService.id);
       const panel = h.document.querySelector<HTMLElement>("#audioServiceKeyField")!;
-      assert.equal(panel.classList.contains("connection-auth-panel"), true, audioService.provider);
       assert.equal(panel.dataset.authState, "signed-in", audioService.provider);
       assert.equal(panel.querySelector(".connection-auth-state-badge")?.textContent, "Ready");
-      assert.equal(panel.querySelector(".connection-auth-state-title")?.id, "audioServiceKeyStatus");
     }
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }

@@ -86,7 +86,7 @@ export function writeU32(bytes: Uint8Array, offset: number, value: number): void
   bytes[offset + 3] = (value >>> 24) & 0xff;
 }
 
-export function writeU64(bytes: Uint8Array, offset: number, value: number): void {
+function writeU64(bytes: Uint8Array, offset: number, value: number): void {
   writeU32(bytes, offset, value >>> 0);
   writeU32(bytes, offset + 4, Math.floor(value / 0x1_0000_0000));
 }
@@ -250,7 +250,7 @@ export function asStructurallyValidZip64(source: Uint8Array): Uint8Array {
   return result;
 }
 
-export function findEocd(bytes: Uint8Array): number {
+function findEocd(bytes: Uint8Array): number {
   for (let offset = bytes.byteLength - 22; offset >= 0; offset -= 1) {
     if (
       readU32(bytes, offset) === 0x06054b50 &&

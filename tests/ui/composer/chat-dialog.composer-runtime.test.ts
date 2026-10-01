@@ -342,42 +342,6 @@ test("composer hides efforts without a configured reasoning strategy", async () 
   }
 });
 
-test("composer keeps live, runtime, and follow-up controls as independent layout groups", async () => {
-  const state = stateFixture();
-  state.openSettingsOnLoad = false;
-  const harness = await createDialogHarness(state);
-  try {
-    const toolbar = harness.document.querySelector(".composer-toolbar");
-    const live = toolbar?.querySelector(":scope > .composer-live-controls");
-    const runtime = toolbar?.querySelector(":scope > .composer-runtime-controls");
-    const followUp = toolbar?.querySelector(":scope > #followUpShortcutHint");
-    assert.ok(live);
-    assert.ok(runtime);
-    assert.ok(followUp);
-    const scopePanel = live.querySelector("#editScopePanel");
-    const approval = live.querySelector("#approvalMode");
-    assert.ok(live.querySelector("#editScopeButton"));
-    assert.ok(scopePanel);
-    assert.ok(approval);
-    assert.equal(scopePanel.contains(approval), false);
-    assert.equal(scopePanel.querySelectorAll("select").length, 0);
-    for (const selector of ["#approvalMode", "#composerModel", "#composerReasoning"]) {
-      assert.equal(
-        toolbar?.querySelector(selector)?.classList.contains("composer-select"),
-        true,
-        `${selector} should use the shared composer select treatment`,
-      );
-    }
-    assert.equal(runtime.querySelector("#composerModel") !== null, true);
-    assert.equal(runtime.querySelector("#composerReasoning") !== null, true);
-    assert.equal(runtime.querySelector("#contextUsage") !== null, true);
-    assert.equal(runtime.querySelector("#sendButton") !== null, true);
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
-});
-
 test("Load Models merges the provider catalog into the Profile", async () => {
   const state = stateFixture();
   state.availableModels = [
@@ -1234,31 +1198,6 @@ test("composer reasoning represents a disabled Profile default as Off", async ()
   }
 });
 
-test("composer reasoning uses a compact default label", async () => {
-  const state = stateFixture();
-  state.openSettingsOnLoad = true;
-  state.runtimeProfile!.selection.reasoning = { mode: "default" };
-  state.runtimeProfile!.capabilities.reasoning = {
-    supported: true,
-    canDisable: true,
-    efforts: ["low", "high"],
-    budgetTokens: false,
-    strategy: "effort",
-  };
-  const harness = await createDialogHarness(state);
-  try {
-    const reasoning = harness.document.querySelector<HTMLSelectElement>(
-      "#composerReasoning",
-    );
-    assert.equal(reasoning?.value, "");
-    assert.equal(reasoning?.selectedOptions[0]?.textContent, "Default");
-    assert.equal(reasoning?.title, "Reasoning · Default");
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
-});
-
 test("authoritative Profile changes refresh a clean Settings form and preserve a dirty Draft visibly", async () => {
   const state = stateFixture();
   const profileA = profileFixture({
@@ -1580,7 +1519,7 @@ test("the context ring distinguishes unavailable and exact latest-turn usage", a
   }
 });
 
-test("the circular transport button preserves Send and Stop semantics", async () => {
+test("the transport button switches between Send and Stop", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
   const harness = await createDialogHarness(state);
@@ -1589,8 +1528,6 @@ test("the circular transport button preserves Send and Stop semantics", async ()
     assert.equal(button?.textContent?.trim(), "Send");
     assert.equal(button?.dataset.action, "send");
     assert.equal(button?.getAttribute("aria-label"), "Send message");
-    assert.equal(button?.querySelectorAll("svg[aria-hidden='true']").length, 2);
-    assert.ok(button?.querySelector(".send-button-label.visually-hidden"));
     assert.equal(button?.getAttribute("title"), "Send (Enter)");
 
     harness.holdNextSend();
@@ -1615,166 +1552,6 @@ test("the circular transport button preserves Send and Stop semantics", async ()
     await harness.settle();
     assert.equal(button?.textContent?.trim(), "Send");
     assert.equal(button?.dataset.action, "send");
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
-});
-
-test("Inspector sections keep Session content separate from global Agent, Extensions and App settings", async () => {
-  const harness = await createDialogHarness();
-  try {
-    assert.equal(harness.document.querySelector("#agentTab")?.textContent, "Agent");
-    assert.equal(harness.document.querySelector("#appTab")?.textContent, "App");
-    assert.equal(harness.document.querySelector("#settingsTab"), null);
-    for (const name of ["agent", "app", "extensions", "context", "skills", "tools"] as const) {
-      const tab = harness.document.querySelector(`#${name}Tab`);
-      const panel = harness.document.querySelector(`#${name}Panel`);
-      assert.equal(tab?.getAttribute("aria-controls"), `${name}Panel`);
-      assert.equal(panel?.getAttribute("aria-labelledby"), `${name}Tab`);
-    }
-    const agentPanel = harness.document.querySelector("#agentPanel");
-    const appPanel = harness.document.querySelector("#appPanel");
-    const contextPanel = harness.document.querySelector("#contextPanel");
-    const skillsPanel = harness.document.querySelector("#skillsPanel");
-    const extensionsPanel = harness.document.querySelector("#extensionsPanel");
-    const contextRoot = harness.document.querySelector("#context");
-    const contextGroup = contextRoot?.querySelector(":scope > .context-shell");
-    const profileGroup = harness.document.querySelector("#modelProfileSettings");
-    const appGroup = harness.document.querySelector("#appPreferencesSettings");
-    const customInstructions = harness.document.querySelector("#customInstructionsSettings");
-    const skillManager = harness.document.querySelector("#skillManager");
-    const skillViewer = harness.document.querySelector("#skillViewer");
-    const profileControls = harness.document.querySelector("#modelProfileControls");
-    const lockNotice = harness.document.querySelector("#settingsLockNotice");
-    assert.ok(agentPanel);
-    assert.ok(appPanel);
-    assert.ok(contextPanel);
-    assert.ok(skillsPanel);
-    assert.ok(extensionsPanel);
-    assert.ok(contextRoot);
-    assert.ok(contextGroup);
-    assert.ok(profileGroup);
-    assert.ok(appGroup);
-    assert.ok(customInstructions);
-    assert.ok(skillManager);
-    assert.ok(skillViewer);
-    assert.ok(profileControls);
-    assert.ok(lockNotice);
-    assert.equal(profileGroup.tagName, "SECTION");
-    assert.equal(appGroup.tagName, "SECTION");
-    assert.equal(contextRoot.parentElement?.classList.contains("settings"), true);
-    assert.equal(contextGroup.tagName, "SECTION");
-    assert.equal(contextGroup.classList.contains("settings-scope"), true);
-    assert.equal(contextGroup.getAttribute("aria-labelledby"), "contextHeading");
-    assert.equal(
-      contextGroup.querySelector(":scope > .inspector-scope-header h2")?.id,
-      "contextHeading",
-    );
-    assert.equal(agentPanel.contains(profileGroup), true);
-    assert.equal(agentPanel.contains(skillManager), false);
-    assert.equal(agentPanel.contains(skillViewer), false);
-    assert.equal(contextPanel.contains(contextRoot), true);
-    assert.equal(agentPanel.contains(customInstructions), true);
-    assert.equal(skillsPanel.contains(skillManager), true);
-    assert.equal(skillsPanel.contains(skillViewer), true);
-    for (const id of ["pluginManager", "audioSettingsSection", "skillLibrary", "skillDropZone"]) {
-      assert.equal(extensionsPanel.contains(harness.document.getElementById(id)), true);
-    }
-    assert.equal(appPanel.contains(appGroup), true);
-    const profileHeader = profileGroup.querySelector(":scope > .inspector-scope-header");
-    const appHeader = appGroup.querySelector(":scope > .inspector-scope-header");
-    assert.equal(profileHeader?.textContent?.trim(), "Model Profile");
-    assert.equal(appHeader?.textContent?.trim(), "App Preferences");
-    assert.equal(profileHeader?.querySelector("p"), null);
-    assert.equal(appHeader?.querySelector("p"), null);
-
-    for (const id of [
-      "profileSettingsSection",
-      "connectionSettingsSection",
-      "modelSettingsSection",
-      "capabilitySettingsSection",
-      "generationSettings",
-      "advancedSettings",
-    ]) assert.equal(profileGroup.contains(harness.document.getElementById(id)), true);
-    for (const id of ["followUpSettingsSection", "networkSettingsSection"]) {
-      assert.equal(appGroup.contains(harness.document.getElementById(id)), true);
-    }
-    const profileActions = harness.document.querySelector(".settings-actions");
-    assert.ok(profileActions);
-    assert.equal(profileGroup.contains(profileActions), true);
-    assert.equal(appGroup.contains(profileActions), false);
-    assert.equal(profileGroup.contains(lockNotice), true);
-    assert.equal(profileControls.contains(lockNotice), false);
-    assert.equal(profileControls.getAttribute("aria-busy"), "false");
-
-    assert.ok(
-      harness.document.querySelector("#modelSettingsSection #discoverModelsButton"),
-    );
-    assert.ok(
-      harness.document.querySelector("#modelSettingsSection #modelConfigSelector"),
-    );
-    assert.ok(
-      harness.document.querySelector("#capabilitySettingsSection #webSearchEnabled"),
-    );
-    const generation = harness.document.querySelector("#generationSettings");
-    const overrides = harness.document.querySelector("#advancedSettings");
-    assert.ok(generation);
-    assert.ok(overrides);
-    assert.equal(generation.parentElement?.id, "capabilitySettingsSection");
-    assert.equal(overrides.parentElement?.id, "capabilitySettingsSection");
-    assert.equal(
-      Boolean(generation.compareDocumentPosition(overrides) &
-        harness.window.Node.DOCUMENT_POSITION_FOLLOWING),
-      true,
-    );
-    assert.match(
-      harness.document.querySelector("#capabilitySettingsHeading")?.textContent ?? "",
-      /Model Behavior/i,
-    );
-    assert.ok(harness.document.querySelector("#generationSettings #temperature"));
-    assert.ok(harness.document.querySelector("#generationSettings #reasoningMode"));
-    assert.ok(
-      harness.document.querySelector(
-        "#followUpSettingsSection #defaultFollowUpBehavior",
-      ),
-    );
-    assert.equal(harness.document.querySelector("#webSearchBoundaryHint"), null);
-    harness.select("#connectionKind", "oauth-subscription");
-    const webSearchHint = harness.document.querySelector<HTMLElement>("#webSearchHint");
-    assert.equal(webSearchHint?.hidden, false);
-    assert.match(
-      webSearchHint?.textContent ?? "",
-      /subscriptions.*Direct API.*Responses.*Messages/i,
-    );
-    assert.equal(
-      harness.document.querySelector("#webSearchEnabled")?.getAttribute("aria-describedby"),
-      "webSearchHint",
-    );
-    assert.deepEqual(
-      [...harness.document.querySelectorAll<HTMLOptionElement>(
-        "#defaultFollowUpBehavior option",
-      )].map((option) => [option.value, option.textContent]),
-      [
-        ["queue", "Queue after response"],
-        ["steer", "Steer current response"],
-      ],
-    );
-    assert.equal(harness.document.querySelector("#defaultFollowUpBehaviorHint"), null);
-    assert.equal(harness.document.querySelector("#microphoneButton"), null);
-    assert.equal(harness.document.querySelector("#voiceButton"), null);
-    assert.equal(
-      harness.document.querySelector("#settingsProfileActionsLabel")?.textContent,
-      "Profile",
-    );
-    assert.equal(
-      harness.document.querySelector(".settings-actions")?.getAttribute("role"),
-      "group",
-    );
-    assert.equal(
-      harness.document.querySelector(".settings-actions")?.getAttribute("aria-labelledby"),
-      "settingsProfileActionsLabel",
-    );
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

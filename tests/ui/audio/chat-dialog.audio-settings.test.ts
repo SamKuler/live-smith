@@ -295,7 +295,7 @@ for (const [isNew, withState] of [[false, false], [false, true], [true, false], 
   });
 }
 
-test("Suno keeps essential connection facts visible and moves adapter details into aligned help", async () => {
+test("Suno exposes account controls instead of API-key fields and keeps help keyboard accessible", async () => {
   const harness = await createDialogHarness(audioState([{ ...service, provider: "suno", enabled: false, apiKeyConfigured: false }]));
   try {
     assert.equal(harness.document.querySelector<HTMLOptionElement>('#audioServiceProvider option[value="suno"]')!.disabled, false);
@@ -311,18 +311,13 @@ test("Suno keeps essential connection facts visible and moves adapter details in
     assert.equal(operations.hidden, false);
     assert.match(operations.textContent!, /Custom lyrics.*Extend.*Library.*Retrieve/);
     assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /Suno credits.*save.*never retried/i);
-    const heading = harness.document.querySelector("#sunoConnectionHeading");
     const help = harness.document.querySelector<HTMLElement>("#sunoFeatureHelp")!;
-    assert.equal(heading?.nextElementSibling, help);
-    assert.equal(help.parentElement?.classList.contains("field-label-row"), true);
-    assert.equal(help.textContent, "?");
     assert.equal(help.tabIndex, 0);
     assert.equal(help.getAttribute("role"), "note");
     assert.equal(help.dataset.tooltip, help.getAttribute("aria-label"));
     assert.ok(help.dataset.tooltip?.trim());
     help.focus();
     assert.equal(harness.document.activeElement, help, "Connection help must remain keyboard accessible.");
-    assert.equal(harness.document.querySelector("#sunoLoginControls details#sunoFeatureHelp"), null);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#sunoSessionValue")!.type, "password");
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#openSunoWebsiteButton")!.disabled, false);
     assert.deepEqual(harness.errors, []);

@@ -18,7 +18,7 @@ import { createChatBridge, ChatBridgeSendFailureError, type PromptPersistence } 
 import { liveContextPresentationFixture } from "../../context/support/live-context.test-harness.js";
 import { runtimeProfileForSavedProfile } from "../../../../src/app/model/model-request.js";
 
-export type ReceiptScenario = "audio-stop" | "commit-stop" | "corrupt-audio" |
+type ReceiptScenario = "audio-stop" | "commit-stop" | "corrupt-audio" |
   "reject-commit" | "unknown-visible" | "unknown-absent" | "success";
 
 function deferred() {

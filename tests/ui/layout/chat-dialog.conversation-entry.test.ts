@@ -19,21 +19,6 @@ const contexts: LiveContextPresentation[] = [
   { origin: "clip-slot-selection", objectKind: "other", title: "Clip slot selection", details: ["Bass slot 1", "Lead slot 2"] },
 ];
 
-test("context, message input, and controls share one composer focus surface", async () => {
-  const harness = await createDialogHarness();
-  try {
-    const surface = harness.document.querySelector(".composer-surface");
-    assert.ok(surface);
-    for (const selector of ["#liveContextSummaryButton", "#prompt", ".composer-toolbar"]) {
-      assert.equal(harness.document.querySelector(selector)?.parentElement, surface, selector);
-    }
-    assert.equal(surface.parentElement?.classList.contains("composer"), true);
-    assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
-});
-
 for (const context of contexts) {
   test(`${context.title} keeps one direct conversation entry with its own context`, async () => {
     const state = stateFixture();

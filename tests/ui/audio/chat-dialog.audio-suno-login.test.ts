@@ -27,23 +27,6 @@ type Harness = Awaited<ReturnType<typeof createDialogHarness>>;
 const text = (harness: Harness, selector: string) => harness.document.querySelector(selector)!.textContent!;
 const disabled = (harness: Harness, selector: string) => harness.document.querySelector<HTMLButtonElement>(selector)!.disabled;
 
-test("Suno uses the shared account surface and keeps model settings separate", async () => {
-  const harness = await createDialogHarness(websiteState("signed_in"));
-  try {
-    const panel = harness.document.querySelector<HTMLElement>("#sunoLoginControls")!;
-    assert.equal(panel.classList.contains("connection-auth-panel"), true);
-    assert.equal(panel.dataset.authState, "signed-in");
-    assert.equal(panel.querySelector(".connection-auth-state-badge")?.textContent, "Connected");
-    assert.equal(panel.querySelector(".connection-auth-state-title")?.id, "sunoLoginStatus");
-    assert.equal(panel.querySelector(".connection-auth-state-detail")?.id, "sunoAccountName");
-    const clearCookie = harness.document.querySelector("#logoutSunoButton")!;
-    assert.equal(panel.querySelector("#sunoCookieEditor")?.contains(clearCookie), true);
-    assert.equal(panel.querySelector(".connection-auth-actions")?.contains(clearCookie), false);
-    assert.equal(panel.contains(harness.document.querySelector("#sunoModelSelection")), false);
-    assert.deepEqual(harness.errors, []);
-  } finally { harness.close(); }
-});
-
 test("refresh permits saved or unavailable sessions while only authoritative status establishes connection", async () => {
   for (const status of ["signed_out", "saved", "signed_in", "expired", "unavailable"] as const) {
     const harness = await createDialogHarness(websiteState(status));

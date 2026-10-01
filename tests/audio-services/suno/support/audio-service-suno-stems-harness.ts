@@ -1,7 +1,7 @@
 import { SUNO_STEM_BASE_ROLES } from "../../../../src/audio-services/contracts.js";
 import { accountId, C, catalog, clip, gateStep, type Step } from "./audio-service-suno-harness.js";
 
-export const stemGroups = ["Vocals", "Backing_Vocals", "Drums", "Bass", "Guitar", "Keyboard", "Percussion", "Strings", "Synth", "FX", "Brass", "Woodwinds"];
+const stemGroups = ["Vocals", "Backing_Vocals", "Drums", "Bass", "Guitar", "Keyboard", "Percussion", "Strings", "Synth", "FX", "Brass", "Woodwinds"];
 export const stemIds = Array.from({ length: 24 }, (_, index) => `00000000-0000-4000-8000-${(100 + index).toString().padStart(12, "0")}`);
 export const stemClips = (count = 12) => stemIds.slice(0, count).map((id, index) => clip(id, "complete", {
   metadata: { type: "stem", task: "gen_stem", stem_task: "twelve", stem_type_group_name: stemGroups[index % 12],
