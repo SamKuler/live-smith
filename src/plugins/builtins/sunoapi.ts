@@ -3,7 +3,7 @@ import {
   createSunoApiAudioAdapter,
   DEFAULT_SUNOAPI_MUSIC_MODEL,
   SUNOAPI_MUSIC_MODELS,
-} from "../../audio-services/sunoapi.js";
+} from "../../audio-services/sunoapi/sunoapi.js";
 import { createBuiltInAudioTools } from "./provider-tools.js";
 
 export { DEFAULT_SUNOAPI_MUSIC_MODEL, SUNOAPI_MUSIC_MODELS };

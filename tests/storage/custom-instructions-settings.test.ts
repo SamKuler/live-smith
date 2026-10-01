@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { parseCommandInput } from "../../src/app/chat-bridge-http.js";
+import { parseCommandInput } from "../../src/app/chat/chat-bridge-http.js";
 import {
   MAX_CUSTOM_INSTRUCTIONS_CODE_POINTS,
   compareCustomInstructionsRevisions,

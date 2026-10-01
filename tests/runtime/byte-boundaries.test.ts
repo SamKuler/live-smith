@@ -10,7 +10,7 @@ import { inspectAudioAttachment, isAudioAttachmentCandidate } from "../../src/at
 import { assertDocumentAttachmentBytesWithinLimit, AttachmentProcessingError, MAX_DOCUMENT_ATTACHMENT_BYTES } from "../../src/attachments/contracts.js";
 import { openBoundedOoxmlZip } from "../../src/attachments/ooxml-zip.js";
 import { packageBytes } from "../attachments/support/ooxml-test-helpers.js";
-import { createLalalAudioAdapter } from "../../src/audio-services/lalal.js";
+import { createLalalAudioAdapter } from "../../src/audio-services/lalal/lalal.js";
 import { readAudioAsset } from "../../src/storage/audio-assets.js";
 import { AudioStorageError } from "../../src/storage/audio-jobs.js";
 import { audioStorageHarness, generationJobCases, waveBytes } from "../storage/support/audio-storage-test-helpers.js";

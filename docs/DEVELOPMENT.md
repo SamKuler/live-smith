@@ -80,6 +80,11 @@ does not start it. The capsule contains no Ableton SDK or account data.
 Test modules live under `tests/`, mirroring their source module directories.
 Test-only helpers and harnesses live in each test module's `support/` directory;
 attachment document fixtures live under `tests/attachments/fixtures/`.
+Application coordinator and bridge tests use subject directories such as
+`tests/app/agent-flow/`, `tests/app/agent-request/`, and
+`tests/app/chat/chat-bridge/`. Audio protocol tests use provider directories
+under `tests/audio-services/`. UI tests group composer, conversation, audio,
+Inspector, Session, layout and internationalization behavior under `tests/ui/`.
 TypeScript checking includes production source and the complete test tree.
 `test:core` runs the core module suites and `test:ui` runs the real-dialog DOM
 and UI module suites. The structure check enforces test placement and module

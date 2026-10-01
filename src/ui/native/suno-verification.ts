@@ -1,4 +1,4 @@
-import type { SunoCaptchaVersion } from "../../audio-services/suno-verification.js";
+import type { SunoCaptchaVersion } from "../../audio-services/suno/suno-verification.js";
 
 /** Runs on an actual Suno document. Opaque results go only to the native pipe. */
 export function buildSunoVerificationScript(version: SunoCaptchaVersion, locale: string, styles: string): string {

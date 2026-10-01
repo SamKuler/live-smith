@@ -8,7 +8,7 @@ import type {
   LyricWritingResult,
   LyricModelCatalog,
 } from "../../audio-services/contracts.js";
-import type { SunoSessionRefreshHandler } from "../../audio-services/suno-http.js";
+import type { SunoSessionRefreshHandler } from "../../audio-services/suno/suno-http.js";
 import type { AudioToolRequest } from "../../agent/audio-tools.js";
 import type { ModelFunctionTool } from "../../model/provider.js";
 import type { OpenProviderWebSocket } from "../../runtime/proxy-websocket.js";

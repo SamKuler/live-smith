@@ -10,10 +10,10 @@ import { throwIfAborted } from "../runtime/host.js";
 import { appendSessionEvent, loadSessionEvents } from "../storage/events.js";
 import { listSessions } from "../storage/sessions.js";
 import { preflightAgentPlan } from "./agent-request.js";
-import { ChatBridgeCommandOutcomeUnknownError, ChatBridgeConflictError } from "./chat-bridge.js";
-import { activeRecoveryLedgerFromEvents } from "./session-context.js";
+import { ChatBridgeCommandOutcomeUnknownError, ChatBridgeConflictError } from "./chat/chat-bridge.js";
+import { activeRecoveryLedgerFromEvents } from "./context/session-context.js";
 import type { LiveMutationQueue } from "./live-mutation-queue.js";
-import { subscribeSessionEditScopesChanges, subscribeSessionEditScopesInvalidations } from "./session-edit-scope-events.js";
+import { subscribeSessionEditScopesChanges, subscribeSessionEditScopesInvalidations } from "./session/session-edit-scope-events.js";
 
 export interface MidiArtifactImportCommand {
   kind: "import_midi_artifact";

@@ -2,7 +2,7 @@ import type { AudioParameterPanel } from "../plugins/builtins/parameter-panel.js
 import { safeAttachmentDisplayFileName } from "../attachments/contracts.js";
 import type { AudioJobView } from "../audio-services/contracts.js";
 import { isStandaloneMcpConnection, type IntegrationConnectionsView } from "../plugins/integration-connections.js";
-import type { SunoAccountView } from "../audio-services/suno-session-contracts.js";
+import type { SunoAccountView } from "../audio-services/suno/suno-session-contracts.js";
 import type { LiveContextPresentation } from "../live/context.js";
 import type { ConversationScope } from "../model/contracts.js";
 import type {

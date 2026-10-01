@@ -4,7 +4,7 @@ import {
   DEFAULT_MUREKA_MUSIC_MODEL,
   generateMurekaLyrics,
   MUREKA_MUSIC_MODELS,
-} from "../../audio-services/mureka.js";
+} from "../../audio-services/mureka/mureka.js";
 import {
   MUREKA_EXTENSION_TOOL_NAMES,
   murekaExtensionTools,

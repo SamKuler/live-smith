@@ -15,7 +15,7 @@
     "start": "npm run build:dev && extensions-cli run --storage-directory .live-smith-data",
     "test": "npm run test:structure && npm run test:core && npm run test:ui",
     "test:structure": "tsx scripts/check-test-structure.ts",
-    "test:core": "tsx --test \"tests/agent/**/*.test.ts\" \"tests/app/**/*.test.ts\" \"tests/attachments/**/*.test.ts\" \"tests/live/**/*.test.ts\" \"tests/model/**/*.test.ts\" \"tests/plugins/**/*.test.ts\" \"tests/release/**/*.test.ts\" \"tests/runtime/**/*.test.ts\" \"tests/skills/**/*.test.ts\" \"tests/storage/**/*.test.ts\"",
+    "test:core": "tsx --test \"tests/agent/**/*.test.ts\" \"tests/app/**/*.test.ts\" \"tests/attachments/**/*.test.ts\" \"tests/audio-services/**/*.test.ts\" \"tests/live/**/*.test.ts\" \"tests/model/**/*.test.ts\" \"tests/plugins/**/*.test.ts\" \"tests/release/**/*.test.ts\" \"tests/runtime/**/*.test.ts\" \"tests/skills/**/*.test.ts\" \"tests/storage/**/*.test.ts\"",
     "test:ui": "tsx --test \"tests/ui/**/*.test.ts\"",
     "verify:client": "tsx scripts/check-dialog-client-syntax.ts",
     "verify:plugins": "tsx scripts/check-plugin-fixtures.ts",

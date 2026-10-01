@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runtimeProfileForSavedProfile } from "../../../src/app/model-request.js";
+import { runtimeProfileForSavedProfile } from "../../../src/app/model/model-request.js";
 import type { ModelConversationMessage } from "../../../src/model/contracts.js";
 import type { DirectApiConnection, DirectApiProfile } from "../../../src/model/profile.js";
 import type { ModelTransport, TransportRequest } from "../../../src/model/provider.js";

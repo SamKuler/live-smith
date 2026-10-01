@@ -4,8 +4,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { platform } from "node:process";
 import { TextDecoder } from "node:util";
-import type { SunoSessionIdentity } from "../audio-services/suno-session-contracts.js";
-import { normalizeSunoSessionIdentity, normalizeSunoSessionValue } from "../audio-services/suno-session.js";
+import type { SunoSessionIdentity } from "../audio-services/suno/suno-session-contracts.js";
+import { normalizeSunoSessionIdentity, normalizeSunoSessionValue } from "../audio-services/suno/suno-session.js";
 import { isMissingFileError } from "./errors.js";
 import { requireSafeStorageId } from "./id.js";
 import { isStorageCommitOutcomeUnknownError, StorageCommitOutcomeUnknownError,

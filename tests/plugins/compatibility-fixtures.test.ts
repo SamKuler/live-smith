@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import { zipSync } from "fflate/browser";
 
-import { resolveSkillContext } from "../../src/app/skill-context.js";
-import { createRequestPluginTools } from "../../src/app/request-plugin-tools.js";
+import { resolveSkillContext } from "../../src/app/context/skill-context.js";
+import { createRequestPluginTools } from "../../src/app/plugins/request-plugin-tools.js";
 import { createHostAbortController } from "../../src/runtime/host.js";
 import { pluginSkillsFromPackages } from "../../src/skills/plugin-package.js";
 import {

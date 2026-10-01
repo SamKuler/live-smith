@@ -25,14 +25,14 @@ import {
   type AgentPlan,
 } from "../agent/actions.js";
 import { liveSmithTools } from "../agent/tool-definitions.js";
-import { createRequestAudioTools } from "./request-audio-tools.js";
+import { createRequestAudioTools } from "./audio/request-audio-tools.js";
 import {
   createRequestPluginTools,
   type PluginExecutionAuthorization,
-} from "./request-plugin-tools.js";
-import { providerFetchForStorage } from "./provider-fetch.js";
-import { audioProcessingAvailable, type AudioProcessingContext } from "./audio-processing.js";
-import { addAudioAssetSampleSources, audioAssetSampleSourceInstructions } from "./audio-asset-sources.js";
+} from "./plugins/request-plugin-tools.js";
+import { providerFetchForStorage } from "./model/provider-fetch.js";
+import { audioProcessingAvailable, type AudioProcessingContext } from "./audio/audio-processing.js";
+import { addAudioAssetSampleSources, audioAssetSampleSourceInstructions } from "./audio/audio-asset-sources.js";
 import {
   assertEditScopesAllow,
   EditScopeDeniedError,
@@ -108,51 +108,51 @@ import {
 import {
   resolveConversationHistory,
   resolveCurrentAttachmentParts,
-} from "./attachment-context.js";
+} from "./context/attachment-context.js";
 import {
   ChatBridgePromptPersistenceUnknownError,
-} from "./chat-bridge.js";
-import { sessionErrorMessage } from "./error-routing.js";
+} from "./chat/chat-bridge.js";
+import { sessionErrorMessage } from "./chat/error-routing.js";
 import {
   buildModelRequest,
   requestModelTurn,
   type ModelTurnRequestInput,
-} from "./model-request.js";
+} from "./model/model-request.js";
 import {
   requestModelWithReconnect,
   type ModelReconnectWait,
-} from "./model-reconnect.js";
+} from "./model/model-reconnect.js";
 import {
   createRequestAudioSampleSources,
   mergeRequestAudioImportProgress,
   prepareRequestAudioSampleSources,
   requestAudioSampleSourceInstructions,
   type RequestAudioImportProgress,
-} from "./request-audio-sources.js";
+} from "./audio/request-audio-sources.js";
 import {
   activeRecoveryLedgerFromEvents,
   getOrCreateDefaultSession,
   recoveryContextFromEvents,
   sessionTitleForPrompt,
-} from "./session-context.js";
+} from "./context/session-context.js";
 import {
   resolveSkillContext,
   type ResolvedSkillContext,
-} from "./skill-context.js";
+} from "./context/skill-context.js";
 import {
   subscribeSessionEditScopesChanges,
   subscribeSessionEditScopesInvalidations,
-} from "./session-edit-scope-events.js";
+} from "./session/session-edit-scope-events.js";
 import {
   SteeringPersistenceOutcomeUnknownError,
   type SteeringChannel,
-} from "./steering.js";
+} from "./chat/steering.js";
 import {
   conversationCheckpointMessage,
   createConversationCheckpoint,
   estimateTransportContextTokens,
   resolveAutoCompactTokenLimit,
-} from "./context-compaction.js";
+} from "./context/context-compaction.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const maxConsecutiveInvalidToolCalls = 3;

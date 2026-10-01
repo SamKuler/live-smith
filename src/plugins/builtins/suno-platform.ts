@@ -1,5 +1,5 @@
 import type { BuiltInAudioPluginDefinition, BuiltInAudioToolContract } from "./contracts.js";
-import { createSunoPlatformAudioAdapter } from "../../audio-services/suno-platform.js";
+import { createSunoPlatformAudioAdapter } from "../../audio-services/suno-platform/suno-platform.js";
 import { createBuiltInAudioTools } from "./provider-tools.js";
 
 const audio: BuiltInAudioToolContract = {

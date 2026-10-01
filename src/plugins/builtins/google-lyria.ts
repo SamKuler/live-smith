@@ -3,7 +3,7 @@ import {
   createGoogleLyriaAudioAdapter,
   DEFAULT_GOOGLE_LYRIA_MUSIC_MODEL,
   GOOGLE_LYRIA_MUSIC_MODELS,
-} from "../../audio-services/google-lyria.js";
+} from "../../audio-services/google-lyria/google-lyria.js";
 import { createBuiltInAudioTools } from "./provider-tools.js";
 
 export { DEFAULT_GOOGLE_LYRIA_MUSIC_MODEL, GOOGLE_LYRIA_MUSIC_MODELS };

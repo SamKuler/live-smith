@@ -1,7 +1,7 @@
 import type { BuiltInAudioPluginDefinition, BuiltInAudioToolContract } from "./contracts.js";
 import { createBuiltInAudioTools } from "./provider-tools.js";
 import { SUNO_LYRIC_TOOL_NAMES, sunoLyricTools, parseSunoLyricTool } from "./suno-lyrics-tools.js";
-import { readSunoLyricModels, writeSunoLyrics } from "../../audio-services/suno-lyrics.js";
+import { readSunoLyricModels, writeSunoLyrics } from "../../audio-services/suno/suno-lyrics.js";
 
 const audio: BuiltInAudioToolContract = {
   operations: ["generate_music", "extend_music", "get_whole_song", "retrieve_music", "generate_sound_sample", "cover_music", "remaster_music", "add_vocals", "add_instrumental", "replace_music_section", "finish_music_replacement", "upload_music", "extract_music_stems"],

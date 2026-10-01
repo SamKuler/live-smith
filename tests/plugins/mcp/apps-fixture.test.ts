@@ -6,7 +6,7 @@ import { fileURLToPath, URL } from "node:url";
 import { TextDecoder } from "node:util";
 import { zipSync } from "fflate/browser";
 import { buildPluginAppExample } from "../../../scripts/build-plugin-app-example.js";
-import { createRequestPluginTools, type RequestPluginTools } from "../../../src/app/request-plugin-tools.js";
+import { createRequestPluginTools, type RequestPluginTools } from "../../../src/app/plugins/request-plugin-tools.js";
 import { createHostAbortController } from "../../../src/runtime/host.js";
 import { installPlugin, savePluginConfigInTransaction, setPluginEnabled, setPluginMcpServerApproved, setPluginArtifactPermissionApproved } from "../../../src/storage/plugins.js";
 import { withStorageTransaction } from "../../../src/storage/persistence.js";

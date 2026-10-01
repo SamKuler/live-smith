@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import process from "node:process";
 import { normalizeNetworkProxySettings, type NetworkProxySettings } from "../model/profile.js";
 import { isSunoVerificationFailureCode, readSunoVerificationProof, SunoVerificationError,
-  type SunoCaptchaVersion, type SunoVerificationProof } from "../audio-services/suno-verification.js";
+  type SunoCaptchaVersion, type SunoVerificationProof } from "../audio-services/suno/suno-verification.js";
 import { buildSunoVerificationScript } from "../ui/native/suno-verification.js";
 import { createNativeVerificationDirectProxy } from "./native-verification-proxy.js";
 

@@ -24,55 +24,57 @@ src/
     agent-request.ts
       Runs one provider-neutral agent request, including attachment/Skill
       context, trace persistence, approval, preflight, and Live execution.
-    chat-bridge.ts
-      Local authenticated HTTP/SSE bridge state machine for the modal WebView.
-    chat-bridge-http.ts
-      Strict correlation IDs, command/query decoding, bounded body reads, and
-      safe request errors for the bridge transport boundary.
-    model-request.ts
-      Materializes one Session-selected model from a saved multi-model Profile,
-      then builds provider-neutral requests and Draft capability previews.
-    model-reconnect.ts
-      Rebuilds an unaccepted model response on typed connection loss with
-      bounded, cancellable backoff; never re-enters send admission.
-    provider-fetch.ts
-      Applies the current global proxy selection to provider HTTP requests
-      through one process-scoped Fetch boundary per storage directory.
-    provider-websocket.ts
-      Applies the same storage-scoped network selection to provider WebSocket
-      connections without changing process-global routing.
-    attachment-context.ts
-      Resolves current and bounded historical attachment parts without exposing
-      attachment storage details to providers or the agent loop.
-    request-audio-sources.ts
-      Owns send-scoped audio SampleSource locators, verified staging, Live Project
-      import, and partial import progress.
-    request-plugin-tools.ts
-      Discovers enabled installed and standalone MCP tools for one request,
-      binds their admitted configuration and permissions, and mediates artifacts.
-    integration-connections.ts, built-in-plugin-runtime.ts
-      Resolve private Plugin-owned Connection snapshots and supply explicit host
-      networking primitives to built-in protocol factories.
-    skill-context.ts
-      Resolves persistent and one-turn Skill activation from bundled definitions,
-      immutable User Skills, and enabled immutable Plugin packages without
-      changing prompt bytes.
-    session-context.ts
-      Selects scoped sessions and derives bounded conversation and recovery
-      context from events.
-    context-compaction.ts
-      Estimates provider-neutral request context and creates bounded model
-      checkpoints through the active Direct API or OAuth backend.
-    session-mutation-fence.ts
-      Serializes the full same-Session send and lifecycle boundary across
-      dialogs that share one storage directory.
-    model-auth-send-fence.ts
-      Serializes one Profile's editable OAuth lifecycle and subscription sends,
-      with provider-tagged pending login, activity, generation invalidation,
-      and poison state.
     live-mutation-queue.ts
       Serializes validated Live plans across dialogs in one extension activation;
       the caller revalidates state after acquiring the queue.
+    midi-artifact-import.ts
+      Validates Session artifact ownership and mediates queued Live MIDI import.
+    chat/
+      chat-bridge.ts, chat-bridge-http.ts
+        Own authenticated HTTP/SSE state, command admission, body bounds,
+        correlation IDs and safe bridge errors.
+      steering.ts, error-routing.ts, global-settings-events.ts
+        Own follow-up admission, UI error routing and global settings notices.
+    audio/
+      audio-generation.ts, audio-processing.ts, audio-polling.ts, audio-job-runtime.ts
+        Coordinate remote tasks, durable audio jobs, recovery, bounded polling
+        and prepared output retrieval.
+      audio-asset-sources.ts, audio-asset-response.ts, request-audio-sources.ts
+        Bind admitted audio, stage Session outputs and mediate Live Project import.
+      request-audio-tools.ts, audio-parameter-tool.ts, audio-parameter-suggestions.ts
+        Assemble request-bound tools and explicit parameter-panel execution.
+      suno-session-manager.ts, suno-model-catalog.ts, suno-upload.ts, suno-human-verification.ts
+        Own application-level account lifecycle, catalog admission, upload
+        receipts and user-driven verification.
+    plugins/
+      request-plugin-tools.ts
+        Discover enabled installed and standalone MCP tools for one request,
+        bind admitted configuration and permissions, and mediate artifacts.
+      integration-connections.ts, built-in-plugin-runtime.ts
+        Resolve private Connection snapshots and provide host networking to factories.
+      plugin-apps.ts, plugin-app-sandbox.ts, plugin-parameter-tool.ts
+        Own MCP App sessions, browser sandbox resources and panel invocation.
+    model/
+      model-request.ts, model-reconnect.ts
+        Resolve saved Session model selection, assemble provider-neutral requests
+        and capability previews, and bound retries before model-turn acceptance.
+      model-auth-send-fence.ts, profile-settings-events.ts
+        Serialize Profile OAuth edits and sends, and publish committed settings notices.
+      provider-fetch.ts, provider-websocket.ts
+        Apply storage-scoped proxy choices without changing process-global routing.
+    context/
+      attachment-context.ts, skill-context.ts
+        Select bounded attachment and Skill data without exposing storage details.
+      session-context.ts, context-compaction.ts
+        Derive scoped recovery context and bounded model checkpoints from events.
+    session/
+      session-mutation-fence.ts, session-claims.ts
+        Serialize same-Session mutations and track active dialog ownership.
+      session-tool-catalog.ts
+        Assemble Session tool views without invoking tools.
+      session-approval-events.ts, session-edit-scope-events.ts,
+      session-model-selection-events.ts, session-state-events.ts
+        Publish committed Session metadata and scoped state invalidation.
 
   agent/
     action-schema.ts
@@ -105,26 +107,26 @@ src/
     contracts.ts
       Typed audio protocol operations, private remote locators, historical job
       compatibility, and immutable audio asset contracts.
-    lalal.ts, lalal-http.ts
+    lalal/
       LALAL.AI Public API v1 upload, multistem submission, task checks and
       cancellation, bounded protocol decoding and credential-free downloads.
-    elevenlabs.ts, elevenlabs-http.ts
+    elevenlabs/
       Official music and sound-effect requests, bounded MP3 responses, and
       cancellation without automatic regeneration.
-    google-lyria.ts
+    google-lyria/
       Stateless Lyria Interactions generation plus bounded Lyria RealTime WSS
       collection, strict inline/base64 decoding, and PCM-to-WAV packaging.
-    mureka.ts, mureka-http.ts
+    mureka/
       Official prompt-to-song and instrumental task submission, typed polling,
       stable output collection, and validated credential-free provider media
       downloads.
-    suno-platform.ts, suno-platform-http.ts
+    suno-platform/
       First-party Suno Platform API-key generation, task polling, and bounded
       credential-free media collection through api.suno.com.
-    sunoapi.ts, sunoapi-http.ts
+    sunoapi/
       Explicit third-party SunoAPI.org submission, polling, and provider-returned
       media downloads; no Suno Platform or website-subscription credentials.
-    suno.ts, suno-catalog.ts, suno-download.ts, suno-http.ts
+    suno/
       Experimental Suno.com account-bound generation, custom parameters,
       extension/whole-song requests, bounded catalog/library reads, short-lived
       session-token exchange and authorized MP3 preparation with allowlisted CDN
@@ -626,7 +628,7 @@ The OAuth backend is split by responsibility:
 
 - `model/shared-backend-manager.ts` owns one ref-counted
   `ModelBackendManager` per canonical storage directory.
-- `app/model-auth-send-fence.ts` serializes each Profile's connection lifecycle,
+- `app/model/model-auth-send-fence.ts` serializes each Profile's connection lifecycle,
   with provider-tagged pending-login ownership, activity, generations, and
   poison. Different Profile IDs remain independent.
 - `storage/oauth-credentials.ts` owns strict private token persistence in
@@ -823,7 +825,7 @@ The reserved `io.github.samkuler/live-smith-artifacts` result metadata is rebuil
 from host-validated artifacts. Server values cannot forge these references;
 reopening an App resolves saved references against the current Session store.
 
-`app/plugin-apps.ts` retains request resources for each open App. Authenticated
+`app/plugins/plugin-apps.ts` retains request resources for each open App. Authenticated
 bridge endpoints open, call, read/list resources, and close an instance. The
 browser allocates the instance ID before sending its open request. One bounded
 map owns both pending opens and ready instances; close can cancel and await
@@ -858,7 +860,7 @@ persists the normal recovery ledger and returns an unknown command outcome.
 An existing active recovery blocks another direct import until resolved.
 
 `ui/client/plugin-apps.ts` bundles the official MCP Apps AppBridge and uses manual
-handlers so every RPC passes through the host. `app/plugin-app-sandbox.ts` serves
+handlers so every RPC passes through the host. `app/plugins/plugin-app-sandbox.ts` serves
 a fixed proxy from a separate loopback origin; its inner App iframe has an opaque
 origin. Closing a loading App, changing its owner, or opening a replacement
 cancels the pending HTTP open request and its backend discovery. The browser
@@ -1303,13 +1305,13 @@ for imported files, so a failed later step may leave an unused project copy.
 `plugins/builtins/provider-tools.ts` supplies shared schema builders, while every
 built-in Plugin directly owns its resulting `tools()/parse()` contract and
 protocol factory. `agent/audio-tool-parser.ts` contains only shared strict syntax
-parsing. `app/request-audio-tools.ts` binds input references to the current
+parsing. `app/audio/request-audio-tools.ts` binds input references to the current
 request's attachments, same-Session saved results, or an isolated Arrangement
 Audio Clip range and exposes each Provider's namespaced Plugin toolset.
-`app/audio-processing.ts` owns the asynchronous lifecycle and calls the selected
+`app/audio/audio-processing.ts` owns the asynchronous lifecycle and calls the selected
 Plugin factory through the proxy-aware Fetch or WebSocket boundary.
-`app/audio-generation.ts` owns generation responses and saved-result recovery;
-`app/integration-connections.ts` resolves the exact named Plugin Connection and
+`app/audio/audio-generation.ts` owns generation responses and saved-result recovery;
+`app/plugins/integration-connections.ts` resolves the exact named Plugin Connection and
 credential owner. Tool admission captures immutable private connection snapshots; public
 tool choices are derived from those same snapshots. Initial operations reject
 changes to the selected connection before uploading input or submitting paid
@@ -1317,7 +1319,7 @@ work, and adapters retain the admitted connection rather than reloading a new
 account. Changes to unrelated connections do not invalidate the request.
 `audio-job-runtime.ts` shares active-job exclusion and verified local recovery
 across operations.
-`audio-services/google-lyria.ts` keeps both Gemini music protocols inside one
+`audio-services/google-lyria/google-lyria.ts` keeps both Gemini music protocols inside one
 provider adapter. Batch models issue one stateless Interactions request and
 validate the final inline audio block. The realtime model authenticates in the
 WSS header, waits for setup, collects only the requested amount of raw PCM, and
@@ -1329,7 +1331,7 @@ job exists. Interactive steering is outside the current tool contract.
 handler. Website navigation is independent of saved connections
 and is never evidence of authentication. No browser process, profile directory,
 extension or debugging connection is owned by Live Smith.
-`app/suno-human-verification.ts` separately creates the production Suno adapter
+`app/audio/suno-human-verification.ts` separately creates the production Suno adapter
 and binds an in-app challenge to the admitted account/configuration and proxy
 revision. `runtime/suno-human-verification.ts` stages only our embedded native
 capsule in a private temporary directory and executes its fixed entrypoint with
@@ -1348,9 +1350,9 @@ the verification lease. Manual/system proxy routing remains user-selected.
 Official Suno Platform connections are ordinary API-key audio connections. Their
 transport is isolated from the following website-session lifecycle and never
 receives a Suno.com Cookie.
-`app/suno-session-manager.ts` binds explicitly imported Suno Cookies to exact
+`app/audio/suno-session-manager.ts` binds explicitly imported Suno Cookies to exact
 saved audio connection IDs. Import and refresh use the bounded Suno-only
-`audio-services/suno-session.ts` verifier through proxy-aware Fetch. The adapter
+`audio-services/suno/suno-session.ts` verifier through proxy-aware Fetch. The adapter
 reads the current Clerk client/session identity; it never automates Google
 login or extracts browser data. Both Clerk `__client` token exchange and current
 `__session` + `__client_uat` touch/rotation are supported. Verified rotations
@@ -1376,7 +1378,7 @@ current private credential. Recovery fingerprints likewise bind verified account
 IDs so rotation does not orphan accepted tasks. Custom options are typed,
 capability-gated and validated against
 the selected account's model catalog. Read-only preparation and the endpoint's
-required challenge checks precede the paid submission boundary. `audio-services/suno-verification.ts`
+required challenge checks precede the paid submission boundary. `audio-services/suno/suno-verification.ts`
 owns transient proof validation and provider-specific lifetimes. A successful
 challenge adds only proof fields to the original prepared body, consumed once;
 the HTTP boundary rechecks freshness after authentication and the app rechecks
@@ -1399,7 +1401,7 @@ Session/service/account/manifest job without replacing unknown generation outcom
 Remote text is bounded untrusted data; no generic HTTP tool or credential-bearing
 locator reaches the chat model.
 Closing a dialog neither disconnects the saved account nor closes a user's browser.
-`app/suno-model-catalog.ts` owns one modal-only, read-only model catalog for the
+`app/audio/suno-model-catalog.ts` owns one modal-only, read-only model catalog for the
 explicit `load_suno_models` command. The saved connection ID and verified account
 bind its ownership; ordinary display/model/enablement edits and automatic Cookie
 rotation do not change the account catalog. Publication revalidates that owner and tags the

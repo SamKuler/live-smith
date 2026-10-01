@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
 import test from "node:test";
 
-import { runtimeProfileForSavedProfile } from "../../../src/app/model-request.js";
+import { runtimeProfileForSavedProfile } from "../../../src/app/model/model-request.js";
 import type { DirectApiProfile } from "../../../src/model/profile.js";
 import type { TransportRequest } from "../../../src/model/provider.js";
 import { createOpenAIChatTransport } from "../../../src/model/transports/openai-chat.js";

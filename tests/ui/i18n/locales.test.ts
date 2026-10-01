@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { UI_LANGUAGES, isUiLanguage } from "../../../src/i18n/languages.js";
-import { parseCommandInput } from "../../../src/app/chat-bridge-http.js";
+import { parseCommandInput } from "../../../src/app/chat/chat-bridge-http.js";
 import { freshEmptyAgentSettings } from "../../../src/model/profile.js";
 import { decodeAgentSettings } from "../../../src/storage/settings-migrations.js";
 import { createDialogHarness, stateFixture } from "../support/chat-dialog.test-harness.js";

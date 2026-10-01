@@ -1,5 +1,5 @@
 import type { BuiltInAudioPluginDefinition, BuiltInAudioToolContract } from "./contracts.js";
-import { createElevenLabsAudioAdapter } from "../../audio-services/elevenlabs.js";
+import { createElevenLabsAudioAdapter } from "../../audio-services/elevenlabs/elevenlabs.js";
 import { createBuiltInAudioTools } from "./provider-tools.js";
 
 const audio: BuiltInAudioToolContract = {

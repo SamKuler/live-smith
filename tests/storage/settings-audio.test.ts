@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { parseCommandInput, parseSendInput } from "../../src/app/chat-bridge-http.js";
+import { parseCommandInput, parseSendInput } from "../../src/app/chat/chat-bridge-http.js";
 import {
   LEGACY_AUDIO_SERVICE_ID,
   type AudioServiceConnection,

@@ -5,7 +5,7 @@ import * as path from "node:path";
 import test, { type TestContext } from "node:test";
 
 import { EDIT_SCOPES, resolveEditScopes } from "../../src/agent/edit-scopes.js";
-import { isReusableEmptySessionMetadata } from "../../src/app/session-context.js";
+import { isReusableEmptySessionMetadata } from "../../src/app/context/session-context.js";
 import { loadSessionEvents } from "../../src/storage/events.js";
 import { withStorageTransaction } from "../../src/storage/persistence.js";
 import {

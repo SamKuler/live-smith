@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 import { strToU8, zipSync } from "fflate/browser";
-import { resolveSkillContext } from "../../src/app/skill-context.js";
+import { resolveSkillContext } from "../../src/app/context/skill-context.js";
 import { installPlugin, readPluginConfig, savePluginConfigInTransaction, setPluginEnabled, deletePlugin,
   readInstalledPluginPackagesInTransaction } from "../../src/storage/plugins.js";
 import { withStorageTransaction } from "../../src/storage/persistence.js";

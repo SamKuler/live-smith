@@ -19,8 +19,12 @@ implementation plan, or record of individual changes.
 
 ## Project map
 
-- `src/app/` owns the chat bridge and orchestration. Model-request assembly and
-  session-context selection live in dedicated app modules.
+- `src/app/` owns application orchestration. Its `chat/`, `audio/`, `plugins/`,
+  `model/`, `context/`, and `session/` directories own the corresponding
+  workflows; request and dialog coordinators remain at the application root.
+- `src/audio-services/` owns shared audio contracts and provider directories
+  for protocol implementations. Suno website, Suno Platform, and SunoAPI remain
+  separate provider boundaries.
 - `src/agent/` contains the provider-neutral bounded tool loop and strict Live
   action schemas.
 - `src/live/` observes Ableton state, resolves targets, and executes validated
@@ -36,8 +40,10 @@ implementation plan, or record of individual changes.
 - `src/ui/` contains state serialization and dialogs for the chat interface.
 - `tests/` mirrors source module ownership and contains behavior tests,
   module-local `support/` helpers, and attachment fixtures. Real chat DOM
-  behavior tests live under `tests/ui/`; Plugin examples and compatibility
-  packages remain under `test-fixtures/plugins/`.
+  behavior tests live under interaction domains in `tests/ui/`; coordinator
+  and bridge suites use subject directories under `tests/app/`.
+  Provider protocol tests live under `tests/audio-services/`. Plugin examples
+  and compatibility packages remain under `test-fixtures/plugins/`.
 
 See `docs/ARCHITECTURE.md` and `docs/MODEL_PROVIDERS.md` before changing a
 cross-module contract.

@@ -9,10 +9,10 @@ import { appendSessionEvent, loadSessionEvents } from "../../src/storage/events.
 import { importMidiArtifact } from "../../src/app/midi-artifact-import.js";
 import { LiveMutationQueue } from "../../src/app/live-mutation-queue.js";
 import { decidePlanApproval } from "../../src/app/agent-flow.js";
-import { liveContextPresentationFixture } from "./support/live-context.test-harness.js";
-import { parseCommandInput } from "../../src/app/chat-bridge-http.js";
-import { ChatBridgeCommandOutcomeUnknownError, createChatBridge } from "../../src/app/chat-bridge.js";
-import { activeRecoveryLedgerFromEvents } from "../../src/app/session-context.js";
+import { liveContextPresentationFixture } from "./context/support/live-context.test-harness.js";
+import { parseCommandInput } from "../../src/app/chat/chat-bridge-http.js";
+import { ChatBridgeCommandOutcomeUnknownError, createChatBridge } from "../../src/app/chat/chat-bridge.js";
+import { activeRecoveryLedgerFromEvents } from "../../src/app/context/session-context.js";
 import { digestActionIdentity } from "../../src/agent/loop.js";
 import { AgentPlanExecutionError } from "../../src/live/executor.js";
 import type { ChatDialogState } from "../../src/ui/chat-state.js";

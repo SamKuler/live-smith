@@ -2,15 +2,15 @@ import { importMidiArtifact } from "./midi-artifact-import.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { createHash } from "node:crypto";
 
-import { audioJobViews, resumeAudioJob } from "./audio-processing.js";
-import { downloadAudioOutput } from "./audio-generation.js";
-import { audioMessage as m } from "./audio-messages.js";
+import { audioJobViews, resumeAudioJob } from "./audio/audio-processing.js";
+import { downloadAudioOutput } from "./audio/audio-generation.js";
+import { audioMessage as m } from "./audio/audio-messages.js";
 import { uiMessage, type UiMessage } from "../i18n/ui-message.js";
-import { SunoSessionManager } from "./suno-session-manager.js";
-import { SunoModelCatalog } from "./suno-model-catalog.js";
-import type { readSunoMusicService } from "../audio-services/suno-catalog.js";
-import { createSunoSessionVerifier } from "../audio-services/suno-session.js";
-import type { SunoSessionVerifier } from "../audio-services/suno-session-contracts.js";
+import { SunoSessionManager } from "./audio/suno-session-manager.js";
+import { SunoModelCatalog } from "./audio/suno-model-catalog.js";
+import type { readSunoMusicService } from "../audio-services/suno/suno-catalog.js";
+import { createSunoSessionVerifier } from "../audio-services/suno/suno-session.js";
+import type { SunoSessionVerifier } from "../audio-services/suno/suno-session-contracts.js";
 import { openSunoPlatform, openSunoWebsite } from "../runtime/suno-website.js";
 import { openAudioDownload } from "../runtime/audio-download-browser.js";
 import { integrationConnectionsView } from "../storage/settings.js";
@@ -73,8 +73,8 @@ import {
 import { pluginSkillsFromPackages } from "../skills/plugin-package.js";
 import { installedPluginViews, previewPluginArchive } from "../plugins/view.js";
 import { PluginConfigError, PluginConfigConflictError } from "../plugins/user-config.js";
-import { createPluginAppSessions } from "./plugin-apps.js";
-import { ChatBridgeRequestValidationError } from "./chat-bridge-http.js";
+import { createPluginAppSessions } from "./plugins/plugin-apps.js";
+import { ChatBridgeRequestValidationError } from "./chat/chat-bridge-http.js";
 import { openPluginArchive, PluginArchiveError } from "../plugins/archive.js";
 import {
   createDirectApiBackend,
@@ -175,7 +175,7 @@ import {
   type ChatBridgeState,
   type ChatDialogState,
 } from "../ui/chat-state.js";
-import { shouldOpenSettingsForAgentError } from "./error-routing.js";
+import { shouldOpenSettingsForAgentError } from "./chat/error-routing.js";
 import {
   ChatBridgeCommandOutcomeUnknownError,
   ChatBridgeCommandStoppedError,
@@ -203,40 +203,40 @@ import {
   type ChatBridgeSteeringReceiptLookupInput,
   type ChatBridgeSteeringReceiptLookupResult,
   type ChatBridgeStream,
-} from "./chat-bridge.js";
+} from "./chat/chat-bridge.js";
 import type {
   RawAttachmentBodyReadOptions,
   RawPluginBodyReadOptions,
   RawSkillBodyReadOptions,
-} from "./chat-bridge-http.js";
+} from "./chat/chat-bridge-http.js";
 import {
   publishSessionApprovalModeChange,
   subscribeSessionApprovalModeChanges,
-} from "./session-approval-events.js";
+} from "./session/session-approval-events.js";
 import {
   invalidateSessionEditScopes,
   publishSessionEditScopesChange,
   subscribeSessionEditScopesChanges,
-} from "./session-edit-scope-events.js";
+} from "./session/session-edit-scope-events.js";
 import {
   publishSessionModelSelectionChange,
   subscribeSessionModelSelectionChanges,
-} from "./session-model-selection-events.js";
+} from "./session/session-model-selection-events.js";
 import {
   publishGlobalSettingsChange,
   subscribeGlobalSettingsChanges,
-} from "./global-settings-events.js";
+} from "./chat/global-settings-events.js";
 import {
   publishProfileSettingsChange,
   subscribeProfileSettingsChanges,
   type ProfileSettingsChange,
-} from "./profile-settings-events.js";
+} from "./model/profile-settings-events.js";
 import {
   capabilityPreviewForProfile,
   requestModelTurn,
   resolveDiscoveredModels,
   runtimeProfileForSavedProfile,
-} from "./model-request.js";
+} from "./model/model-request.js";
 import {
   recoveryContextFromEvents,
   getOrCreateDefaultSession,
@@ -245,46 +245,46 @@ import {
   projectKeyForContext,
   continuableSessionsForScope,
   withSessionCreationScope,
-} from "./session-context.js";
+} from "./context/session-context.js";
 import {
   claimSession,
   releaseSessionClaims,
   sessionIsClaimedByAnotherOwner,
-} from "./session-claims.js";
-import { resolveSkillContextInTransaction, sessionSkillIdsForEnabledPlugins } from "./skill-context.js";
+} from "./session/session-claims.js";
+import { resolveSkillContextInTransaction, sessionSkillIdsForEnabledPlugins } from "./context/skill-context.js";
 import {
   invalidateGlobalState,
   invalidateSessionState,
   subscribeGlobalStateInvalidations,
   subscribeSessionStateInvalidations,
-} from "./session-state-events.js";
+} from "./session/session-state-events.js";
 import { LiveMutationQueue } from "./live-mutation-queue.js";
 import {
   SessionMutationFence,
   sessionMutationFenceKey,
-} from "./session-mutation-fence.js";
+} from "./session/session-mutation-fence.js";
 import {
   modelAuthSendFenceForStorage,
   type ModelAuthSendFence,
-} from "./model-auth-send-fence.js";
+} from "./model/model-auth-send-fence.js";
 import {
   SteeringClosedError,
   type SteeringChannel,
-} from "./steering.js";
+} from "./chat/steering.js";
 import {
   consumedAttachmentIds,
   handleAgentRequest,
   steeringReceiptFor,
   type AgentModelTurnRequester,
 } from "./agent-request.js";
-import { closeActiveMcpConnection, closeActivePluginConnections } from "./request-plugin-tools.js";
-import { loadSessionToolCatalog, sessionToolCatalogOwner } from "./session-tool-catalog.js";
-import { runPluginParameterTool } from "./plugin-parameter-tool.js";
-import { runAudioParameterTool } from "./audio-parameter-tool.js";
-import { providerFetchForStorage } from "./provider-fetch.js";
-import { resolveConversationHistory } from "./attachment-context.js";
-import { createConversationCheckpoint } from "./context-compaction.js";
-import { requestModelWithReconnect } from "./model-reconnect.js";
+import { closeActiveMcpConnection, closeActivePluginConnections } from "./plugins/request-plugin-tools.js";
+import { loadSessionToolCatalog, sessionToolCatalogOwner } from "./session/session-tool-catalog.js";
+import { runPluginParameterTool } from "./plugins/plugin-parameter-tool.js";
+import { runAudioParameterTool } from "./audio/audio-parameter-tool.js";
+import { providerFetchForStorage } from "./model/provider-fetch.js";
+import { resolveConversationHistory } from "./context/attachment-context.js";
+import { createConversationCheckpoint } from "./context/context-compaction.js";
+import { requestModelWithReconnect } from "./model/model-reconnect.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const sessionMutationFence = new SessionMutationFence();

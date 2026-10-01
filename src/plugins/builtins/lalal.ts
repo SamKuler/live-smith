@@ -1,5 +1,5 @@
 import type { BuiltInAudioPluginDefinition, BuiltInAudioToolContract } from "./contracts.js";
-import { createLalalAudioAdapter } from "../../audio-services/lalal.js";
+import { createLalalAudioAdapter } from "../../audio-services/lalal/lalal.js";
 import { createBuiltInAudioTools } from "./provider-tools.js";
 
 const audio: BuiltInAudioToolContract = {

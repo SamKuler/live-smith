@@ -5,7 +5,7 @@ import test from "node:test";
 
 import { createHostAbortController } from "../../../src/runtime/host.js";
 import { NetworkProxyError } from "../../../src/runtime/network-proxy-error.js";
-import { runtimeProfileForSavedProfile } from "../../../src/app/model-request.js";
+import { runtimeProfileForSavedProfile } from "../../../src/app/model/model-request.js";
 import {
   ModelConnectionError,
   ModelRetryableError,
