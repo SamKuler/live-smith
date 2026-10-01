@@ -14,5 +14,5 @@
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["build.ts", "src/**/*"]
+  "include": ["build.ts", "src/**/*", "tests/**/*"]
 }

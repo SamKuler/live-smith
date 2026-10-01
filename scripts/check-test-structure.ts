@@ -7,6 +7,9 @@ const maximumTestDeclarationsPerFile = 80;
 
 const violations: string[] = [];
 for (const filePath of testFilesUnder("src")) {
+  violations.push(`${filePath}: place test modules under tests/.`);
+}
+for (const filePath of testFilesUnder("tests")) {
   const source = readFileSync(filePath, "utf8");
   const lineCount = source.split(/\r?\n/u).length;
   const sourceFile = ts.createSourceFile(

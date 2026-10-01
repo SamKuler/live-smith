@@ -33,8 +33,11 @@ implementation plan, or record of individual changes.
   `src/skills/` owns Skill format rules and bundled definitions.
 - `src/storage/` persists Profiles, sessions, session events, and raw model
   discovery metadata, and owns private attachment and User Skill storage.
-- `src/ui/` contains state serialization, dialogs, and the real DOM behavior
-  tests for the chat interface.
+- `src/ui/` contains state serialization and dialogs for the chat interface.
+- `tests/` mirrors source module ownership and contains behavior tests,
+  module-local `support/` helpers, and attachment fixtures. Real chat DOM
+  behavior tests live under `tests/ui/`; Plugin examples and compatibility
+  packages remain under `test-fixtures/plugins/`.
 
 See `docs/ARCHITECTURE.md` and `docs/MODEL_PROVIDERS.md` before changing a
 cross-module contract.

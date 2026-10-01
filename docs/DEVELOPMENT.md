@@ -77,6 +77,14 @@ does not start it. The capsule contains no Ableton SDK or account data.
 
 ## Verification
 
+Test modules live under `tests/`, mirroring their source module directories.
+Test-only helpers and harnesses live in each test module's `support/` directory;
+attachment document fixtures live under `tests/attachments/fixtures/`.
+TypeScript checking includes production source and the complete test tree.
+`test:core` runs the core module suites and `test:ui` runs the real-dialog DOM
+and UI module suites. The structure check enforces test placement and module
+size limits.
+
 To add an interface language, register its canonical locale ID, native name, and
 system-language aliases in `src/i18n/languages.ts`, then add its message catalog to
 `uiCatalogs` in `src/ui/i18n/messages.ts`. Preserve named interpolation fields and
@@ -186,7 +194,7 @@ into Live automatically. Artifact input and output permissions are approved
 independently after the MCP server itself.
 
 The committed fixtures under `test-fixtures/plugins/` exercise portable, Codex,
-and Claude package discovery. `src/plugins/compatibility-fixtures.test.ts` packs
+and Claude package discovery. `tests/plugins/compatibility-fixtures.test.ts` packs
 those exact files and verifies install, disabled defaults, MCP approval, Skill
 loading, a real stdio tool call, disable, and uninstall. Add format changes to
 these fixtures and tests rather than creating credential-bearing or executable
