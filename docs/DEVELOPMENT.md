@@ -117,6 +117,13 @@ checks every committed Plugin compatibility fixture for a valid contained
 manifest, tracked package data, non-executable files, and credential-shaped
 content.
 
+Typed bridge validators and Connection state/editor code are compiled through
+`scripts/build-bridge-contracts.ts` for both the production dialog and its DOM
+harness. `tsc` checks their public DTO references and field names. The composer
+injects host-owned constants into this browser bundle before registering the
+legacy bridge factory and bootstrapping the UI. Translation coverage scans both
+TypeScript modules and authored script fragments recursively.
+
 External pull-request automation must not expose the private Ableton SDK
 archives through repository secrets, shared caches, or a privileged workflow
 that executes untrusted fork code. Until the full gate can run without giving

@@ -24,14 +24,21 @@ export type AudioProcessingSource =
       endBeat: number;
     };
 
-export type AudioToolRequest =
-  | MusicServiceRequest
+export type AudioTextToolRequest =
   | ({ kind: "write_lyrics"; connectionId: string } & LyricWritingRequest)
   | { kind: "inspect_lyric_models"; connectionId: string }
+  | { kind: "generate_lyrics"; connectionId: string; prompt: string };
+
+export function isAudioTextToolRequest(request: AudioToolRequest): request is AudioTextToolRequest {
+  return request.kind === "write_lyrics" || request.kind === "inspect_lyric_models" || request.kind === "generate_lyrics";
+}
+
+export type AudioToolRequest =
+  | MusicServiceRequest
+  | AudioTextToolRequest
   | { kind: "upload_music"; connectionId: string; source: AudioProcessingSource; rightsConfirmed: true }
   | { kind: "separate_stems"; connectionId: string; source: AudioProcessingSource; stems: SeparationStem[] }
   | { kind: "generate_music"; connectionId: string; prompt: string; durationSeconds?: number; instrumental: boolean; options?: MusicGenerationOptions }
-  | { kind: "generate_lyrics"; connectionId: string; prompt: string }
   | { kind: "generate_song_from_lyrics"; connectionId: string; lyrics: string; prompt?: string; gender?: "female" | "male" }
   | { kind: "generate_sound_effect"; connectionId: string; prompt: string; durationSeconds: number; loop: boolean }
   | { kind: "listen_to_audio_asset"; assetRef: string }

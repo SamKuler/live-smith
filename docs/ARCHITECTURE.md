@@ -57,6 +57,9 @@ src/
         credential callbacks and provider application workflows to Plugin factories.
       plugin-apps.ts, plugin-app-sandbox.ts, plugin-parameter-tool.ts
         Own MCP App sessions, browser sandbox resources and panel invocation.
+      plugin-lifecycle.ts, user-skill-lifecycle.ts
+        Own package/Skill installation, replacement, permission changes,
+        dependent Session cleanup and uncertain-commit reconciliation.
     model/
       model-request.ts, model-reconnect.ts
         Resolve saved Session model selection, assemble provider-neutral requests
@@ -65,6 +68,9 @@ src/
         Serialize Profile OAuth edits and sends, and publish committed settings notices.
       provider-fetch.ts, provider-websocket.ts
         Apply storage-scoped proxy choices without changing process-global routing.
+      dialog-model-backends.ts
+        Own lazy shared OAuth lease acquisition, acquisition cancellation,
+        backend invalidation and ordered release for one dialog.
     context/
       attachment-context.ts, skill-context.ts
         Select bounded attachment and Skill data without exposing storage details.
@@ -75,6 +81,9 @@ src/
         Serialize same-Session mutations and track active dialog ownership.
       session-tool-catalog.ts
         Assemble Session tool views without invoking tools.
+      session-lifecycle.ts
+        Own metadata-first deletion, pending cleanup and startup orphan
+        reconciliation through the shared Session mutation boundary.
       session-approval-events.ts, session-edit-scope-events.ts,
       session-model-selection-events.ts, session-state-events.ts
         Publish committed Session metadata and scoped state invalidation.
@@ -320,6 +329,20 @@ src/
     client/markdown-renderer.ts
       Shared sanitized Markdown rendering for conversation content and the
       read-only built-in Skill viewer.
+    client/wire-contracts/
+      Browser-safe validators for untrusted model, Session, Plugin and bridge
+      state data. Inputs are unknown; output guards and allowed field names
+      reference canonical public DTO types.
+    client/connection-state.ts
+      Owns one confirmed Connection snapshot, audio drafts and editor selection.
+      Audio form values are derived projections; the full snapshot retains
+      installed-Plugin and standalone MCP fields and ordering.
+    client/audio-connection-editor.ts
+      Owns form rendering/events, submission state, account controls,
+      catalog presentation and transient secret input lifetime.
+    client/bridge-contracts.ts
+      Browser bundle entry registering typed validators, Connection state and
+      Connection editor factories before the bridge and UI bootstrap.
 ```
 
 ### Extension Host compatibility
@@ -1330,6 +1353,12 @@ contract. An adapter that declares submission authorization ownership holds its
 own settings lease and acknowledges the actual dispatch through the submission
 callback; other adapters use the host's lease after preparation. Neither path
 holds the lease while waiting for a user-driven verification window.
+Provider rules have one owner across schema construction, request parsing,
+pre-job validation and protocol encoding. Mureka's text bounds and model
+restrictions live in `audio-services/mureka/mureka-rules.ts`. Plugins select
+read-only or paid text invocations; the host retains connection admission,
+post-read ownership checks, the paid authorization lease and confirmed result
+recording. Text invocations do not create audio jobs or mutate Live.
 `app/plugins/built-in-plugin-runtime.ts` binds application facilities to the
 existing Plugin factories. Suno account, verification, upload and suggestion
 workflows live in `app/audio/suno/`; the service protocol remains in

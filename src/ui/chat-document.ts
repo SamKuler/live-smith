@@ -75,6 +75,7 @@ export interface ChatClientScripts {
   pluginUserConfig: string;
   pluginApps: string;
   audioParameters: string;
+  bridgeContracts: string;
   connectionsManager: string;
   sessionTimeline: string;
   skillManager: string;
@@ -285,6 +286,9 @@ export function composeChatDocument(
     })),
     __PLUGIN_USER_CONFIG_SCRIPT__: scripts.pluginUserConfig.replace("__PLUGIN_CONFIG_LIMITS__", () => JSON.stringify({ fields: MAX_PLUGIN_CONFIG_FIELDS, text: MAX_PLUGIN_CONFIG_TEXT })),
     __BRIDGE_CLIENT_SCRIPT__: bridgeClientScript,
+    __BRIDGE_CONTRACTS_SCRIPT__: injectPluginContract(injectSessionContract(injectEditScopeContract(
+      injectModelContract(injectSkillContract(injectAttachmentContract(scripts.bridgeContracts))),
+    ))),
     __MARKDOWN_RENDERER_SCRIPT__: scripts.markdownRenderer,
     __SESSION_TIMELINE_SCRIPT__: injectSessionContract(injectAttachmentContract(scripts.sessionTimeline)),
     __ACTION_PREVIEW_SCRIPT__: scripts.actionPreview,

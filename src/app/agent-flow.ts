@@ -1,6 +1,13 @@
+import {
+  createDialogModelBackends,
+  oauthSubscriptionProviders,
+  type DialogModelBackendDependencies,
+} from "./model/dialog-model-backends.js";
+import { createPluginLifecycle, inspectPluginPackage } from "./plugins/plugin-lifecycle.js";
+import { createUserSkillLifecycle } from "./plugins/user-skill-lifecycle.js";
+import { createSessionLifecycle } from "./session/session-lifecycle.js";
 import { importMidiArtifact } from "./midi-artifact-import.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
-import { createHash } from "node:crypto";
 
 import { audioJobViews, resumeAudioJob } from "./audio/audio-processing.js";
 import { downloadAudioOutput } from "./audio/audio-generation.js";
@@ -14,11 +21,7 @@ import type { SunoSessionVerifier } from "../audio-services/suno/suno-session-co
 import { openSunoPlatform, openSunoWebsite } from "../runtime/suno-website.js";
 import { openAudioDownload } from "../runtime/audio-download-browser.js";
 import { integrationConnectionsView } from "../storage/settings.js";
-import { readAudioAsset, deleteSessionAudio, listSessionAudioDirectoryIds } from "../storage/audio-assets.js";
-import {
-  deleteSessionMidiArtifacts,
-  listSessionMidiArtifactDirectoryIds,
-} from "../storage/midi-artifacts.js";
+import { readAudioAsset } from "../storage/audio-assets.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
 import {
   type AgentConfirmationDecision,
@@ -62,28 +65,11 @@ import {
   MAX_PENDING_ATTACHMENT_COUNT,
 } from "../attachments/contracts.js";
 import {
-  isSafeSkillId,
-  parseSkillMarkdown,
-  SkillFormatError,
-} from "../skills/format.js";
-import {
   availableSkillSummaries,
-  isBuiltInSkillId,
 } from "../skills/builtins.js";
 import { pluginSkillsFromPackages } from "../skills/plugin-package.js";
-import { installedPluginViews, previewPluginArchive } from "../plugins/view.js";
-import { PluginConfigError, PluginConfigConflictError } from "../plugins/user-config.js";
+import { installedPluginViews } from "../plugins/view.js";
 import { createPluginAppSessions } from "./plugins/plugin-apps.js";
-import { ChatBridgeRequestValidationError } from "./chat/chat-bridge-http.js";
-import { openPluginArchive, PluginArchiveError } from "../plugins/archive.js";
-import {
-  createDirectApiBackend,
-  type ModelBackendManager,
-} from "../model/backend-registry.js";
-import {
-  acquireSharedModelBackendManager,
-  type SharedModelBackendManagerLease,
-} from "../model/shared-backend-manager.js";
 import {
   canonicalStorageDirectory,
   storageScopeKey,
@@ -99,8 +85,6 @@ import {
   AttachmentPendingQuotaError,
   AttachmentTooLargeError,
   deleteSessionAttachment,
-  deleteSessionAttachments,
-  listSessionAttachmentDirectoryIds,
   listPendingSessionAttachments,
   saveSessionAttachment,
   sessionAttachmentRefFromStored,
@@ -108,8 +92,6 @@ import {
 } from "../storage/attachments.js";
 import {
   appendSessionEvent,
-  deleteSessionEvents,
-  listSessionEventLogIds,
   loadSessionEvents,
 } from "../storage/events.js";
 import {
@@ -129,26 +111,11 @@ import {
   type AgentSession,
 } from "../storage/sessions.js";
 import {
-  deleteInstalledSkillInTransaction,
-  installSkillInTransaction,
-  listInstalledSkills,
   listInstalledSkillsInTransaction,
-  SkillStorageCorruptionError,
-  type InstalledSkill,
 } from "../storage/skills.js";
 import {
-  deletePluginInTransaction,
-  installPlugin,
-  listInstalledPlugins,
-  listInstalledPluginsInTransaction,
   readEnabledPluginPackagesInTransaction,
   readInstalledPluginPackagesInTransaction,
-  setPluginEnabledInTransaction,
-  savePluginConfigInTransaction,
-  setPluginArtifactPermissionApprovedInTransaction,
-  setPluginMcpServerApprovedInTransaction,
-  PluginStorageCorruptionError,
-  type InstalledPlugin,
 } from "../storage/plugins.js";
 import {
   deleteOAuthCredentialProfile,
@@ -185,7 +152,6 @@ import {
   ChatBridgeResourceNotFoundError,
   ChatBridgeSendFailureError,
   ChatBridgeSkillValidationError,
-  ChatBridgePluginValidationError,
   createChatBridge,
   type ChatBridgeCommandContext,
   type ChatBridgeCommandInput,
@@ -197,7 +163,6 @@ import {
   type ChatBridgeSkillDeleteInput,
   type ChatBridgeSkillInstallInput,
   type ChatBridgeSkillInstallResult,
-  type ChatBridgePluginInspectResult,
   type ChatBridgePluginInstallInput,
   type ChatBridgePluginInstallResult,
   type ChatBridgeSteeringReceiptLookupInput,
@@ -277,7 +242,7 @@ import {
   steeringReceiptFor,
   type AgentModelTurnRequester,
 } from "./agent-request.js";
-import { closeActiveMcpConnection, closeActivePluginConnections } from "./plugins/request-plugin-tools.js";
+import { closeActiveMcpConnection } from "./plugins/request-plugin-tools.js";
 import { loadSessionToolCatalog, sessionToolCatalogOwner } from "./session/session-tool-catalog.js";
 import { runPluginParameterTool } from "./plugins/plugin-parameter-tool.js";
 import { runAudioParameterTool } from "./audio/audio-parameter-tool.js";
@@ -295,11 +260,6 @@ const pendingProfileOAuthLifecycleByStorage = new Map<
   StorageScopeKey,
   Set<string>
 >();
-const oauthSubscriptionProviders: readonly OAuthSubscriptionProvider[] = [
-  "openai",
-  "anthropic",
-  "google",
-];
 
 function pendingProfileOAuthLifecycleForStorage(
   storageDirectory: string | undefined,
@@ -333,7 +293,7 @@ function effectiveSessionModelSelection(
   };
 }
 
-export interface AgentFlowDependencies {
+export interface AgentFlowDependencies extends DialogModelBackendDependencies {
   /** Test seams; production uses the OS default browser and a Suno-only verifier. */
   openSunoWebsite?: typeof openSunoWebsite;
   openSunoPlatform?: typeof openSunoPlatform;
@@ -354,17 +314,6 @@ export interface AgentFlowDependencies {
     profile: DraftProfile,
     signal: AbortSignal,
   ): Promise<DiscoveredModelInfo[]>;
-  /** Test-only manager; production creates Direct backends per use and shares OAuth. */
-  modelBackendManager?: Pick<
-    ModelBackendManager,
-    | "forProfile"
-    | "oauth"
-    | "oauthLease"
-    | "invalidateOAuth"
-    | "close"
-  >;
-  /** Test-only shared-manager acquisition; production uses the process-wide registry. */
-  acquireSharedModelBackendManager?: typeof acquireSharedModelBackendManager;
   /** Process-wide in production; injectable only for isolated tests. */
   modelAuthSendFence?: ModelAuthSendFence;
   /** Production host capability; injectable only for isolated tests. */
@@ -449,102 +398,7 @@ export async function runAgentFlow(
   void prepareOAuthCredentialStoreForSavedProfiles(storageDirectory).catch(
     () => undefined,
   );
-  let sharedBackendManagerLeasePromise:
-    | Promise<SharedModelBackendManagerLease>
-    | undefined;
-  let sharedBackendManagerLease: SharedModelBackendManagerLease | undefined;
-  let sharedBackendManagerAcquisitionController:
-    | ReturnType<typeof createHostAbortController>
-    | undefined;
-  const oauthBackendAcquisitionClosedError = new Error(
-    "The OAuth model backend acquisition was closed.",
-  );
-  let oauthBackendLeaseClosing = false;
-  const oauthBackendManager = async (signal?: AbortSignal) => {
-    if (dependencies.modelBackendManager) return dependencies.modelBackendManager;
-    throwIfAborted(signal);
-    if (
-      sharedBackendManagerLeasePromise === undefined &&
-      oauthBackendLeaseClosing
-    ) {
-      throw new Error("The OAuth model backend is closing.");
-    }
-    if (sharedBackendManagerLeasePromise === undefined) {
-      sharedBackendManagerAcquisitionController = createHostAbortController();
-      const acquireSharedManager =
-        dependencies.acquireSharedModelBackendManager ??
-        acquireSharedModelBackendManager;
-      sharedBackendManagerLeasePromise = acquireSharedManager(
-        storageDirectory,
-        { fetchImpl: providerFetch },
-        sharedBackendManagerAcquisitionController.signal,
-      ).then((lease) => {
-        sharedBackendManagerLease = lease;
-        return lease;
-      });
-    }
-    return (await waitForPromiseWithSignal(
-      sharedBackendManagerLeasePromise,
-      signal,
-    )).manager;
-  };
-  const modelBackendManager = {
-    async forProfile(
-      profile: DraftProfile | SavedProfile,
-      signal?: AbortSignal,
-    ) {
-      if (
-        profile.connection.kind === "direct-api" &&
-        dependencies.modelBackendManager === undefined
-      ) {
-        return createDirectApiBackend(profile, { fetchImpl: providerFetch });
-      }
-      return (await oauthBackendManager(signal)).forProfile(profile, signal);
-    },
-    async oauth(
-      profileId: string,
-      provider: OAuthSubscriptionProvider,
-      signal?: AbortSignal,
-    ) {
-      return (await oauthBackendManager(signal)).oauth(
-        profileId,
-        provider,
-        signal,
-      );
-    },
-    async oauthLease(
-      profileId: string,
-      provider: OAuthSubscriptionProvider,
-      signal?: AbortSignal,
-    ) {
-      return (await oauthBackendManager(signal)).oauthLease(
-        profileId,
-        provider,
-        signal,
-      );
-    },
-    async invalidateOAuth(
-      profileId: string,
-      provider: OAuthSubscriptionProvider,
-    ) {
-      return (await oauthBackendManager()).invalidateOAuth(profileId, provider);
-    },
-    async invalidateOAuthProfile(profileId: string) {
-      const manager = await oauthBackendManager();
-      if (dependencies.modelBackendManager === undefined) {
-        return (manager as ModelBackendManager).invalidateOAuthProfile(profileId);
-      }
-      const results = await Promise.allSettled(
-        oauthSubscriptionProviders.map((provider) =>
-          manager.invalidateOAuth(profileId, provider)
-        ),
-      );
-      const failure = results.find(
-        (result): result is PromiseRejectedResult => result.status === "rejected",
-      );
-      if (failure) throw failure.reason;
-    },
-  };
+  const modelBackendManager = createDialogModelBackends(storageDirectory, dependencies);
   const modelAuthOwner = Symbol("Live Smith modal auth owner");
   const oauthAuthByScope = new Map<
     string,
@@ -615,7 +469,6 @@ export async function runAgentFlow(
   let bindInvocationSelectionToNextSession = Boolean(
     interaction.selectionContext,
   );
-  const pendingSessionCleanup = new Set<string>();
   const withSessionMutation = <T>(
     sessionId: string,
     signal: AbortSignal | undefined,
@@ -649,6 +502,10 @@ export async function runAgentFlow(
     storageDirectory,
     "request-configuration",
   );
+  const withRequestConfiguration = <T>(
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> => requestConfigurationFence.run(requestConfigurationFenceKey, signal, operation);
   const manualAudioObservations = new Map<string, Map<string, Set<string>>>();
   const notifySessionStateChanged = (sessionId: string): void => {
     invalidateSessionState(storageDirectory, {
@@ -661,6 +518,22 @@ export async function runAgentFlow(
       ...(sunoAuthServiceId === undefined ? {} : { sunoAuthServiceId }),
     });
   };
+  const sessionLifecycle = createSessionLifecycle({
+    storageDirectory, withSessionMutation, notifySessionStateChanged,
+    ...(dependencies.deleteSession === undefined ? {} : { deleteSession: dependencies.deleteSession }),
+  });
+  const pluginLifecycle = createPluginLifecycle({
+    storageDirectory,
+    withRequestConfiguration,
+    notifyGlobalStateChanged,
+    notifySessionStateChanged,
+    ...(dependencies.updateSessionInTransaction === undefined ? {} : {
+      updateSessionInTransaction: dependencies.updateSessionInTransaction,
+    }),
+  });
+  const userSkillLifecycle = createUserSkillLifecycle({
+    storageDirectory, withRequestConfiguration, notifyGlobalStateChanged,
+  });
   const publishOAuthPendingState = (
     scope: OAuthProfileScope,
     generation: number,
@@ -1258,7 +1131,7 @@ export async function runAgentFlow(
   ): Promise<AgentSettings> => {
     throwIfAborted(options.signal);
     if (!options.sessionMutationHeld) {
-      await retryPendingSessionCleanup();
+      await sessionLifecycle.retryPendingCleanup();
       throwIfAborted(options.signal);
     }
     if (pendingProfileOAuthLifecycleReconciliation.size > 0) {
@@ -3177,51 +3050,9 @@ export async function runAgentFlow(
     }
 
     if (commandInput.kind === "delete_session") {
-      let existed = false;
-      await withSessionMutation(commandInput.sessionId, signal, async () => {
-        existed = await sessionExists(commandInput.sessionId);
-        throwIfAborted(signal);
-        if (existed) {
-          try {
-            await (dependencies.deleteSession ?? deleteSession)(
-              storageDirectory,
-              commandInput.sessionId,
-            );
-          } catch (cause) {
-            if (isStorageCommitOutcomeUnknownError(cause)) {
-              pendingSessionCleanup.add(commandInput.sessionId);
-              notifySessionStateChanged(commandInput.sessionId);
-              throw new ChatBridgeCommandOutcomeUnknownError(
-                "Session deletion storage could not be confirmed.",
-                { cause },
-              );
-            }
-            throw cause;
-          }
-          selectionInteractionsBySessionId.delete(commandInput.sessionId);
-          if (activeSessionId === commandInput.sessionId) activeSessionId = undefined;
-        }
-        try {
-          await deleteSessionEvents(
-            storageDirectory,
-            commandInput.sessionId,
-          );
-          await deleteSessionAttachments(
-            storageDirectory,
-            commandInput.sessionId,
-          );
-          await deleteSessionAudio(storageDirectory, commandInput.sessionId);
-          await deleteSessionMidiArtifacts(storageDirectory, commandInput.sessionId);
-          pendingSessionCleanup.delete(commandInput.sessionId);
-        } catch (cause) {
-          pendingSessionCleanup.add(commandInput.sessionId);
-          notifySessionStateChanged(commandInput.sessionId);
-          throw new ChatBridgeCommandOutcomeUnknownError(
-            "The Session was deleted, but associated data cleanup could not be confirmed.",
-            { cause },
-          );
-        }
-        notifySessionStateChanged(commandInput.sessionId);
+      const existed = await sessionLifecycle.remove(commandInput.sessionId, signal, () => {
+        selectionInteractionsBySessionId.delete(commandInput.sessionId);
+        if (activeSessionId === commandInput.sessionId) activeSessionId = undefined;
       });
       if (!existed) {
         status = "That Session no longer exists.";
@@ -3286,19 +3117,7 @@ export async function runAgentFlow(
     }
 
     if (commandInput.kind === "set_plugin_user_config") {
-      try {
-        await requestConfigurationFence.run(requestConfigurationFenceKey, signal, async () => {
-          await withStorageTransaction(storageDirectory, (transaction) =>
-            savePluginConfigInTransaction(transaction, storageDirectory, commandInput));
-          await closeActivePluginConnections(storageDirectory, commandInput.pluginId);
-        });
-      } catch (error) {
-        if (error instanceof PluginConfigConflictError) throw new ChatBridgeConflictError(error.message);
-        if (error instanceof PluginConfigError) throw new ChatBridgeRequestValidationError(error.message);
-        if (isStorageCommitOutcomeUnknownError(error)) notifyGlobalStateChanged();
-        throw error;
-      }
-      notifyGlobalStateChanged();
+      await pluginLifecycle.saveConfiguration(commandInput, signal);
       status = uiMessage("Plugin parameters saved.");
       return buildStateAfterCommandMutation();
     }
@@ -3309,127 +3128,7 @@ export async function runAgentFlow(
       commandInput.kind === "set_plugin_artifact_permission" ||
       commandInput.kind === "delete_plugin"
     ) {
-      let changed = false;
-      let sessionCleanupPending = false;
-      let privateCleanupPending = false;
-      try {
-        await requestConfigurationFence.run(
-          requestConfigurationFenceKey,
-          signal,
-          async () => {
-            try {
-              await withStorageTransaction(storageDirectory, async (transaction) => {
-                throwIfAborted(signal);
-                const plugins = await listInstalledPluginsInTransaction(transaction, storageDirectory);
-                const plugin = plugins.find((candidate) => candidate.id === commandInput.pluginId);
-                if (!plugin) throw new ChatBridgeResourceNotFoundError("That Plugin is not installed.");
-                const removeSessionSelections = async () => {
-                  const prefix = `${plugin.id}:`;
-                  for (const session of await listSessionsInTransaction(transaction, storageDirectory)) {
-                    const current = session.activeSkillIds ?? [];
-                    const retained = current.filter((skillId) => !skillId.startsWith(prefix));
-                    if (retained.length === current.length) continue;
-                    await (dependencies.updateSessionInTransaction ?? updateSessionInTransaction)(
-                      transaction, storageDirectory, session.id, { activeSkillIds: retained },
-                    );
-                    notifySessionStateChanged(session.id);
-                  }
-                };
-                if (commandInput.kind === "set_plugin_enabled") {
-                  if (commandInput.enabled) {
-                    if (plugin.enabled) return;
-                    await removeSessionSelections();
-                    await setPluginEnabledInTransaction(transaction, storageDirectory, plugin.id, true);
-                    changed = true;
-                    return;
-                  }
-                  if (plugin.enabled) {
-                    await setPluginEnabledInTransaction(transaction, storageDirectory, plugin.id, false);
-                    changed = true;
-                  }
-                  try {
-                    await removeSessionSelections();
-                  } catch {
-                    throwIfAborted(signal);
-                    sessionCleanupPending = true;
-                  }
-                  return;
-                }
-                if (commandInput.kind === "set_plugin_mcp_server_approved") {
-                  if (plugin.approvedMcpServerIds.includes(commandInput.serverId) === commandInput.approved) return;
-                  await setPluginMcpServerApprovedInTransaction(
-                    transaction,
-                    storageDirectory,
-                    plugin.id,
-                    commandInput.serverId,
-                    commandInput.approved,
-                  );
-                  changed = true;
-                  return;
-                }
-                if (commandInput.kind === "set_plugin_artifact_permission") {
-                  const current = commandInput.permission === "input"
-                    ? plugin.approvedArtifactInputServerIds
-                    : plugin.approvedArtifactOutputServerIds;
-                  if (current.includes(commandInput.serverId) === commandInput.approved) return;
-                  await setPluginArtifactPermissionApprovedInTransaction(
-                    transaction,
-                    storageDirectory,
-                    plugin.id,
-                    commandInput.serverId,
-                    commandInput.permission,
-                    commandInput.approved,
-                  );
-                  changed = true;
-                  return;
-                }
-                if (plugin.enabled) {
-                  throw new ChatBridgeConflictError("Disable this Plugin before deleting it.");
-                }
-                const settings = await loadAgentSettings(storageDirectory);
-                if (settings.integrationConnections?.connections.some((connection) =>
-                  connection.pluginId === plugin.id)) {
-                  throw new ChatBridgeConflictError("Remove this Plugin's Integration Connections before deleting it.");
-                }
-                await removeSessionSelections();
-                privateCleanupPending = !(await deletePluginInTransaction(transaction, storageDirectory, plugin.id));
-                changed = true;
-              });
-            } finally {
-              if (commandInput.kind === "delete_plugin" ||
-                  commandInput.kind === "set_plugin_enabled" && !commandInput.enabled ||
-                  commandInput.kind === "set_plugin_mcp_server_approved" && !commandInput.approved ||
-                  commandInput.kind === "set_plugin_artifact_permission" && !commandInput.approved) {
-                await closeActivePluginConnections(storageDirectory, commandInput.pluginId);
-              }
-            }
-          },
-        );
-      } catch (error) {
-        if (error instanceof PluginConfigError) throw new ChatBridgeRequestValidationError(error.message);
-        if (error instanceof PluginStorageCorruptionError) {
-          throw new ChatBridgePluginValidationError("Installed Plugin storage is invalid and was not changed.");
-        }
-        if (isStorageCommitOutcomeUnknownError(error)) notifyGlobalStateChanged();
-        throw error;
-      } finally {
-        if (changed) notifyGlobalStateChanged();
-      }
-      status = commandInput.kind === "delete_plugin"
-        ? privateCleanupPending
-          ? uiMessage("Plugin {pluginId} removed; private data cleanup will retry if it has not completed.", {
-              pluginId: commandInput.pluginId,
-            })
-          : `Plugin ${commandInput.pluginId} deleted.`
-        : commandInput.kind === "set_plugin_enabled"
-          ? sessionCleanupPending
-            ? uiMessage("Plugin {pluginId} disabled; Session Skill cleanup is pending.", {
-                pluginId: commandInput.pluginId,
-              })
-            : `Plugin ${commandInput.pluginId} ${commandInput.enabled ? "enabled" : "disabled"}.`
-          : commandInput.kind === "set_plugin_artifact_permission"
-            ? `Plugin ${commandInput.pluginId} MCP server ${commandInput.serverId} artifact ${commandInput.permission} ${commandInput.approved ? "approved" : "revoked"}.`
-          : `Plugin ${commandInput.pluginId} MCP server ${commandInput.serverId} ${commandInput.approved ? "approved" : "revoked"}.`;
+      status = await pluginLifecycle.change(commandInput, signal);
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
     }
@@ -3911,62 +3610,6 @@ export async function runAgentFlow(
     return undefined;
   };
 
-  async function retryPendingSessionCleanup(): Promise<void> {
-    for (const sessionId of [...pendingSessionCleanup]) {
-      await withSessionMutation(sessionId, undefined, async () => {
-        if (await sessionExists(sessionId)) {
-          pendingSessionCleanup.delete(sessionId);
-          return;
-        }
-        await deleteSessionEvents(
-          storageDirectory,
-          sessionId,
-        );
-        await deleteSessionAttachments(
-          storageDirectory,
-          sessionId,
-        );
-        await deleteSessionAudio(storageDirectory, sessionId);
-        await deleteSessionMidiArtifacts(storageDirectory, sessionId);
-        pendingSessionCleanup.delete(sessionId);
-      });
-    }
-  }
-
-  async function reconcileStartupSessionOrphans(): Promise<void> {
-    const existingSessionIds = new Set(
-      (await listSessions(storageDirectory)).map(
-        (session) => session.id,
-      ),
-    );
-    const orphanCandidates = new Set([
-      ...await listSessionAudioDirectoryIds(storageDirectory),
-      ...await listSessionMidiArtifactDirectoryIds(storageDirectory),
-      ...await listSessionAttachmentDirectoryIds(
-        storageDirectory,
-      ),
-      ...await listSessionEventLogIds(
-        storageDirectory,
-      ),
-    ]);
-    for (const sessionId of [...orphanCandidates].sort()) {
-      if (existingSessionIds.has(sessionId)) continue;
-      await withSessionMutation(sessionId, undefined, async () => {
-        if (await sessionExists(sessionId)) return;
-        await deleteSessionEvents(
-          storageDirectory,
-          sessionId,
-        );
-        await deleteSessionAttachments(
-          storageDirectory,
-          sessionId,
-        );
-        await deleteSessionAudio(storageDirectory, sessionId);
-        await deleteSessionMidiArtifacts(storageDirectory, sessionId);
-      });
-    }
-  }
-
   const attachmentSession = async (sessionId: string) => {
     const session = (await listSessions(
       storageDirectory,
@@ -4127,289 +3770,31 @@ export async function runAgentFlow(
     }
   };
 
-  const handlePluginInspect = async (
-    input: { bytes: Uint8Array },
-    signal: AbortSignal,
-  ): Promise<ChatBridgePluginInspectResult> => {
-    throwIfAborted(signal);
-    try {
-      return { preview: await previewPluginArchive(input.bytes, signal) };
-    } catch (error) {
-      if (error instanceof PluginArchiveError) {
-        throw new ChatBridgePluginValidationError(error.message);
-      }
-      throwIfAborted(signal);
-      throw new ChatBridgePluginValidationError("The uploaded Plugin package is invalid.");
-    }
-  };
-
   const handlePluginInstall = async (
     input: ChatBridgePluginInstallInput,
     signal: AbortSignal,
   ): Promise<ChatBridgePluginInstallResult> => {
-    throwIfAborted(signal);
-    const bytes = Uint8Array.from(input.bytes);
-    let opened;
-    try {
-      opened = await openPluginArchive(bytes, signal);
-    } catch (error) {
-      if (error instanceof PluginArchiveError) throw new ChatBridgePluginValidationError(error.message);
-      throw new ChatBridgePluginValidationError("The uploaded Plugin package is invalid.");
-    }
-    const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
-    let installed: InstalledPlugin | undefined;
-    let catalogChanged = false;
-    await requestConfigurationFence.run(requestConfigurationFenceKey, signal, async () => {
-      let invalidationPublished = false;
-      const publishInvalidation = () => {
-        if (invalidationPublished) return;
-        invalidationPublished = true;
-        notifyGlobalStateChanged();
-      };
-      try {
-        const existing = (await listInstalledPlugins(storageDirectory)).find(
-          (plugin) => plugin.id === opened.manifest.id,
-        );
-        if (existing?.sha256 === expectedSha256) {
-          installed = existing;
-          return;
-        }
-        if (existing?.enabled) {
-          throw new ChatBridgeConflictError("Disable this Plugin before replacing it.");
-        }
-        if (existing && !input.replace) {
-          throw new ChatBridgeConflictError(
-            `Plugin ${opened.manifest.id} is already installed. Confirm replacement to change it.`,
-          );
-        }
-        throwIfAborted(signal);
-        installed = await installPlugin(storageDirectory, bytes, { replace: Boolean(existing) });
-        catalogChanged = true;
-      } catch (error) {
-        if (isStorageCommitOutcomeUnknownError(error)) {
-          publishInvalidation();
-          try {
-            installed = (await listInstalledPlugins(storageDirectory)).find((plugin) =>
-              plugin.id === opened.manifest.id && plugin.sha256 === expectedSha256);
-          } catch {
-            installed = undefined;
-          }
-          if (!installed) {
-            throw new ChatBridgeCommandOutcomeUnknownError(
-              "The Plugin may have been installed, but its final state could not be confirmed.",
-              { cause: error },
-            );
-          }
-        } else if (error instanceof ChatBridgeConflictError || error instanceof ChatBridgePluginValidationError) {
-          throw error;
-        } else if (error instanceof PluginStorageCorruptionError) {
-          throw new ChatBridgePluginValidationError("Installed Plugin storage is invalid and was not changed.");
-        } else {
-          throwIfAborted(signal);
-          throw new ChatBridgePluginValidationError("The Plugin could not be installed or replaced.");
-        }
-      }
-      if (catalogChanged) publishInvalidation();
-    });
-    if (!installed) throw new ChatBridgePluginValidationError("The Plugin installation could not be confirmed.");
-    status = `Plugin ${installed.id} installed.`;
+    const receipt = await pluginLifecycle.install(input, signal);
+    status = `Plugin ${receipt.id} installed.`;
     openSettingsOnLoad = false;
-    return {
-      state: await buildStateAfterPluginMutation(),
-      receipt: { id: installed.id, sha256: installed.sha256 },
-    };
+    return { state: await buildStateAfterPluginMutation(), receipt };
   };
 
   const handleSkillInstall = async (
     input: ChatBridgeSkillInstallInput,
     signal: AbortSignal,
   ): Promise<ChatBridgeSkillInstallResult> => {
-    throwIfAborted(signal);
-    const bytes = Uint8Array.from(input.bytes);
-    let definition;
-    try {
-      definition = parseSkillMarkdown(bytes);
-    } catch (error) {
-      if (error instanceof SkillFormatError) {
-        throw new ChatBridgeSkillValidationError(error.message);
-      }
-      throw new ChatBridgeSkillValidationError(
-        "The uploaded SKILL.md is invalid.",
-      );
-    }
-    const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
-    let installed: InstalledSkill | undefined;
-    let catalogChanged = false;
-    await requestConfigurationFence.run(
-      requestConfigurationFenceKey,
-      signal,
-      async () => {
-        let invalidationPublished = false;
-        const publishInvalidation = () => {
-          if (invalidationPublished) return;
-          invalidationPublished = true;
-          notifyGlobalStateChanged();
-        };
-        try {
-          installed = await withStorageTransaction(
-            storageDirectory,
-            async (transaction) => {
-              throwIfAborted(signal);
-              const existing = (await listInstalledSkillsInTransaction(
-                transaction,
-                storageDirectory,
-              )).find((skill) => skill.id === definition.id);
-              if (existing === undefined && isBuiltInSkillId(definition.id)) {
-                throw new ChatBridgeSkillValidationError(
-                  `Built-in Skill ${definition.id} is read-only and cannot be installed or replaced.`,
-                );
-              }
-              if (existing?.sha256 === expectedSha256) return existing;
-              if (existing !== undefined && !input.replace) {
-                throw new ChatBridgeConflictError(
-                  `Skill ${definition.id} is already installed. Confirm replacement to change it.`,
-                );
-              }
-              throwIfAborted(signal);
-              const next = await installSkillInTransaction(
-                transaction,
-                storageDirectory,
-                bytes,
-                { replace: input.replace },
-              );
-              catalogChanged = true;
-              return next;
-            },
-          );
-        } catch (error) {
-          if (isStorageCommitOutcomeUnknownError(error)) {
-            publishInvalidation();
-            try {
-              installed = (await listInstalledSkills(
-                storageDirectory,
-              )).find((skill) =>
-                skill.id === definition.id && skill.sha256 === expectedSha256
-              );
-            } catch {
-              installed = undefined;
-            }
-            if (installed === undefined) {
-              throw new ChatBridgeCommandOutcomeUnknownError(
-                "The Skill may have been installed, but its final state could not be confirmed.",
-                { cause: error },
-              );
-            }
-          } else if (
-            error instanceof ChatBridgeConflictError ||
-            error instanceof ChatBridgeSkillValidationError
-          ) {
-            throw error;
-          } else if (error instanceof SkillStorageCorruptionError) {
-            throw new ChatBridgeSkillValidationError(
-              "Installed Skill storage is invalid and was not changed.",
-            );
-          } else {
-            throwIfAborted(signal);
-            throw new ChatBridgeSkillValidationError(
-              "The Skill could not be installed or replaced.",
-            );
-          }
-        }
-        if (catalogChanged) publishInvalidation();
-      },
-    );
-    if (installed === undefined) {
-      throw new ChatBridgeSkillValidationError(
-        "The Skill installation could not be confirmed.",
-      );
-    }
-    status = `Skill ${installed.id} installed.`;
+    const receipt = await userSkillLifecycle.install(input, signal);
+    status = `Skill ${receipt.id} installed.`;
     openSettingsOnLoad = false;
-    return {
-      state: await buildStateAfterSkillMutation(),
-      receipt: { id: installed.id, sha256: installed.sha256 },
-    };
+    return { state: await buildStateAfterSkillMutation(), receipt };
   };
 
   const handleSkillDelete = async (
     input: ChatBridgeSkillDeleteInput,
     signal: AbortSignal,
   ) => {
-    if (!isSafeSkillId(input.skillId)) {
-      throw new ChatBridgeSkillValidationError("Skill ID is invalid.");
-    }
-    let deleted = false;
-    await requestConfigurationFence.run(
-      requestConfigurationFenceKey,
-      signal,
-      async () => {
-        let invalidationPublished = false;
-        const publishInvalidation = () => {
-          if (invalidationPublished) return;
-          invalidationPublished = true;
-          notifyGlobalStateChanged();
-        };
-        try {
-          await withStorageTransaction(
-            storageDirectory,
-            async (transaction) => {
-              throwIfAborted(signal);
-              const existing = (await listInstalledSkillsInTransaction(
-                transaction,
-                storageDirectory,
-              )).some((skill) => skill.id === input.skillId);
-              if (!existing) return;
-              const sessions = await listSessionsInTransaction(
-                transaction,
-                storageDirectory,
-              );
-              if (sessions.some((session) =>
-                session.activeSkillIds?.includes(input.skillId)
-              )) {
-                throw new ChatBridgeConflictError(
-                  "Remove this Skill from every Session before deleting it.",
-                );
-              }
-              throwIfAborted(signal);
-              await deleteInstalledSkillInTransaction(
-                transaction,
-                storageDirectory,
-                input.skillId,
-              );
-              deleted = true;
-            },
-          );
-        } catch (error) {
-          if (isStorageCommitOutcomeUnknownError(error)) {
-            publishInvalidation();
-            try {
-              const stillInstalled = (await listInstalledSkills(
-                storageDirectory,
-              )).some((skill) => skill.id === input.skillId);
-              if (!stillInstalled) deleted = true;
-              else throw error;
-            } catch (reconciliationError) {
-              throw new ChatBridgeCommandOutcomeUnknownError(
-                "The Skill may have been deleted, but its final state could not be confirmed.",
-                { cause: reconciliationError },
-              );
-            }
-          } else if (error instanceof ChatBridgeConflictError) {
-            throw error;
-          } else if (error instanceof SkillStorageCorruptionError) {
-            throw new ChatBridgeSkillValidationError(
-              "Installed Skill storage is invalid and was not changed.",
-            );
-          } else {
-            throwIfAborted(signal);
-            throw new ChatBridgeSkillValidationError(
-              "The Skill could not be deleted.",
-            );
-          }
-        }
-        if (deleted) publishInvalidation();
-      },
-    );
+    const deleted = await userSkillLifecycle.remove(input, signal);
     status = deleted
       ? `Skill ${input.skillId} deleted.`
       : `Skill ${input.skillId} is already absent.`;
@@ -4671,7 +4056,7 @@ export async function runAgentFlow(
         else pendingProfileSettingsChange = change;
       },
     );
-    await reconcileStartupSessionOrphans();
+    await sessionLifecycle.reconcileStartupOrphans();
     const pluginApps = createPluginAppSessions({
       storageDirectory, fetchImpl: providerFetch,
       withAuthorization: (signal, operation) => requestConfigurationFence.run(requestConfigurationFenceKey, signal, operation),
@@ -4720,7 +4105,7 @@ export async function runAgentFlow(
       handleAttachmentDelete,
       handleSkillInstall,
       handleSkillDelete,
-      handlePluginInspect,
+      handlePluginInspect: inspectPluginPackage,
       handlePluginInstall,
       ...(dependencies.attachmentBodyReadOptions === undefined
         ? {}
@@ -4782,10 +4167,7 @@ export async function runAgentFlow(
       );
     }
     await Promise.allSettled([...oauthBrowserLaunches]);
-    oauthBackendLeaseClosing = true;
-    sharedBackendManagerAcquisitionController?.abort(
-      oauthBackendAcquisitionClosedError,
-    );
+    modelBackendManager.stopAcquisition();
     try {
       await bridge?.close();
     } finally {
@@ -4806,8 +4188,7 @@ export async function runAgentFlow(
       }
       if (
         oauthScopesUsed.size > 0 &&
-        (dependencies.modelBackendManager !== undefined ||
-          sharedBackendManagerLease !== undefined)
+        modelBackendManager.hasAcquiredOAuth()
       ) {
         const scopes = [...oauthScopesUsed.values()].filter(
           (scope) => !discardedOAuthProfiles.has(scope.profileId),
@@ -4848,16 +4229,7 @@ export async function runAgentFlow(
         modelAuthSendFenceFor(scope.profileId).releaseOwner(modelAuthOwner);
       }
       try {
-        if (dependencies.modelBackendManager) {
-          await dependencies.modelBackendManager.close();
-        } else if (sharedBackendManagerLeasePromise) {
-          try {
-            await sharedBackendManagerLeasePromise;
-          } catch (error) {
-            if (error !== oauthBackendAcquisitionClosedError) throw error;
-          }
-          await sharedBackendManagerLease?.release();
-        }
+        await modelBackendManager.close();
       } catch (error) {
         for (const scope of oauthScopesUsed.values()) {
           modelAuthSendFenceFor(scope.profileId).poison(error);

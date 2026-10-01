@@ -22,6 +22,7 @@ const scripts: ChatClientScripts = {
   attachments: "",
   bootstrap: "",
   bridgeClient: "",
+  bridgeContracts: "",
   composerInput: "",
   hostAdapter: "",
   markdownRenderer: "",

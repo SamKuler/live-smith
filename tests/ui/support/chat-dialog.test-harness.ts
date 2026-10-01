@@ -29,6 +29,7 @@ import { ATTACHMENT_FORMATS } from "../../../src/attachments/contracts.js";
 import { buildMarkdownRendererScript } from "../../../scripts/build-markdown-renderer.js";
 import { buildPluginAppsScript } from "../../../scripts/build-plugin-apps.js";
 import { buildAudioParametersScript } from "../../../scripts/build-audio-parameters.js";
+import { buildBridgeContractsScript } from "../../../scripts/build-bridge-contracts.js";
 import type { ChatBridgeState, ChatDialogState } from "../../../src/ui/chat-state.js";
 import { composeChatDocument } from "../../../src/ui/chat-document.js";
 import { isEditScopes, resolveEditScopes, type EditScope } from "../../../src/agent/edit-scopes.js";
@@ -163,6 +164,7 @@ const chatTemplate = fs.readFileSync(
 const markdownRendererScript = await buildMarkdownRendererScript(false);
 const pluginAppsScript = await buildPluginAppsScript(false);
 const audioParametersScript = await buildAudioParametersScript(false);
+const bridgeContractsScript = await buildBridgeContractsScript(false);
 const clientScripts = {
   actionPreview: readClientScript("action-preview"),
   i18n: readClientScript("i18n"),
@@ -179,6 +181,7 @@ const clientScripts = {
   pluginUserConfig: readClientScript("plugin-user-config"),
   pluginApps: pluginAppsScript,
   audioParameters: audioParametersScript,
+  bridgeContracts: bridgeContractsScript,
   connectionsManager: readClientScript("connections-manager"),
   sessionTimeline: readClientScript("session-timeline"),
   skillManager: readClientScript("skill-manager"),

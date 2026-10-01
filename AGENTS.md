@@ -42,6 +42,9 @@ implementation plan, or record of individual changes.
 - `src/storage/` persists Profiles, sessions, session events, and raw model
   discovery metadata, and owns private attachment and User Skill storage.
 - `src/ui/` contains state serialization and dialogs for the chat interface.
+- Typed browser validators live in `src/ui/client/wire-contracts/`. Connection
+  state and editing have dedicated browser modules; keep their state ownership
+  out of the transport bridge and derive form views from the canonical snapshot.
 - `tests/` mirrors source module ownership and contains behavior tests,
   module-local `support/` helpers, and attachment fixtures. Real chat DOM
   behavior tests live under interaction domains in `tests/ui/`; coordinator
@@ -149,6 +152,9 @@ logs, screenshots, or documentation.
   computed-style assertions as proof of visual layout in the Ableton host.
 - Keep test modules below the structural limits enforced by
   `npm run test:structure`; split shared harnesses from behavior domains.
+- Keep provider rules canonical across tool schemas, parsing and protocol
+  validation. Plugin-owned text invocations use the host's admission and
+  authorization boundaries; they do not own Session jobs or Live mutation.
 - Keep configuration writes limited to Profile CRUD/activation, explicit
   Session metadata commands, and the dedicated global-settings command.
 - Update the document that owns a changed user workflow or contract; link to it

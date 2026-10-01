@@ -9,6 +9,7 @@ import ts from "typescript";
 import { buildMarkdownRendererScript } from "./scripts/build-markdown-renderer.js";
 import { buildPluginAppsScript } from "./scripts/build-plugin-apps.js";
 import { buildAudioParametersScript } from "./scripts/build-audio-parameters.js";
+import { buildBridgeContractsScript } from "./scripts/build-bridge-contracts.js";
 import { buildDocumentParserScript } from "./scripts/build-document-parser.js";
 import { compileUiStyles } from "./scripts/build-ui-styles.js";
 import { readNativeVerifierCapsule } from "./scripts/build-native-verifier.js";
@@ -25,6 +26,7 @@ verifySourceRuntimeBoundaries("src");
 const markdownRendererScript = await buildMarkdownRendererScript(production);
 const pluginAppsScript = await buildPluginAppsScript(production);
 const audioParametersScript = await buildAudioParametersScript(production);
+const bridgeContractsScript = await buildBridgeContractsScript(production);
 const documentParserScript = await buildDocumentParserScript(production);
 const chatStyles = await compileUiStyles("src/ui/styles/chat.css", production);
 const resultStyles = await compileUiStyles("src/ui/styles/result.css", production);
@@ -49,6 +51,7 @@ const buildResult = await esbuild.build({
     __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__: JSON.stringify(markdownRendererScript),
     __LIVE_SMITH_PLUGIN_APPS_SCRIPT__: JSON.stringify(pluginAppsScript),
     __LIVE_SMITH_AUDIO_PARAMETERS_SCRIPT__: JSON.stringify(audioParametersScript),
+    __LIVE_SMITH_BRIDGE_CONTRACTS_SCRIPT__: JSON.stringify(bridgeContractsScript),
     __LIVE_SMITH_DOCUMENT_PARSER_SCRIPT__: JSON.stringify(documentParserScript),
     __LIVE_SMITH_CHAT_STYLES__: JSON.stringify(chatStyles),
     __LIVE_SMITH_RESULT_STYLES__: JSON.stringify(resultStyles),

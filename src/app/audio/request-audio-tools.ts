@@ -5,6 +5,7 @@ import {
   type AudioProcessingSource,
   type AudioToolRequest,
 } from "../../agent/audio-tools.js";
+import { isAudioTextToolRequest } from "../../agent/audio-tool-parser.js";
 import type { AgentExternalToolResult } from "../../agent/loop.js";
 import {
   audioJobRemoteSettled, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
@@ -184,54 +185,27 @@ export async function createRequestAudioTools(input: {
           if (request.query === "library" && "clips" in result) rememberClips(connection.id, result.clips);
           return { content: JSON.stringify({ ...result, provenance: audioPluginQueryProvenance(connection) }) };
         }
-        if (request.kind === "write_lyrics" || request.kind === "inspect_lyric_models") {
+        if (isAudioTextToolRequest(request)) {
           const connection = await resolveIntegrationConnection(input.storageDirectory, request.connectionId, "generate_music", admittedConnections);
           const plugin = audioPluginDefinition(processing, connection);
-          const runtime = audioPluginHostRuntime(processing, connection);
-          if (request.kind === "inspect_lyric_models") {
-            if (!plugin.inspectLyricModels) throw new Error("Lyric model catalog unavailable.");
-            const result = await plugin.inspectLyricModels(connection, input.signal, runtime);
+          const invocation = plugin.textTool?.(request);
+          if (!invocation) throw new Error("This Plugin does not expose the requested text tool.");
+          if (invocation.kind === "read") {
+            const result = await invocation.run(connection, input.signal, audioPluginHostRuntime(processing, connection));
             await resolveIntegrationConnection(input.storageDirectory, connection.id, "generate_music", [connection]);
             return { content: JSON.stringify({ ...result, provenance: audioPluginQueryProvenance(connection) }) };
           }
-          if (!plugin.writeLyrics || !input.withGenerationAuthorization) throw new Error("Lyric-writing authorization unavailable.");
-          const { kind: _kind, connectionId: _id, ...fields } = request;
+          if (!input.withGenerationAuthorization) throw new Error("Generation authorization unavailable.");
           const result = await input.withGenerationAuthorization(input.signal, async () => {
             const current = await resolveIntegrationConnection(input.storageDirectory, connection.id, "generate_music", [connection]);
             throwIfAborted(input.signal);
-            return plugin.writeLyrics!(current, fields, input.signal, runtime);
+            return invocation.run(current, input.signal, audioPluginHostRuntime(processing, current));
           });
           // Preserve a confirmed paid text receipt even when Stop raced its response.
           return { content: JSON.stringify(result) };
         }
-        if (request.kind === "generate_lyrics") {
-          const connection = await resolveIntegrationConnection(
-            input.storageDirectory,
-            request.connectionId,
-            "generate_music",
-            admittedConnections,
-          );
-          const plugin = audioPluginDefinition(processing, connection);
-          if (!plugin.generateLyrics) {
-            throw new Error("This Plugin does not expose lyrics generation.");
-          }
-          if (!input.withGenerationAuthorization) throw new Error("Generation authorization unavailable.");
-          const result = await input.withGenerationAuthorization(input.signal, async () => {
-            const current = await resolveIntegrationConnection(
-              input.storageDirectory,
-              request.connectionId,
-              "generate_music",
-              [connection],
-            );
-            if (current.pluginId !== plugin.id) throw new Error("The Integration Connection Plugin changed.");
-            throwIfAborted(input.signal);
-            return plugin.generateLyrics!(current, request.prompt, input.signal, audioPluginHostRuntime(processing, current));
-          });
-          // Retain the confirmed paid text result if Stop arrived with its receipt.
-          return { content: JSON.stringify(result) };
-        }
         const clipIds = request.kind === "retrieve_music" ? request.clipIds
-          : request.kind === "extend_music" || request.kind === "get_whole_song" || request.kind === "cover_music" || request.kind === "remaster_music" || request.kind === "add_vocals" || request.kind === "add_instrumental" || request.kind === "replace_music_section" || request.kind === "finish_music_replacement" || request.kind === "extract_music_stems" ? [request.clipId] : [];
+          : "clipId" in request ? [request.clipId] : [];
         if (clipIds.length && "connectionId" in request && clipIds.some((id) => !observedClips.get(observationKeys.get(request.connectionId)!)?.has(id))) {
           return { content: "Read this connection's library or saved audio jobs first, then use an observed clip ID.", failed: true, invalidArguments: true };
         }
@@ -291,19 +265,7 @@ function musicClipReferences(job: import("../../audio-services/contracts.js").Au
 }
 
 function generationRequest(request: Extract<AudioToolRequest, { kind: AudioGenerationRequest["operation"] }>): AudioGenerationRequest {
-  switch (request.kind) {
-    case "generate_music": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "generate_sound_effect": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "generate_song_from_lyrics": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "generate_sound_sample": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "cover_music": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "remaster_music": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "add_vocals": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "add_instrumental": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "replace_music_section": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "finish_music_replacement": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "extend_music": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "extract_music_stems": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-    case "get_whole_song": { const { kind, connectionId: _id, ...fields } = request; return { operation: kind, ...fields }; }
-  }
+  const { kind, connectionId: _id, ...fields } = request;
+  // The request union and protocol union use the same fields with a renamed discriminator.
+  return { operation: kind, ...fields } as AudioGenerationRequest;
 }

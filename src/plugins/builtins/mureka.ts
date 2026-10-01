@@ -10,6 +10,10 @@ import {
   murekaExtensionTools,
   parseMurekaExtensionTool,
 } from "./mureka-tools.js";
+import {
+  MUREKA_INSTRUMENTAL_UNSUPPORTED_MODELS, MUREKA_MUSIC_PROMPT_CHARACTERS,
+  validateMurekaGenerationRequest,
+} from "../../audio-services/mureka/mureka-rules.js";
 import { createBuiltInAudioTools } from "./provider-tools.js";
 
 export { DEFAULT_MUREKA_MUSIC_MODEL, MUREKA_MUSIC_MODELS };
@@ -17,8 +21,8 @@ export { DEFAULT_MUREKA_MUSIC_MODEL, MUREKA_MUSIC_MODELS };
 const audio: BuiltInAudioToolContract = {
   operations: ["generate_music", "generate_song_from_lyrics"],
   generationOutputCount: 1,
-  musicPromptCharacters: 1024,
-  instrumentalUnsupportedModelIds: ["mureka-o2"],
+  musicPromptCharacters: MUREKA_MUSIC_PROMPT_CHARACTERS,
+  instrumentalUnsupportedModelIds: MUREKA_INSTRUMENTAL_UNSUPPORTED_MODELS,
 };
 
 export const murekaPlugin: BuiltInAudioPluginDefinition = {
@@ -39,6 +43,17 @@ export const murekaPlugin: BuiltInAudioPluginDefinition = {
     tools: murekaExtensionTools,
     parse: parseMurekaExtensionTool,
   }),
+  textTool(request) {
+    if (request.kind !== "generate_lyrics") return undefined;
+    const generateLyrics = this.generateLyrics!;
+    return {
+      kind: "paid",
+      run: (connection, signal, runtime) => generateLyrics(connection, request.prompt, signal, runtime),
+    };
+  },
+  validateGenerationRequest(connection, request) {
+    validateMurekaGenerationRequest(request, connection.modelId ?? DEFAULT_MUREKA_MUSIC_MODEL);
+  },
   createGenerationAdapter(connection, runtime) {
     return createMurekaAudioAdapter(connection.apiKey, {
       fetchImpl: runtime.fetchImpl,

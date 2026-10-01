@@ -36,6 +36,19 @@ export const sunoWebsitePlugin: BuiltInAudioPluginDefinition = {
   },
   audio,
   tools: createBuiltInAudioTools(audio, { localToolNames: SUNO_LYRIC_TOOL_NAMES, tools: sunoLyricTools, parse: parseSunoLyricTool }),
+  textTool(request) {
+    if (request.kind === "inspect_lyric_models") {
+      const inspectLyricModels = this.inspectLyricModels!;
+      return { kind: "read", run: inspectLyricModels };
+    }
+    if (request.kind !== "write_lyrics") return undefined;
+    const { kind: _kind, connectionId: _id, ...fields } = request;
+    const writeLyrics = this.writeLyrics!;
+    return {
+      kind: "paid",
+      run: (connection, signal, runtime) => writeLyrics(connection, fields, signal, runtime),
+    };
+  },
   generationModelId(connection, request) {
     if (request.operation === "extract_music_stems") return "chirp-v3-5-b";
     if (request.operation === "remaster_music") return request.modelId;

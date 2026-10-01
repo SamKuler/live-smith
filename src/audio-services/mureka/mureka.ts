@@ -1,7 +1,7 @@
 import { AudioToolOutcomeUnknownError } from "../contracts.js";
-import type { AudioGenerationAdapter, AudioGenerationRequest } from "../contracts.js";
+import type { AudioGenerationAdapter } from "../contracts.js";
 import { createMurekaHttp, MurekaError, type MurekaTaskKind } from "./mureka-http.js";
-import { exceedsAudioPromptLimit } from "../prompt.js";
+import { MUREKA_LYRICS_PROMPT_CHARACTERS, validateMurekaGenerationRequest, validMurekaText } from "./mureka-rules.js";
 
 const RUNNING = new Set(["preparing", "queued", "running", "streaming"]);
 const TERMINAL = new Set(["succeeded", "failed", "timeouted", "cancelled"]);
@@ -34,7 +34,7 @@ export function createMurekaAudioAdapter(
     provider: "mureka",
     async submit(request, signal) {
       http.active(signal);
-      validateGenerationRequest(request, model, http.fail);
+      validateMurekaGenerationRequest(request, model, http.fail);
       const kind: MurekaTaskKind = request.operation === "generate_song_from_lyrics" || !request.instrumental
         ? "song"
         : "instrumental";
@@ -96,7 +96,7 @@ export async function generateMurekaLyrics(
   options: { fetchImpl?: typeof fetch | undefined } = {},
 ): Promise<{ title: string; lyrics: string }> {
   const http = createMurekaHttp(apiKey, options.fetchImpl);
-  if (!validText(prompt, 8000)) throw http.fail("lyrics prompt must contain 1–8000 characters.");
+  if (!validMurekaText(prompt, MUREKA_LYRICS_PROMPT_CHARACTERS)) throw http.fail(`lyrics prompt must contain 1–${MUREKA_LYRICS_PROMPT_CHARACTERS} characters.`);
   let dispatched = false;
   try {
     const value = await http.submit("lyrics", { prompt }, signal, () => { dispatched = true; });
@@ -111,44 +111,13 @@ export async function generateMurekaLyrics(
   }
 }
 
-function validateGenerationRequest(
-  request: AudioGenerationRequest, model: string, fail: (detail: string) => Error,
-): asserts request is Extract<AudioGenerationRequest, {
-  operation: "generate_music" | "generate_song_from_lyrics";
-}> {
-  if (!request || request.operation !== "generate_music" && request.operation !== "generate_song_from_lyrics") {
-    throw fail("only supported music generation operations are accepted.");
-  }
-  if (request.operation === "generate_song_from_lyrics") {
-    if (!validText(request.lyrics, 5000)) throw fail("lyrics must contain 1–5000 characters.");
-    if (request.prompt !== undefined && !validText(request.prompt, 1024)) {
-      throw fail("song prompt must contain 1–1024 characters when provided.");
-    }
-    if (request.gender !== undefined && request.gender !== "female" && request.gender !== "male") {
-      throw fail("vocal gender is invalid.");
-    }
-    return;
-  }
-  if (request.options !== undefined) throw fail("custom music options are not supported by this adapter.");
-  if (request.durationSeconds !== undefined) throw fail("duration is not supported.");
-  if (typeof request.instrumental !== "boolean") throw fail("instrumental must be a boolean.");
-  if (typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.includes("\0") ||
-      exceedsAudioPromptLimit(request.prompt, 1024)) throw fail("music prompt must contain 1–1024 characters.");
-  if (request.instrumental && model === "mureka-o2") throw fail("the selected model does not support instrumental generation.");
-}
-
-function validText(value: unknown, maximum: number): value is string {
-  return typeof value === "string" && Boolean(value.trim()) && !value.includes("\0") &&
-    !exceedsAudioPromptLimit(value, maximum);
-}
-
 function generatedText(
   value: unknown,
   maximum: number,
   multiline: boolean,
   fail: (detail: string) => Error,
 ): string {
-  if (!validText(value, maximum) || /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value) ||
+  if (!validMurekaText(value, maximum) || /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value) ||
       !multiline && /[\r\n]/u.test(value)) {
     throw fail("invalid generated lyrics response.");
   }

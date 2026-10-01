@@ -35,13 +35,13 @@ test("message catalogs agree on shared messages and preserve interpolation field
 });
 
 test("explicit client messages and static template markers all have translations", () => {
-  const files = readdirSync(new URL('../../../src/ui/client/', import.meta.url))
-    .filter(name => name.endsWith('.script.html')).map(name => '../../../src/ui/client/' + name);
+  const files = readdirSync(new URL('../../../src/ui/client/', import.meta.url), { recursive: true })
+    .filter((name): name is string => typeof name === 'string' && (name.endsWith('.script.html') || name.endsWith('.ts'))).map(name => '../../../src/ui/client/' + name);
   files.push('../../../src/ui/action-diff.ts');
   files.push('../../../src/app/audio/audio-generation.ts', '../../../src/app/audio/audio-processing.ts', '../../../src/app/audio/audio-job-runtime.ts', '../../../src/app/audio/suno/suno-human-verification.ts', '../../../src/app/agent-flow.ts');
   for (const file of files) {
     const source = readFileSync(new URL(file, import.meta.url), 'utf8');
-    const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, file.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS);
     function visit(node: ts.Node) {
       if (ts.isCallExpression(node) && ['t','m','message','uiMessage','window.LiveSmithI18n.t','window.LiveSmithI18n.message','i18n.message'].includes(node.expression.getText(ast))) {
         const arg = node.arguments[0];

@@ -1,6 +1,10 @@
 import type { AudioToolRequest } from "../../agent/audio-tools.js";
 import type { BuiltInIntegrationConnectionChoice } from "./contracts.js";
-import { exceedsAudioPromptLimit } from "../../audio-services/prompt.js";
+import {
+  MUREKA_LYRICS_CHARACTERS, MUREKA_LYRICS_PROMPT_CHARACTERS,
+  MUREKA_MUSIC_PROMPT_CHARACTERS, MUREKA_VOCAL_GENDERS,
+  isMurekaVocalGender, validMurekaText,
+} from "../../audio-services/mureka/mureka-rules.js";
 import type { ModelFunctionTool } from "../../model/provider.js";
 import { isSafeStorageId } from "../../storage/id.js";
 
@@ -25,7 +29,7 @@ export function murekaExtensionTools(
           additionalProperties: false,
           properties: {
             connectionId: connection,
-            prompt: { type: "string", minLength: 1, maxLength: 8000 },
+            prompt: { type: "string", minLength: 1, maxLength: MUREKA_LYRICS_PROMPT_CHARACTERS },
           },
           required: ["connectionId", "prompt"],
         },
@@ -41,9 +45,9 @@ export function murekaExtensionTools(
           additionalProperties: false,
           properties: {
             connectionId: connection,
-            lyrics: { type: "string", minLength: 1, maxLength: 5000 },
-            prompt: { type: "string", minLength: 1, maxLength: 1024 },
-            gender: { type: "string", enum: ["female", "male"] },
+            lyrics: { type: "string", minLength: 1, maxLength: MUREKA_LYRICS_CHARACTERS },
+            prompt: { type: "string", minLength: 1, maxLength: MUREKA_MUSIC_PROMPT_CHARACTERS },
+            gender: { type: "string", enum: [...MUREKA_VOCAL_GENDERS] },
           },
           required: ["connectionId", "lyrics"],
         },
@@ -65,19 +69,19 @@ export function parseMurekaExtensionTool(
     return {
       kind: "generate_lyrics",
       connectionId: value.connectionId,
-      prompt: text(value.prompt, 8000),
+      prompt: text(value.prompt, MUREKA_LYRICS_PROMPT_CHARACTERS),
     };
   }
   if (name !== "generate_song_from_lyrics") throw new Error("Unknown Mureka tool.");
   only(value, ["connectionId", "lyrics", "prompt", "gender"]);
-  if (value.gender !== undefined && value.gender !== "female" && value.gender !== "male") {
+  if (value.gender !== undefined && !isMurekaVocalGender(value.gender)) {
     throw new Error("Invalid Mureka vocal gender.");
   }
   return {
     kind: "generate_song_from_lyrics",
     connectionId: value.connectionId,
-    lyrics: text(value.lyrics, 5000),
-    ...(value.prompt === undefined ? {} : { prompt: text(value.prompt, 1024) }),
+    lyrics: text(value.lyrics, MUREKA_LYRICS_CHARACTERS),
+    ...(value.prompt === undefined ? {} : { prompt: text(value.prompt, MUREKA_MUSIC_PROMPT_CHARACTERS) }),
     ...(value.gender === undefined ? {} : { gender: value.gender }),
   };
 }
@@ -96,8 +100,7 @@ function only(value: Record<string, unknown>, keys: readonly string[]): void {
 }
 
 function text(value: unknown, maximum: number): string {
-  if (typeof value !== "string" || !value.trim() || value.includes("\0") ||
-      exceedsAudioPromptLimit(value, maximum)) {
+  if (!validMurekaText(value, maximum)) {
     throw new Error("Mureka text is invalid or exceeds its limit.");
   }
   return value;

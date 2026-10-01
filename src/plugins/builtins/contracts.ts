@@ -12,7 +12,7 @@ import type {
   MusicServiceQueryResult,
   AudioCredentialRefreshHandler,
 } from "../../audio-services/contracts.js";
-import type { AudioToolRequest } from "../../agent/audio-tools.js";
+import type { AudioTextToolRequest, AudioToolRequest } from "../../agent/audio-tool-parser.js";
 import type { ModelFunctionTool } from "../../model/provider.js";
 import type { OpenProviderWebSocket } from "../../runtime/proxy-websocket.js";
 import type { StoredSunoSession } from "../../storage/suno-sessions.js";
@@ -82,6 +82,16 @@ export interface BuiltInAudioHostRuntime {
   ): AudioGenerationAdapter;
 }
 
+/** The host owns connection revalidation and paid allowance authorization. */
+export interface BuiltInAudioTextToolInvocation {
+  kind: "read" | "paid";
+  run(
+    connection: BuiltInAudioConnectionRuntime,
+    signal: AbortSignal,
+    runtime: BuiltInAudioHostRuntime,
+  ): Promise<object>;
+}
+
 export interface BuiltInAudioPluginDefinition {
   id: string;
   version: string;
@@ -90,6 +100,11 @@ export interface BuiltInAudioPluginDefinition {
   connection: BuiltInIntegrationConnectionDescriptor;
   audio: BuiltInAudioToolContract;
   tools: BuiltInAudioToolExtension;
+  textTool?(request: AudioTextToolRequest): BuiltInAudioTextToolInvocation | undefined;
+  validateGenerationRequest?(
+    connection: BuiltInAudioConnectionRuntime,
+    request: AudioGenerationRequest,
+  ): void;
   generationModelId?(
     connection: BuiltInAudioConnectionRuntime,
     request: AudioGenerationRequest,

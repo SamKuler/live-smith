@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import test from "node:test";
 
 import { createMurekaAudioAdapter } from "../../../src/audio-services/mureka/mureka.js";
-import type { AudioGenerationAdapter } from "../../../src/audio-services/contracts.js";
+import type { AudioGenerationAdapter, AudioGenerationRequest } from "../../../src/audio-services/contracts.js";
 import { builtInAudioToolName } from "../../../src/plugins/builtins/audio-toolsets.js";
 import { murekaPlugin } from "../../../src/plugins/builtins/mureka.js";
 import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
@@ -207,4 +207,41 @@ test("Mureka Plugin lyric tools keep text results out of audio jobs and persist 
     modelId: "mureka-9.5",
     status: "completed",
   });
+});
+
+
+test("Mureka lyrics policy rejects invalid application input before creating jobs and accepts Unicode boundaries", async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-mureka-rules-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const session = await createSession(directory, { title: "Mureka", projectKey: "project",
+    scope: { kind: "selection", identity: "selection", label: "Audio" } });
+  await saveIntegrationConnection(directory, "0", {
+    id: "mureka", name: "Mureka", provider: "mureka", enabled: true,
+    apiKey: "fixture-mureka-key", modelId: "mureka-9",
+  });
+  const submitted: AudioGenerationRequest[] = [];
+  const context = { storageDirectory: directory, sessionId: session.id,
+    signal: new AbortController().signal, generationAdapter: {
+      provider: "mureka" as const,
+      submit: async (request: AudioGenerationRequest) => {
+        submitted.push(request);
+        return { kind: "audio" as const, outputs: [{ role: "music" as const, bytes: waveBytes() }] };
+      },
+    } };
+  for (const fields of [
+    { lyrics: "" }, { lyrics: "x".repeat(5001) },
+    { lyrics: "Lyrics", prompt: "x".repeat(1025) },
+    { lyrics: "Lyrics", gender: "unknown" },
+  ]) {
+    await assert.rejects(generateAudio(context, "mureka", {
+      operation: "generate_song_from_lyrics", ...fields,
+    } as AudioGenerationRequest));
+  }
+  assert.deepEqual(submitted, []);
+  assert.deepEqual(await listAudioJobs(directory, session.id), []);
+  const request: AudioGenerationRequest = {
+    operation: "generate_song_from_lyrics", lyrics: "🎵".repeat(5000), prompt: "🎼".repeat(1024), gender: "female",
+  };
+  assert.equal((await generateAudio(context, "mureka", request)).status, "completed");
+  assert.deepEqual(submitted, [request]);
 });
