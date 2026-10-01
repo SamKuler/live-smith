@@ -30,6 +30,11 @@ npm ci
 npm start -- --live "/Applications/Ableton Live Beta.app"
 ```
 
+The document parser bundles pinned `officeparser` and SheetJS distributions.
+SheetJS is installed from the public archive under `vendor/`; its source and
+integrity are documented in [vendor/README.md](../vendor/README.md). No additional
+document-conversion runtime is required by the installed extension.
+
 Adjust the Live application path for your installation. `npm start` builds the
 development bundle and starts the Extensions CLI. Enable the extension in the
 CLI, then right-click a supported object in Live and choose **Ask Live Smith**.

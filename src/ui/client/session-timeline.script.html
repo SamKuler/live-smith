@@ -275,7 +275,7 @@
       }
 
       function attachmentTypeLabel(attachment) {
-        const format = (__ATTACHMENT_FORMATS__).find((candidate) =>
+        const format = (__ATTACHMENT_REFERENCE_FORMATS__).find((candidate) =>
           candidate.kind === attachment.kind && candidate.mediaType === attachment.mediaType);
         if (!format) return t("File");
         if (format.mediaType === "application/pdf") return t("PDF · Native PDF");

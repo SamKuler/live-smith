@@ -102,8 +102,8 @@ test("RTF font definitions stay bounded and flat entries do not inherit another 
 test("ODT retains paragraph order, explicit spaces and Unicode with inert markup", async () => {
   const result = await extract(odfBytes("text",
     `<text:h>Title</text:h><text:p>音乐<text:s text:c="3"/>🎵<text:tab/>end<text:line-break/>next</text:p>` +
-    `<office:annotation><text:p>secret</text:p></office:annotation><text:p>&lt;script&gt;</text:p>`), "application/vnd.oasis.opendocument.text");
-  assert.equal(result.text, "Title\n音乐   🎵\tend\nnext\n<script>\n");
+    `<text:p><office:annotation><text:p>secret</text:p></office:annotation>&lt;script&gt;</text:p>`), "application/vnd.oasis.opendocument.text");
+  assert.equal(result.text, "Title\n音乐   🎵\tend\nnext\n<script>");
 });
 
 test("ODS preserves sheets, numbers, repeated cells and sparse coordinates without dense allocation", async () => {
@@ -117,21 +117,63 @@ test("ODS preserves sheets, numbers, repeated cells and sparse coordinates witho
     `<table:table-cell office:value-type="float" office:value="2" table:formula="of:=1+1"/></table:table-row></table:table>` +
     `<table:table table:name="Second"><table:table-row><table:table-cell office:value-type="date" office:date-value="2026-09-30"/></table:table-row></table:table>`), "application/vnd.oasis.opendocument.spreadsheet");
   assert.match(result.text, /Sheet "First"\nRow 1: A1="123456789\.125"\tB1="true"\tC1="音乐"\tD1="音乐"/);
-  assert.match(result.text, /Row 100002: XFD100002="2" \[formula "of:=1\+1"\]/);
-  assert.match(result.text, /Sheet "Second"\nRow 1: A1="2026-09-30"/);
+  assert.match(result.text, /Row 100002: XFD100002="2" \[formula "1\+1"\]/);
+  assert.match(result.text, /Sheet "Second"\nRow 1: A1="2026-09-30T00:00:00\.000Z"/);
   assert.ok(result.text.length < 500);
+});
+
+test("ODS explicit collapsed and filtered rows stay excluded without shifting coordinates", async () => {
+  const result = await extract(odfBytes("spreadsheet", '<table:table table:name="Visibility">' +
+    '<table:table-row table:visibility="collapse"><table:table-cell><text:p>HIDDEN_COLLAPSED</text:p></table:table-cell></table:table-row>' +
+    '<table:table-row table:visibility="filter"><table:table-cell><text:p>HIDDEN_FILTERED</text:p></table:table-cell></table:table-row>' +
+    '<table:table-row><table:table-cell><text:p>Visible</text:p></table:table-cell></table:table-row></table:table>'), "application/vnd.oasis.opendocument.spreadsheet");
+  assert.doesNotMatch(result.text, /HIDDEN_/);
+  assert.match(result.text, /Row 3: A3="Visible"/);
+});
+
+test("ODS hidden sheets remain named without exposing cells or formulas", async () => {
+  const result = await extract(odfBytes("spreadsheet", '<table:table table:name="Hidden" table:display="false">' +
+    '<table:table-row><table:table-cell table:formula="of:=HIDDEN_FORMULA"><text:p>HIDDEN_VALUE</text:p></table:table-cell></table:table-row>' +
+    '</table:table><table:table table:name="Visible"><table:table-row><table:table-cell><text:p>Visible value</text:p></table:table-cell></table:table-row></table:table>'), "application/vnd.oasis.opendocument.spreadsheet");
+  assert.match(result.text, /\[Hidden sheet "Hidden" omitted\]/);
+  assert.doesNotMatch(result.text, /HIDDEN_VALUE|HIDDEN_FORMULA/);
+  assert.match(result.text, /Sheet "Visible"\nRow 1: A1="Visible value"/);
+  assert.equal(result.truncated, false);
+});
+
+test("ODS ignores full-grid empty padding and retains uncached formulas", async () => {
+  const result = await extract(odfBytes("spreadsheet", '<table:table table:name="Sparse">' +
+    '<table:table-row><table:table-cell table:formula="of:=1+1"/>' +
+    '<table:table-cell table:number-columns-repeated="16383"/></table:table-row>' +
+    '<table:table-row table:number-rows-repeated="1048575"><table:table-cell table:number-columns-repeated="16384"/></table:table-row>' +
+    '</table:table><table:table table:name="Later"><table:table-row><table:table-cell><text:p>Visible</text:p></table:table-cell></table:table-row></table:table>'), "application/vnd.oasis.opendocument.spreadsheet");
+  assert.match(result.text, /Row 1: A1="\[cached value unavailable\]" \[formula "1\+1"\]/);
+  assert.match(result.text, /Sheet "Later"\nRow 1: A1="Visible"/);
+  assert.ok(result.text.length < 200); assert.equal(result.truncated, false);
+});
+
+test("ODS retains attribute-only string values and explicit empty formula caches", async () => {
+  const result = await extract(odfBytes("spreadsheet", '<table:table table:name="Values"><table:table-row>' +
+    '<table:table-cell office:value-type="string" office:string-value="stored string"/>' +
+    '<table:table-cell office:value-type="string" office:string-value="cached string" table:formula="of:=&quot;cached string&quot;"/>' +
+    '<table:table-cell office:value-type="string" office:string-value="" table:formula="of:=&quot;&quot;"/>' +
+    '</table:table-row></table:table>'), "application/vnd.oasis.opendocument.spreadsheet");
+  assert.match(result.text, /A1="stored string"/);
+  assert.match(result.text, /B1="cached string" \[formula "\\"cached string\\""\]/);
+  assert.match(result.text, /C1="" \[formula "\\"\\""\]/);
+  assert.doesNotMatch(result.text, /cached value unavailable/);
 });
 
 test("ODP preserves slide order and labels notes", async () => {
   const result = await extract(odfBytes("presentation",
-    `<draw:page draw:name="Z"><draw:frame><text:p>first</text:p></draw:frame><presentation:notes><text:p>note</text:p></presentation:notes></draw:page>` +
-    `<draw:page draw:name="A"><text:p>second</text:p></draw:page>`), "application/vnd.oasis.opendocument.presentation");
-  assert.equal(result.text, 'Slide 1 "Z"\nfirst\nNotes\nnote\nSlide 2 "A"\nsecond\n');
+    `<draw:page draw:name="Z"><draw:frame><draw:text-box><text:p>first</text:p></draw:text-box></draw:frame><presentation:notes><text:p>note</text:p></presentation:notes></draw:page>` +
+    `<draw:page draw:name="A"><draw:frame><draw:text-box><text:p>second</text:p></draw:text-box></draw:frame></draw:page>`), "application/vnd.oasis.opendocument.presentation");
+  assert.equal(result.text, 'Slide 1\nfirst\nNotes\nnote\nSlide 2\nsecond');
 });
 
 test("ODF recognizes namespace aliases and rejects spoofed namespace content", async () => {
   const aliased = `<o:document-content xmlns:o="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:t="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><o:body><o:text><t:p>aliased</t:p></o:text></o:body></o:document-content>`;
-  assert.equal((await extract(odfBytes("text", "", { "content.xml": aliased }), "application/vnd.oasis.opendocument.text")).text, "aliased\n");
+  assert.equal((await extract(odfBytes("text", "", { "content.xml": aliased }), "application/vnd.oasis.opendocument.text")).text, "aliased");
   await assert.rejects(extract(odfBytes("text", "", { "content.xml": aliased.replaceAll("xmlns:office:1.0", "xmlns:spoof:1.0") }), "application/vnd.oasis.opendocument.text"), processingError("invalid_document"));
 });
 
@@ -150,9 +192,7 @@ test("rich extraction bounds Unicode output, repeated spreadsheets and nested RT
   const over = await extract(odfBytes("text", `<text:p>${"🎵".repeat(100001)}</text:p>`), "application/vnd.oasis.opendocument.text");
   assert.equal([...over.text].length, 100000);
   assert.equal(over.truncated, true);
-  const repeated = await extract(odfBytes("spreadsheet", `<table:table table:name="Main"><table:table-row table:number-rows-repeated="1048576"><table:table-cell><text:p>1</text:p></table:table-cell></table:table-row></table:table>`), "application/vnd.oasis.opendocument.spreadsheet");
-  assert.equal(repeated.text.length, 100000);
-  assert.equal(repeated.truncated, true);
+  await assert.rejects(extract(odfBytes("spreadsheet", `<table:table table:name="Main"><table:table-row table:number-rows-repeated="1048576"><table:table-cell><text:p>1</text:p></table:table-cell></table:table-row></table:table>`), "application/vnd.oasis.opendocument.spreadsheet"), processingError("archive_limit"));
   const rtfOver = await extract(rtfBytes(`{\\rtf1 ${"a".repeat(100001)}}`), "application/rtf");
   assert.equal(rtfOver.text.length, 100000);
   assert.equal(rtfOver.truncated, true);

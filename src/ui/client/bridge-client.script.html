@@ -11,7 +11,7 @@
         setState,
       }) {
       const t = (sourceEnglish, namedParams) => window.LiveSmithI18n.t(sourceEnglish, namedParams);
-      const attachmentFormats = __ATTACHMENT_FORMATS__;
+      const attachmentFormats = __ATTACHMENT_REFERENCE_FORMATS__;
       const attachmentMediaTypeMatchesKind = (kind, mediaType) =>
         attachmentFormats.some((format) => format.kind === kind && format.mediaType === mediaType);
       const maximumDiscoveredModelCount = __MAX_DISCOVERED_MODEL_COUNT__;

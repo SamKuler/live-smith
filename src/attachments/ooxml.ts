@@ -74,7 +74,7 @@ export async function openOoxmlPackage(
   }
 
   const contentTypes = parseXmlBytesPreservingOrder(contentTypesBytes).nodes;
-  assertNoActiveContentTypes(contentTypes);
+  assertNoActiveContentTypes(contentTypes, archive.entryNames);
   await yieldToHost(signal);
   const rootRelationships =
     parseXmlBytesPreservingOrder(rootRelationshipsBytes).nodes;
@@ -188,16 +188,20 @@ function isActiveOfficePart(name: string): boolean {
     /(?:^|\/)macrosheets?(?:\/|$)/i.test(name);
 }
 
-function assertNoActiveContentTypes(nodes: readonly XmlNode[]): void {
+function assertNoActiveContentTypes(nodes: readonly XmlNode[], entryNames: readonly string[]): void {
   const roots = rootElements(nodes, "Types");
   if (roots.length !== 1) return;
-  const declarations = [
-    ...childElements(roots[0]!.children, "Default"),
-    ...childElements(roots[0]!.children, "Override"),
-  ];
-  if (declarations.some((declaration) =>
-    isActiveOfficeMetadata(declaration.attributes.ContentType)
-  )) {
+  const defaults = childElements(roots[0]!.children, "Default");
+  const overrides = childElements(roots[0]!.children, "Override");
+  const overriddenParts = new Set(overrides.map((declaration) => declaration.attributes.PartName));
+  const activeParts = new Set(overrides.filter((declaration) => isActiveOfficeMetadata(declaration.attributes.ContentType))
+    .map((declaration) => declaration.attributes.PartName));
+  const activeExtensions = new Set(defaults.filter((declaration) => isActiveOfficeMetadata(declaration.attributes.ContentType))
+    .map((declaration) => declaration.attributes.Extension?.toLowerCase()));
+  if (entryNames.some((name) => {
+    const part = `/${name}`;
+    return activeParts.has(part) || (!overriddenParts.has(part) && activeExtensions.has(name.split(".").at(-1)?.toLowerCase()));
+  })) {
     throw macroEnabled();
   }
 }

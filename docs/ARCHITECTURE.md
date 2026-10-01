@@ -93,8 +93,13 @@ src/
     audio.ts
       Strict, bounded WAV/MP3 inspection without decoding, executing metadata,
       or changing the owned source bytes.
-    image.ts, pdf.ts, ooxml*.ts, docx.ts, xlsx.ts, pptx.ts
-      Type-specific inspection and bounded local document extraction.
+    image.ts, pdf.ts, ooxml*.ts, odf.ts
+      Type-specific inspection and bounded ZIP/XML document admission.
+    office-parser.ts, office-parser.worker.ts
+      Bundled officeparser/SheetJS extraction, visibility policy, presentation
+      ordering, and bounded text projection in an owned Node worker.
+    rich-rtf.ts
+      Bounded built-in RTF visible-text and encoding extraction.
 
   audio-services/
     contracts.ts
@@ -1130,14 +1135,35 @@ source files through the composer's paste or drop boundary. Arrangement audio
 model input uses `resources.renderPreFxAudio` and reads only the SDK-created
 temporary render through a bounded regular-file snapshot.
 
-DOCX, XLSX, and PPTX are opened by a bounded local OOXML ZIP/XML parser. It
+DOCX, XLSX, and PPTX are admitted by a bounded local OOXML ZIP/XML inspector. It
 rejects malformed packages and packages with detected macro, VBA, ActiveX, or
 macrosheet signals, and it never exposes embedded binary parts to the model.
 This is not general OOXML sanitization; unrecognized embedded binary parts are
 discarded rather than interpreted or sent.
-The extractors preserve validated document, sheet, and presentation slide order
-and produce semantic text, not a visual rendering of Word pages, spreadsheet
-layout, or slides. Extraction is capped at 100,000 Unicode code points per file
+Modern Office and OpenDocument content extraction runs through pinned bundled
+officeparser and SheetJS libraries. `scripts/build-document-parser.ts` embeds a
+self-contained slim parser script; its native module resolver is disabled so
+production workers never require a runtime `node_modules` directory. The
+parent Extension VM imports only Node worker APIs and retains its existing
+restricted-global compatibility boundary. `runtime/document-parser.ts` admits
+two active parsers, cancels queued waits, and terminates active workers on
+cancellation or a 30-second deadline. Worker V8 heaps have a 128-MiB old-generation
+and 16-MiB young-generation limit; these do not bound ArrayBuffer allocations.
+Input, ZIP expansion, XML and output bounds apply separately. Workers receive
+document bytes and extraction policy, an empty environment, and no storage
+paths or credentials. Worker isolation bounds execution and heap usage; it is
+not an operating-system sandbox. Raw diagnostics stay out of host logs.
+
+An adapter constructs parser input from declared semantic OOXML parts, validates
+root and namespace identity, and maps relationship-addressed parts to canonical
+filenames. Unreferenced archive members cannot match the library's part selectors.
+The adapter retains explicit Word/PPTX visibility rules and validates declared
+PowerPoint ordering against parsed slides. SheetJS results retain sheet identity,
+sparse coordinates, stored values and formulas; formula stubs carry an unavailable
+cached-value marker. Hidden XLSX sheets, rows and columns and explicitly hidden
+ODS sheets and collapsed or filtered rows are omitted. ODF
+namespace aliases are canonicalized before extraction. Results carry semantic
+text and omission markers. Extraction is capped at 100,000 Unicode code points per file
 and 200,000 code points across the request; per-file truncation is labelled in
 the untrusted document wrapper, while a current request that exceeds the
 aggregate limit fails before event append.
@@ -1148,11 +1174,12 @@ configuration files remain inert text. RTF extraction interprets visible text
 and Unicode escapes while omitting binary objects and non-text destinations.
 OpenDocument text, spreadsheets, and presentations use the same bounded ZIP
 inspection and ordered XML parsing, with manifest, encryption, and macro
-checks. Legacy DOC, XLS, and PPT use a bounded Compound File parser with checked
-sector chains; their format readers resolve Word piece tables, sparse BIFF8
-cells and cached formula values, and live PowerPoint slide/persist ordering.
-Legacy Excel numbers retain stored values, so dates may remain serial values
-rather than formatted display strings. Embedded images, chart geometry, and
+checks. Legacy DOC, XLS, and PPT ingestion is unsupported. Historical MIME
+references remain valid Session data and client wire references. The shared
+reference-format registry supplies their display labels without restoring
+ingestion support. They become explicit unsupported-context
+markers before attachment reads; a pending legacy attachment must be removed
+or replaced before sending. Embedded images, chart geometry, and
 Office style rendering are outside this local text representation.
 These formats share the extracted-text budgets and untrusted-data envelope.
 
@@ -1186,8 +1213,8 @@ Upload, pending-quota validation, deletion, request
 preparation, event append, and existing-Session lifecycle mutations use the
 same process-wide Session mutation fence. Operations check cancellation at
 their defined boundaries; upload hashing, audio/PDF/OOXML inspection, Office
-extraction, history reads, and waiting for the fence yield or recheck
-cooperatively. Pending references are completely resolved before the user
+extraction, history reads, and waiting for the fence yield, recheck cancellation,
+or terminate the owned parser worker. Pending references are completely resolved before the user
 event is appended. A confirmed append consumes those exact immutable IDs even
 if the provider later fails; unknown append outcomes remain
 `PromptPersistence=unknown` until authoritative state is refreshed. An ID can

@@ -14,6 +14,15 @@ document-parser, Markdown-renderer, sanitizer, and network packages.
 - `path-expression-matcher` 1.6.2 — Copyright (c) 2024
 - `strnum` 2.4.1 — Copyright (c) 2021 Natural Intelligence
 - `xml-naming` 0.3.0 — Copyright (c) 2026 Natural Intelligence
+- `officeparser` 8.1.0 — Copyright (c) 2019 Harsh Ankur
+
+The embedded officeparser slim distribution includes MIT-licensed components
+from `@xmldom/xmldom` (Copyright 2019–present Christopher J. Brody and other
+contributors; Copyright 2012–2017 @jindw and other contributors),
+`file-type` and `uint8array-extras` (Copyright Sindre Sorhus),
+`strtok3`, `token-types`, and `@tokenizer/inflate` (Copyright Borewit),
+`@jspm/core` (Copyright Guy Bedford), `safe-buffer` (Copyright Feross
+Aboukhadijeh), and `core-js` (Copyright Denis Pushkarev).
 
 Each package above is distributed under the MIT License:
 
@@ -34,6 +43,38 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+`xlsx` 0.20.3 is Copyright (C) 2012-present SheetJS LLC and distributed under
+Apache-2.0. The embedded officeparser distribution also contains PDF.js,
+Copyright 2012 Mozilla Foundation, under Apache-2.0. The Apache License is
+reproduced in the DOMPurify section below. PDF parsing and OCR are not invoked
+by this worker's supported input paths.
+
+The bundled `ieee754` component is Copyright (c) 2008, Fair Oaks Labs, Inc.,
+Copyright (c) 2013, Feross Aboukhadijeh and distributed under BSD-3-Clause:
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Interface styles
 
@@ -213,7 +254,7 @@ Redistribution and use in source and binary forms, with or without modification,
 This software is provided by the copyright holders and contributors “as is” and any express or implied warranties, including, but not limited to, the implied warranties of merchantability and fitness for a particular purpose are disclaimed. In no event shall the copyright owner or contributors be liable for any direct, indirect, incidental, special, exemplary, or consequential damages (including, but not limited to, procurement of substitute goods or services; loss of use, data, or profits; or business interruption) however caused and on any theory of liability, whether in contract, strict liability, or tort (including negligence or otherwise) arising in any way out of the use of this software, even if advised of the possibility of such damage.
 ```
 
-### `dompurify` 3.4.13
+### `dompurify` 3.4.16
 
 Copyright (c) Cure53 and other contributors
 

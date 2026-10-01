@@ -7,6 +7,8 @@ import { parsePluginPackageManifest } from "../plugins/manifest.js";
 const REQUIRED_THIRD_PARTY_NOTICE_MARKERS = [
   "Third-Party Notices for Live Smith",
   "`fflate` 0.8.3 — Copyright (c) 2026 Arjun Barrett",
+  "`officeparser` 8.1.0",
+  "`xlsx` 0.20.3",
   "`fast-xml-parser` 5.10.1 — Copyright (c) 2017 Amit Kumar Gupta",
   "`@nodable/entities` 3.0.0 — authored by Amit Gupta",
   "`anynum` 1.0.1 — Copyright (c) 2026 Natural Intelligence",
@@ -41,7 +43,7 @@ const REQUIRED_THIRD_PARTY_NOTICE_MARKERS = [
   "Copyright (c) 2018+, MarkedJS",
   "Copyright (c) 2011-2018, Christopher Jeffrey",
   "Copyright © 2004, John Gruber",
-  "`dompurify` 3.4.13",
+  "`dompurify` 3.4.16",
   "Copyright (c) Cure53 and other contributors",
   "Apache License",
   "Version 2.0, January 2004",

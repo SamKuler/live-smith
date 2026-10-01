@@ -88,7 +88,7 @@ test("ZIP accepts validated signed and unsigned data descriptors for Office and 
     assert.equal(office.kind, "docx");
     const bytes = withDataDescriptor(odfBytes("text", "<text:p>Document text</text:p>"), 2, { includeSignature });
     const text = await extractRichDocumentText({ bytes, fileName: "export.odt", mediaType: "application/vnd.oasis.opendocument.text" });
-    assert.equal(text.text, "Document text\n");
+    assert.equal(text.text, "Document text");
   }
 });
 

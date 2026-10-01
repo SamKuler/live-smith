@@ -5,6 +5,7 @@ import {
   type AttachmentQuotaItem,
   AttachmentProcessingError,
   type DocumentAttachmentMediaType,
+  isHistoricalDocumentMediaType,
   MAX_REQUEST_BINARY_ATTACHMENT_BYTES,
   safeAttachmentDisplayFileName,
 } from "../attachments/contracts.js";
@@ -31,6 +32,7 @@ import { conversationCheckpointMessage } from "./context-compaction.js";
 type HistoricalAttachmentState =
   | "omitted_from_request"
   | "unavailable"
+  | "unsupported_format"
   | "profile_incompatible";
 
 export interface ResolvedCurrentAttachmentContext {
@@ -491,6 +493,9 @@ function historicalPreflightMarker(
   ref: PersistedSessionAttachmentRef,
   runtimeProfile: RuntimeProfile,
 ): ModelInputPart | undefined {
+  if (ref.kind === "document" && isHistoricalDocumentMediaType(ref.mediaType)) {
+    return historicalMarker("unsupported_format", ref.fileName);
+  }
   if (ref.kind === "image") {
     if (!runtimeProfile.capabilities.inputs.image) {
       return historicalMarker("profile_incompatible", ref.fileName);
@@ -530,6 +535,9 @@ function assertCurrentProfileCompatibility(
   runtimeProfile: RuntimeProfile,
 ): void {
   for (const ref of refs) {
+    if (ref.kind === "document" && isHistoricalDocumentMediaType(ref.mediaType)) {
+      throw new AttachmentProcessingError("unsupported_type", "Legacy Office attachments are unsupported. Save this file as DOCX, XLSX or PPTX.");
+    }
     if (ref.kind === "image" && !runtimeProfile.capabilities.inputs.image) {
       throw new AttachmentInputCapabilityError();
     }

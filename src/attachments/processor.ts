@@ -6,13 +6,12 @@ import {
   AttachmentProcessingError,
   type DocumentAttachmentMediaType,
 } from "./contracts.js";
-import { extractDocxText } from "./docx.js";
 import type { ExtractedDocumentText } from "./document-text.js";
 import { extractMidiText } from "./midi.js";
-import { classifyRichDocumentAttachment, extractRichDocumentText } from "./rich-document.js";
+import { inspectRichDocumentAttachment } from "./rich-document.js";
+import { extractRtfText } from "./rich-rtf.js";
 import { type OoxmlPackage, openOoxmlPackage } from "./ooxml.js";
-import { extractPptxText } from "./pptx.js";
-import { extractXlsxText } from "./xlsx.js";
+import { extractOfficeDocumentText, officeParserFileType } from "./office-parser.js";
 import { inspectTextAttachment } from "./text.js";
 
 export {
@@ -87,9 +86,11 @@ export async function processAttachment(input: {
       ...inspected.extractedText,
     };
   }
-  const officePackage = inspected.package;
-  if (officePackage === undefined) throw invalidDocument();
-  const extracted = await extractOfficeText(officePackage, ownedInput.signal);
+  const fileType = officeParserFileType(inspected.mediaType);
+  if (fileType === undefined) throw invalidDocument();
+  const extracted = await extractOfficeDocumentText({ bytes: ownedInput.bytes, fileType,
+    ...(inspected.canonicalOdfContent ? { canonicalOdfContent: inspected.canonicalOdfContent } : {}),
+    ...(ownedInput.signal ? { signal: ownedInput.signal } : {}) });
   throwIfAborted(ownedInput.signal);
   return {
     type: "text",
@@ -126,7 +127,7 @@ async function inspectDocumentAttachment(input: {
   signal?: AbortSignal;
 }): Promise<{
   mediaType: DocumentAttachmentMediaType;
-  package?: OoxmlPackage;
+  canonicalOdfContent?: string;
   extractedText?: ExtractedDocumentText;
 }> {
   throwIfAborted(input.signal);
@@ -136,12 +137,11 @@ async function inspectDocumentAttachment(input: {
       extractedText: await extractMidiText({ bytes: input.bytes, ...(input.signal ? { signal: input.signal } : {}) }),
     };
   }
-  const richMediaType = await classifyRichDocumentAttachment(input);
-  if (richMediaType !== undefined) {
-    return {
-      mediaType: richMediaType,
-      extractedText: await extractRichDocumentText({ ...input, mediaType: richMediaType }),
-    };
+  const rich = await inspectRichDocumentAttachment(input);
+  if (rich !== undefined) {
+    return rich.mediaType === "application/rtf" ? {
+      mediaType: rich.mediaType, extractedText: await extractRtfText(input.bytes, input.signal),
+    } : rich;
   }
   if (!isPdfHeader(input.bytes) && !isZipHeader(input.bytes)) {
     return {
@@ -162,7 +162,7 @@ async function inspectDocumentAttachment(input: {
 
   const officePackage = await openOoxmlPackage(input.bytes, input.signal);
   const mediaType = ooxmlMediaType(officePackage.kind);
-  return { mediaType, package: officePackage };
+  return { mediaType };
 }
 
 function ooxmlMediaType(kind: OoxmlPackage["kind"]): DocumentAttachmentMediaType {
@@ -173,23 +173,6 @@ function ooxmlMediaType(kind: OoxmlPackage["kind"]): DocumentAttachmentMediaType
       return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     case "pptx":
       return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-  }
-}
-
-async function extractOfficeText(
-  officePackage: OoxmlPackage,
-  signal?: AbortSignal,
-): Promise<{ text: string; truncated: boolean }> {
-  const input = signal === undefined
-    ? { officePackage }
-    : { officePackage, signal };
-  switch (officePackage.kind) {
-    case "docx":
-      return extractDocxText(input);
-    case "xlsx":
-      return extractXlsxText(input);
-    case "pptx":
-      return extractPptxText(input);
   }
 }
 

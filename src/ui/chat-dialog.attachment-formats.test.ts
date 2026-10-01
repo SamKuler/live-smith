@@ -9,6 +9,7 @@ import {
   imageCapableState,
   pendingAudio,
   pendingDocument,
+  waitForCondition,
   pendingImage,
   profileFixture,
   profileRevisionFixture,
@@ -220,7 +221,8 @@ test("the attachment drop handler preserves a Skill drop's ownership", async () 
   try {
     const file = new harness.window.File(["---\nname: test-skill\ndescription: Read a reference\n---\nRead the reference."], "SKILL.md");
     assert.equal(harness.dropSkillFile(file), true);
-    await harness.settle();
+    await waitForCondition(() => harness.document.querySelector("#skillDropZone")?.getAttribute("aria-disabled") === "false",
+      "Expected the Skill import to reach its terminal UI state.");
     assert.equal(uploads(harness).length, 0);
     assert.equal(harness.calls.some((call) => call.path === "/skills"), true);
     assert.deepEqual(harness.errors, []);

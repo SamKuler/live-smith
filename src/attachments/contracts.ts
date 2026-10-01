@@ -34,9 +34,21 @@ export interface AttachmentQuotaItem {
 
 export type DocumentAttachmentMediaType = Extract<
   (typeof ATTACHMENT_FORMATS)[number], { kind: "document" }
->["mediaType"];
+>["mediaType"] | HistoricalDocumentMediaType;
 
-export type AttachmentMediaType = (typeof ATTACHMENT_FORMATS)[number]["mediaType"];
+export type AttachmentMediaType = (typeof ATTACHMENT_FORMATS)[number]["mediaType"] | HistoricalDocumentMediaType;
+
+// Historical Session references stay readable after ingestion support is removed.
+const HISTORICAL_DOCUMENT_FORMATS = [
+  { kind: "document", mediaType: "application/msword", label: "DOC" },
+  { kind: "document", mediaType: "application/vnd.ms-excel", label: "XLS" },
+  { kind: "document", mediaType: "application/vnd.ms-powerpoint", label: "PPT" },
+] as const;
+type HistoricalDocumentMediaType = (typeof HISTORICAL_DOCUMENT_FORMATS)[number]["mediaType"];
+
+export function isHistoricalDocumentMediaType(value: unknown): value is HistoricalDocumentMediaType {
+  return HISTORICAL_DOCUMENT_FORMATS.some((format) => format.mediaType === value);
+}
 
 export const ATTACHMENT_FORMATS = [
   { kind: "image", mediaType: "image/png", extensions: ["png"], label: "PNG" },
@@ -46,9 +58,6 @@ export const ATTACHMENT_FORMATS = [
   { kind: "document", mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", extensions: ["docx"], label: "DOCX" },
   { kind: "document", mediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", extensions: ["xlsx"], label: "XLSX" },
   { kind: "document", mediaType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", extensions: ["pptx"], label: "PPTX" },
-  { kind: "document", mediaType: "application/msword", extensions: ["doc", "dot"], label: "DOC" },
-  { kind: "document", mediaType: "application/vnd.ms-excel", extensions: ["xls", "xlt"], label: "XLS" },
-  { kind: "document", mediaType: "application/vnd.ms-powerpoint", extensions: ["ppt", "pps", "pot"], label: "PPT" },
   { kind: "document", mediaType: "text/plain", extensions: ["txt", "text", "md", "markdown", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "xml", "html", "htm", "log"], label: "Text" },
   { kind: "document", mediaType: "audio/midi", extensions: ["mid", "midi"], label: "MIDI" },
   { kind: "document", mediaType: "application/rtf", extensions: ["rtf"], label: "RTF" },
@@ -69,16 +78,19 @@ export const ATTACHMENT_IMPORT_FORMATS = [
   { kind: "audio", extensions: ["flac", "ogg", "oga", "opus", "m4a", "m4b", "aac", "aif", "aiff", "aifc", "webm", "weba", "mp4"], mediaTypes: ["audio/flac", "audio/x-flac", "audio/ogg", "application/ogg", "audio/opus", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/aiff", "audio/x-aiff", "audio/webm", "video/webm", "video/mp4"], conversion: "audio" },
 ] as const;
 
+/** Stored references and display labels include formats retired from ingestion. */
+export const ATTACHMENT_REFERENCE_FORMATS = [...ATTACHMENT_FORMATS, ...HISTORICAL_DOCUMENT_FORMATS] as const;
+
 export function isDocumentAttachmentMediaType(value: unknown): value is DocumentAttachmentMediaType {
-  return ATTACHMENT_FORMATS.some((format) => format.kind === "document" && format.mediaType === value);
+  return ATTACHMENT_REFERENCE_FORMATS.some((format) => format.kind === "document" && format.mediaType === value);
 }
 
 export function isAttachmentMediaType(value: unknown): value is AttachmentMediaType {
-  return ATTACHMENT_FORMATS.some((format) => format.mediaType === value);
+  return ATTACHMENT_REFERENCE_FORMATS.some((format) => format.mediaType === value);
 }
 
 export function attachmentMediaTypeMatchesKind(kind: unknown, mediaType: unknown): boolean {
-  return ATTACHMENT_FORMATS.some((format) => format.kind === kind && format.mediaType === mediaType);
+  return ATTACHMENT_REFERENCE_FORMATS.some((format) => format.kind === kind && format.mediaType === mediaType);
 }
 
 export type AttachmentProcessingErrorCode =

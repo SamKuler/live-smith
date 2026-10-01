@@ -9,6 +9,7 @@ import test from "node:test";
 import { strToU8, zipSync } from "fflate/browser";
 
 import { defaultModelCapabilities } from "../model/capabilities.js";
+import { AttachmentProcessingError } from "../attachments/contracts.js";
 import type { DirectApiConnection, SavedProfile } from "../model/profile.js";
 import type { ModelCapabilities, RuntimeProfile } from "../model/provider.js";
 import {
@@ -25,6 +26,19 @@ import {
   buildModelRequest,
   runtimeProfileForSavedProfile,
 } from "./model-request.js";
+
+test("historical legacy formats remain context markers and pending legacy refs fail before byte reads", async () => {
+  const ref = { id: "legacy-doc", kind: "document" as const, fileName: "old.doc",
+    mediaType: "application/msword" as const, byteLength: 1, sha256: "a".repeat(64) };
+  const runtime = runtimeProfile();
+  const event = { id: "legacy-event", kind: "user", createdAt: "2026-10-01T00:00:00.000Z", content: "Old reference", attachments: [ref] } as SessionEvent;
+  const history = await resolveConversationHistory({ storageDirectory: undefined, sessionId: "legacy-session",
+    events: [event], currentAttachmentRefs: [], currentDocumentTextCharacters: 0, runtimeProfile: runtime });
+  assert.match(JSON.stringify(history), /unsupported_format/);
+  assert.match(JSON.stringify(history), /Old reference/);
+  await assert.rejects(resolveCurrentAttachmentParts({ storageDirectory: undefined, sessionId: "legacy-session",
+    refs: [ref], runtimeProfile: runtime }), (error: unknown) => error instanceof AttachmentProcessingError && error.code === "unsupported_type");
+});
 
 function imageCapabilities(): ModelCapabilities {
   return {

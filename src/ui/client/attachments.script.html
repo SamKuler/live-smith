@@ -7,7 +7,7 @@
         uploadAttachments,
       }) {
       const t = (message, params) => window.LiveSmithI18n.t(message, params);
-      const formats = __ATTACHMENT_FORMATS__;
+      const formats = __ATTACHMENT_REFERENCE_FORMATS__;
       const inputTransportSupport = __MODEL_INPUT_TRANSPORT_SUPPORT__;
       const media = window.LiveSmithFactories.createAttachmentMedia();
       const macroEnabledExtensions = new Set([

@@ -32,5 +32,5 @@ test("empty script containers and quoted code references remain ordinary visible
     fileName: "reference.odt", nativePdfAllowed: false,
   });
   assert.equal(result.type, "text");
-  if (result.type === "text") assert.equal(result.text, "Reference: office:script and text:script are element names.\n");
+  if (result.type === "text") assert.equal(result.text, "Reference: office:script and text:script are element names.");
 });

@@ -567,6 +567,11 @@ to PNG and WAV before upload, so the provider receives the existing image/audio
 parts and capability checks. Conversion codec availability is a local WebView
 property; it does not change provider capability evidence.
 
+Modern Office and OpenDocument use bundled parser workers without an installed
+helper runtime. Formula caches are read without evaluation; missing cached
+values remain explicit. Historical DOC/XLS/PPT references are retained as
+unsupported-format context markers. They never become native provider parts.
+
 Locally extracted text includes a JSON-escaped filename as untrusted metadata.
 Attachment storage IDs and filesystem paths never enter model input.
 Base64 bytes appear only in the send-scoped provider request for a supported

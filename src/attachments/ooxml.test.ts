@@ -97,6 +97,7 @@ test("OOXML rejects CRC corruption, malformed XML, DTDs, macros, and required ex
         `<Default Extension="bin" ContentType="application/vnd.ms-office.vbaProject"/>` +
         `<Override PartName="/word/document.xml" ContentType="${contentTypes.docx}"/>` +
         `</Types>`,
+      "word/extra.bin": new Uint8Array([1, 2, 3]),
     })),
     processingError("macro_enabled"),
   );

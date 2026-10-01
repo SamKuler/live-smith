@@ -62,3 +62,20 @@ test("new text fallback rejects binary data even when its filename claims code o
     );
   }
 });
+
+test("historical legacy Office references remain valid persisted Session events", async (t) => {
+  const directory = await fs.mkdtemp("/private/tmp/live-smith-legacy-reference-");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const session = await createSession(directory, {
+    title: "Historical references", projectKey: "set", scope: { kind: "selection", identity: "set", label: "Set" },
+  });
+  for (const [index, mediaType] of ["application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint"].entries()) {
+    const ref = { id: `legacy-${index}`, kind: "document" as const, fileName: `legacy-${index}.bin`,
+      mediaType, byteLength: 1, sha256: "a".repeat(64) };
+    await appendSessionEvent(directory, session.id, { kind: "user", content: `Reference ${index}`, attachments: [ref as never] });
+  }
+  const events = await loadSessionEvents(directory, session.id);
+  assert.equal(events.length, 3);
+  assert.deepEqual(events.map((event) => event.attachments?.[0]?.mediaType),
+    ["application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint"]);
+});
