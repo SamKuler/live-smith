@@ -15,7 +15,7 @@ import type { ChatDialogState } from "../../../src/ui/chat-state.js";
 import { runAgentFlow, type AgentFlowDependencies } from "../../../src/app/agent-flow.js";
 import { integrationConnectionUpsert, saveIntegrationConnection } from "../plugins/support/integration-connection-test-helpers.js";
 import { liveContextPresentationFixture } from "../context/support/live-context.test-harness.js";
-import { uploadSunoMusic } from "../../../src/app/audio/suno-upload.js";
+import { uploadSunoMusic } from "../../../src/app/audio/suno/suno-upload.js";
 
 const connection = { id: "suno-resume", name: "Suno", provider: "suno" as const, enabled: true, apiKey: "" };
 const destination = "https://suno-data-uploads.s3.amazonaws.com/";

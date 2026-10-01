@@ -8,7 +8,8 @@ import type { PluginExecutionAuthorization } from "../plugins/request-plugin-too
 import { ChatBridgeConflictError, ChatBridgeRequestValidationError } from "../chat/chat-bridge-http.js";
 import { ChatBridgeCommandOutcomeUnknownError } from "../chat/chat-bridge.js";
 
-import { applyAudioParameterSuggestions } from "./audio-parameter-suggestions.js";
+import { applyAudioPluginSuggestions } from "../plugins/built-in-plugin-runtime.js";
+import { builtInAudioPluginById } from "../../plugins/builtins/index.js";
 
 type AudioRuntimeInput = Parameters<typeof createRequestAudioTools>[0];
 
@@ -22,8 +23,8 @@ export async function loadAudioParameterGroups(storageDirectory: string | undefi
     return [connection.id, connection.name, connection.pluginId, connection.configuration, connection.secrets,
       integrationConnectionFingerprint(connection)];
   } });
-  if (connections.some((connection) => connection.provider === "suno")) {
-    applyAudioParameterSuggestions(groups, connections, jobs, await loadSessionEvents(storageDirectory, sessionId));
+  if (connections.some((connection) => builtInAudioPluginById(connection.pluginId)?.audio.musicLibrary)) {
+    applyAudioPluginSuggestions(groups, connections, jobs, await loadSessionEvents(storageDirectory, sessionId));
   }
   return { groups, services };
 }

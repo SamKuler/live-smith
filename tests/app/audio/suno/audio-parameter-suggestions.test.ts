@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { retrievalHarness, connection, clipIds, fixtureToken } from "./support/audio-retrieval-test-helpers.js";
-import { loadAudioParameterGroups, runAudioParameterTool } from "../../../src/app/audio/audio-parameter-tool.js";
-import { appendSessionEvent, loadSessionEvents } from "../../../src/storage/events.js";
-import { retrieveMusic } from "../../../src/app/audio/audio-generation.js";
-import { captureIntegrationConnections, integrationConnectionFingerprint } from "../../../src/app/plugins/integration-connections.js";
-import { saveIntegrationConnection } from "../plugins/support/integration-connection-test-helpers.js";
-import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
+import { retrievalHarness, connection, clipIds, fixtureToken } from "../support/audio-retrieval-test-helpers.js";
+import { loadAudioParameterGroups, runAudioParameterTool } from "../../../../src/app/audio/audio-parameter-tool.js";
+import { appendSessionEvent, loadSessionEvents } from "../../../../src/storage/events.js";
+import { retrieveMusic } from "../../../../src/app/audio/audio-generation.js";
+import { captureIntegrationConnections, integrationConnectionFingerprint } from "../../../../src/app/plugins/integration-connections.js";
+import { saveIntegrationConnection } from "../../plugins/support/integration-connection-test-helpers.js";
+import { waveBytes } from "../../../storage/support/audio-storage-test-helpers.js";
 
 const authorize = async <T>(_signal: AbortSignal, operation: () => Promise<T>): Promise<T> => operation();
 const currentClip = "cccccccc-3333-4333-8333-333333333333";
@@ -67,8 +67,8 @@ test("host-authored query provenance overrides provider fields and restores obse
   const query = await panel("inspect_music_service");
   await runAudioParameterTool({ ...input, toolName: query.toolName, signature: query.signature,
     arguments: { connectionId: connection.id, query: "library" }, processing: {
-      musicServiceReader: async () => ({ query: "library" as const, hasMore: false, clips: [{ id: currentClip, title: "Current clip", status: "complete", modelId: "model", styles: "" }],
-        provenance: { connectionId: "wrong", accountId: "wrong" } }),
+      pluginOverrides: { plugin: { inspectMusicService: async () => ({ query: "library" as const, hasMore: false, clips: [{ id: currentClip, title: "Current clip", status: "complete", modelId: "model", styles: "" }],
+        provenance: { connectionId: "wrong", accountId: "wrong" } }) } },
     },
   });
   const event = (await loadSessionEvents(h.directory, h.session.id)).at(-1)!;

@@ -1,3 +1,4 @@
+import { AudioServiceHttpError, type AudioCredentialRefreshHandler } from "../contracts.js";
 import { Buffer } from "node:buffer";
 import { clearTimeout, setTimeout } from "node:timers";
 import { URL } from "node:url";
@@ -30,12 +31,10 @@ const DOWNLOAD_ITEM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-
 // Suno bucket. No wildcard S3 hosts, playback endpoints or caller-selected APIs.
 const AUDIO_HOSTS = new Set(["cdn1.suno.ai", "cdn2.suno.ai", "cdn.suno.ai", "suno-data-uploads.s3.amazonaws.com"]);
 
-export class SunoHttpError extends Error {
-  constructor(message: string, readonly status?: number) { super(message); }
+export class SunoHttpError extends AudioServiceHttpError {
+  constructor(message: string, status?: number) { super(message, status); }
 }
-export type SunoSessionRefreshHandler = (
-  previousSessionValue: string, nextSessionValue: string, signal: AbortSignal,
-) => void | Promise<void>;
+export type SunoSessionRefreshHandler = AudioCredentialRefreshHandler;
 
 /** Trusted local diagnostics only; network failures never supply their messages. */
 function fail(detail: string, status?: number): Error {

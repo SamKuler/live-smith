@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import { Buffer } from "node:buffer";
 import test from "node:test";
-import type { AudioGenerationAdapter } from "../../../src/audio-services/contracts.js";
-import { saveIntegrationConnection } from "../plugins/support/integration-connection-test-helpers.js";
-import { createSession } from "../../../src/storage/sessions.js";
-import { SunoSessions } from "../../../src/storage/suno-sessions.js";
-import { loadAudioJob } from "../../../src/storage/audio-jobs.js";
-import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
-import { generateAudio, downloadAudioOutput, resumeAudioGeneration } from "../../../src/app/audio/audio-generation.js";
+import type { AudioGenerationAdapter } from "../../../../src/audio-services/contracts.js";
+import { saveIntegrationConnection } from "../../plugins/support/integration-connection-test-helpers.js";
+import { createSession } from "../../../../src/storage/sessions.js";
+import { SunoSessions } from "../../../../src/storage/suno-sessions.js";
+import { loadAudioJob } from "../../../../src/storage/audio-jobs.js";
+import { waveBytes } from "../../../storage/support/audio-storage-test-helpers.js";
+import { generateAudio, downloadAudioOutput, resumeAudioGeneration } from "../../../../src/app/audio/audio-generation.js";
 
 test("Suno sound samples preserve both roles through explicit download, storage and local recovery", async (t) => {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-sound-samples-");

@@ -65,6 +65,7 @@ export const audioMessages = {
   "Generating a sound effect": "正在生成音效",
   "Waiting for the audio service. Do not submit duplicates.": "正在等待音频服务，请勿重复提交。",
   "Downloading the selected Suno song": "正在下载所选 Suno 歌曲",
+  "Downloading the selected audio output": "正在下载所选音频结果",
   "Complete Suno verification in the Live Smith window": "请在 Live Smith 验证窗口中完成 Suno 人机验证",
   "The audio service confirmed cancellation.": "音频服务已确认取消。",
   "The service failed to generate the confirmed outputs.": "服务未能生成已确认的版本。",

@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { setTimeout, clearTimeout } from "node:timers";
 
 import {
-  audioJobRemoteSettled, audioJobView, sunoUploadCanResume, type AudioAsset, type AudioJob, type AudioJobView,
+  audioJobRemoteSettled, audioJobView, audioUploadCanResume, type AudioAsset, type AudioJob, type AudioJobView,
   type AudioOrigin, type AudioServiceAdapter, type AudioGenerationAdapter,
   type SeparationStem, type AudioDownloadAuthorization, type AudioServiceAuthorization,
 } from "../../audio-services/contracts.js";
@@ -17,14 +17,12 @@ import {
 } from "../../storage/audio-jobs.js";
 import { integrationConnectionFingerprint, availableIntegrationConnections, resolveIntegrationConnection, type RuntimeIntegrationConnection } from "../plugins/integration-connections.js";
 import { builtInAudioPluginById } from "../../plugins/builtins/index.js";
-import { builtInAudioHostRuntime } from "../plugins/built-in-plugin-runtime.js";
+import { builtInAudioHostRuntime, resumePluginAudioUpload, type AudioPluginOverrides } from "../plugins/built-in-plugin-runtime.js";
 import { acquireAudioJob, audioJobIsActive, boundedAudioMessage, reconcileLocalAudioJob, safeAudioFailure } from "./audio-job-runtime.js";
 import { resumeAudioGeneration } from "./audio-generation.js";
 import { audioPollScheduler } from "./audio-polling.js";
 import { formatUiMessage, type UiMessage } from "../../i18n/ui-message.js";
 import { audioMessage as m, audioRoleMessage } from "./audio-messages.js";
-import { resumeSunoUpload } from "./suno-upload.js";
-import type { SunoUploadAdapter } from "../../audio-services/suno/suno-upload.js";
 export { integrationConnectionFingerprint } from "../plugins/integration-connections.js";
 export { downloadAudioOutput } from "./audio-generation.js";
 
@@ -42,7 +40,7 @@ export interface AudioProcessingContext {
   /** Injected service and wait are used by protocol-independent lifecycle tests. */
   adapter?: AudioServiceAdapter;
   generationAdapter?: AudioGenerationAdapter;
-  sunoUploadAdapter?: SunoUploadAdapter;
+  pluginOverrides?: AudioPluginOverrides;
   wait?: (signal: AbortSignal) => Promise<void>;
 }
 
@@ -63,7 +61,7 @@ export async function audioJobViews(
       view.status = job.remoteOutputs?.length ? job.outputAssets.length ? "partial" : "ready"
         : job.status === "submitting" && !job.remoteTaskId ? "unknown" : "interrupted";
     }
-    if (job.operation === "upload_music") view.resumable = !active && sunoUploadCanResume(job);
+    if (job.operation === "upload_music") view.resumable = !active && audioUploadCanResume(job);
     else if (active) view.resumable = false;
     else if (!job.remoteTaskId && job.operation !== "separate_stems" &&
       job.status !== "completed" && job.status !== "cancelled") {
@@ -116,7 +114,7 @@ export async function resumeAudioJob(context: AudioProcessingContext, jobId: str
   try {
     let job = await loadAudioJob(context.storageDirectory, context.sessionId, jobId);
     if (job.status === "completed" || job.status === "cancelled") return job;
-    if (job.operation === "upload_music") return resumeSunoUpload(context, job);
+    if (job.operation === "upload_music") return resumePluginAudioUpload(context, job);
     job = await reconcileLocalAudioJob(context.storageDirectory, context.sessionId, job, context.signal);
     if (job.status === "completed" || audioJobRemoteSettled(job)) return job;
     if (job.operation !== "separate_stems") return await resumeAudioGeneration(context, job);
@@ -289,7 +287,7 @@ async function cancelRemoteBestEffort(adapter: AudioServiceAdapter, taskId: stri
 
 export function audioJobResultText(job: AudioJob): string {
   const view = audioJobView(job);
-  return JSON.stringify({ ...view, ...(view.message ? { message: formatUiMessage(view.message) } : {}), ...(job.provider === "suno" && job.remoteOutputs
+  return JSON.stringify({ ...view, ...(view.message ? { message: formatUiMessage(view.message) } : {}), ...(job.remoteOutputs
     ? { musicClips: job.remoteOutputs.map(({ key, role }) => ({ clipId: key, role })) } : {}) });
 }
 

@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import { readSunoMusicService } from "../../audio-services/suno/suno-catalog.js";
-import { throwIfAborted, waitForPromiseWithSignal } from "../../runtime/host.js";
-import { withStorageTransaction } from "../../storage/persistence.js";
-import { loadAgentSettings } from "../../storage/settings.js";
-import { SunoSessions } from "../../storage/suno-sessions.js";
-import { isIntegrationConnectionForProvider } from "../../plugins/integration-connections.js";
-import type { SunoModelCatalogView } from "../../ui/chat-state.js";
-import { ChatBridgeConflictError } from "../chat/chat-bridge.js";
+import { readSunoMusicService } from "../../../audio-services/suno/suno-catalog.js";
+import { throwIfAborted, waitForPromiseWithSignal } from "../../../runtime/host.js";
+import { withStorageTransaction } from "../../../storage/persistence.js";
+import { loadAgentSettings } from "../../../storage/settings.js";
+import { SunoSessions } from "../../../storage/suno-sessions.js";
+import { isIntegrationConnectionForProvider } from "../../../plugins/integration-connections.js";
+import type { SunoModelCatalogView } from "../../../ui/chat-state.js";
+import { ChatBridgeConflictError } from "../../chat/chat-bridge.js";
 import { persistRotatedSunoSession } from "./suno-session-manager.js";
 
 /** One dialog-owned catalog. Neither credentials nor catalog results are persisted. */

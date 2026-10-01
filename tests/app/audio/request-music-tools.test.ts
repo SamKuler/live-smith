@@ -30,12 +30,12 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
     context: {} as never, storageDirectory: directory, sessionId: session.id, requestId: "request",
     attachmentRefs: [], target: {}, signal: new AbortController().signal, onProgress() {}, onAssets() {},
     processing: {
-      musicServiceReader: async (credential, query) => {
+      pluginOverrides: { plugin: { inspectMusicService: async (credential, query) => {
         calls.queries.push(query);
-        assert.equal(credential.accountId, "user_personal");
+        assert.equal(credential.sunoSession!.accountId, "user_personal");
         if (mode.changeCredential) await new SunoSessions(directory).clear("personal");
         return { query: "library" as const, hasMore: false, clips: [{ id: clipId, title: "An observed song", status: "complete", modelId: "catalog-model", styles: "piano", durationSeconds: 60 }] };
-      },
+      } } },
       generationAdapter: {
         provider: "suno", submit: async (request) => {
           calls.submissions.push(request);

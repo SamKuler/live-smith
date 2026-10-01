@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseCommandInput } from "../../../src/app/chat/chat-bridge-http.js";
+import { parseCommandInput } from "../../../../src/app/chat/chat-bridge-http.js";
 
 test("local audio export accepts only a Session-owned asset reference", () => {
   const input = { kind: "open_audio_download", sessionId: "session-one", assetId: "asset-one" };

@@ -1,3 +1,4 @@
+import { AudioServiceHttpError } from "../contracts.js";
 import { Buffer } from "node:buffer";
 import { clearTimeout, setTimeout } from "node:timers";
 import { URL } from "node:url";
@@ -15,8 +16,8 @@ const JSON_TIMEOUT_MS = 120_000;
 const MEDIA_TIMEOUT_MS = 10 * 60_000;
 const SUBMIT_STOP_GRACE_MS = 3_000;
 
-export class MurekaError extends Error {
-  constructor(message: string, readonly status?: number) { super(message); }
+export class MurekaError extends AudioServiceHttpError {
+  constructor(message: string, status?: number) { super(message, status); }
 }
 
 export type MurekaTaskKind = "song" | "instrumental";

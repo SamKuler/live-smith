@@ -85,6 +85,8 @@ Application coordinator and bridge tests use subject directories such as
 `tests/app/chat/chat-bridge/`. Audio protocol tests use provider directories
 under `tests/audio-services/`. UI tests group composer, conversation, audio,
 Inspector, Session, layout and internationalization behavior under `tests/ui/`.
+Provider application suites use directories such as `tests/app/audio/suno/`;
+their protocol suites remain under `tests/audio-services/suno/`.
 TypeScript checking includes production source and the complete test tree.
 `test:core` runs the core module suites and `test:ui` runs the real-dialog DOM
 and UI module suites. The structure check enforces test placement and module

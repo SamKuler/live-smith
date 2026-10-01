@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { retrievalHarness, connection, clipIds, fixtureToken } from "./support/audio-retrieval-test-helpers.js";
-import { loadAudioParameterGroups, runAudioParameterTool } from "../../../src/app/audio/audio-parameter-tool.js";
-import { createSession } from "../../../src/storage/sessions.js";
-import { loadSessionEvents } from "../../../src/storage/events.js";
-import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
-import type { AudioGenerationRequest } from "../../../src/audio-services/contracts.js";
-import { saveIntegrationConnection } from "../plugins/support/integration-connection-test-helpers.js";
+import { retrievalHarness, connection, clipIds, fixtureToken } from "../support/audio-retrieval-test-helpers.js";
+import { loadAudioParameterGroups, runAudioParameterTool } from "../../../../src/app/audio/audio-parameter-tool.js";
+import { createSession } from "../../../../src/storage/sessions.js";
+import { loadSessionEvents } from "../../../../src/storage/events.js";
+import { waveBytes } from "../../../storage/support/audio-storage-test-helpers.js";
+import type { AudioGenerationRequest } from "../../../../src/audio-services/contracts.js";
+import { saveIntegrationConnection } from "../../plugins/support/integration-connection-test-helpers.js";
 
 const authorize = async <T>(_signal: AbortSignal, operation: () => Promise<T>): Promise<T> => operation();
 
@@ -18,8 +18,8 @@ test("manual music observations survive separate calls but remain bound to Sessi
     signal: h.controller.signal, observedMusicClips, onProgress() {}, onAssets() {},
     withAdmissionAuthorization: authorize, withGenerationAuthorization: authorize,
     processing: {
-      musicServiceReader: async () => ({ query: "library" as const, hasMore: false,
-        clips: [{ id: clipIds[0]!, title: "Library clip", status: "complete", modelId: "fixture-model", styles: "piano" }] }),
+      pluginOverrides: { plugin: { inspectMusicService: async () => ({ query: "library" as const, hasMore: false,
+        clips: [{ id: clipIds[0]!, title: "Library clip", status: "complete", modelId: "fixture-model", styles: "piano" }] }) } },
       generationAdapter: { provider: "suno" as const, submit: async (request: AudioGenerationRequest) => {
         submitted.push(request); return { kind: "audio" as const, outputs: [{ role: "music" as const, bytes: waveBytes() }] };
       } },

@@ -1,16 +1,16 @@
 import { isDeepStrictEqual } from "node:util";
-import { AudioSubmissionNotStartedError, type AudioGenerationAdapter } from "../../audio-services/contracts.js";
-import { createSunoAudioAdapter } from "../../audio-services/suno/suno.js";
-import { assertSunoVerificationFresh, SunoVerificationError, type SunoVerificationProof } from "../../audio-services/suno/suno-verification.js";
-import { loadAgentSettings } from "../../storage/settings.js";
-import { createProxyAwareFetch } from "../../runtime/proxy-fetch.js";
-import { readSystemProxyConfiguration } from "../../runtime/system-proxy.js";
-import { runSunoHumanVerification } from "../../runtime/suno-human-verification.js";
-import type { AudioProcessingContext } from "./audio-processing.js";
-import { resolveIntegrationConnection, type RuntimeIntegrationConnection } from "../plugins/integration-connections.js";
-import { providerFetchForStorage } from "../model/provider-fetch.js";
+import { AudioSubmissionNotStartedError, type AudioGenerationAdapter, type AudioServiceAuthorization } from "../../../audio-services/contracts.js";
+import { createSunoAudioAdapter } from "../../../audio-services/suno/suno.js";
+import { assertSunoVerificationFresh, SunoVerificationError, type SunoVerificationProof } from "../../../audio-services/suno/suno-verification.js";
+import { loadAgentSettings } from "../../../storage/settings.js";
+import { createProxyAwareFetch } from "../../../runtime/proxy-fetch.js";
+import { readSystemProxyConfiguration } from "../../../runtime/system-proxy.js";
+import { runSunoHumanVerification } from "../../../runtime/suno-human-verification.js";
+import type { AudioProcessingContext } from "../audio-processing.js";
+import { resolveIntegrationConnection, type RuntimeIntegrationConnection } from "../../plugins/integration-connections.js";
+import { providerFetchForStorage } from "../../model/provider-fetch.js";
 import { persistRotatedSunoSession } from "./suno-session-manager.js";
-import { audioMessage as m } from "./audio-messages.js";
+import { audioMessage as m } from "../audio-messages.js";
 
 interface Dependencies {
   verify?: typeof runSunoHumanVerification;
@@ -43,38 +43,38 @@ export function createAppSunoGenerationAdapter(
     active(signal);
   };
   const fetchImpl = ((input, init) => (submissionFetch ?? ordinaryFetch)(input, init)) as typeof fetch;
-  return createSunoAudioAdapter(settings.sunoSession, {
-    fetchImpl, authorizeDownloads,
+  const authorizeSubmission: AudioServiceAuthorization = async (signal, dispatch) => {
+    let dispatchEntered = false;
+    try {
+      if (!context.withGenerationAuthorization) throw new Error();
+      return await context.withGenerationAuthorization(signal, async () => {
+        if (proof) {
+          await validateLease(signal);
+          assertSunoVerificationFresh(proof);
+          const route = lease!;
+          submissionFetch = dependencies.fetchImpl ?? createProxyAwareFetch(async () => route.selection, {
+            readSystemProxy: async () => route.system ?? await readSystemProxy(),
+          });
+        } else await resolveIntegrationConnection(context.storageDirectory, settings.id, "generate_music", [settings]);
+        active(signal);
+        dispatchEntered = true;
+        // The adapter now authenticates and rechecks the *complete* original
+        // request/proof under the same lease, then retains its bounded receipt.
+        return dispatch();
+      });
+    } catch (error) {
+      if (dispatchEntered) throw error;
+      const notStarted = new AudioSubmissionNotStartedError("Suno.com audio service: generation authorization or verification is no longer valid. No generation was submitted.");
+      if (signal.aborted) notStarted.name = "AbortError";
+      throw notStarted;
+    } finally { submissionFetch = undefined; proof = undefined; lease = undefined; }
+  };
+  const adapter = createSunoAudioAdapter(settings.sunoSession, {
+    fetchImpl, authorizeDownloads, authorizeSubmission,
     onSessionRefresh: (previous, next, signal) => persistRotatedSunoSession(
       context.storageDirectory, settings.id, settings.sunoSession!.accountId, previous, next, signal,
     ),
     ...(settings.modelId ? { modelId: settings.modelId } : {}),
-    authorizeSubmission: async (signal, dispatch) => {
-      let dispatchEntered = false;
-      try {
-        if (!context.withGenerationAuthorization) throw new Error();
-        return await context.withGenerationAuthorization(signal, async () => {
-          if (proof) {
-            await validateLease(signal);
-            assertSunoVerificationFresh(proof);
-            const route = lease!;
-            submissionFetch = dependencies.fetchImpl ?? createProxyAwareFetch(async () => route.selection, {
-              readSystemProxy: async () => route.system ?? await readSystemProxy(),
-            });
-          } else await resolveIntegrationConnection(context.storageDirectory, settings.id, "generate_music", [settings]);
-          active(signal);
-          dispatchEntered = true;
-          // The adapter now authenticates and rechecks the *complete* original
-          // request/proof under the same lease, then retains its bounded receipt.
-          return dispatch();
-        });
-      } catch (error) {
-        if (dispatchEntered) throw error;
-        const notStarted = new AudioSubmissionNotStartedError("Suno.com audio service: generation authorization or verification is no longer valid. No generation was submitted.");
-        if (signal.aborted) notStarted.name = "AbortError";
-        throw notStarted;
-      } finally { submissionFetch = undefined; proof = undefined; lease = undefined; }
-    },
     verifyHuman: async (captchaVersion, signal) => {
       active(signal);
       proof = undefined;
@@ -91,4 +91,5 @@ export function createAppSunoGenerationAdapter(
       return result;
     },
   });
+  return { ...adapter, submissionAuthorization: "adapter" };
 }

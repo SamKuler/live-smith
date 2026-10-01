@@ -1,9 +1,9 @@
-import type { AudioJob } from "../../audio-services/contracts.js";
-import type { SessionEvent } from "../../storage/events.js";
-import { builtInAudioToolName } from "../../plugins/builtins/audio-toolsets.js";
-import { sunoWebsitePlugin } from "../../plugins/builtins/suno-website.js";
-import { MAX_AUDIO_PARAMETER_SUGGESTIONS, type AudioParameterGroup, type AudioParameterSuggestion } from "../../plugins/builtins/parameter-panel.js";
-import { integrationConnectionFingerprint, type RuntimeIntegrationConnection } from "../plugins/integration-connections.js";
+import type { AudioJob } from "../../../audio-services/contracts.js";
+import type { SessionEvent } from "../../../storage/events.js";
+import { builtInAudioToolName } from "../../../plugins/builtins/audio-toolsets.js";
+import { sunoWebsitePlugin } from "../../../plugins/builtins/suno-website.js";
+import { MAX_AUDIO_PARAMETER_SUGGESTIONS, type AudioParameterGroup, type AudioParameterSuggestion } from "../../../plugins/builtins/parameter-panel.js";
+import { integrationConnectionFingerprint, type RuntimeIntegrationConnection } from "../../plugins/integration-connections.js";
 
 type SuggestionMap = Map<string, AudioParameterSuggestion>;
 const clipIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;

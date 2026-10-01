@@ -1,22 +1,22 @@
-import { formatUiMessage } from "../../../src/i18n/ui-message.js";
+import { formatUiMessage } from "../../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test from "node:test";
-import { createHostAbortController } from "../../../src/runtime/host.js";
-import { createSession } from "../../../src/storage/sessions.js";
-import { loadAgentSettings, saveGlobalSettings } from "../../../src/storage/settings.js";
-import { SunoSessions } from "../../../src/storage/suno-sessions.js";
-import { readAudioAsset } from "../../../src/storage/audio-assets.js";
-import { listAudioJobs } from "../../../src/storage/audio-jobs.js";
-import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
+import { createHostAbortController } from "../../../../src/runtime/host.js";
+import { createSession } from "../../../../src/storage/sessions.js";
+import { loadAgentSettings, saveGlobalSettings } from "../../../../src/storage/settings.js";
+import { SunoSessions } from "../../../../src/storage/suno-sessions.js";
+import { readAudioAsset } from "../../../../src/storage/audio-assets.js";
+import { listAudioJobs } from "../../../../src/storage/audio-jobs.js";
+import { waveBytes } from "../../../storage/support/audio-storage-test-helpers.js";
 import { MUSIC, session as sunoSession, replay, accountStep, gateStep, submitStep, pollStep, clip, A, B,
-  downloadPath } from "../../audio-services/suno/support/audio-service-suno-harness.js";
-import { resolveIntegrationConnection } from "../../../src/app/plugins/integration-connections.js";
-import { generateAudio, downloadAudioOutput } from "../../../src/app/audio/audio-generation.js";
-import { audioJobViews } from "../../../src/app/audio/audio-processing.js";
-import { createAppSunoGenerationAdapter } from "../../../src/app/audio/suno-human-verification.js";
-import { SessionMutationFence } from "../../../src/app/session/session-mutation-fence.js";
-import { saveIntegrationConnection } from "../plugins/support/integration-connection-test-helpers.js";
+  downloadPath } from "../../../audio-services/suno/support/audio-service-suno-harness.js";
+import { resolveIntegrationConnection } from "../../../../src/app/plugins/integration-connections.js";
+import { generateAudio, downloadAudioOutput } from "../../../../src/app/audio/audio-generation.js";
+import { audioJobViews } from "../../../../src/app/audio/audio-processing.js";
+import { createAppSunoGenerationAdapter } from "../../../../src/app/audio/suno/suno-human-verification.js";
+import { SessionMutationFence } from "../../../../src/app/session/session-mutation-fence.js";
+import { saveIntegrationConnection } from "../../plugins/support/integration-connection-test-helpers.js";
 
 const secret = "private-native-proof-fixture";
 const connection = { id: "website", name: "Personal Suno", provider: "suno" as const, enabled: true, apiKey: "" };

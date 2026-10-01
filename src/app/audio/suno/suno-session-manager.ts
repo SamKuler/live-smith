@@ -1,15 +1,15 @@
 import { createHash } from "node:crypto";
-import type { SunoAccountView, SunoSessionVerifier } from "../../audio-services/suno/suno-session-contracts.js";
+import type { SunoAccountView, SunoSessionVerifier } from "../../../audio-services/suno/suno-session-contracts.js";
 import {
   isIntegrationConnectionForProvider,
   type IntegrationConnection,
-} from "../../plugins/integration-connections.js";
-import { normalizeSunoSessionIdentity, normalizeSunoSessionValue, SunoSessionExpiredError, SunoSessionUnavailableError } from "../../audio-services/suno/suno-session.js";
-import { waitForPromiseWithSignal } from "../../runtime/host.js";
-import { isStorageCommitOutcomeUnknownError, StorageCommitOutcomeUnknownError, withStorageTransaction, type StorageTransactionContext } from "../../storage/persistence.js";
-import { loadAgentSettings } from "../../storage/settings.js";
-import { storageScopeKey, type StorageScopeKey } from "../../storage/scope.js";
-import { SunoSessions, SunoSessionStorageError, type StoredSunoSession } from "../../storage/suno-sessions.js";
+} from "../../../plugins/integration-connections.js";
+import { normalizeSunoSessionIdentity, normalizeSunoSessionValue, SunoSessionExpiredError, SunoSessionUnavailableError } from "../../../audio-services/suno/suno-session.js";
+import { waitForPromiseWithSignal } from "../../../runtime/host.js";
+import { isStorageCommitOutcomeUnknownError, StorageCommitOutcomeUnknownError, withStorageTransaction, type StorageTransactionContext } from "../../../storage/persistence.js";
+import { loadAgentSettings } from "../../../storage/settings.js";
+import { storageScopeKey, type StorageScopeKey } from "../../../storage/scope.js";
+import { SunoSessions, SunoSessionStorageError, type StoredSunoSession } from "../../../storage/suno-sessions.js";
 
 interface VerificationEvidence {
   fingerprint: string;

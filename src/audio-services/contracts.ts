@@ -148,12 +148,36 @@ export type AudioGenerationSubmission =
 /** The adapter knows no paid request was dispatched, unlike a transport failure. */
 export class AudioSubmissionNotStartedError extends Error {}
 
+/** Fixed provider diagnostics for a tool whose remote receipt could not be retained. */
+export class AudioToolOutcomeUnknownError extends Error {}
+
+/** A provider-confirmed HTTP rejection; the message contains only local diagnostics. */
+export class AudioServiceHttpError extends Error {
+  constructor(message: string, readonly status?: number) { super(message); }
+}
+
+export interface MusicServiceQuery {
+  query: "catalog" | "library" | "persona";
+  search?: string;
+  cursor?: string;
+  personaId?: string;
+}
+
+export type MusicServiceQueryResult =
+  | { query: "library"; clips: readonly { id: string }[] }
+  | { query: "catalog" | "persona" };
+
 /** Holds the connection lifecycle boundary through one authorized paid request. */
 export type AudioServiceAuthorization = <T>(signal: AbortSignal, operation: () => Promise<T>) => Promise<T>;
 export type AudioDownloadAuthorization = AudioServiceAuthorization;
+export type AudioCredentialRefreshHandler = (
+  previousValue: string, nextValue: string, signal: AbortSignal,
+) => void | Promise<void>;
 
 export interface AudioGenerationAdapter {
   readonly provider: "elevenlabs" | "google-lyria" | "mureka" | "suno-platform" | "suno" | "sunoapi";
+  /** submit owns the authorization lease and acknowledges the actual dispatch via its callback. */
+  submissionAuthorization?: "adapter";
   /** Read-only validation and challenge preflight, before the paid submission boundary. */
   prepare?(request: AudioGenerationRequest, signal: AbortSignal): Promise<void>;
   submit(request: AudioGenerationRequest, signal: AbortSignal,
@@ -309,12 +333,12 @@ export function audioJobView(job: AudioJob): AudioJobView {
         ? job.remoteOutputs.length ? "partial" as const : job.remoteTaskTerminal === "cancelled" ? "cancelled" as const : "failed" as const
         : "completed" as const,
     } : {}),
-    resumable: job.operation === "upload_music" ? sunoUploadCanResume(job) : Boolean(job.remoteTaskId) && job.status !== "completed" && job.status !== "cancelled" &&
+    resumable: job.operation === "upload_music" ? audioUploadCanResume(job) : Boolean(job.remoteTaskId) && job.status !== "completed" && job.status !== "cancelled" &&
       !audioJobRemoteSettled(job),
   };
 }
 
-export function sunoUploadCanResume(job: Pick<AudioJob, "operation" | "upload" | "status">): boolean {
+export function audioUploadCanResume(job: Pick<AudioJob, "operation" | "upload" | "status">): boolean {
   return job.operation === "upload_music" && job.status !== "completed" && job.status !== "cancelled" && job.status !== "failed" &&
     Boolean(job.upload && !job.upload.pendingStage && ["prepared", "uploaded", "processing", "processed"].includes(job.upload.stage));
 }

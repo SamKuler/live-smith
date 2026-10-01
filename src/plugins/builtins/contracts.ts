@@ -1,5 +1,6 @@
 import type {
   AudioGenerationAdapter,
+  AudioGenerationRequest,
   AudioOperation,
   AudioProvider,
   AudioServiceAdapter,
@@ -7,8 +8,10 @@ import type {
   LyricWritingRequest,
   LyricWritingResult,
   LyricModelCatalog,
+  MusicServiceQuery,
+  MusicServiceQueryResult,
+  AudioCredentialRefreshHandler,
 } from "../../audio-services/contracts.js";
-import type { SunoSessionRefreshHandler } from "../../audio-services/suno/suno-http.js";
 import type { AudioToolRequest } from "../../agent/audio-tools.js";
 import type { ModelFunctionTool } from "../../model/provider.js";
 import type { OpenProviderWebSocket } from "../../runtime/proxy-websocket.js";
@@ -46,6 +49,7 @@ export interface BuiltInAudioToolContract {
   musicDuration?: { minimumSeconds: number; maximumSeconds: number };
   generationOutputCount: number;
   inlineGeneration?: boolean;
+  outputCollection?: "explicit";
   musicPromptCharacters: number;
   customMusic?: boolean;
   customMusicOptions?: readonly MusicGenerationOptionField[];
@@ -71,8 +75,8 @@ export interface BuiltInAudioConnectionRuntime {
 export interface BuiltInAudioHostRuntime {
   fetchImpl: typeof fetch;
   openWebSocket: OpenProviderWebSocket;
-  onSunoSessionRefresh?: SunoSessionRefreshHandler;
-  createWebsiteSubscriptionAdapter?(
+  onCredentialRefresh?: AudioCredentialRefreshHandler;
+  createGenerationAdapter?(
     connection: BuiltInAudioConnectionRuntime,
     authorizeDownloads: boolean,
   ): AudioGenerationAdapter;
@@ -86,6 +90,16 @@ export interface BuiltInAudioPluginDefinition {
   connection: BuiltInIntegrationConnectionDescriptor;
   audio: BuiltInAudioToolContract;
   tools: BuiltInAudioToolExtension;
+  generationModelId?(
+    connection: BuiltInAudioConnectionRuntime,
+    request: AudioGenerationRequest,
+  ): string | undefined;
+  inspectMusicService?(
+    connection: BuiltInAudioConnectionRuntime,
+    query: MusicServiceQuery,
+    signal: AbortSignal,
+    runtime: BuiltInAudioHostRuntime,
+  ): Promise<MusicServiceQueryResult>;
   createGenerationAdapter?(
     connection: BuiltInAudioConnectionRuntime,
     runtime: BuiltInAudioHostRuntime,

@@ -19,7 +19,7 @@ for (const response of ["lost", "invalid", "rejected", "rejected-stop", "stopped
     withAdmissionAuthorization: async (_signal, work) => work(),
     withGenerationAuthorization: async (_signal, work) => work(),
     toolName: panel.toolName, signature: panel.signature, arguments: { connectionId: "lyrics", prompt: "A verse about rain" },
-    processing: { murekaLyricsGenerator: (key, prompt, signal) => generateMurekaLyrics(key, prompt, signal, {
+    processing: { pluginOverrides: { plugin: { generateLyrics: (key, prompt, signal) => generateMurekaLyrics(key.apiKey, prompt, signal, {
       fetchImpl: async (url, init) => {
         assert.equal(String(url), "https://api.mureka.ai/v1/lyrics/generate");
         assert.equal(init?.method, "POST"); submissions++;
@@ -32,7 +32,7 @@ for (const response of ["lost", "invalid", "rejected", "rejected-stop", "stopped
         return new Response(JSON.stringify({}), { status: response === "rejected" ? 422 : 200,
           headers: { "Content-Type": "application/json" } });
       },
-    }) },
+    }) } } },
   });
   if (response === "rejected" || response === "rejected-stop") assert.deepEqual(await run(), { failed: true });
   else if (response === "stopped") assert.deepEqual(await run(), { failed: false });

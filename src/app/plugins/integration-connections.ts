@@ -27,6 +27,11 @@ export interface RuntimeIntegrationConnection extends PluginIntegrationConnectio
   sunoSession?: Readonly<StoredSunoSession>;
 }
 
+/** Private credential value used only by the host's error redaction boundary. */
+export function integrationConnectionSecret(connection: RuntimeIntegrationConnection): string {
+  return connection.sunoSession?.clientToken ?? connection.apiKey;
+}
+
 export function integrationConnectionFingerprint(
   connection: RuntimeIntegrationConnection,
 ): string {

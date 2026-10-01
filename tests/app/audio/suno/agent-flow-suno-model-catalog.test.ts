@@ -1,19 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readSunoMusicService } from "../../../src/audio-services/suno/suno-catalog.js";
-import { saveGlobalSettings, loadAgentSettings } from "../../../src/storage/settings.js";
-import { SunoSessions } from "../../../src/storage/suno-sessions.js";
-import { chatDialogStateForWire, type ChatDialogState } from "../../../src/ui/chat-state.js";
-import { parseCommandInput } from "../../../src/app/chat/chat-bridge-http.js";
-import { providerFetchForStorage } from "../../../src/app/model/provider-fetch.js";
-import { invalidateGlobalState } from "../../../src/app/session/session-state-events.js";
-import { createHostAbortController } from "../../../src/runtime/host.js";
-import { SunoModelCatalog } from "../../../src/app/audio/suno-model-catalog.js";
-import { catalog, clientCookie, connection, files, flow, models, post, session, state, storageFixture, token } from "./support/suno-model-catalog-test-helpers.js";
+import { readSunoMusicService } from "../../../../src/audio-services/suno/suno-catalog.js";
+import { saveGlobalSettings, loadAgentSettings } from "../../../../src/storage/settings.js";
+import { SunoSessions } from "../../../../src/storage/suno-sessions.js";
+import { chatDialogStateForWire, type ChatDialogState } from "../../../../src/ui/chat-state.js";
+import { parseCommandInput } from "../../../../src/app/chat/chat-bridge-http.js";
+import { providerFetchForStorage } from "../../../../src/app/model/provider-fetch.js";
+import { invalidateGlobalState } from "../../../../src/app/session/session-state-events.js";
+import { createHostAbortController } from "../../../../src/runtime/host.js";
+import { SunoModelCatalog } from "../../../../src/app/audio/suno/suno-model-catalog.js";
+import { catalog, clientCookie, connection, files, flow, models, post, session, state, storageFixture, token } from "../support/suno-model-catalog-test-helpers.js";
 import {
   integrationConnectionUpsert,
   saveIntegrationConnection,
-} from "../plugins/support/integration-connection-test-helpers.js";
+} from "../../plugins/support/integration-connection-test-helpers.js";
 
 const load = { kind: "load_suno_models", serviceId: connection.id };
 

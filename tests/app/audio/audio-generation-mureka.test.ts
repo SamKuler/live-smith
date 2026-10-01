@@ -152,13 +152,13 @@ test("Mureka Plugin lyric tools keep text results out of audio jobs and persist 
     },
     processing: {
       generationAdapter,
-      murekaLyricsGenerator: async (credential, prompt, signal, options) => {
-        assert.equal(credential, apiKey);
+      pluginOverrides: { plugin: { generateLyrics: async (credential, prompt, signal, options) => {
+        assert.equal(credential.apiKey, apiKey);
         assert.equal(prompt, "A hopeful night-drive song");
         assert.equal(signal.aborted, false);
         assert.equal(typeof options?.fetchImpl, "function");
         return { title: "Afterlight", lyrics: "[Verse]\nCity lights" };
-      },
+      } } },
     },
   });
   const execute = (localName: string, args: unknown) => tools.execute({

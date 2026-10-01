@@ -22,6 +22,10 @@ implementation plan, or record of individual changes.
 - `src/app/` owns application orchestration. Its `chat/`, `audio/`, `plugins/`,
   `model/`, `context/`, and `session/` directories own the corresponding
   workflows; request and dialog coordinators remain at the application root.
+  Provider-specific application workflows stay in their provider directory,
+  such as `src/app/audio/suno/`; shared audio workflows consume Plugin methods
+  and adapter capabilities. Bind private credentials and host facilities in
+  `src/app/plugins/built-in-plugin-runtime.ts`.
 - `src/audio-services/` owns shared audio contracts and provider directories
   for protocol implementations. Suno website, Suno Platform, and SunoAPI remain
   separate provider boundaries.

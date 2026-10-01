@@ -14,42 +14,18 @@ import { createHostAbortController, throwIfAborted, waitForPromiseWithSignal } f
 import { createAudioJob, listAudioJobs, loadAudioJob, updateAudioJob } from "../../storage/audio-jobs.js";
 import { assertAudioOutputCapacity, saveAudioAsset } from "../../storage/audio-assets.js";
 import { acquireAudioJob, boundedAudioMessage, reconcileLocalAudioJob, safeAudioFailure } from "./audio-job-runtime.js";
-import { integrationConnectionFingerprint, resolveIntegrationConnection, type RuntimeIntegrationConnection } from "../plugins/integration-connections.js";
+import { integrationConnectionFingerprint, integrationConnectionSecret, resolveIntegrationConnection, type RuntimeIntegrationConnection } from "../plugins/integration-connections.js";
 import type { AudioProcessingContext } from "./audio-processing.js";
-import { createAppSunoGenerationAdapter } from "./suno-human-verification.js";
 import { audioMessage as m } from "./audio-messages.js";
-import { builtInAudioPluginById } from "../../plugins/builtins/index.js";
-import { builtInAudioHostRuntime } from "../plugins/built-in-plugin-runtime.js";
-
-function pluginGenerationAdapter(
-  context: AudioProcessingContext, settings: RuntimeIntegrationConnection, authorizeDownloads = false,
-): AudioGenerationAdapter {
-  if (context.generationAdapter) {
-    if (context.generationAdapter.provider !== settings.provider) throw new Error("Audio adapter does not match the selected connection.");
-    return context.generationAdapter;
-  }
-  const plugin = builtInAudioPluginById(settings.pluginId);
-  if (!plugin || plugin.provider !== settings.provider || !plugin.createGenerationAdapter) {
-    throw new Error("This Plugin does not expose an audio-generation adapter.");
-  }
-  return plugin.createGenerationAdapter(settings, builtInAudioHostRuntime(
-    context.storageDirectory,
-    {
-      createWebsiteSubscriptionAdapter: (_connection, authorize) =>
-        createAppSunoGenerationAdapter(context, settings, authorize),
-    },
-  ), authorizeDownloads);
-}
+import { builtInAudioPlugin } from "../../plugins/builtins/index.js";
+import { audioPluginDefinition, pluginGenerationAdapter } from "../plugins/built-in-plugin-runtime.js";
 
 export async function generateAudio(
   context: AudioProcessingContext, serviceId: string, request: AudioGenerationRequest,
 ): Promise<AudioJob> {
   throwIfAborted(context.signal);
   const settings = await resolveIntegrationConnection(context.storageDirectory, serviceId, request.operation, context.admittedConnections);
-  const plugin = builtInAudioPluginById(settings.pluginId);
-  if (!plugin || plugin.provider !== settings.provider) {
-    throw new Error("The selected Integration Connection Plugin is unavailable.");
-  }
+  const plugin = audioPluginDefinition(context, settings);
   const capability = plugin.audio;
   const musicOptions = "options" in request ? request.options : undefined;
   if (musicOptions &&
@@ -97,13 +73,13 @@ export async function generateAudio(
     }
   }
   const adapter = pluginGenerationAdapter(context, settings);
-  if (settings.provider !== "suno") await assertAudioOutputCapacity(context.storageDirectory, context.sessionId,
+  if (capability.outputCollection !== "explicit") await assertAudioOutputCapacity(context.storageDirectory, context.sessionId,
     request.operation === "get_whole_song" || request.operation === "finish_music_replacement" ? 1 : capability.generationOutputCount);
+  const modelId = plugin.generationModelId ? plugin.generationModelId(settings, request)
+    : request.operation !== "generate_sound_effect" ? settings.modelId : undefined;
   const job = await createAudioJob(context.storageDirectory, context.sessionId, {
     provider: settings.provider, serviceId: settings.id, operation: request.operation,
-    ...(request.operation === "extract_music_stems" ? { modelId: "chirp-v3-5-b" }
-      : request.operation === "remaster_music" ? request.modelId ? { modelId: request.modelId } : {}
-      : request.operation !== "generate_sound_effect" && settings.modelId ? { modelId: settings.modelId } : {}),
+    ...(modelId ? { modelId } : {}),
     ...(musicOptions?.title?.trim()
       ? { title: musicOptions.title } : {}),
     connectionFingerprint: integrationConnectionFingerprint(settings), stems: [],
@@ -175,11 +151,11 @@ export async function downloadAudioOutput(
   try {
     let job = await loadAudioJob(context.storageDirectory, context.sessionId, jobId);
     const selected = job.expectedOutputs?.find((output) => output.key === outputKey);
-    if (job.provider !== "suno" || !selected) throw new Error("This output is not part of the original Suno job.");
+    if (builtInAudioPlugin(job.provider).audio.outputCollection !== "explicit" || !selected) throw new Error("This output is not part of the original audio job.");
     job = await reconcileLocalAudioJob(context.storageDirectory, context.sessionId, job, context.signal);
     if (job.outputAssets.some((asset) => asset.role === selected.role)) return job;
     if (job.status === "cancelled" || !job.remoteOutputs?.some((output) => output.key === selected.key && output.role === selected.role)) {
-      throw new Error("This Suno output has not been observed complete. Resume its existing job before downloading.");
+      throw new Error("This output has not been observed complete. Resume its existing job before downloading.");
     }
     const settings = await resolveIntegrationConnection(context.storageDirectory, job.serviceId, job.operation, context.admittedConnections);
     if (settings.provider !== job.provider || integrationConnectionFingerprint(settings) !== job.connectionFingerprint) {
@@ -190,12 +166,12 @@ export async function downloadAudioOutput(
     };
     try {
       await assertAudioOutputCapacity(context.storageDirectory, context.sessionId, 1);
-      await context.onProgress?.(m("Downloading the selected Suno song"));
+      await context.onProgress?.(m("Downloading the selected audio output"));
       const currentSettings = await resolveIntegrationConnection(context.storageDirectory, settings.id, job.operation, [settings]);
       throwIfAborted(context.signal);
       const adapter = pluginGenerationAdapter(context, currentSettings, true);
       if (!adapter.downloadSelected) throw new Error("This service cannot download the selected output.");
-      await update({ status: "collecting", message: m("Downloading the selected Suno song") });
+      await update({ status: "collecting", message: m("Downloading the selected audio output") });
       throwIfAborted(context.signal);
       const bytes = await adapter.downloadSelected(selected, context.signal, (signal, authorize) => {
         if (!context.withDownloadAuthorization) throw new Error("Download authorization requires the connection lifecycle fence.");
@@ -222,7 +198,7 @@ export async function downloadAudioOutput(
       await update({ status: job.outputAssets.length ? "partial" : "ready",
         message: context.signal.aborted
           ? m("Local download stopped. Download authorization may have consumed an allowance. No automatic retry will occur.")
-          : safeAudioFailure(error, settings.sunoSession?.clientToken ?? settings.apiKey) });
+          : safeAudioFailure(error, integrationConnectionSecret(settings)) });
       throwIfAborted(context.signal);
     }
     return job;
@@ -254,6 +230,7 @@ async function runGeneration(
   adapter: AudioGenerationAdapter, request?: AudioGenerationRequest,
 ): Promise<AudioJob> {
   let job = initial;
+  const explicitCollection = audioPluginDefinition(context, settings).audio.outputCollection === "explicit";
   let acceptedTaskId = initial.remoteTaskId;
   let acceptedOutputs = initial.expectedOutputs;
   let hasCompleteAudio = false;
@@ -287,15 +264,11 @@ async function runGeneration(
       const submit = async () => {
         await resolveIntegrationConnection(context.storageDirectory, settings.id, request.operation, [settings]);
         throwIfAborted(context.signal);
-        if (settings.provider === "suno") return adapter.submit(request, context.signal, markSubmitting);
-        await markSubmitting();
-        return adapter.submit(request, context.signal);
+        if (adapter.submissionAuthorization !== "adapter") await markSubmitting();
+        return adapter.submit(request, context.signal, markSubmitting);
       };
-      // The Suno.com adapter acquires this fence after human verification, at
-      // its own paid dispatch boundary. An outer lease would nest the same lock.
-      const result = settings.provider === "suno" || !context.withGenerationAuthorization
-        ? await submit()
-        : await context.withGenerationAuthorization(context.signal, submit);
+      const authorize = adapter.submissionAuthorization === "adapter" ? undefined : context.withGenerationAuthorization;
+      const result = authorize ? await authorize(context.signal, submit) : await submit();
       if (result.kind === "audio") {
         hasCompleteAudio = true;
         for (const output of result.outputs) await save(output, true);
@@ -309,7 +282,7 @@ async function runGeneration(
         ...(acceptedOutputs ? { expectedOutputs: acceptedOutputs } : {}), status: "running" }));
     }
     throwIfAborted(context.signal);
-    if (!acceptedTaskId || !adapter.inspect || job.provider !== "suno" && !adapter.download) {
+    if (!acceptedTaskId || !adapter.inspect || !explicitCollection && !adapter.download) {
       throw new Error("This generation has no resumable remote task. It will not be submitted again automatically.");
     }
     const deadline = Date.now() + 30 * 60_000;
@@ -328,7 +301,7 @@ async function runGeneration(
         const roles = expectedOutputs.map((output) => output.role);
         const failed = remote.failedOutputKeys ?? [];
         acceptedOutputs = expectedOutputs;
-        if (job.provider === "suno") {
+        if (explicitCollection) {
           const successful = new Set([...job.remoteOutputs ?? [], ...remote.outputs].map((output) => output.key));
           const remoteOutputs = expectedOutputs.filter((output) => successful.has(output.key));
           await retryLocalCommit(() => update({ expectedOutputs, remoteOutputs,
@@ -352,14 +325,14 @@ async function runGeneration(
           try { bytes = await adapter.download!(output, context.signal); }
           catch (error) {
             throwIfAborted(context.signal);
-            failures.push(`${output.role}: ${safeAudioFailure(error, settings.sunoSession?.clientToken ?? settings.apiKey)}`);
+            failures.push(`${output.role}: ${safeAudioFailure(error, integrationConnectionSecret(settings))}`);
             continue;
           }
           try { await save({ role: output.role as GeneratedAudioOutput["role"], bytes }); }
           catch (error) {
             throwIfAborted(context.signal);
             if (!(error instanceof AttachmentProcessingError)) throw error;
-            failures.push(`${output.role}: ${safeAudioFailure(error, settings.sunoSession?.clientToken ?? settings.apiKey)}`);
+            failures.push(`${output.role}: ${safeAudioFailure(error, integrationConnectionSecret(settings))}`);
           }
         }
         const missing = roles.filter((role) => !job.outputAssets.some((asset) => asset.role === role));
@@ -388,7 +361,7 @@ async function runGeneration(
           : context.signal.aborted ? "interrupted" : "failed",
         message: context.signal.aborted
           ? m("Local audio generation stopped. This does not confirm service-side cancellation or a credit refund. No automatic resubmission will occur.")
-          : safeAudioFailure(error, settings.sunoSession?.clientToken ?? settings.apiKey),
+          : safeAudioFailure(error, integrationConnectionSecret(settings)),
       });
     } catch (failure) { recordingFailure = failure; }
     finally {

@@ -8,6 +8,7 @@ import {
 import type { AgentExternalToolResult } from "../../agent/loop.js";
 import {
   audioJobRemoteSettled, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
+  AudioToolOutcomeUnknownError, AudioServiceHttpError,
   type AudioAsset, type AudioOrigin, type AudioGenerationRequest,
 } from "../../audio-services/contracts.js";
 import { readArrangementAudio } from "../../live/observer.js";
@@ -28,16 +29,10 @@ import {
 } from "./audio-processing.js";
 import { integrationConnectionFingerprint, captureIntegrationConnections, resolveIntegrationConnection } from "../plugins/integration-connections.js";
 import { generateAudio, retrieveMusic } from "./audio-generation.js";
-import { uploadSunoMusic, SunoUploadOutcomeUnknownError } from "./suno-upload.js";
-import { MurekaError } from "../../audio-services/mureka/mureka-http.js";
-import { SunoHttpError } from "../../audio-services/suno/suno-http.js";
-import { readSunoMusicService } from "../../audio-services/suno/suno.js";
-import { SunoLyricsOutcomeUnknownError, type writeSunoLyrics, type readSunoLyricModels } from "../../audio-services/suno/suno-lyrics.js";
-import { MurekaLyricsOutcomeUnknownError, type generateMurekaLyrics } from "../../audio-services/mureka/mureka.js";
-import { providerFetchForStorage } from "../model/provider-fetch.js";
-import { persistRotatedSunoSession } from "./suno-session-manager.js";
-import { audioQueryProvenance, observedAudioQueryClipIds } from "./audio-parameter-suggestions.js";
-import { builtInAudioHostRuntime } from "../plugins/built-in-plugin-runtime.js";
+import {
+  audioPluginDefinition, audioPluginHostRuntime, uploadPluginAudio,
+  audioPluginQueryProvenance, observedAudioPluginClipIds,
+} from "../plugins/built-in-plugin-runtime.js";
 
 export async function createRequestAudioTools(input: {
   context: ExtensionContext<"1.0.0">;
@@ -56,12 +51,7 @@ export async function createRequestAudioTools(input: {
   };
   withGenerationAuthorization?: AudioProcessingContext["withGenerationAuthorization"];
   /** Test seam; production uses the saved service and shared network route. */
-  processing?: Pick<AudioProcessingContext, "adapter" | "generationAdapter" | "sunoUploadAdapter" | "wait"> & {
-    musicServiceReader?: typeof readSunoMusicService;
-    murekaLyricsGenerator?: typeof generateMurekaLyrics;
-    sunoLyricsWriter?: typeof writeSunoLyrics;
-    sunoLyricModelsReader?: typeof readSunoLyricModels;
-  };
+  processing?: Pick<AudioProcessingContext, "adapter" | "generationAdapter" | "pluginOverrides" | "wait">;
 }) {
   const admittedConnections = await captureIntegrationConnections(input.storageDirectory);
   const services = admittedConnections.map(({ id, name, pluginId, provider, modelId }) => ({
@@ -84,17 +74,17 @@ export async function createRequestAudioTools(input: {
   };
   const rememberJobs = (current: typeof jobs) => {
     for (const job of current) {
-      const connection = admittedConnections.find((entry) => entry.id === job.serviceId && entry.provider === "suno");
+      const connection = admittedConnections.find((entry) => entry.id === job.serviceId && builtInAudioPluginById(entry.pluginId)?.audio.musicLibrary);
       if (connection && integrationConnectionFingerprint(connection) === job.connectionFingerprint) {
         rememberClips(connection.id, job.remoteOutputs?.map((output) => ({ id: output.key })) ?? []);
       }
     }
   };
   rememberJobs(jobs);
-  if (admittedConnections.some((connection) => connection.provider === "suno")) {
+  if (admittedConnections.some((connection) => builtInAudioPluginById(connection.pluginId)?.audio.musicLibrary)) {
     const events = await loadSessionEvents(input.storageDirectory, input.sessionId);
     for (const connection of admittedConnections) {
-      rememberClips(connection.id, observedAudioQueryClipIds(connection, events).map((id) => ({ id })));
+      rememberClips(connection.id, observedAudioPluginClipIds(connection, events).map((id) => ({ id })));
     }
   }
   const assets = new Map<string, AudioAsset>();
@@ -183,51 +173,33 @@ export async function createRequestAudioTools(input: {
         }
         if (request.kind === "inspect_music_service") {
           const connection = await resolveIntegrationConnection(input.storageDirectory, request.connectionId, "generate_music", admittedConnections);
-          if (connection.provider !== "suno" || !connection.sunoSession) throw new Error("Music account unavailable.");
+          const plugin = audioPluginDefinition(processing, connection);
+          if (!plugin.inspectMusicService) throw new Error("Music account unavailable.");
           const { kind: _kind, connectionId: _id, ...query } = request;
-          const result = await (input.processing?.musicServiceReader ?? readSunoMusicService)(
-            connection.sunoSession,
-            query,
-            input.signal,
-            providerFetchForStorage(input.storageDirectory),
-            (previous, next, refreshSignal) => persistRotatedSunoSession(
-              input.storageDirectory,
-              connection.id,
-              connection.sunoSession!.accountId,
-              previous,
-              next,
-              refreshSignal,
-            ),
+          const result = await plugin.inspectMusicService(
+            connection, query, input.signal, audioPluginHostRuntime(processing, connection),
           );
           // Validate the owner again before returning a private account's library.
           await resolveIntegrationConnection(input.storageDirectory, request.connectionId, "generate_music", [connection]);
           if (request.query === "library" && "clips" in result) rememberClips(connection.id, result.clips);
-          return { content: JSON.stringify({ ...result, provenance: audioQueryProvenance(connection) }) };
+          return { content: JSON.stringify({ ...result, provenance: audioPluginQueryProvenance(connection) }) };
         }
         if (request.kind === "write_lyrics" || request.kind === "inspect_lyric_models") {
           const connection = await resolveIntegrationConnection(input.storageDirectory, request.connectionId, "generate_music", admittedConnections);
-          const plugin = builtInAudioPluginById(connection.pluginId);
-          if (!plugin || !connection.sunoSession) throw new Error("Lyric-writing account unavailable.");
-          const runtime = builtInAudioHostRuntime(input.storageDirectory, {
-            onSunoSessionRefresh: (previous, next, signal) => persistRotatedSunoSession(
-              input.storageDirectory, connection.id, connection.sunoSession!.accountId, previous, next, signal),
-          });
+          const plugin = audioPluginDefinition(processing, connection);
+          const runtime = audioPluginHostRuntime(processing, connection);
           if (request.kind === "inspect_lyric_models") {
             if (!plugin.inspectLyricModels) throw new Error("Lyric model catalog unavailable.");
-            const result = input.processing?.sunoLyricModelsReader
-              ? await input.processing.sunoLyricModelsReader(connection.sunoSession, input.signal)
-              : await plugin.inspectLyricModels(connection, input.signal, runtime);
+            const result = await plugin.inspectLyricModels(connection, input.signal, runtime);
             await resolveIntegrationConnection(input.storageDirectory, connection.id, "generate_music", [connection]);
-            return { content: JSON.stringify({ ...result, provenance: audioQueryProvenance(connection) }) };
+            return { content: JSON.stringify({ ...result, provenance: audioPluginQueryProvenance(connection) }) };
           }
           if (!plugin.writeLyrics || !input.withGenerationAuthorization) throw new Error("Lyric-writing authorization unavailable.");
           const { kind: _kind, connectionId: _id, ...fields } = request;
           const result = await input.withGenerationAuthorization(input.signal, async () => {
             const current = await resolveIntegrationConnection(input.storageDirectory, connection.id, "generate_music", [connection]);
             throwIfAborted(input.signal);
-            return input.processing?.sunoLyricsWriter
-              ? input.processing.sunoLyricsWriter(current.sunoSession!, fields, input.signal)
-              : plugin.writeLyrics!(current, fields, input.signal, runtime);
+            return plugin.writeLyrics!(current, fields, input.signal, runtime);
           });
           // Preserve a confirmed paid text receipt even when Stop raced its response.
           return { content: JSON.stringify(result) };
@@ -239,8 +211,8 @@ export async function createRequestAudioTools(input: {
             "generate_music",
             admittedConnections,
           );
-          const plugin = builtInAudioPluginById(connection.pluginId);
-          if (!plugin || plugin.provider !== connection.provider || !plugin.generateLyrics) {
+          const plugin = audioPluginDefinition(processing, connection);
+          if (!plugin.generateLyrics) {
             throw new Error("This Plugin does not expose lyrics generation.");
           }
           if (!input.withGenerationAuthorization) throw new Error("Generation authorization unavailable.");
@@ -253,19 +225,7 @@ export async function createRequestAudioTools(input: {
             );
             if (current.pluginId !== plugin.id) throw new Error("The Integration Connection Plugin changed.");
             throwIfAborted(input.signal);
-            return input.processing?.murekaLyricsGenerator
-              ? input.processing.murekaLyricsGenerator(
-                  current.apiKey,
-                  request.prompt,
-                  input.signal,
-                  { fetchImpl: providerFetchForStorage(input.storageDirectory) },
-                )
-              : plugin.generateLyrics!(
-                  current,
-                  request.prompt,
-                  input.signal,
-                  builtInAudioHostRuntime(input.storageDirectory),
-                );
+            return plugin.generateLyrics!(current, request.prompt, input.signal, audioPluginHostRuntime(processing, current));
           });
           // Retain the confirmed paid text result if Stop arrived with its receipt.
           return { content: JSON.stringify(result) };
@@ -278,7 +238,7 @@ export async function createRequestAudioTools(input: {
         const job = request.kind === "resume_audio_job"
           ? await resumeAudioJob(processing, request.jobId)
           : request.kind === "upload_music"
-          ? await uploadSunoMusic(processing, request.connectionId, request.rightsConfirmed, () => snapshot(request.source))
+          ? await uploadPluginAudio(processing, request.connectionId, request.rightsConfirmed, () => snapshot(request.source))
           : request.kind === "separate_stems"
           ? await separateAudioStems(processing, request.connectionId, request.stems, () => snapshot(request.source))
           : request.kind === "retrieve_music"
@@ -287,7 +247,7 @@ export async function createRequestAudioTools(input: {
         rememberJobs([job]);
         await registerAssets(job.outputAssets);
         throwIfAborted(input.signal);
-        const partialCollection = job.status === "partial" && job.provider === "suno" &&
+        const partialCollection = job.status === "partial" && job.remoteOutputs !== undefined &&
           audioJobRemoteSettled(job) && !job.failedOutputKeys?.length;
         return {
           content: audioJobResultText(job), progressKey: `${job.id}:${job.updatedAt}`,
@@ -295,10 +255,10 @@ export async function createRequestAudioTools(input: {
             ? { failed: true, stop: true } : {}),
         };
     } catch (error) {
-      if (error instanceof SunoLyricsOutcomeUnknownError || error instanceof MurekaLyricsOutcomeUnknownError || error instanceof SunoUploadOutcomeUnknownError) return {
+      if (error instanceof AudioToolOutcomeUnknownError) return {
         content: JSON.stringify({ status: "unknown", message: error.message }), failed: true, stop: true,
       };
-      if ((error instanceof MurekaError || error instanceof SunoHttpError) && error.status !== undefined &&
+      if (error instanceof AudioServiceHttpError && error.status !== undefined &&
           error.status >= 400 && error.status < 500 && error.status !== 408) return {
         content: JSON.stringify({ status: "failed", message: error.message }), failed: true, stop: true,
       };
@@ -325,7 +285,7 @@ export async function createRequestAudioTools(input: {
 }
 
 function musicClipReferences(job: import("../../audio-services/contracts.js").AudioJob) {
-  return job.provider === "suno" && job.remoteOutputs ? {
+  return job.remoteOutputs ? {
     musicClips: job.remoteOutputs.map(({ key, role }) => ({ clipId: key, role })),
   } : {};
 }

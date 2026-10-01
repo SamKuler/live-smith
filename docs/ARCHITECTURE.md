@@ -41,17 +41,20 @@ src/
         and prepared output retrieval.
       audio-asset-sources.ts, audio-asset-response.ts, request-audio-sources.ts
         Bind admitted audio, stage Session outputs and mediate Live Project import.
-      request-audio-tools.ts, audio-parameter-tool.ts, audio-parameter-suggestions.ts
+      request-audio-tools.ts, audio-parameter-tool.ts
         Assemble request-bound tools and explicit parameter-panel execution.
-      suno-session-manager.ts, suno-model-catalog.ts, suno-upload.ts, suno-human-verification.ts
-        Own application-level account lifecycle, catalog admission, upload
-        receipts and user-driven verification.
+      suno/
+        suno-session-manager.ts, suno-model-catalog.ts, suno-upload.ts,
+        suno-human-verification.ts, suno-parameter-suggestions.ts
+          Own account lifecycle, catalog admission, upload receipts, user-driven
+          verification and account-bound parameter suggestions.
     plugins/
       request-plugin-tools.ts
         Discover enabled installed and standalone MCP tools for one request,
         bind admitted configuration and permissions, and mediate artifacts.
       integration-connections.ts, built-in-plugin-runtime.ts
-        Resolve private Connection snapshots and provide host networking to factories.
+        Resolve private Connection snapshots and bind host networking, private
+        credential callbacks and provider application workflows to Plugin factories.
       plugin-apps.ts, plugin-app-sandbox.ts, plugin-parameter-tool.ts
         Own MCP App sessions, browser sandbox resources and panel invocation.
     model/
@@ -1319,6 +1322,18 @@ work, and adapters retain the admitted connection rather than reloading a new
 account. Changes to unrelated connections do not invalidate the request.
 `audio-job-runtime.ts` shares active-job exclusion and verified local recovery
 across operations.
+Plugin definitions own generation model selection, account-query methods and
+output collection policy. Automatic collection stages completed audio locally;
+explicit collection retains observed remote identities until a selected download
+is authorized. Shared generation code resolves these behaviors from the Plugin
+contract. An adapter that declares submission authorization ownership holds its
+own settings lease and acknowledges the actual dispatch through the submission
+callback; other adapters use the host's lease after preparation. Neither path
+holds the lease while waiting for a user-driven verification window.
+`app/plugins/built-in-plugin-runtime.ts` binds application facilities to the
+existing Plugin factories. Suno account, verification, upload and suggestion
+workflows live in `app/audio/suno/`; the service protocol remains in
+`audio-services/suno/` and does not access application storage or dialogs.
 `audio-services/google-lyria/google-lyria.ts` keeps both Gemini music protocols inside one
 provider adapter. Batch models issue one stateless Interactions request and
 validate the final inline audio block. The realtime model authenticates in the
@@ -1331,7 +1346,7 @@ job exists. Interactive steering is outside the current tool contract.
 handler. Website navigation is independent of saved connections
 and is never evidence of authentication. No browser process, profile directory,
 extension or debugging connection is owned by Live Smith.
-`app/audio/suno-human-verification.ts` separately creates the production Suno adapter
+`app/audio/suno/suno-human-verification.ts` separately creates the production Suno adapter
 and binds an in-app challenge to the admitted account/configuration and proxy
 revision. `runtime/suno-human-verification.ts` stages only our embedded native
 capsule in a private temporary directory and executes its fixed entrypoint with
@@ -1350,7 +1365,7 @@ the verification lease. Manual/system proxy routing remains user-selected.
 Official Suno Platform connections are ordinary API-key audio connections. Their
 transport is isolated from the following website-session lifecycle and never
 receives a Suno.com Cookie.
-`app/audio/suno-session-manager.ts` binds explicitly imported Suno Cookies to exact
+`app/audio/suno/suno-session-manager.ts` binds explicitly imported Suno Cookies to exact
 saved audio connection IDs. Import and refresh use the bounded Suno-only
 `audio-services/suno/suno-session.ts` verifier through proxy-aware Fetch. The adapter
 reads the current Clerk client/session identity; it never automates Google
@@ -1401,7 +1416,7 @@ Session/service/account/manifest job without replacing unknown generation outcom
 Remote text is bounded untrusted data; no generic HTTP tool or credential-bearing
 locator reaches the chat model.
 Closing a dialog neither disconnects the saved account nor closes a user's browser.
-`app/audio/suno-model-catalog.ts` owns one modal-only, read-only model catalog for the
+`app/audio/suno/suno-model-catalog.ts` owns one modal-only, read-only model catalog for the
 explicit `load_suno_models` command. The saved connection ID and verified account
 bind its ownership; ordinary display/model/enablement edits and automatic Cookie
 rotation do not change the account catalog. Publication revalidates that owner and tags the

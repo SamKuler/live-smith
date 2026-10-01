@@ -3,15 +3,15 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
-import { retrievalHarness, connection } from "./support/audio-retrieval-test-helpers.js";
-import { uploadSunoMusic, resumeSunoUpload } from "../../../src/app/audio/suno-upload.js";
-import type { SunoUploadAdapter } from "../../../src/audio-services/suno/suno-upload.js";
-import { AudioSubmissionNotStartedError, SUNO_UPLOAD_MUTATIONS, type SunoUploadMutationStage, type SunoUploadReceipt } from "../../../src/audio-services/contracts.js";
-import { listAudioAssets } from "../../../src/storage/audio-assets.js";
-import { bindAudioDirectory, listAudioJobs, loadAudioJob, updateAudioJob } from "../../../src/storage/audio-jobs.js";
-import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
-import { audioJobViews, resumeAudioJob } from "../../../src/app/audio/audio-processing.js";
-import { createHostAbortController } from "../../../src/runtime/host.js";
+import { retrievalHarness, connection } from "../support/audio-retrieval-test-helpers.js";
+import { uploadSunoMusic, resumeSunoUpload } from "../../../../src/app/audio/suno/suno-upload.js";
+import type { SunoUploadAdapter } from "../../../../src/audio-services/suno/suno-upload.js";
+import { AudioSubmissionNotStartedError, SUNO_UPLOAD_MUTATIONS, type SunoUploadMutationStage, type SunoUploadReceipt } from "../../../../src/audio-services/contracts.js";
+import { listAudioAssets } from "../../../../src/storage/audio-assets.js";
+import { bindAudioDirectory, listAudioJobs, loadAudioJob, updateAudioJob } from "../../../../src/storage/audio-jobs.js";
+import { waveBytes } from "../../../storage/support/audio-storage-test-helpers.js";
+import { audioJobViews, resumeAudioJob } from "../../../../src/app/audio/audio-processing.js";
+import { createHostAbortController } from "../../../../src/runtime/host.js";
 
 const uploadId = "aaaaaaaa-1111-4111-8111-111111111111";
 const clipId = "bbbbbbbb-2222-4222-8222-222222222222";
@@ -82,7 +82,7 @@ test("confirmed multipart receipt survives Stop and explicit Resume only finishe
   assert.equal(paused.upload?.stage, "uploaded");
   delete h.mode.abort;
   assert.equal((await audioJobViews(h.directory, h.session.id))[0]!.resumable, true);
-  const finished = await resumeAudioJob({ ...h.freshContext(), sunoUploadAdapter: h.adapter }, paused.id);
+  const finished = await resumeAudioJob({ ...h.freshContext(), pluginOverrides: { uploadAdapter: h.adapter } }, paused.id);
   assert.equal(finished.status, "ready");
   assert.equal(h.calls.filter((call) => call === "create").length, 1);
   assert.equal(h.calls.filter((call) => call === "upload").length, 1);
@@ -196,10 +196,10 @@ for (const [step, stage] of Object.entries(mutationStages)) {
     assert.equal((await audioJobViews(h.directory, h.session.id))[0]!.resumable, resumable);
     const before = h.calls.slice();
     if (!resumable) {
-      await assert.rejects(resumeAudioJob({ ...h.freshContext(), sunoUploadAdapter: h.adapter }, job.id), /cannot resume its transfer/);
+      await assert.rejects(resumeAudioJob({ ...h.freshContext(), pluginOverrides: { uploadAdapter: h.adapter } }, job.id), /cannot resume its transfer/);
       assert.deepEqual(h.calls, before);
     } else {
-      const finished = await resumeAudioJob({ ...h.freshContext(), sunoUploadAdapter: h.adapter }, job.id);
+      const finished = await resumeAudioJob({ ...h.freshContext(), pluginOverrides: { uploadAdapter: h.adapter } }, job.id);
       assert.equal(finished.status, "ready");
       assertOneMutationEach(h.calls);
       assert.equal(finished.upload?.uploadId, uploadId);
@@ -227,9 +227,9 @@ for (const [step, stage] of Object.entries(mutationStages)) {
     assert.equal(h.calls.includes(step), false);
     delete h.mode.notStarted;
     if (job.upload.stage === "created") {
-      await assert.rejects(resumeAudioJob({ ...h.freshContext(), sunoUploadAdapter: h.adapter }, job.id), /cannot resume its transfer/);
+      await assert.rejects(resumeAudioJob({ ...h.freshContext(), pluginOverrides: { uploadAdapter: h.adapter } }, job.id), /cannot resume its transfer/);
     } else {
-      assert.equal((await resumeAudioJob({ ...h.freshContext(), sunoUploadAdapter: h.adapter }, job.id)).status, "ready");
+      assert.equal((await resumeAudioJob({ ...h.freshContext(), pluginOverrides: { uploadAdapter: h.adapter } }, job.id)).status, "ready");
       assertOneMutationEach(h.calls);
     }
   });
@@ -248,7 +248,7 @@ test("an unresolved legacy upload marker remains readable and cannot be resumed"
   assert.equal(saved.upload?.stage, "initializing");
   assert.equal((await audioJobViews(h.directory, h.session.id))[0]!.resumable, false);
   const calls = h.calls.slice();
-  await assert.rejects(resumeAudioJob({ ...h.freshContext(), sunoUploadAdapter: h.adapter }, saved.id), /cannot be sent again/);
+  await assert.rejects(resumeAudioJob({ ...h.freshContext(), pluginOverrides: { uploadAdapter: h.adapter } }, saved.id), /cannot be sent again/);
   assert.deepEqual(h.calls, calls);
 });
 

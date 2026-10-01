@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { generateAudio, downloadAudioOutput } from "../../../src/app/audio/audio-generation.js";
-import { resumeAudioJob } from "../../../src/app/audio/audio-processing.js";
-import { retrievalHarness, connection } from "./support/audio-retrieval-test-helpers.js";
-import { createHostAbortController } from "../../../src/runtime/host.js";
-import type { AudioGenerationAdapter } from "../../../src/audio-services/contracts.js";
-import { stemIds, stemManifest } from "../../audio-services/suno/support/audio-service-suno-stems-harness.js";
-import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
-import { listAudioAssets } from "../../../src/storage/audio-assets.js";
-import { listAudioJobs, loadAudioJob } from "../../../src/storage/audio-jobs.js";
-import { saveIntegrationConnection } from "../plugins/support/integration-connection-test-helpers.js";
+import { generateAudio, downloadAudioOutput } from "../../../../src/app/audio/audio-generation.js";
+import { resumeAudioJob } from "../../../../src/app/audio/audio-processing.js";
+import { retrievalHarness, connection } from "../support/audio-retrieval-test-helpers.js";
+import { createHostAbortController } from "../../../../src/runtime/host.js";
+import type { AudioGenerationAdapter } from "../../../../src/audio-services/contracts.js";
+import { stemIds, stemManifest } from "../../../audio-services/suno/support/audio-service-suno-stems-harness.js";
+import { waveBytes } from "../../../storage/support/audio-storage-test-helpers.js";
+import { listAudioAssets } from "../../../../src/storage/audio-assets.js";
+import { listAudioJobs, loadAudioJob } from "../../../../src/storage/audio-jobs.js";
+import { saveIntegrationConnection } from "../../plugins/support/integration-connection-test-helpers.js";
 
 const authorize = async <T>(_signal: AbortSignal, operation: () => Promise<T>): Promise<T> => operation();
 async function fixture(t: Parameters<typeof retrievalHarness>[0]) {

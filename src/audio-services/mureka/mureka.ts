@@ -1,3 +1,4 @@
+import { AudioToolOutcomeUnknownError } from "../contracts.js";
 import type { AudioGenerationAdapter, AudioGenerationRequest } from "../contracts.js";
 import { createMurekaHttp, MurekaError, type MurekaTaskKind } from "./mureka-http.js";
 import { exceedsAudioPromptLimit } from "../prompt.js";
@@ -84,7 +85,7 @@ export function createMurekaAudioAdapter(
   };
 }
 
-export class MurekaLyricsOutcomeUnknownError extends Error {
+export class MurekaLyricsOutcomeUnknownError extends AudioToolOutcomeUnknownError {
   constructor() { super("Mureka audio service: lyric-generation result is unconfirmed. Do not submit it again automatically."); }
 }
 

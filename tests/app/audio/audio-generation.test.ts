@@ -34,6 +34,41 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
   return { directory, session, controller, adapter, context, submissions: () => submissions };
 }
 
+for (const owner of ["host", "adapter"] as const) {
+  test(`an ordinary provider can use ${owner} submission authorization without a nested lease`, async (t) => {
+    const h = await harness(t);
+    let leases = 0;
+    let authorized = false;
+    const withGenerationAuthorization = async <T>(_signal: AbortSignal, operation: () => Promise<T>): Promise<T> => {
+      assert.equal(authorized, false);
+      leases++;
+      authorized = true;
+      try { return await operation(); }
+      finally { authorized = false; }
+    };
+    h.adapter.prepare = async () => { assert.equal(authorized, false); };
+    if (owner === "adapter") h.adapter.submissionAuthorization = "adapter";
+    h.adapter.submit = async (_request, signal, onAuthorizedDispatch) => {
+      const dispatch = async () => {
+        assert.equal(authorized, true);
+        const [before] = await listAudioJobs(h.directory, h.session.id);
+        assert.equal(before?.status, owner === "adapter" ? "preparing" : "submitting");
+        if (owner === "adapter") await onAuthorizedDispatch!();
+        assert.equal((await listAudioJobs(h.directory, h.session.id))[0]?.status, "submitting");
+        return { kind: "audio" as const, outputs: [{ role: "music" as const, bytes: waveBytes() }] };
+      };
+      return owner === "adapter" ? withGenerationAuthorization(signal, dispatch) : dispatch();
+    };
+    const job = await generateAudio({ ...h.context, withGenerationAuthorization }, "music-a", {
+      operation: "generate_music", prompt: "Piano", instrumental: true,
+    });
+    assert.equal(job.status, "completed");
+    assert.equal(job.outputAssets.length, 1);
+    assert.equal(leases, 1);
+    assert.equal(authorized, false);
+  });
+}
+
 test("named music and sound-effect connections produce immutable usable results without credential leakage", async (t) => {
   const h = await harness(t);
   const music = await generateAudio(h.context, "music-a", { operation: "generate_music", prompt: "Sparse piano", durationSeconds: 12, instrumental: true });

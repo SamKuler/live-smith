@@ -1,19 +1,20 @@
+import { AudioToolOutcomeUnknownError } from "../../../audio-services/contracts.js";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AudioAsset, AudioJob, AudioOrigin, SunoUploadMutationStage, SunoUploadReceipt } from "../../audio-services/contracts.js";
-import { AudioSubmissionNotStartedError, MAX_AUDIO_ASSET_DURATION_SECONDS, SUNO_UPLOAD_MUTATIONS } from "../../audio-services/contracts.js";
-import { createSunoUploadAdapter, type SunoUploadAdapter, type SunoUploadSpec } from "../../audio-services/suno/suno-upload.js";
-import { readAudioAsset, saveAudioAsset } from "../../storage/audio-assets.js";
-import { createAudioJob, loadAudioJob, updateAudioJob } from "../../storage/audio-jobs.js";
-import { throwIfAborted } from "../../runtime/host.js";
-import type { AudioProcessingContext } from "./audio-processing.js";
-import { acquireAudioJob } from "./audio-job-runtime.js";
-import { integrationConnectionFingerprint, resolveIntegrationConnection, type RuntimeIntegrationConnection } from "../plugins/integration-connections.js";
+import type { AudioAsset, AudioJob, AudioOrigin, SunoUploadMutationStage, SunoUploadReceipt } from "../../../audio-services/contracts.js";
+import { AudioSubmissionNotStartedError, MAX_AUDIO_ASSET_DURATION_SECONDS, SUNO_UPLOAD_MUTATIONS } from "../../../audio-services/contracts.js";
+import { createSunoUploadAdapter, type SunoUploadAdapter, type SunoUploadSpec } from "../../../audio-services/suno/suno-upload.js";
+import { readAudioAsset, saveAudioAsset } from "../../../storage/audio-assets.js";
+import { createAudioJob, loadAudioJob, updateAudioJob } from "../../../storage/audio-jobs.js";
+import { throwIfAborted } from "../../../runtime/host.js";
+import type { AudioProcessingContext } from "../audio-processing.js";
+import { acquireAudioJob } from "../audio-job-runtime.js";
+import { integrationConnectionFingerprint, resolveIntegrationConnection, type RuntimeIntegrationConnection } from "../../plugins/integration-connections.js";
 import { persistRotatedSunoSession } from "./suno-session-manager.js";
-import { providerFetchForStorage } from "../model/provider-fetch.js";
-import { audioMessage as m } from "./audio-messages.js";
+import { providerFetchForStorage } from "../../model/provider-fetch.js";
+import { audioMessage as m } from "../audio-messages.js";
 
 export interface SunoUploadOptions { adapter?: SunoUploadAdapter }
-export class SunoUploadOutcomeUnknownError extends Error {
+export class SunoUploadOutcomeUnknownError extends AudioToolOutcomeUnknownError {
   constructor() { super("The upload outcome could not be recorded. Check Suno and the saved upload receipt before continuing; do not submit it again automatically."); }
 }
 const legacyPendingMutation = (stage: SunoUploadReceipt["stage"]) => Object.hasOwn(SUNO_UPLOAD_MUTATIONS, stage);
@@ -27,7 +28,7 @@ export async function uploadSunoMusic(
   if (!context.withGenerationAuthorization) throw new Error("Audio upload authorization is unavailable.");
   throwIfAborted(context.signal);
   const settings = await connection(context, connectionId);
-  const adapter = options.adapter ?? context.sunoUploadAdapter ?? uploadAdapter(context, settings);
+  const adapter = options.adapter ?? context.pluginOverrides?.uploadAdapter ?? uploadAdapter(context, settings);
   const limits = await adapter.limits(context.signal);
   const job = await createAudioJob(context.storageDirectory, context.sessionId, {
     provider: "suno", serviceId: connectionId, connectionFingerprint: integrationConnectionFingerprint(settings), operation: "upload_music", stems: [],
@@ -71,7 +72,7 @@ export async function resumeSunoUpload(context: AudioProcessingContext, job: Aud
   if (integrationConnectionFingerprint(settings) !== job.connectionFingerprint) throw new Error("This upload belongs to another Suno account.");
   const { asset, bytes } = await readAudioAsset(context.storageDirectory, context.sessionId, job.sourceAssetId, context.signal);
   if (asset.sha256 !== job.upload.sourceSha256) throw new Error("The saved upload source changed.");
-  const adapter = options.adapter ?? context.sunoUploadAdapter ?? uploadAdapter(context, settings);
+  const adapter = options.adapter ?? context.pluginOverrides?.uploadAdapter ?? uploadAdapter(context, settings);
   const limits = await adapter.limits(context.signal);
   if (asset.durationSeconds < limits.minimumSeconds || asset.durationSeconds > limits.maximumSeconds) throw new Error("Audio duration is outside this Suno account's upload limits.");
   return ownUpload(context, job, settings, adapter, asset, bytes);

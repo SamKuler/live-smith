@@ -1,13 +1,9 @@
+import type { MusicServiceQuery } from "../contracts.js";
 import { createSunoHttp, type SunoSessionRefreshHandler } from "./suno-http.js";
 
 type SunoHttp = ReturnType<typeof createSunoHttp>;
 export type SunoSession = { clientToken: string; accountId: string };
-export type SunoMusicServiceRequest = {
-  query: "catalog" | "library" | "persona";
-  search?: string;
-  cursor?: string;
-  personaId?: string;
-};
+export type SunoMusicServiceRequest = MusicServiceQuery;
 
 const LIMIT_FIELDS = ["title", "prompt", "tags", "negative_tags", "gpt_description_prompt"] as const;
 type LimitField = (typeof LIMIT_FIELDS)[number];

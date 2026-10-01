@@ -5,7 +5,7 @@ import { URL } from "node:url";
 import type { LiveInteractionContext } from "../../../src/live/context.js";
 import { chatDialogStateForWire, type ChatDialogState } from "../../../src/ui/chat-state.js";
 import { runAgentFlow } from "../../../src/app/agent-flow.js";
-import { SunoSessionManager } from "../../../src/app/audio/suno-session-manager.js";
+import { SunoSessionManager } from "../../../src/app/audio/suno/suno-session-manager.js";
 import { liveContextPresentationFixture } from "../context/support/live-context.test-harness.js";
 import { SunoSessions } from "../../../src/storage/suno-sessions.js";
 import { subscribeGlobalStateInvalidations } from "../../../src/app/session/session-state-events.js";

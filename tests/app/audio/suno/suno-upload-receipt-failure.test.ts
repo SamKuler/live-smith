@@ -2,16 +2,16 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
-import { retrievalHarness, connection, clipIds } from "./support/audio-retrieval-test-helpers.js";
-import { captureIntegrationConnections, integrationConnectionFingerprint } from "../../../src/app/plugins/integration-connections.js";
-import { createAudioJob, updateAudioJob, bindAudioDirectory, listAudioJobs } from "../../../src/storage/audio-jobs.js";
-import { saveAudioAsset } from "../../../src/storage/audio-assets.js";
-import { loadSessionEvents } from "../../../src/storage/events.js";
-import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
-import { loadAudioParameterGroups, runAudioParameterTool } from "../../../src/app/audio/audio-parameter-tool.js";
-import type { SunoUploadAdapter } from "../../../src/audio-services/suno/suno-upload.js";
-import { ChatBridgeCommandOutcomeUnknownError } from "../../../src/app/chat/chat-bridge.js";
-import { audioJobViews, resumeAudioJob } from "../../../src/app/audio/audio-processing.js";
+import { retrievalHarness, connection, clipIds } from "../support/audio-retrieval-test-helpers.js";
+import { captureIntegrationConnections, integrationConnectionFingerprint } from "../../../../src/app/plugins/integration-connections.js";
+import { createAudioJob, updateAudioJob, bindAudioDirectory, listAudioJobs } from "../../../../src/storage/audio-jobs.js";
+import { saveAudioAsset } from "../../../../src/storage/audio-assets.js";
+import { loadSessionEvents } from "../../../../src/storage/events.js";
+import { waveBytes } from "../../../storage/support/audio-storage-test-helpers.js";
+import { loadAudioParameterGroups, runAudioParameterTool } from "../../../../src/app/audio/audio-parameter-tool.js";
+import type { SunoUploadAdapter } from "../../../../src/audio-services/suno/suno-upload.js";
+import { ChatBridgeCommandOutcomeUnknownError } from "../../../../src/app/chat/chat-bridge.js";
+import { audioJobViews, resumeAudioJob } from "../../../../src/app/audio/audio-processing.js";
 
 for (const phase of ["before-dispatch", "after-initialize"] as const) test(`manual upload preserves dispatch certainty when receipt storage fails ${phase}`, async (t) => {
   const h = await retrievalHarness(t);
@@ -60,7 +60,7 @@ for (const phase of ["before-dispatch", "after-initialize"] as const) test(`manu
     target: {}, signal: h.controller.signal, onProgress() {}, onAssets() {},
     withAdmissionAuthorization: async (_signal, operation) => operation(),
     withGenerationAuthorization: async (_signal, operation) => operation(),
-    processing: { sunoUploadAdapter: adapter }, toolName: panel.toolName, signature: panel.signature,
+    processing: { pluginOverrides: { uploadAdapter: adapter } }, toolName: panel.toolName, signature: panel.signature,
     arguments: { connectionId: connection.id, rightsConfirmed: true, source: { kind: "audio_asset", assetRef: asset.id } },
   });
   try {
@@ -85,7 +85,7 @@ for (const phase of ["before-dispatch", "after-initialize"] as const) test(`manu
     assert.deepEqual(calls, ["create", "upload", "finish", "initialize"]);
     assert.equal(JSON.parse(events[1]!.content).status, "unknown");
     assert.equal((await audioJobViews(h.directory, h.session.id)).find((job) => job.id === saved.id)!.resumable, false);
-    await assert.rejects(resumeAudioJob({ ...h.context, sunoUploadAdapter: adapter,
+    await assert.rejects(resumeAudioJob({ ...h.context, pluginOverrides: { uploadAdapter: adapter },
       withGenerationAuthorization: async (_signal, operation) => operation() }, saved.id), /cannot be sent again/);
     assert.deepEqual(calls, ["create", "upload", "finish", "initialize"]);
   }

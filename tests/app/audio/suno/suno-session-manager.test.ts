@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test, { type TestContext } from "node:test";
-import type { SunoSessionIdentity } from "../../../src/audio-services/suno/suno-session-contracts.js";
-import { SunoSessionExpiredError } from "../../../src/audio-services/suno/suno-session.js";
-import { createHostAbortController } from "../../../src/runtime/host.js";
-import { isStorageCommitOutcomeUnknownError, StorageCommitOutcomeUnknownError, withStorageTransaction } from "../../../src/storage/persistence.js";
-import { loadAgentSettings, saveGlobalSettings } from "../../../src/storage/settings.js";
-import { SunoSessions, SunoSessionStorageError } from "../../../src/storage/suno-sessions.js";
-import { persistRotatedSunoSession, SunoSessionManager } from "../../../src/app/audio/suno-session-manager.js";
-import { integrationConnectionFixture } from "../plugins/support/integration-connection-test-helpers.js";
+import type { SunoSessionIdentity } from "../../../../src/audio-services/suno/suno-session-contracts.js";
+import { SunoSessionExpiredError } from "../../../../src/audio-services/suno/suno-session.js";
+import { createHostAbortController } from "../../../../src/runtime/host.js";
+import { isStorageCommitOutcomeUnknownError, StorageCommitOutcomeUnknownError, withStorageTransaction } from "../../../../src/storage/persistence.js";
+import { loadAgentSettings, saveGlobalSettings } from "../../../../src/storage/settings.js";
+import { SunoSessions, SunoSessionStorageError } from "../../../../src/storage/suno-sessions.js";
+import { persistRotatedSunoSession, SunoSessionManager } from "../../../../src/app/audio/suno/suno-session-manager.js";
+import { integrationConnectionFixture } from "../../plugins/support/integration-connection-test-helpers.js";
 
 const token = "__client=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzeW50aGV0aWMifQ.c3ludGhldGlj";
 const replacement = "__client=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJyZXBsYWNlbWVudCJ9.c3ludGhldGlj";

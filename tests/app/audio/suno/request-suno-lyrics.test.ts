@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
 import test from "node:test";
-import { SunoLyricsOutcomeUnknownError } from "../../../src/audio-services/suno/suno-lyrics.js";
-import { createSession } from "../../../src/storage/sessions.js";
-import { SunoSessions } from "../../../src/storage/suno-sessions.js";
-import { listAudioJobs } from "../../../src/storage/audio-jobs.js";
-import { loadSessionEvents } from "../../../src/storage/events.js";
-import { saveIntegrationConnection } from "../plugins/support/integration-connection-test-helpers.js";
-import { loadAudioParameterGroups, runAudioParameterTool } from "../../../src/app/audio/audio-parameter-tool.js";
-import { ChatBridgeCommandOutcomeUnknownError } from "../../../src/app/chat/chat-bridge.js";
+import { SunoLyricsOutcomeUnknownError } from "../../../../src/audio-services/suno/suno-lyrics.js";
+import { createSession } from "../../../../src/storage/sessions.js";
+import { SunoSessions } from "../../../../src/storage/suno-sessions.js";
+import { listAudioJobs } from "../../../../src/storage/audio-jobs.js";
+import { loadSessionEvents } from "../../../../src/storage/events.js";
+import { saveIntegrationConnection } from "../../plugins/support/integration-connection-test-helpers.js";
+import { loadAudioParameterGroups, runAudioParameterTool } from "../../../../src/app/audio/audio-parameter-tool.js";
+import { ChatBridgeCommandOutcomeUnknownError } from "../../../../src/app/chat/chat-bridge.js";
 
 const authorize = async <T>(_signal: AbortSignal, operation: () => Promise<T>): Promise<T> => operation();
 async function harness(t: { after(fn: () => Promise<void>): void }) {
@@ -33,10 +33,10 @@ test("manual lyric writing records confirmed text in history without creating an
   let calls = 0, leases = 0;
   assert.deepEqual(await runAudioParameterTool({ ...h.input,
     withGenerationAuthorization: async (signal, operation) => { leases++; return authorize(signal, operation); },
-    processing: { sunoLyricsWriter: async (session, request) => {
-      calls++; assert.equal(session.accountId, "user_fixture"); assert.equal(request.selected, "");
+    processing: { pluginOverrides: { plugin: { writeLyrics: async (session, request) => {
+      calls++; assert.equal(session.sunoSession!.accountId, "user_fixture"); assert.equal(request.selected, "");
       return { status: "completed", lyrics: "A new verse" };
-    } },
+    } } } },
   }), { failed: false });
   assert.equal(calls, 1);
   assert.equal(leases, 1);
@@ -49,9 +49,9 @@ test("manual lyric writing records confirmed text in history without creating an
 test("manual lyric writing records and reports an unknown outcome without an automatic retry", async (t) => {
   const h = await harness(t);
   let calls = 0;
-  await assert.rejects(runAudioParameterTool({ ...h.input, processing: { sunoLyricsWriter: async () => {
+  await assert.rejects(runAudioParameterTool({ ...h.input, processing: { pluginOverrides: { plugin: { writeLyrics: async () => {
     calls++; throw new SunoLyricsOutcomeUnknownError();
-  } } }), ChatBridgeCommandOutcomeUnknownError);
+  } } } } }), ChatBridgeCommandOutcomeUnknownError);
   assert.equal(calls, 1);
   assert.equal(JSON.parse((await loadSessionEvents(h.storage, h.session.id))[1]!.content).status, "unknown");
   assert.deepEqual(await listAudioJobs(h.storage, h.session.id), []);

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { retrievalHarness, connection, clipIds } from "./support/audio-retrieval-test-helpers.js";
-import { createRequestAudioTools } from "../../../src/app/audio/request-audio-tools.js";
-import { saveSessionAttachment, sessionAttachmentRefFromStored } from "../../../src/storage/attachments.js";
-import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
-import { listAudioJobs } from "../../../src/storage/audio-jobs.js";
-import type { SunoUploadAdapter } from "../../../src/audio-services/suno/suno-upload.js";
-import type { AudioGenerationRequest } from "../../../src/audio-services/contracts.js";
+import { retrievalHarness, connection, clipIds } from "../support/audio-retrieval-test-helpers.js";
+import { createRequestAudioTools } from "../../../../src/app/audio/request-audio-tools.js";
+import { saveSessionAttachment, sessionAttachmentRefFromStored } from "../../../../src/storage/attachments.js";
+import { waveBytes } from "../../../storage/support/audio-storage-test-helpers.js";
+import { listAudioJobs } from "../../../../src/storage/audio-jobs.js";
+import type { SunoUploadAdapter } from "../../../../src/audio-services/suno/suno-upload.js";
+import type { AudioGenerationRequest } from "../../../../src/audio-services/contracts.js";
 
 test("a request-scoped attachment upload makes its acknowledged clip available to later creation tools", async (t) => {
   const h = await retrievalHarness(t);
@@ -30,7 +30,7 @@ test("a request-scoped attachment upload makes its acknowledged clip available t
     requestId: "current-request", attachmentRefs: [ref], target: {}, signal: h.controller.signal,
     onProgress() {}, onAssets() {},
     withGenerationAuthorization: async (_signal, run) => run(),
-    processing: { sunoUploadAdapter: adapter, wait: async () => {},
+    processing: { pluginOverrides: { uploadAdapter: adapter }, wait: async () => {},
       generationAdapter: { provider: "suno", submit: async (request) => {
         generated.push(request); return { kind: "audio", outputs: [{ role: "music", bytes: waveBytes() }] };
       } },
