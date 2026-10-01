@@ -486,7 +486,7 @@ runs in workers with a 30-second deadline and a V8 heap limit. RTF retains a
 bounded built-in text reader. Spreadsheets retain sheet names, coordinates,
 stored values and formulas; missing formula caches are marked unavailable.
 Explicitly hidden Word runs, PowerPoint slides/shapes, and XLSX sheets/rows/columns
-are omitted, along with explicitly hidden ODS sheets and collapsed or filtered rows.
+are omitted, along with explicitly hidden ODS sheets and collapsed or filtered rows and columns.
 Office formatting, embedded images, and chart geometry are not
 rendered by local text extraction. Legacy DOC/XLS/PPT, XLSB, and video frames
 are not accepted as model context; historical legacy Office references remain

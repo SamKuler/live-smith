@@ -19,12 +19,44 @@ async function parse(job: ParseJob): Promise<void> {
     let bytes = job.bytes;
     let parts: Record<string, Uint8Array> = unzipSync(bytes);
     const hiddenSheets = new Set<string>();
+    const hiddenColumns = new Map<string, { first: number; end: number }[]>();
     let slideOrder: { position: number; hasText: boolean }[] | undefined;
     let omittedSlides = false;
     if (job.canonicalOdfContent !== undefined) {
       parts = Object.fromEntries(["mimetype", "META-INF/manifest.xml", "content.xml", "styles.xml"]
         .filter((name) => Object.hasOwn(parts, name)).map((name) => [name, parts[name]!]));
-      const content = readXml(strToU8(job.canonicalOdfContent));
+      let content = readXml(strToU8(job.canonicalOdfContent));
+      if (job.fileType === "ods") {
+        const rootAttributes = childrenNamed(content, "office:document-content")[0]!.attributes;
+        const vocabulary = Object.fromEntries(Object.entries(rootAttributes)
+          .filter(([name]) => name.startsWith("xmlns:") && !/^xmlns:ns\d+$/u.test(name))
+          .map(([name, uri]) => [uri, name.slice(6)]));
+        const policy = { elements: vocabulary, attributes: vocabulary, unqualifiedAttributes: false };
+        if (parts["styles.xml"]) parts["styles.xml"] = writeXml(projectNamespaces(readXml(parts["styles.xml"]), policy));
+        const styleRoot = parts["styles.xml"] ? readXml(parts["styles.xml"]) : [{ "office:document-styles": [], ":@": rootAttributes }];
+        const styleElement = childrenNamed(styleRoot, "office:document-styles")[0];
+        const styleContent = projectNamespaces(content, policy);
+        const automatic = childrenNamed(childrenNamed(styleContent, "office:document-content")[0]!, "office:automatic-styles");
+        if (styleElement) {
+          styleElement.children.push(...automatic.map((node) => ({ "office:automatic-styles": node.children, ":@": node.attributes })));
+          parts["styles.xml"] = writeXml(styleRoot);
+        }
+        content = projectNamespaces(content, { ...policy, members: ODS_MEMBERS, children: ODS_CHILDREN,
+          textContainers: ["text:p", "text:h", "text:span", "text:a"], omittedTextElements: ["text:tracked-changes", "text:deletion"] });
+        const tables = findNodes(content, "table:table");
+        distinctSheetNames(tables.map((node) => node.attributes["table:name"]));
+        for (const table of tables) {
+          const ranges: { first: number; end: number }[] = [];
+          let column = 0;
+          for (const definition of findNodes(table.children, "table:table-column")) {
+            const repeat = Number(definition.attributes["table:number-columns-repeated"] ?? 1);
+            if (!Number.isSafeInteger(repeat) || repeat < 1) throw new Error("Invalid column repetition.");
+            if (["collapse", "filter"].includes(definition.attributes["table:visibility"] ?? "")) ranges.push({ first: column, end: column + repeat });
+            column += repeat;
+          }
+          hiddenColumns.set(table.attributes["table:name"]!, ranges);
+        }
+      }
       const prepareSheet = (nodes: OrderedXml[]): OrderedXml[] => nodes.map((node) => {
         const tag = tagOf(node);
         if (!tag) return node;
@@ -102,7 +134,7 @@ async function parse(job: ParseJob): Promise<void> {
     }
     bytes = zipSync(parts);
     if (job.fileType === "xlsx" || job.fileType === "ods") {
-      const result = extractSpreadsheet(bytes, job.maxCharacters, job.fileType, hiddenSheets);
+      const result = extractSpreadsheet(bytes, job.maxCharacters, job.fileType, hiddenSheets, hiddenColumns);
       parentPort!.postMessage({ ok: true, ...result });
       return;
     }
@@ -163,9 +195,7 @@ async function parse(job: ParseJob): Promise<void> {
   }
 }
 
-void parse(workerData as ParseJob);
-
-function extractSpreadsheet(bytes: Uint8Array, maxCharacters: number, fileType: "xlsx" | "ods", hiddenSheets: ReadonlySet<string>): { text: string; truncated: boolean } {
+function extractSpreadsheet(bytes: Uint8Array, maxCharacters: number, fileType: "xlsx" | "ods", hiddenSheets: ReadonlySet<string>, hiddenColumns: ReadonlyMap<string, readonly { first: number; end: number }[]>): { text: string; truncated: boolean } {
   const workbook = XLSX.read(bytes, { type: "array", dense: true, cellFormula: true,
     // XLSX needs styles for hidden-row/column metadata; enabling styles also forces blank-cell stubs.
     cellHTML: false, cellDates: true, sheetStubs: false, cellStyles: fileType === "xlsx" });
@@ -205,6 +235,7 @@ function extractSpreadsheet(bytes: Uint8Array, maxCharacters: number, fileType: 
       for (const [columnKey, cell] of Object.entries(row)) {
         if (!cell || (cell.t === "z" && !cell.f) || (cell.v === undefined && !cell.f)) continue;
         if (sheet["!cols"]?.[Number(columnKey)]?.hidden) continue;
+        if (hiddenColumns.get(name)?.some((range) => Number(columnKey) >= range.first && Number(columnKey) < range.end)) continue;
         const address = XLSX.utils.encode_cell({ r: Number(rowKey), c: Number(columnKey) });
         const value = cell.t === "z" ? "[cached value unavailable]" : cell.t === "e" ? XLSX.utils.format_cell(cell)
           : cell.v instanceof Date ? cell.v.toISOString() : String(cell.v ?? "");
@@ -281,7 +312,7 @@ function canonicalWorkbookOrDocument(source: Record<string, Uint8Array>, kind: "
     throw new Error("Missing document body.");
   }
   const result: Record<string, Uint8Array> = {};
-  const names = new Map<string, string>([[main, main]]);
+  const names = new Map<string, { path: string; role: string }>([[main, { path: main, role: "officeDocument" }]]);
   const counts = new Map<string, number>();
   const roles: Record<string, { path: string; root: string }> = word ? {
     header: { path: "word/header#.xml", root: "w:hdr" }, footer: { path: "word/footer#.xml", root: "w:ftr" },
@@ -291,9 +322,19 @@ function canonicalWorkbookOrDocument(source: Record<string, Uint8Array>, kind: "
     worksheet: { path: "xl/worksheets/sheet#.xml", root: "worksheet" },
     styles: { path: "xl/styles.xml", root: "styleSheet" }, sharedStrings: { path: "xl/sharedStrings.xml", root: "sst" },
   };
-  const sheetIds = new Set(findNodes(mainXml, "sheet").map((sheet) => sheet.attributes["r:id"]));
+  const sheets = word ? [] : childrenNamed(childrenNamed(mainXml, "workbook")[0]!, "sheets")
+    .flatMap((list) => childrenNamed(list, "sheet"));
+  if (!word) distinctSheetNames(sheets.map((sheet) => sheet.attributes.name));
+  const sheetIds = new Set<string>();
+  const numericIds = new Set<string>();
+  for (const sheet of sheets) {
+    const id = sheet.attributes["r:id"];
+    const numericId = sheet.attributes.sheetId;
+    if (!id || sheetIds.has(id) || !numericId || numericIds.has(numericId)) throw new Error("Ambiguous sheet identity.");
+    sheetIds.add(id); numericIds.add(numericId);
+  }
   const visit = (owner: string, destination: string, xml: OrderedXml[]): void => {
-    result[destination] = writeXml(xml);
+    result[destination] = writeXml(!word && destination.startsWith("xl/worksheets/") ? preserveFormulaCaches(xml) : xml);
     const kept: XmlChildren[] = [];
     for (const relationship of relationshipsFor(source, owner)) {
       const role = relationshipRole(relationship);
@@ -302,18 +343,22 @@ function canonicalWorkbookOrDocument(source: Record<string, Uint8Array>, kind: "
         if (role === "hyperlink" && relationship.attributes.TargetMode === "External") kept.push(relationship);
         continue;
       }
-      if (owner === main && role === "worksheet" && !sheetIds.has(relationship.attributes.Id)) continue;
+      if (owner === main && role === "worksheet" && !sheetIds.has(relationship.attributes.Id!)) continue;
       const part = relationshipPart(owner, relationship);
-      let canonical = names.get(part);
-      if (canonical === undefined) {
+      let identity = names.get(part);
+      if (identity && identity.role !== role) throw new Error("Conflicting semantic part roles.");
+      if (identity === undefined) {
         const count = (counts.get(role) ?? 0) + 1; counts.set(role, count);
-        canonical = descriptor.path.replace("#", String(count));
-        if (Object.hasOwn(result, canonical)) throw new Error("Ambiguous semantic part.");
-        names.set(part, canonical);
-        visit(part, canonical, officeXml(source, part, descriptor.root, word ? "wordprocessingml" : "spreadsheetml"));
+        identity = { path: descriptor.path.replace("#", String(count)), role };
+        if (Object.hasOwn(result, identity.path)) throw new Error("Ambiguous semantic part.");
+        names.set(part, identity);
+        visit(part, identity.path, officeXml(source, part, descriptor.root, word ? "wordprocessingml" : "spreadsheetml"));
       }
       kept.push({ ...relationship, attributes: { ...relationship.attributes,
-        Target: posix.relative(posix.dirname(destination), canonical) } });
+        Target: posix.relative(posix.dirname(destination), identity.path) } });
+    }
+    if (owner === main && !word && [...sheetIds].some((id) => !kept.some((node) => node.attributes.Id! === id && relationshipRole(node) === "worksheet"))) {
+      throw new Error("Missing worksheet relationship.");
     }
     if (kept.length) result[relationshipFile(destination)] = writeRelationships(kept);
   };
@@ -323,8 +368,8 @@ function canonicalWorkbookOrDocument(source: Record<string, Uint8Array>, kind: "
     ...node, Types: (node.Types as OrderedXml[]).flatMap((declaration) => {
       if (tagOf(declaration) !== "Override") return [declaration];
       const attributes = declaration[":@"] as Record<string, string>;
-      const name = names.get(attributes.PartName?.replace(/^\//u, "") ?? "");
-      return name ? [{ ...declaration, ":@": { ...attributes, PartName: `/${name}` } }] : [];
+      const identity = names.get(attributes.PartName?.replace(/^\//u, "") ?? "");
+      return identity ? [{ ...declaration, ":@": { ...attributes, PartName: `/${identity.path}` } }] : [];
     }),
   }));
   result["_rels/.rels"] = writeRelationships([{ attributes: { Id: "main", Type:
@@ -355,7 +400,10 @@ function relationshipsFor(parts: Record<string, Uint8Array>, owner: string): Xml
   const roots = childrenNamed(nodes, "Relationships");
   if (roots.length !== 1 || !["http://schemas.openxmlformats.org/package/2006/relationships", "http://purl.oclc.org/ooxml/package/relationships"]
     .includes(roots[0]!.attributes.xmlns ?? "")) throw new Error("Invalid part relationships.");
-  const relationships = childrenNamed(roots[0]!, "Relationship");
+  const normalized = projectNamespaces(nodes, { elements: { [roots[0]!.attributes.xmlns!]: "" },
+    attributes: {}, unqualifiedAttributes: true, members: { Relationships: [], Relationship: ["Id", "Type", "Target", "TargetMode"] },
+    children: { Relationships: ["Relationship"] } });
+  const relationships = childrenNamed(childrenNamed(normalized, "Relationships")[0]!, "Relationship");
   const ids = new Set<string>();
   for (const relationship of relationships) {
     const id = relationship.attributes.Id;
@@ -380,21 +428,183 @@ function officeXml(parts: Record<string, Uint8Array>, name: string, rootName: st
     `http://schemas.openxmlformats.org/${family}/2006/main`, `http://purl.oclc.org/ooxml/${family}/main`,
   ].includes(namespace ?? "")) throw new Error("Invalid semantic part identity.");
   const bindings: Record<string, string> = { [namespaceName]: namespace! };
-  if (family === "presentationml") {
-    bindings["xmlns:a"] = namespace!.replace("presentationml", "drawingml");
-    bindings["xmlns:r"] = namespace!.includes("purl.oclc.org")
-      ? "http://purl.oclc.org/ooxml/officeDocument/relationships"
-      : "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-  }
-  const visit = (items: OrderedXml[]): void => {
+  if (family === "presentationml") bindings["xmlns:a"] = namespace!.replace("presentationml", "drawingml");
+  bindings["xmlns:r"] = namespace!.includes("purl.oclc.org")
+    ? "http://purl.oclc.org/ooxml/officeDocument/relationships"
+    : "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+  const visit = (items: OrderedXml[], inherited: Record<string, string> = {}): void => {
     for (const node of items) {
       const attributes = (node[":@"] ?? {}) as Record<string, string>;
       for (const [key, expected] of Object.entries(bindings)) {
         if (attributes[key] !== undefined && attributes[key] !== expected) throw new Error("Rebound semantic namespace.");
       }
-      const tag = tagOf(node); if (tag) visit(node[tag] as OrderedXml[]);
+      const scoped = { ...inherited };
+      for (const [key, value] of Object.entries(attributes)) if (key === "xmlns" || key.startsWith("xmlns:")) scoped[key] = value;
+      const tag = tagOf(node);
+      if (tag && !tag.startsWith("?")) {
+        for (const name of [tag, ...Object.keys(attributes).filter((key) => !key.startsWith("xmlns") && key.includes(":"))]) {
+          const key = name.includes(":") ? `xmlns:${name.split(":")[0]}` : "xmlns";
+          if (bindings[key] !== undefined && scoped[key] !== bindings[key]) throw new Error("Unbound semantic namespace.");
+        }
+        visit(node[tag] as OrderedXml[], scoped);
+      }
     }
   };
   visit(nodes);
-  return nodes;
+  return family === "spreadsheetml" ? projectNamespaces(nodes, {
+    elements: { [namespace!]: "" }, attributes: { [bindings["xmlns:r"]!]: "r", "http://www.w3.org/XML/1998/namespace": "xml" },
+    unqualifiedAttributes: true, attributeNames: { r: ["id"], xml: ["space", "lang"] },
+    ...(rootName === "styleSheet" ? {} : { members: XLSX_MEMBERS, children: XLSX_CHILDREN }),
+  }) : nodes;
 }
+
+function distinctSheetNames(names: readonly (string | undefined)[]): void {
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (!name || seen.has(name)) throw new Error("Ambiguous sheet name.");
+    seen.add(name);
+  }
+}
+
+/** Preserve raw value presence before the library synthesizes typed defaults. */
+function preserveFormulaCaches(nodes: OrderedXml[]): OrderedXml[] {
+  return nodes.map((node) => {
+    const tag = tagOf(node); if (!tag) return node;
+    let children = preserveFormulaCaches(node[tag] as OrderedXml[]);
+    if (tag === "c") {
+      const attributes = (node[":@"] ?? {}) as Record<string, string>;
+      const values = childrenNamed(children, "v");
+      const cached = values.length === 1 && (attributes.t === "str" || hasXmlText(values[0]!.children) &&
+        values[0]!.children.some((child) => String(child["#text"] ?? "").trim()));
+      if (!cached && childrenNamed(children, "f").length) {
+        children = [...children.filter((child) => !["v", "is"].includes(tagOf(child) ?? "")), { v: [{ "#text": "[cached value unavailable]" }] }];
+        return { ...node, c: children, ":@": { ...attributes, t: "str" } };
+      }
+      if (!cached && !childrenNamed(children, "is").length) {
+        const cleaned = { ...attributes }; delete cleaned.t;
+        return { ...node, c: children.filter((child) => tagOf(child) !== "v"), ":@": cleaned };
+      }
+    }
+    return { ...node, [tag]: children };
+  });
+}
+
+interface NamespacePolicy {
+  elements: Readonly<Record<string, string>>;
+  attributes: Readonly<Record<string, string>>;
+  unqualifiedAttributes: boolean;
+  attributeNames?: Readonly<Record<string, readonly string[]>>;
+  members?: Readonly<Record<string, readonly string[]>>;
+  children?: Readonly<Record<string, readonly string[]>>;
+  textContainers?: readonly string[];
+  omittedTextElements?: readonly string[];
+}
+/** Feed prefix-insensitive libraries only namespace-owned semantic XML. */
+function projectNamespaces(nodes: OrderedXml[], policy: NamespacePolicy): OrderedXml[] {
+  const visit = (items: OrderedXml[], inherited: Record<string, string>, parent?: string): OrderedXml[] => items.flatMap((node) => {
+    const tag = tagOf(node);
+    if (!tag || tag.startsWith("?")) return [node];
+    const attributes = (node[":@"] ?? {}) as Record<string, string>;
+    const scoped = { ...inherited };
+    for (const [name, value] of Object.entries(attributes)) {
+      if (name === "xmlns") scoped[""] = value;
+      else if (name.startsWith("xmlns:")) scoped[name.slice(6)] = value;
+    }
+    const expanded = (name: string, attribute: boolean): { uri: string; local: string } => {
+      const colon = name.indexOf(":");
+      const prefix = colon < 0 ? "" : name.slice(0, colon);
+      if (prefix && !scoped[prefix]) throw new Error("Undeclared XML namespace.");
+      return { uri: colon < 0 && attribute ? "" : scoped[prefix] ?? "", local: colon < 0 ? name : name.slice(colon + 1) };
+    };
+    const element = expanded(tag, false);
+    if (!Object.hasOwn(policy.elements, element.uri)) return [];
+    const prefix = policy.elements[element.uri]!;
+    const name = prefix ? `${prefix}:${element.local}` : element.local;
+    const childNames = parent && policy.members ? policy.children?.[parent] ?? [] : undefined;
+    if (policy.members && !Object.hasOwn(policy.members, name) || childNames && !childNames.includes(name)) {
+      if (!parent || !policy.textContainers?.includes(parent) || prefix !== parent.split(":")[0]) return [];
+      const flatten = (items: OrderedXml[], inherited: Record<string, string>): OrderedXml[] => items.flatMap((item) => {
+        const tag = tagOf(item); if (!tag) return [item];
+        const attributes = (item[":@"] ?? {}) as Record<string, string>;
+        const scope = { ...inherited };
+        for (const [key, value] of Object.entries(attributes)) {
+          if (key === "xmlns") scope[""] = value;
+          else if (key.startsWith("xmlns:")) scope[key.slice(6)] = value;
+        }
+        const colon = tag.indexOf(":");
+        const local = colon < 0 ? tag : tag.slice(colon + 1);
+        const uri = scope[colon < 0 ? "" : tag.slice(0, colon)];
+        if (uri !== element.uri || policy.omittedTextElements?.includes(`${prefix}:${local}`)) return [];
+        return flatten(item[tag] as OrderedXml[], scope);
+      });
+      return flatten([node], inherited);
+    }
+    const allowed = policy.members?.[name];
+    const kept: Record<string, string> = {};
+    for (const [key, value] of Object.entries(attributes)) {
+      if (key === "xmlns" || key.startsWith("xmlns:")) continue;
+      const attribute = expanded(key, true);
+      if (!key.includes(":")) { if (policy.unqualifiedAttributes && (!allowed || allowed.includes(key))) kept[key] = value; continue; }
+      const alias = policy.attributes[attribute.uri];
+      if (alias === undefined || !alias || policy.attributeNames?.[alias] && !policy.attributeNames[alias]!.includes(attribute.local)) continue;
+      const canonical = `${alias}:${attribute.local}`;
+      if (allowed && !allowed.includes(canonical)) continue;
+      if (kept[canonical] !== undefined) throw new Error("Duplicate expanded attribute.");
+      kept[canonical] = value;
+    }
+    return [{ [name]: visit(node[tag] as OrderedXml[], scoped, name), ":@": kept }];
+  });
+  const projected = visit(nodes, { xml: "http://www.w3.org/XML/1998/namespace" });
+  for (const node of projected) {
+    const tag = tagOf(node); if (!tag || tag.startsWith("?")) continue;
+    const declarations = { ...(node[":@"] as Record<string, string>) };
+    for (const [uri, prefix] of Object.entries({ ...policy.elements, ...policy.attributes })) declarations[prefix ? `xmlns:${prefix}` : "xmlns"] = uri;
+    node[":@"] = declarations;
+  }
+  return projected;
+}
+
+// These are the semantic branches and fields consumed for spreadsheet context.
+// Formatting remains in its separately parsed style part.
+const XLSX_MEMBERS: Readonly<Record<string, readonly string[]>> = {
+  workbook: [], workbookPr: ["date1904"], sheets: [], sheet: ["name", "sheetId", "state", "r:id"],
+  definedNames: [], definedName: ["name", "localSheetId", "hidden"],
+  worksheet: [], dimension: ["ref"], sheetData: [], row: ["r", "hidden"], c: ["r", "t", "s"],
+  v: [], f: ["t", "si", "ref"], is: [], t: ["xml:space"], r: [], rPr: [],
+  cols: [], col: ["min", "max", "hidden"], mergeCells: [], mergeCell: ["ref"],
+  hyperlinks: [], hyperlink: ["ref", "r:id", "location", "display"], sst: ["count", "uniqueCount"], si: [],
+};
+const XLSX_CHILDREN: Readonly<Record<string, readonly string[]>> = {
+  workbook: ["workbookPr", "sheets", "definedNames"], sheets: ["sheet"], definedNames: ["definedName"],
+  worksheet: ["dimension", "sheetData", "cols", "mergeCells", "hyperlinks"], sheetData: ["row"], row: ["c"],
+  c: ["v", "f", "is"], is: ["t", "r"], r: ["rPr", "t"], rPr: [], cols: ["col"],
+  mergeCells: ["mergeCell"], hyperlinks: ["hyperlink"], sst: ["si"], si: ["t", "r"],
+};
+const odfRows = ["table:table-row", "table:table-rows", "table:table-header-rows", "table:table-row-group"];
+const odfColumns = ["table:table-column", "table:table-columns", "table:table-header-columns", "table:table-column-group"];
+const odfInline = ["text:span", "text:s", "text:tab", "text:line-break", "text:a"];
+const odfParagraphs = ["text:p", "text:h", "text:list"];
+const odfCellFields = ["office:value-type", "office:value", "office:currency", "office:boolean-value", "office:date-value", "office:time-value", "office:string-value", "calcext:value-type",
+  "table:formula", "table:style-name", "table:number-columns-repeated", "table:number-rows-spanned", "table:number-columns-spanned", "table:number-matrix-rows-spanned", "table:number-matrix-columns-spanned"];
+const ODS_MEMBERS: Readonly<Record<string, readonly string[]>> = {
+  "office:document-content": ["office:version"], "office:body": [], "office:spreadsheet": [],
+  "table:table": ["table:name", "table:style-name", "table:display"],
+  "table:table-row": ["table:style-name", "table:default-cell-style-name", "table:number-rows-repeated", "table:visibility"],
+  "table:table-column": ["table:style-name", "table:default-cell-style-name", "table:number-columns-repeated", "table:visibility"],
+  "table:table-cell": odfCellFields, "table:covered-table-cell": ["table:number-columns-repeated"],
+  ...Object.fromEntries([...odfRows, ...odfColumns].filter((name) => name !== "table:table-row" && name !== "table:table-column").map((name) => [name, []])),
+  "text:p": ["text:style-name", "xml:space"], "text:h": ["text:style-name", "text:outline-level", "xml:space"],
+  "text:span": ["text:style-name"], "text:a": ["xlink:href"], "text:s": ["text:c"], "text:tab": [], "text:line-break": [],
+  "text:list": ["text:style-name"], "text:list-item": [],
+};
+const ODS_CHILDREN: Readonly<Record<string, readonly string[]>> = {
+  "office:document-content": ["office:body"], "office:body": ["office:spreadsheet"], "office:spreadsheet": ["table:table"],
+  "table:table": [...odfRows, ...odfColumns], "table:table-row": ["table:table-cell", "table:covered-table-cell"],
+  ...Object.fromEntries(odfRows.filter((name) => name !== "table:table-row").map((name) => [name, odfRows])),
+  ...Object.fromEntries(odfColumns.filter((name) => name !== "table:table-column").map((name) => [name, odfColumns])),
+  "table:table-cell": odfParagraphs, "table:covered-table-cell": [],
+  "text:p": odfInline, "text:h": odfInline, "text:span": odfInline, "text:a": odfInline,
+  "text:list": ["text:list-item"], "text:list-item": odfParagraphs,
+};
+
+void parse(workerData as ParseJob);
