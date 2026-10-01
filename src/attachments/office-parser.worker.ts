@@ -26,16 +26,17 @@ async function parse(job: ParseJob): Promise<void> {
       parts = Object.fromEntries(["mimetype", "META-INF/manifest.xml", "content.xml", "styles.xml"]
         .filter((name) => Object.hasOwn(parts, name)).map((name) => [name, parts[name]!]));
       let content = readXml(strToU8(job.canonicalOdfContent));
+      const rootAttributes = childrenNamed(content, "office:document-content")[0]!.attributes;
+      const vocabulary = Object.fromEntries(Object.entries(rootAttributes)
+        .filter(([name]) => name.startsWith("xmlns:") && !/^xmlns:ns\d+$/u.test(name))
+        .map(([name, uri]) => [uri, name.slice(6)]));
+      const policy = { elements: vocabulary, attributes: vocabulary, unqualifiedAttributes: false };
+      if (parts["styles.xml"]) parts["styles.xml"] = writeXml(projectNamespaces(readXml(parts["styles.xml"]), policy));
+      const styleRoot = parts["styles.xml"] ? readXml(parts["styles.xml"]) : [{ "office:document-styles": [], ":@": rootAttributes }];
+      const styleContent = projectNamespaces(content, policy);
+      const styles = odfStyles(styleRoot, styleContent);
       if (job.fileType === "ods") {
-        const rootAttributes = childrenNamed(content, "office:document-content")[0]!.attributes;
-        const vocabulary = Object.fromEntries(Object.entries(rootAttributes)
-          .filter(([name]) => name.startsWith("xmlns:") && !/^xmlns:ns\d+$/u.test(name))
-          .map(([name, uri]) => [uri, name.slice(6)]));
-        const policy = { elements: vocabulary, attributes: vocabulary, unqualifiedAttributes: false };
-        if (parts["styles.xml"]) parts["styles.xml"] = writeXml(projectNamespaces(readXml(parts["styles.xml"]), policy));
-        const styleRoot = parts["styles.xml"] ? readXml(parts["styles.xml"]) : [{ "office:document-styles": [], ":@": rootAttributes }];
         const styleElement = childrenNamed(styleRoot, "office:document-styles")[0];
-        const styleContent = projectNamespaces(content, policy);
         const automatic = childrenNamed(childrenNamed(styleContent, "office:document-content")[0]!, "office:automatic-styles");
         if (styleElement) {
           styleElement.children.push(...automatic.map((node) => ({ "office:automatic-styles": node.children, ":@": node.attributes })));
@@ -43,6 +44,16 @@ async function parse(job: ParseJob): Promise<void> {
         }
         content = projectNamespaces(content, { ...policy, members: ODS_MEMBERS, children: ODS_CHILDREN,
           textContainers: ["text:p", "text:h", "text:span", "text:a"], omittedTextElements: ["text:tracked-changes", "text:deletion"] });
+        // SheetJS resolves cell-to-number-format references only in content.xml.
+        // Restore those owned attributes without restoring arbitrary style children.
+        const mappings: OrderedXml[] = [];
+        for (const name of styles.get("table-cell")?.keys() ?? []) {
+          const format = odfStyleValue(styles, "table-cell", name, (style) => style.attributes["style:data-style-name"]);
+          if (name && format) mappings.push({ "style:style": [], ":@": {
+            "style:name": name, "style:family": "table-cell", "style:data-style-name": format,
+          } });
+        }
+        if (mappings.length) childrenNamed(content, "office:document-content")[0]!.children.unshift({ "office:automatic-styles": mappings });
         const tables = findNodes(content, "table:table");
         distinctSheetNames(tables.map((node) => node.attributes["table:name"]));
         for (const table of tables) {
@@ -57,11 +68,27 @@ async function parse(job: ParseJob): Promise<void> {
           hiddenColumns.set(table.attributes["table:name"]!, ranges);
         }
       }
+      if (job.fileType === "odp") {
+        const presentation = childrenNamed(childrenNamed(childrenNamed(content, "office:document-content")[0]!, "office:body")[0]!, "office:presentation")[0]!;
+        slideOrder = [];
+        for (const [index, page] of childrenNamed(presentation, "draw:page").entries()) {
+          const visibility = odfStyleValue(styles, "drawing-page", page.attributes["draw:style-name"],
+            (style) => childrenNamed(style, "style:drawing-page-properties")[0]?.attributes["presentation:visibility"]);
+          if (visibility === "hidden") {
+            page.children.length = 0;
+            omittedSlides = true;
+          } else {
+            slideOrder.push({ position: index + 1, hasText: hasOdfText(page.children) });
+          }
+        }
+      }
       const prepareSheet = (nodes: OrderedXml[]): OrderedXml[] => nodes.map((node) => {
         const tag = tagOf(node);
         if (!tag) return node;
         const attributes = (node[":@"] ?? {}) as Record<string, string>;
-        const hiddenSheet = tag === "table:table" && attributes["table:display"] !== undefined && !onOff(attributes["table:display"]);
+        const display = tag === "table:table" ? attributes["table:display"] ?? odfStyleValue(styles, "table", attributes["table:style-name"],
+          (style) => childrenNamed(style, "style:table-properties")[0]?.attributes["table:display"]) : undefined;
+        const hiddenSheet = tag === "table:table" && display !== undefined && !onOff(display);
         if (hiddenSheet) hiddenSheets.add(attributes["table:name"] ?? "");
         const hidden = hiddenSheet || (tag === "table:table-row" && ["collapse", "filter"].includes(attributes["table:visibility"] ?? ""));
         let children = hidden ? [] : prepareSheet(node[tag] as OrderedXml[]);
@@ -70,8 +97,7 @@ async function parse(job: ParseJob): Promise<void> {
           children = [...children, { "text:p": [{ "#text": attributes["office:string-value"] }] }];
         }
         if (tag === "table:table-cell" && attributes["table:formula"] !== undefined &&
-            !Object.keys(attributes).some((name) => name.startsWith("office:") && name.endsWith("value")) &&
-            !hasXmlText(children)) {
+            !hasOdfCachedValue(attributes, children)) {
           // SheetJS omits empty formula cells without stubs; retain an explicit unavailable-cache value.
           children = [{ "text:p": [{ "#text": "[cached value unavailable]" }] }];
           return { ...node, [tag]: children, ":@": { ...attributes, "office:value-type": "string" } };
@@ -261,7 +287,9 @@ function writeXml(nodes: OrderedXml[]): Uint8Array {
   nodes = nodes.map((node) => node["?xml"] ? { ...node,
     ":@": { ...(node[":@"] as Record<string, string>), encoding: "UTF-8" } } : node);
   return strToU8(new XMLBuilder({ preserveOrder: true, ignoreAttributes: false,
-    attributeNamePrefix: "", suppressEmptyNode: false }).build(nodes) as string);
+    attributeNamePrefix: "", suppressEmptyNode: false,
+    // SheetJS recognizes ODF whitespace controls in their empty-element form.
+    unpairedTags: ["text:s", "text:tab", "text:line-break"], suppressUnpairedNode: false }).build(nodes) as string);
 }
 function childrenNamed(nodes: OrderedXml[] | XmlChildren, name: string): XmlChildren[] {
   const children = Array.isArray(nodes) ? nodes : nodes.children;
@@ -296,6 +324,53 @@ function visibleShapes(nodes: OrderedXml[]): OrderedXml[] {
 function hasXmlText(nodes: OrderedXml[]): boolean {
   return nodes.some((node) => node["#text"] !== undefined ? String(node["#text"]).length > 0
     : Boolean(tagOf(node) && hasXmlText(node[tagOf(node)!] as OrderedXml[])));
+}
+function hasOdfText(nodes: OrderedXml[]): boolean {
+  return [...findNodes(nodes, "text:p"), ...findNodes(nodes, "text:h")].some((paragraph) =>
+    hasXmlText(paragraph.children) || ["text:s", "text:tab", "text:line-break"].some((name) => findNodes(paragraph.children, name).length > 0));
+}
+function hasOdfCachedValue(attributes: Readonly<Record<string, string>>, children: OrderedXml[]): boolean {
+  const type = attributes["office:value-type"];
+  const fields: Readonly<Record<string, string>> = {
+    float: "office:value", percentage: "office:value", currency: "office:value", boolean: "office:boolean-value",
+    date: "office:date-value", time: "office:time-value", string: "office:string-value",
+  };
+  return Object.hasOwn(attributes, fields[type ?? ""] ?? "office:string-value") ||
+    type === "string" && [...findNodes(children, "text:p"), ...findNodes(children, "text:h")].length > 0 ||
+    type === undefined && hasOdfText(children);
+}
+type OdfStyles = Map<string, Map<string, XmlChildren>>;
+function odfStyles(...documents: OrderedXml[][]): OdfStyles {
+  const styles: OdfStyles = new Map();
+  for (const document of documents) {
+    const roots = [...childrenNamed(document, "office:document-styles"), ...childrenNamed(document, "office:document-content")];
+    for (const root of roots) {
+      for (const collection of [...childrenNamed(root, "office:styles"), ...childrenNamed(root, "office:automatic-styles")]) {
+        for (const node of [...childrenNamed(collection, "style:default-style"), ...childrenNamed(collection, "style:style")]) {
+          const family = node.attributes["style:family"];
+          if (!family) continue;
+          let members = styles.get(family);
+          if (!members) { members = new Map(); styles.set(family, members); }
+          members.set(node.attributes["style:name"] ?? "", node);
+        }
+      }
+    }
+  }
+  return styles;
+}
+function odfStyleValue(styles: OdfStyles, family: string, name: string | undefined, value: (style: XmlChildren) => string | undefined): string | undefined {
+  const members = styles.get(family);
+  const visited = new Set<string>();
+  let current: string | undefined = name ?? "";
+  while (current !== undefined) {
+    if (visited.has(current)) throw new Error("Cyclic ODF style inheritance.");
+    visited.add(current);
+    const style: XmlChildren | undefined = members?.get(current);
+    const property = style && value(style);
+    if (property !== undefined) return property;
+    current = style?.attributes["style:parent-style-name"] ?? (current ? "" : undefined);
+  }
+  return undefined;
 }
 function onOff(value?: string): boolean {
   if (value === undefined || value === "true" || value === "1" || value === "on") return true;
@@ -588,6 +663,7 @@ const odfCellFields = ["office:value-type", "office:value", "office:currency", "
   "table:formula", "table:style-name", "table:number-columns-repeated", "table:number-rows-spanned", "table:number-columns-spanned", "table:number-matrix-rows-spanned", "table:number-matrix-columns-spanned"];
 const ODS_MEMBERS: Readonly<Record<string, readonly string[]>> = {
   "office:document-content": ["office:version"], "office:body": [], "office:spreadsheet": [],
+  "table:calculation-settings": [], "table:null-date": ["table:date-value"],
   "table:table": ["table:name", "table:style-name", "table:display"],
   "table:table-row": ["table:style-name", "table:default-cell-style-name", "table:number-rows-repeated", "table:visibility"],
   "table:table-column": ["table:style-name", "table:default-cell-style-name", "table:number-columns-repeated", "table:visibility"],
@@ -598,7 +674,8 @@ const ODS_MEMBERS: Readonly<Record<string, readonly string[]>> = {
   "text:list": ["text:style-name"], "text:list-item": [],
 };
 const ODS_CHILDREN: Readonly<Record<string, readonly string[]>> = {
-  "office:document-content": ["office:body"], "office:body": ["office:spreadsheet"], "office:spreadsheet": ["table:table"],
+  "office:document-content": ["office:body"], "office:body": ["office:spreadsheet"], "office:spreadsheet": ["table:calculation-settings", "table:table"],
+  "table:calculation-settings": ["table:null-date"],
   "table:table": [...odfRows, ...odfColumns], "table:table-row": ["table:table-cell", "table:covered-table-cell"],
   ...Object.fromEntries(odfRows.filter((name) => name !== "table:table-row").map((name) => [name, odfRows])),
   ...Object.fromEntries(odfColumns.filter((name) => name !== "table:table-column").map((name) => [name, odfColumns])),

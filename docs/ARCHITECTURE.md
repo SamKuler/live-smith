@@ -1161,12 +1161,18 @@ The adapter retains explicit Word/PPTX visibility rules and validates declared
 PowerPoint ordering against parsed slides. SheetJS results retain sheet identity,
 sparse coordinates, stored values and formulas; formula stubs carry an unavailable
 cached-value marker. Hidden XLSX sheets, rows and columns and explicitly hidden
-ODS sheets and collapsed or filtered rows and columns are omitted. ODF
+ODS sheets and collapsed or filtered rows and columns are omitted. ODP hidden
+pages and their notes are omitted while visible pages retain their slide numbers.
+ODF sheet and page visibility resolves referenced and inherited styles from
+`content.xml` and `styles.xml`. ODF
 namespace aliases are canonicalized before extraction. Spreadsheet input contains
 only active semantic branches. The spreadsheet adapter preserves
 element and attribute ownership before the library removes namespace prefixes;
-style definitions are parsed separately. Missing formula caches are marked from
-the source XML before typed defaults can replace their absence. Sheet names,
+style definitions are parsed separately, with cell format references and
+calculation date metadata retained for SheetJS. Missing formula caches are marked
+from typed source values and semantic paragraph text before library defaults can
+replace their absence. XML indentation is not a cache; explicit text spaces,
+tabs and line breaks retain their empty-element representation. Sheet names,
 IDs and referenced part roles must be unambiguous. Inline ODF text fields retain
 their text without introducing new spreadsheet structure. Results carry semantic
 text and omission markers. Extraction is capped at 100,000 Unicode code points per file
