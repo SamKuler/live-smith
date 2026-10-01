@@ -16,6 +16,7 @@ const clientFragments = [
   "connections-manager",
   "tools-inspector",
   "bridge-client",
+  "audio-results",
   "session-timeline",
   "action-preview",
   "bootstrap",

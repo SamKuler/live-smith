@@ -30,7 +30,7 @@ import {
   createRequestPluginTools,
   type PluginExecutionAuthorization,
 } from "./plugins/request-plugin-tools.js";
-import { providerFetchForStorage } from "./model/provider-fetch.js";
+import { providerFetchForStorage } from "./network.js";
 import { audioProcessingAvailable, type AudioProcessingContext } from "./audio/audio-processing.js";
 import { addAudioAssetSampleSources, audioAssetSampleSourceInstructions } from "./audio/audio-asset-sources.js";
 import {

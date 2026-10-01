@@ -32,6 +32,7 @@ const scripts: ChatClientScripts = {
   pluginUserConfig: "",
   pluginApps: "",
   audioParameters: "",
+  audioResults: "",
   connectionsManager: "",
   sessionTimeline: "",
   skillManager: "",

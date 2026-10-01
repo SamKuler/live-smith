@@ -8,7 +8,7 @@ import { readSystemProxyConfiguration } from "../../../runtime/system-proxy.js";
 import { runSunoHumanVerification } from "../../../runtime/suno-human-verification.js";
 import type { AudioProcessingContext } from "../audio-processing.js";
 import { resolveIntegrationConnection, type RuntimeIntegrationConnection } from "../../plugins/integration-connections.js";
-import { providerFetchForStorage } from "../../model/provider-fetch.js";
+import { providerFetchForStorage } from "../../network.js";
 import { persistRotatedSunoSession } from "./suno-session-manager.js";
 import { audioMessage as m } from "../audio-messages.js";
 

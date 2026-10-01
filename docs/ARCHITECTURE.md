@@ -29,6 +29,9 @@ src/
       the caller revalidates state after acquiring the queue.
     midi-artifact-import.ts
       Validates Session artifact ownership and mediates queued Live MIDI import.
+    network.ts
+      Binds storage-scoped proxy settings to shared Fetch and WebSocket clients
+      for model providers, audio services and Plugin applications.
     chat/
       chat-bridge.ts, chat-bridge-http.ts
         Own authenticated HTTP/SSE state, command admission, body bounds,
@@ -66,8 +69,11 @@ src/
         and capability previews, and bound retries before model-turn acceptance.
       model-auth-send-fence.ts, profile-settings-events.ts
         Serialize Profile OAuth edits and sends, and publish committed settings notices.
-      provider-fetch.ts, provider-websocket.ts
-        Apply storage-scoped proxy choices without changing process-global routing.
+      dialog-model-state.ts
+        Owns dialog model catalogs, discovery receipts, OAuth projections and
+        browser login lifetime. Admits catalogs against the current authentication
+        generation and binds model requests to the admitted backend. Coordinates
+        Profile credential cleanup and backend release when the dialog closes.
       dialog-model-backends.ts
         Own lazy shared OAuth lease acquisition, acquisition cancellation,
         backend invalidation and ordered release for one dialog.
@@ -340,6 +346,10 @@ src/
     client/audio-connection-editor.ts
       Owns form rendering/events, submission state, account controls,
       catalog presentation and transient secret input lifetime.
+    client/audio-results.script.html
+      Owns audio task cards, local and remote playback, pending download
+      confirmation and result actions. Reads current Connection and account
+      projections; sends commands through the bridge.
     client/bridge-contracts.ts
       Browser bundle entry registering typed validators, Connection state and
       Connection editor factories before the bridge and UI bootstrap.
@@ -657,6 +667,11 @@ The OAuth backend is split by responsibility:
 - `app/model/model-auth-send-fence.ts` serializes each Profile's connection lifecycle,
   with provider-tagged pending-login ownership, activity, generations, and
   poison. Different Profile IDs remain independent.
+- `app/model/dialog-model-state.ts` owns each dialog's catalogs and OAuth
+  projections. Discovery, capability loading and request admission share catalog
+  ownership rules. Capability loading retains its Profile-use lease through
+  command-state assembly. Browser launch results remain readable while that
+  state is assembled, including authorization for an unsaved Profile.
 - `storage/oauth-credentials.ts` owns strict private token persistence in
   Profile-ID/provider tuple slots. Provisional provider sign-ins do not replace
   another provider tuple; authoritative Save and Delete finalize the retained

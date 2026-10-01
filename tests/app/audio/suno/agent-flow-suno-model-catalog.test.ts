@@ -5,7 +5,7 @@ import { saveGlobalSettings, loadAgentSettings } from "../../../../src/storage/s
 import { SunoSessions } from "../../../../src/storage/suno-sessions.js";
 import { chatDialogStateForWire, type ChatDialogState } from "../../../../src/ui/chat-state.js";
 import { parseCommandInput } from "../../../../src/app/chat/chat-bridge-http.js";
-import { providerFetchForStorage } from "../../../../src/app/model/provider-fetch.js";
+import { providerFetchForStorage } from "../../../../src/app/network.js";
 import { invalidateGlobalState } from "../../../../src/app/session/session-state-events.js";
 import { createHostAbortController } from "../../../../src/runtime/host.js";
 import { SunoModelCatalog } from "../../../../src/app/audio/suno/suno-model-catalog.js";

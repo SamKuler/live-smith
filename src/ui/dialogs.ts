@@ -1,3 +1,4 @@
+import audioResultsScript from "./client/audio-results.script.html";
 import resultDialog from "./templates/result-dialog.html";
 import chatDialog from "./templates/chat-dialog.html";
 import hostAdapterScript from "./client/host-adapter.script.html";
@@ -49,6 +50,7 @@ export function chatHtml(
     attachmentMedia: attachmentMediaScript,
     bootstrap: bootstrapScript,
     bridgeClient: bridgeClientScript,
+    audioResults: audioResultsScript,
     composerInput: composerInputScript,
     hostAdapter: hostAdapterScript,
     markdownRenderer: __LIVE_SMITH_MARKDOWN_RENDERER_SCRIPT__,

@@ -10,8 +10,8 @@ import { createAppSunoGenerationAdapter } from "../audio/suno/suno-human-verific
 import { persistRotatedSunoSession } from "../audio/suno/suno-session-manager.js";
 import { uploadSunoMusic, resumeSunoUpload } from "../audio/suno/suno-upload.js";
 import { audioQueryProvenance, observedAudioQueryClipIds, applyAudioParameterSuggestions } from "../audio/suno/suno-parameter-suggestions.js";
-import { providerFetchForStorage } from "../model/provider-fetch.js";
-import { providerWebSocketForStorage } from "../model/provider-websocket.js";
+import { providerFetchForStorage } from "../network.js";
+import { providerWebSocketForStorage } from "../network.js";
 
 export function builtInAudioHostRuntime(
   storageDirectory: string | undefined,

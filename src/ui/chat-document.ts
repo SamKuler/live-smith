@@ -75,6 +75,7 @@ export interface ChatClientScripts {
   pluginUserConfig: string;
   pluginApps: string;
   audioParameters: string;
+  audioResults: string;
   bridgeContracts: string;
   connectionsManager: string;
   sessionTimeline: string;
@@ -279,6 +280,7 @@ export function composeChatDocument(
     __PLUGIN_MANAGER_SCRIPT__: injectPluginContract(scripts.pluginManager),
     __PLUGIN_APPS_SCRIPT__: scripts.pluginApps,
     __AUDIO_PARAMETERS_SCRIPT__: scripts.audioParameters,
+    __AUDIO_RESULTS_SCRIPT__: scripts.audioResults,
     __CONNECTIONS_MANAGER_SCRIPT__: injectSessionContract(scripts.connectionsManager),
     __TOOLS_INSPECTOR_SCRIPT__: injectSessionContract(scripts.toolsInspector),
     __PLUGIN_PARAMETERS_SCRIPT__: scripts.pluginParameters.replace("__PLUGIN_PARAMETER_LIMITS__", () => JSON.stringify({

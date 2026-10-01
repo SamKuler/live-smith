@@ -10,7 +10,7 @@ import type { AudioProcessingContext } from "../audio-processing.js";
 import { acquireAudioJob } from "../audio-job-runtime.js";
 import { integrationConnectionFingerprint, resolveIntegrationConnection, type RuntimeIntegrationConnection } from "../../plugins/integration-connections.js";
 import { persistRotatedSunoSession } from "./suno-session-manager.js";
-import { providerFetchForStorage } from "../../model/provider-fetch.js";
+import { providerFetchForStorage } from "../../network.js";
 import { audioMessage as m } from "../audio-messages.js";
 
 export interface SunoUploadOptions { adapter?: SunoUploadAdapter }

@@ -34,6 +34,7 @@ import {
   saveOAuthCredential,
 } from "../../../src/storage/oauth-credentials.js";
 import type { ChatDialogState } from "../../../src/ui/chat-state.js";
+import { getOrCreateDefaultSession } from "../../../src/app/context/session-context.js";
 import { runAgentFlow } from "../../../src/app/agent-flow.js";
 import {
   modelAuthSendFenceForStorage,
@@ -324,6 +325,95 @@ test("agent flow shares one OAuth backend across auth and discovery, then closes
   assert.deepEqual(openedUrls, ["https://auth.openai.com/codex/device"]);
 });
 
+test("draft OAuth login retains a browser failure arriving during command state assembly", { timeout: 5_000 }, async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-draft-browser-failure-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await saveSavedProfile(directory, directProfile);
+  const stateAssemblyEntered = deferred<void>();
+  const releaseStateAssembly = deferred<void>();
+  const failBrowser = deferred<void>();
+  let holdCommandState = false;
+  let auth: OAuthAuthState = { status: "signed-out" };
+  const backend: OAuthSubscriptionBackend = {
+    kind: "oauth-subscription",
+    async readAuthState() { return auth; },
+    async beginLogin() {
+      auth = { status: "pending", verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test", authorizationCodeInput: true };
+      return auth;
+    },
+    async setPendingLoginBrowserLaunchFailed(failed) {
+      assert.equal(failed, true);
+      assert.equal(auth.status, "pending");
+      auth = { ...auth, browserLaunchFailed: true };
+      return auth;
+    },
+    async logout() { return { status: "signed-out" }; },
+    async listModels() { return []; },
+    async createToolTurn() { return { content: null, toolCalls: [] }; },
+    async close() {},
+  };
+  const manager = {
+    async oauth() { return backend; },
+    async oauthLease() { return { backend, async retire() { return true; } }; },
+    async forProfile() { return backend; },
+    async invalidateOAuth() {},
+    async close() {},
+  };
+  const interaction: LiveInteractionContext = {
+    presentation: liveContextPresentationFixture("Lead"), summary: "Track: Lead", target: {},
+    scope: { kind: "track", identity: "track-1", label: "Lead" },
+  };
+  interaction.selectionContext = { refresh: () => interaction };
+  const context = {
+    application: { song: { handle: { id: 1n } } },
+    environment: { storageDirectory: directory },
+    ui: {
+      async showModalDialog(url: string) {
+        const events = await fetch(bridgeEndpoint(url, "/events"));
+        const publishedFailure = readSsePayload(events, "oauth_auth_changed");
+        holdCommandState = true;
+        const response = fetch(bridgeEndpoint(url, "/command"), {
+          method: "POST", headers: bridgeJsonHeaders(),
+          body: JSON.stringify({ kind: "start_oauth_login", profileId: "unsaved-google-profile", provider: "google" }),
+        });
+        try {
+          await stateAssemblyEntered.promise;
+          failBrowser.resolve(undefined);
+          const event = await publishedFailure;
+          assert.equal((event.oauthAuth as { browserLaunchFailed?: boolean }).browserLaunchFailed, true);
+          releaseStateAssembly.resolve(undefined);
+          const result = await response;
+          assert.equal(result.status, 200);
+          const state = await result.json() as ChatDialogState;
+          assert.equal(state.oauthAuthProfileId, "unsaved-google-profile");
+          assert.equal(state.oauthAuth?.status, "pending");
+          assert.equal(state.oauthAuth.browserLaunchFailed, true);
+        } finally {
+          failBrowser.resolve(undefined);
+          releaseStateAssembly.resolve(undefined);
+          await events.body?.cancel();
+        }
+      },
+    },
+  };
+  await runAgentFlow(context as never, interaction, {
+    renderHtml: () => "<html></html>", modelBackendManager: manager,
+    async getOrCreateDefaultSession(...args) {
+      const session = await getOrCreateDefaultSession(...args);
+      if (holdCommandState) {
+        holdCommandState = false;
+        stateAssemblyEntered.resolve(undefined);
+        await releaseStateAssembly.promise;
+      }
+      return session;
+    },
+    async openOAuthAuthorizationUrl() {
+      await failBrowser.promise;
+      throw new Error("browser could not open");
+    },
+  });
+});
+
 test("browser failure stays retryable and Antigravity code submission notifies peers", {
   timeout: 5_000,
 }, async (t) => {
@@ -435,8 +525,12 @@ test("browser failure stays retryable and Antigravity code submission notifies p
         assert.equal(startedState.oauthAuth?.status, "pending");
         assert.equal(startedState.oauthAuth.browserLaunchFailed, undefined);
 
+        const blockedDiscovery = await command({ kind: "discover_models", profile });
         failFirstBrowserLaunch.resolve(undefined);
         const browserFailure = await browserFailurePublished;
+        assert.equal(blockedDiscovery.status, 409);
+        const discoveryConflict = await blockedDiscovery.json() as { error: string };
+        assert.match(discoveryConflict.error, /sign-in operation.*loading models/);
         assert.deepEqual(
           {
             ...browserFailure,

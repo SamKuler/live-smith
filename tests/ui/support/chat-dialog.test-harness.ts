@@ -172,6 +172,7 @@ const clientScripts = {
   attachmentMedia: readClientScript("attachment-media"),
   bootstrap: readClientScript("bootstrap"),
   bridgeClient: readClientScript("bridge-client"),
+  audioResults: readClientScript("audio-results"),
   composerInput: readClientScript("composer-input"),
   hostAdapter: readClientScript("host-adapter"),
   markdownRenderer: markdownRendererScript,

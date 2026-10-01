@@ -9,7 +9,7 @@ import {
   throwIfAborted,
   waitForPromiseWithSignal,
 } from "../../runtime/host.js";
-import { providerFetchForStorage } from "./provider-fetch.js";
+import { providerFetchForStorage } from "../network.js";
 
 export const oauthSubscriptionProviders: readonly OAuthSubscriptionProvider[] = ["openai", "anthropic", "google"];
 
