@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
+import { Worker } from "node:worker_threads";
 
 import { AttachmentProcessingError } from "../../src/attachments/contracts.js";
 import { runDocumentParserWorker } from "../../src/runtime/document-parser.js";
@@ -62,6 +63,58 @@ test("two active parsers bound concurrency and a cancelled waiter never consumes
     await Promise.all(cancelled);
     assert.equal((await runDocumentParserWorker({ source: success, job: null })).text, "ready");
   } finally { for (const controller of controllers) controller.abort(new Error("release active parser")); }
+});
+
+test("cancelling notified parser waiters passes the available slots to the remaining queue", async () => {
+  const activeControllers = [createHostAbortController(), createHostAbortController()];
+  const activeMarkers = [new SharedArrayBuffer(4), new SharedArrayBuffer(4)];
+  const active = activeControllers.map((controller, index) => runDocumentParserWorker({
+    source: busy, job: activeMarkers[index], signal: controller.signal,
+  }));
+  const activeCancelled = active.map((operation) => assert.rejects(operation, /release active parser/));
+  const queuedControllers = [createHostAbortController(), createHostAbortController()];
+  const survivorController = createHostAbortController();
+  const originalEmit = Worker.prototype.emit;
+  const originalEmitDescriptor = Object.getOwnPropertyDescriptor(Worker.prototype, "emit");
+  const queued: Promise<unknown>[] = [];
+  let exits = 0;
+  try {
+    await Promise.all(activeMarkers.map(started));
+    queued.push(...queuedControllers.map((controller) => assert.rejects(runDocumentParserWorker({
+      source: busy, job: new SharedArrayBuffer(4), signal: controller.signal,
+    }), /cancel notified parser/)));
+    const survivorMarker = new SharedArrayBuffer(4);
+    const survivor = runDocumentParserWorker({
+      source: 'const {workerData}=require("node:worker_threads");Atomics.store(new Int32Array(workerData),0,1);' + success,
+      job: survivorMarker, signal: survivorController.signal,
+    });
+    queued.push(survivor.catch(() => undefined));
+    // Native exit handlers resolve termination before the independent Stop
+    // microtask runs, placing cancellation at the slot-notification boundary.
+    Worker.prototype.emit = function (event: string | symbol, ...args: unknown[]): boolean {
+      const result = Reflect.apply(originalEmit, this, [event, ...args]) as boolean;
+      if (event === "exit" && exits < queuedControllers.length) {
+        const controller = queuedControllers[exits++]!;
+        queueMicrotask(() => controller.abort(new Error("cancel notified parser")));
+      }
+      return result;
+    };
+    for (let index = 0; index < activeControllers.length; index += 1) {
+      activeControllers[index]!.abort(new Error("release active parser"));
+      await activeCancelled[index];
+      await queued[index];
+    }
+    await started(survivorMarker);
+    assert.deepEqual(await survivor, { text: "ready", truncated: false });
+    assert.equal(exits, 2);
+  } finally {
+    if (originalEmitDescriptor) Object.defineProperty(Worker.prototype, "emit", originalEmitDescriptor);
+    else Reflect.deleteProperty(Worker.prototype, "emit");
+    for (const controller of activeControllers) controller.abort(new Error("release active parser"));
+    for (const controller of queuedControllers) controller.abort(new Error("cancel notified parser"));
+    survivorController.abort(new Error("cancel survivor parser"));
+    await Promise.allSettled([...activeCancelled, ...queued]);
+  }
 });
 
 test("parser failures expose safe errors and subsequent jobs still run", async () => {

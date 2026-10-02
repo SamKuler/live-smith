@@ -88,21 +88,23 @@ export async function runDocumentParserWorker(input: {
 }
 
 async function acquireParser(signal?: AbortSignal): Promise<void> {
-  while (activeParsers >= MAX_ACTIVE_PARSERS) {
-    await new Promise<void>((resolve, reject) => {
-      const ready = (): void => { cleanup(); resolve(); };
-      const aborted = (): void => {
-        cleanup();
-        try { throwIfAborted(signal); } catch (error) { reject(error); }
-      };
-      const cleanup = (): void => { waiting.delete(ready); signal?.removeEventListener("abort", aborted); };
-      waiting.add(ready);
-      signal?.addEventListener("abort", aborted, { once: true });
-      if (signal?.aborted) aborted();
-    });
-    throwIfAborted(signal);
+  if (activeParsers < MAX_ACTIVE_PARSERS) {
+    activeParsers += 1;
+    return;
   }
-  activeParsers += 1;
+  await new Promise<void>((resolve, reject) => {
+    // Reserve the slot before resuming its owner; cancellation then follows
+    // the same release path as a running parser.
+    const ready = (): void => { activeParsers += 1; cleanup(); resolve(); };
+    const aborted = (): void => {
+      cleanup();
+      try { throwIfAborted(signal); } catch (error) { reject(error); }
+    };
+    const cleanup = (): void => { waiting.delete(ready); signal?.removeEventListener("abort", aborted); };
+    waiting.add(ready);
+    signal?.addEventListener("abort", aborted, { once: true });
+    if (signal?.aborted) aborted();
+  });
 }
 
 function parserError(message: string): AttachmentProcessingError {
