@@ -312,10 +312,7 @@
           selectAudioConnection: bridgeClient.handleAudioServiceSelection,
         });
 
-        const pluginResults = factories.createPluginResults({
-          getState,
-          prepareMidiImport: bridgeClient.prepareMidiImport,
-          useInChat: async (text) => {
+        const useResultInChat = async (text) => {
             const sessionId = getState().activeSessionId;
             try { await pluginApps.close(); }
             catch { bridgeClient.showStatus(i18n.message("MCP App could not be closed."), true); return; }
@@ -324,7 +321,11 @@
             prompt.value = [prompt.value.trimEnd(), text].filter(Boolean).join("\n\n");
             prompt.dispatchEvent(new Event("input", { bubbles: true }));
             prompt.focus();
-          },
+        };
+        const pluginResults = factories.createPluginResults({
+          getState,
+          prepareMidiImport: bridgeClient.prepareMidiImport,
+          useInChat: useResultInChat,
           importMidi: async (input) => {
             try { await pluginApps.close(); }
             catch { bridgeClient.showStatus(i18n.message("MCP App could not be closed."), true); return false; }
@@ -335,6 +336,18 @@
             });
             return completed && known;
           },
+        });
+        const candidateComparison = factories.createCandidateComparison({
+          getState, read: bridgeClient.readSessionCandidates,
+          select: async (input) => {
+            let known = false;
+            const completed = await bridgeClient.runCommand("select_candidate", input, { onOutcome: (outcome) => { known = outcome.known; } });
+            return completed && known;
+          },
+          useInChat: useResultInChat, resultActions: pluginResults,
+          createAudioPlayer: (...args) => attachmentViewer.createAudioPlayer(...args),
+          audioUrl: (sessionId, id) => bridgeConfig.baseUrl + "/audio-assets/" + encodeURIComponent(id) +
+            "?token=" + encodeURIComponent(bridgeConfig.token) + "&sessionId=" + encodeURIComponent(sessionId),
         });
         const pluginApps = factories.createPluginApps({
           resultActions: pluginResults,
@@ -1319,6 +1332,7 @@
           skillManager.render();
           pluginManager.render();
           pluginApps.sync();
+          candidateComparison.render();
           audioParameters.sync();
           toolsInspector.render();
           renderProfileStateProjection();
@@ -1731,6 +1745,7 @@
           pluginApps.setBusy(operationBusy);
           audioParameters.setBusy(operationBusy);
           pluginResults.setBusy(operationBusy);
+          candidateComparison.setBusy(operationBusy);
 
           if (
             !settingsBusy &&

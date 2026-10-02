@@ -240,7 +240,7 @@ test("approved artifact tools receive exact staged audio and return only saved M
     signal: h.signal,
     withAuthorization: async (_signal, operation) => operation(),
   });
-  assert.deepEqual(withoutArtifactGrant.tools().map((tool) => tool.function.name), ["list_session_artifacts"]);
+  assert.deepEqual(withoutArtifactGrant.tools().map((tool) => tool.function.name), ["list_session_artifacts", "inspect_midi_artifact"]);
   assert.ok(withoutArtifactGrant.issues.some((issue) => issue.code === "artifact_permission_required"));
   await withoutArtifactGrant.close();
 

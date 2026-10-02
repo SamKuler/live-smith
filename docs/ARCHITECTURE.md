@@ -843,6 +843,37 @@ failures persist the same recovery ledger as chat-driven edits and prevent blind
 retries. All positions are quarter-note beats; tempo, meter and controller events
 are retained only in the source artifact and never materialize Set mutations.
 
+### Saved candidate comparison and lineage
+
+`app/session/session-candidates.ts` projects Session-owned MIDI artifacts and
+local audio result assets into paginated comparison views. It creates no media
+copies or candidate database. Audio bytes stay behind the existing authenticated
+asset route; MIDI previews contain at most 256 notes and bounded source-part
+summaries. `inspect_midi_artifact` in the host artifact toolset reads one exact
+source part with a 256-note page and `nextOffset`, allowing subsequent chat turns
+to inspect the saved material without first importing it into Live.
+
+The `candidate` Session event records an explicit `prefer` or `continue` selection
+using a typed `{ kind, id }` reference. A null reference clears that selection.
+Preferences and pending continuation survive compaction and reload because they
+are reconstructed from durable events. Only a successfully persisted initial
+chat `user` event consumes pending continuation and stores its `parentCandidate`.
+The admitted request carries that fixed reference and its user event ID to every
+subsequent model `tool_call` as `parentCandidate` and `requestEventId`. Steered
+messages and manual tool calls leave pending continuation intact. A failure before
+the initial message commit therefore leaves the source available for retry.
+
+Generation provenance references the original tool-call and result events and
+their public arguments. Owned artifact or audio-job IDs correlate the result;
+overlapping same-name calls keep their provenance unknown. Candidate views never
+read current Connection credentials or pretend missing historical arguments are
+known. Shortened parameter previews retain the original event reference. A
+preferred candidate does not authorize generation or mutation: Continue prepares
+a composer draft, MIDI import uses the ordinary mapped import path, and audio
+import uses the existing chat action/preflight path. Read-only comparison and
+playback remain available during generation; selection commands share the Session
+mutation fence and validate ownership again before writing their event.
+
 `ui/client/plugin-parameters.script.html` renders the native controls inside
 Session Tools. Optional parameters have an explicit inclusion control; omitted
 fields stay absent from the request. Form drafts survive directory redraws while

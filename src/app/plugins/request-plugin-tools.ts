@@ -17,6 +17,7 @@ import { loadAgentSettings } from "../../storage/settings.js";
 import { callPluginToolWithArtifacts, LIVE_SMITH_ARTIFACT_META_KEY } from "../../plugins/artifacts.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { inspectMidiArtifacts, readMidiArtifact, midiArtifactPartSummaries, type MidiArtifact } from "../../storage/midi-artifacts.js";
+import { isSafeStorageId } from "../../storage/id.js";
 import { canonicalStorageDirectory, storageScopeKey, type StorageScopeKey } from "../../storage/scope.js";
 import { pluginParameterPanel, type PluginParameterPanel } from "../../plugins/parameter-panel.js";
 import {
@@ -341,7 +342,7 @@ export async function createRequestPluginTools(input: {
       }
     }
     if (midiArtifacts.size || artifactListing.unavailableCount || hasArtifactTool) {
-      toolsets.unshift(sessionArtifactToolset(input, midiArtifacts));
+      toolsets.unshift(createSessionMidiArtifactToolset(input, midiArtifacts));
     }
     const registry = new ToolRegistry(toolsets);
     const allRoutes = new Map(catalogRoutes.flatMap((routes) => [...routes]));
@@ -523,9 +524,9 @@ async function callMcpTool(
   }
 }
 
-function sessionArtifactToolset(
-  input: { storageDirectory: string | undefined; sessionId: string },
-  artifacts: Map<string, MidiArtifact>,
+export function createSessionMidiArtifactToolset(
+  input: { storageDirectory: string | undefined; sessionId: string; signal?: AbortSignal },
+  artifacts: Map<string, MidiArtifact> = new Map(),
 ): Toolset {
   return {
     id: "live-smith.artifacts",
@@ -536,11 +537,36 @@ function sessionArtifactToolset(
         description: "List validated non-audio artifacts saved in this Session. If saved MIDI data is unavailable, the result includes an unavailableCount and warning; do not use those missing artifacts. Use an exact listed MIDI artifactRef with create_midi_clip_from_artifact when that action is available. This verifies saved MIDI bytes and returns read-derived source part summaries and timing event counts; it does not run a Plugin or change Live. For multitrack MIDI, select a listed partId per destination or explicitly request mergeParts.",
         parameters: { type: "object", properties: {}, additionalProperties: false },
       },
+    }, {
+      type: "function",
+      function: {
+        name: "inspect_midi_artifact",
+        description: "Read exact saved MIDI notes for one source part from list_session_artifacts. Notes use source-relative quarter-note beats; channel and source track identity remain in the part summary. Returns at most 256 notes with nextOffset for pagination. Reads this Session only; does not change Live or run a generator.",
+        parameters: { type: "object", properties: {
+          artifactRef: { type: "string" }, partId: { type: "string" }, offset: { type: "integer", minimum: 0 },
+        }, required: ["artifactRef", "partId"], additionalProperties: false },
+      },
     }],
     async callTool(call) {
-      if (call.name !== "list_session_artifacts") return invalidArguments();
+      if (call.name !== "list_session_artifacts" && call.name !== "inspect_midi_artifact") return invalidArguments();
       try {
         const value: unknown = JSON.parse(call.arguments || "{}");
+        if (call.name === "inspect_midi_artifact") {
+          if (!value || typeof value !== "object" || Array.isArray(value)) return invalidArguments();
+          const args = value as Record<string, unknown>;
+          if (Object.keys(args).some((key) => !["artifactRef", "partId", "offset"].includes(key)) ||
+              !isSafeStorageId(args.artifactRef) || typeof args.partId !== "string" ||
+              args.offset !== undefined && (!Number.isInteger(args.offset) || (args.offset as number) < 0)) return invalidArguments();
+          const { artifact, parsed } = await readMidiArtifact(input.storageDirectory, input.sessionId, args.artifactRef, input.signal);
+          const part = parsed.parts.find((part) => part.id === args.partId);
+          const offset = args.offset as number ?? 0;
+          if (!part || offset > part.notes.length) return invalidArguments();
+          return { content: JSON.stringify({ artifactRef: artifact.id, label: artifact.label,
+            part: midiArtifactPartSummaries(parsed).find((part) => part.id === args.partId),
+            offset, notes: part.notes.slice(offset, offset + 256),
+            ...(offset + 256 < part.notes.length ? { nextOffset: offset + 256 } : {}), timing: parsed.timing }),
+          progressKey: JSON.stringify([artifact.id, artifact.sha256, part.id, offset]) };
+        }
         if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length) {
           return invalidArguments();
         }
@@ -550,10 +576,10 @@ function sessionArtifactToolset(
         const current = [];
         for (const artifact of listing.artifacts) {
           try {
-            const { parsed } = await readMidiArtifact(input.storageDirectory, input.sessionId, artifact.id);
+            const { parsed } = await readMidiArtifact(input.storageDirectory, input.sessionId, artifact.id, input.signal);
             current.push({ ...midiArtifactView(artifact), parts: midiArtifactPartSummaries(parsed), timing: parsed.timing });
             artifacts.set(artifact.id, artifact);
-          } catch { unavailableCount += 1; }
+          } catch { throwIfAborted(input.signal); unavailableCount += 1; }
         }
         return {
           content: JSON.stringify(unavailableCount
@@ -566,6 +592,7 @@ function sessionArtifactToolset(
           ]),
         };
       } catch {
+        throwIfAborted(input.signal);
         return invalidArguments();
       }
     },

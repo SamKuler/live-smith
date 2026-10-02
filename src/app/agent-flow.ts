@@ -18,6 +18,7 @@ import { createUserSkillLifecycle } from "./plugins/user-skill-lifecycle.js";
 import { createSessionLifecycle } from "./session/session-lifecycle.js";
 import { importMidiArtifact } from "./midi-artifact-import.js";
 import { prepareMidiArtifactImport } from "./midi-artifact-preview.js";
+import { listSessionCandidates, selectSessionCandidate } from "./session/session-candidates.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 
 import { audioJobViews, resumeAudioJob } from "./audio/audio-processing.js";
@@ -1578,6 +1579,18 @@ export async function runAgentFlow(
       return buildStateAfterCommandMutation();
     }
 
+    if (commandInput.kind === "select_candidate") {
+      if (commandInput.sessionId !== activeSessionId || sessionMutationFence.hasQueuedOrActive(
+        sessionMutationFenceKey(storageDirectory, commandInput.sessionId), "send",
+      )) throw new ChatBridgeConflictError("Choose an idle active Session before selecting a candidate.");
+      return withNamedSessionMutation(commandInput.sessionId, "send", signal, async () => {
+        if (commandInput.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed before candidate selection.");
+        await selectSessionCandidate({ ...commandInput, storageDirectory, projectKey, signal });
+        notifySessionStateChanged(commandInput.sessionId);
+        return buildStateAfterCommandMutation(undefined, { heldSessionId: commandInput.sessionId, sessionMutationHeld: true });
+      });
+    }
+
     if (commandInput.kind === "import_midi_artifact") {
       if (commandInput.sessionId !== activeSessionId || sessionMutationFence.hasQueuedOrActive(
         sessionMutationFenceKey(storageDirectory, commandInput.sessionId), "send",
@@ -3114,6 +3127,12 @@ export async function runAgentFlow(
         if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the active Session before preparing MIDI import.");
         const result = await prepareMidiArtifactImport({ ...input, context, storageDirectory, projectKey, signal });
         if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while preparing MIDI import.");
+        return result;
+      },
+      readSessionCandidates: async (input, signal) => {
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the active Session before comparing candidates.");
+        const result = await listSessionCandidates({ ...input, storageDirectory, projectKey, signal });
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while loading candidates.");
         return result;
       },
       closePluginApps: () => pluginApps.close(),

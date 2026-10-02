@@ -11,7 +11,7 @@ interface Artifact {
 }
 
 export interface PluginResultActions {
-  create(toolName: string, result: unknown): HTMLElement;
+  create(toolName: string, result: unknown, options?: { importOnly?: boolean }): HTMLElement;
   setBusy(value: boolean): void;
 }
 
@@ -43,7 +43,7 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
     return element;
   };
   return {
-    create(toolName, raw) {
+    create(toolName, raw, options = {}) {
       const card = node("section", "plugin-result-card");
       if (!record(raw)) return card;
       const sessionId = deps.getState().activeSessionId;
@@ -51,7 +51,7 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
       const saved = artifacts(raw);
       const text = Array.isArray(raw.content) ? raw.content.filter((part) => record(part) && part.type === "text" && typeof part.text === "string")
         .map((part) => (part as { text: string }).text).join("\n") : "";
-      card.append(node("h4", "plugin-result-title", t(raw.isError ? "Tool reported an error" : "Tool result")));
+      if (!options.importOnly) card.append(node("h4", "plugin-result-title", t(raw.isError ? "Tool reported an error" : "Tool result")));
       if (text) card.append(node("p", "plugin-result-summary", text.slice(0, 2000)));
       else if (raw.structuredContent !== undefined) {
         card.append(node("pre", "plugin-result-summary", JSON.stringify(raw.structuredContent, null, 2).slice(0, 2000)));
@@ -67,7 +67,7 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
           (references ? "\n" + references : "");
         void deps.useInChat(prompt);
       });
-      controls.append(chat);
+      if (!options.importOnly) controls.append(chat);
       if (saved.length && !raw.isError) {
         const details = node("details", "plugin-result-import");
         details.append(node("summary", "", t("Insert into Live")));

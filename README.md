@@ -61,6 +61,22 @@ and leaves the Set's tempo and meter unchanged. Import follows the Session's
 Edit Scope and approval mode, without requiring a model request. An interrupted
 import preserves recovery information and must be inspected before retrying.
 
+**Compare saved candidates** collects this Session's downloaded audio and saved
+MIDI results. Choose up to four candidates to compare audio playback, MIDI note
+previews, source parts and recorded generation parameters. Mark a preferred
+candidate explicitly; that selection survives reopening the Session. A missing
+historical tool call leaves its parameters unavailable.
+
+**Continue in chat** selects a source for the next chat request and adds a draft
+to the composer. Add the desired changes and send it through the usual model and
+tool permissions. The source is consumed when that initial user message is saved;
+Steer and manual tool calls do not consume it. The resulting tool calls retain
+their parent candidate even if a later preferred choice changes. Clearing the
+next-request source leaves the original files intact. MIDI candidates use the
+same mapped import preview; audio import is prepared in chat and uses the existing
+scoped audio action and approval preview. Candidate comparison does not audition
+Live instruments or roll back applied changes.
+
 Choose **Settings → App → Interface language** to use **English**, **简体中文**, or follow the
 system language. The preference is shared across Live Smith windows. Switching
 languages keeps drafts and ongoing work; user messages, model replies, object

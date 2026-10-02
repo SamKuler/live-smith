@@ -143,6 +143,7 @@
         "run_plugin_tool",
         "run_audio_tool",
         "import_midi_artifact",
+        "select_candidate",
         "compact_session",
         "resume_audio_job",
         "download_audio_output",
@@ -7471,6 +7472,14 @@
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || t("MIDI import preview failed."));
+          return result;
+        },
+        readSessionCandidates: async (input) => {
+          const response = await fetch(bridgeUrl("/session-candidates"), {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || t("Candidate comparison is unavailable."));
           return result;
         },
         requestPluginApp: async (operation, input, signal) => {

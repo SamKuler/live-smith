@@ -1,5 +1,7 @@
 import { creativeBriefProposalTool, proposeCreativeBrief } from "./context/creative-brief.js";
 import { ModelInputTooLargeError } from "../model/connection-error.js";
+import { candidateSourceInstructions, pendingCandidateParentFromEvents, type CandidateRef } from "../agent/candidate-contracts.js";
+import { assertSessionCandidate } from "./session/session-candidates.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { uiMessage, type UiMessage } from "../i18n/ui-message.js";
 
@@ -219,6 +221,9 @@ export async function handleAgentRequest(
       storageDirectory,
       session.id,
     );
+    const parentCandidate = pendingCandidateParentFromEvents(priorEvents);
+    if (parentCandidate) await assertSessionCandidate({ storageDirectory, sessionId: session.id, projectKey,
+      candidate: parentCandidate, signal: callbacks.signal });
     const skillContext = callbacks.skillContextSnapshot ??
       await resolveSkillContext({
         storageDirectory,
@@ -262,6 +267,7 @@ export async function handleAgentRequest(
         {
           kind: "user",
           content: prompt,
+          ...(parentCandidate ? { parentCandidate } : {}),
           ...(attachmentRefs.length ? { attachments: attachmentRefs } : {}),
         },
       );
@@ -285,7 +291,7 @@ export async function handleAgentRequest(
       documentTextCharacters,
       history,
       initialRecoveryState: activeRecoveryLedgerFromEvents(priorEvents),
-      recoveryContext: recoveryContextFromEvents(priorEvents),
+      recoveryContext: [recoveryContextFromEvents(priorEvents), candidateSourceInstructions(parentCandidate)].filter(Boolean).join("\n\n"),
       skillContext,
       userEvent,
       priorEventIds: priorEvents.map((event) => event.id),
@@ -1006,6 +1012,8 @@ export async function handleAgentRequest(
           session.id,
           event,
           appendTraceEvent,
+          prepared.userEvent.parentCandidate,
+          prepared.userEvent.id,
         );
         knownEventIds.add(sessionEvent.id);
         await callbacks.onSessionEvent(sessionEvent);
@@ -1316,12 +1324,16 @@ async function appendAgentLoopTraceEvent(
   sessionId: string,
   event: AgentLoopTraceEvent,
   appendEvent: typeof appendSessionEvent = appendSessionEvent,
+  parentCandidate?: CandidateRef,
+  requestEventId?: string,
 ): Promise<SessionEvent> {
   if ("name" in event) {
     return appendEvent(storageDirectory, sessionId, {
       kind: event.kind,
       name: event.name,
       content: event.content,
+      ...(event.kind === "tool_call" && parentCandidate ? { parentCandidate,
+        ...(requestEventId ? { requestEventId } : {}) } : {}),
     });
   }
 

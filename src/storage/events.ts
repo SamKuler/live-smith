@@ -24,6 +24,7 @@ import { isModelCitation, MAX_MODEL_CITATION_COUNT } from "../model/citations.js
 import type { ModelCitation, ModelHostedWebSearch } from "../model/contracts.js";
 import { isModelHostedWebSearch } from "../model/web-search.js";
 import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
+import { isCandidateRef, isCandidateSelection, type CandidateRef, type CandidateSelection } from "../agent/candidate-contracts.js";
 
 export const MAX_USER_EVENT_ATTACHMENT_COUNT =
   MAX_PENDING_ATTACHMENT_COUNT;
@@ -57,6 +58,7 @@ export type SessionEventKind =
   | "apply_auto_approved"
   | "apply_result"
   | "compaction"
+  | "candidate"
   | "error";
 
 export interface SessionRecoveryLedger {
@@ -79,6 +81,9 @@ export interface SessionEventInput {
   citations?: ModelCitation[];
   webSearch?: ModelHostedWebSearch;
   steeringReceipt?: SessionSteeringReceipt;
+  candidateSelection?: CandidateSelection;
+  parentCandidate?: CandidateRef;
+  requestEventId?: string;
 }
 
 export interface SessionEvent extends Omit<SessionEventInput, "attachments"> {
@@ -287,11 +292,17 @@ function isSessionEvent(
       "citations",
       "webSearch",
       "steeringReceipt",
+      "candidateSelection",
+      "parentCandidate",
+      "requestEventId",
     ]) &&
     isSafeStorageId(record.id) &&
     typeof record.createdAt === "string" &&
     isSessionEventKind(record.kind) &&
     typeof record.content === "string" &&
+    (record.kind === "candidate" ? isCandidateSelection(record.candidateSelection) : record.candidateSelection === undefined) &&
+    (record.parentCandidate === undefined || (record.kind === "user" || record.kind === "tool_call") && isCandidateRef(record.parentCandidate)) &&
+    (record.requestEventId === undefined || record.kind === "tool_call" && isSafeStorageId(record.requestEventId)) &&
     (record.name === undefined || typeof record.name === "string") &&
     (record.recovery === undefined || (
       record.kind === "apply_result" && isSessionRecoveryLedger(record.recovery)
@@ -535,6 +546,9 @@ export function sessionSteeringContentSha256(
 function cloneSessionEvent(event: SessionEvent): SessionEvent {
   return {
     ...event,
+    ...(event.parentCandidate ? { parentCandidate: { ...event.parentCandidate } } : {}),
+    ...(event.candidateSelection ? { candidateSelection: { ...event.candidateSelection,
+      candidate: event.candidateSelection.candidate ? { ...event.candidateSelection.candidate } : null } } : {}),
     ...(event.attachments === undefined
       ? {}
       : { attachments: event.attachments.map((attachment) => ({
@@ -608,6 +622,7 @@ function isSessionEventKind(value: unknown): value is SessionEventKind {
     value === "apply_auto_approved" ||
     value === "apply_result" ||
     value === "compaction" ||
+    value === "candidate" ||
     value === "error"
   );
 }

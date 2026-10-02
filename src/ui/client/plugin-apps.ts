@@ -13,6 +13,7 @@ import {
 } from "@modelcontextprotocol/client";
 import { type PluginResultActions } from "./plugin-results.js";
 import "./plugin-results.js";
+import "./candidates.js";
 
 interface PluginAppsDependencies {
   resultActions?: PluginResultActions;

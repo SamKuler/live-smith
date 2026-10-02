@@ -1,6 +1,7 @@
 import { isCreativeBrief, MAX_CREATIVE_BRIEF_CODE_POINTS } from "../../agent/creative-brief.js";
 import { MAX_AUDIO_PARAMETER_BYTES } from "../../plugins/builtins/parameter-panel.js";
 import type { MidiArtifactImportCommand } from "../midi-artifact-import.js";
+import { isCandidateSelection, type CandidateSelection } from "../../agent/candidate-contracts.js";
 import { Buffer } from "node:buffer";
 import type { IncomingMessage } from "node:http";
 import { clearTimeout, setTimeout } from "node:timers";
@@ -132,6 +133,7 @@ export interface RawPluginBodyReadOptions extends RawAttachmentBodyReadOptions {
 
 export type ChatBridgeCommandInput =
   | MidiArtifactImportCommand
+  | { kind: "select_candidate"; sessionId: string; selection: CandidateSelection }
   | {
       kind: "save_profile";
       profile: DraftProfile;
@@ -1337,6 +1339,13 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
         : { mappings: mappings as NonNullable<MidiArtifactImportCommand["mappings"]> }),
       startBeat: input.startBeat,
       ...(input.name === undefined ? {} : { name: input.name as string }) };
+  }
+  if (kind === "select_candidate") {
+    assertOnlyInputKeys(input, ["kind", "sessionId", "selection"], `${kind} command`);
+    if (!isSafeStorageId(input.sessionId) || !isCandidateSelection(input.selection)) {
+      throw new ChatBridgeRequestValidationError("Choose a saved candidate and selection action.");
+    }
+    return { kind, sessionId: input.sessionId, selection: input.selection };
   }
   if (kind === "run_plugin_tool" || kind === "run_audio_tool") {
     assertOnlyInputKeys(input, ["kind", "sessionId", "toolName", "signature", "arguments"], `${kind} command`);
