@@ -445,7 +445,7 @@ test("timeline labels MIDI and readable documents as locally extracted material"
   }];
   const harness = await createDialogHarness(state);
   try {
-    assert.deepEqual(Array.from(harness.document.querySelectorAll(".timeline-attachment-chip"), (chip) => chip.textContent), [
+    assert.deepEqual(Array.from(harness.document.querySelectorAll(".timeline-attachment-open"), (button) => button.textContent), [
       "score.mid · MIDI · Extracted document · 24 B", "reference.md · Text · Extracted document · 24 B",
     ]);
     assert.deepEqual(harness.errors, []);

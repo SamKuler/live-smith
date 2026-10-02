@@ -106,12 +106,18 @@
         strip.replaceChildren();
         strip.hidden = attachments.length === 0;
         strip.setAttribute("aria-busy", String(busy));
+        if (attachments.length) {
+          const heading = document.createElement("span");
+          heading.className = "pending-attachments-heading";
+          heading.textContent = t("Next request");
+          strip.append(heading);
+        }
         for (const attachment of attachments) {
           const chip = document.createElement("span");
           chip.className = "attachment-chip";
           chip.dataset.attachmentId = attachment.id;
           chip.setAttribute("role", "listitem");
-          const reference = { id: attachment.id, kind: attachment.kind, fileName: attachment.fileName, durationSeconds: attachment.durationSeconds };
+          const reference = attachment;
           const preview = attachmentViewer.createPreview(sessionId, reference);
           if (preview) {
             chip.dataset.mediaKind = attachment.kind;
@@ -138,12 +144,20 @@
           remove.className = "attachment-remove";
           remove.type = "button";
           remove.disabled = busy;
-          remove.setAttribute("aria-label", t("Remove attached file {fileName}", { fileName: attachment.fileName }));
+          const restoresSource = attachment.provenance?.replacedIds?.length > 0;
+          remove.setAttribute("aria-label", restoresSource ? t("Undo selection and restore the source file") : t("Remove attached file {fileName}", { fileName: attachment.fileName }));
+          remove.title = t(restoresSource ? "Undo selection and restore the previous file" : "Remove attachment");
           remove.textContent = "×";
           remove.addEventListener("click", () => {
             void removePending(attachment.id);
           });
           chip.append(label, remove);
+          if (attachment.provenance?.startSeconds !== undefined) {
+            const selection = document.createElement("span");
+            selection.className = "attachment-selection-label";
+            selection.textContent = t("Selected excerpt: {start}–{end} s", { start: attachment.provenance.startSeconds.toFixed(3), end: attachment.provenance.endSeconds.toFixed(3) });
+            chip.append(selection);
+          }
           if (attachment.kind === "audio" && preview) chip.append(preview);
           strip.append(chip);
         }

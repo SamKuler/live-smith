@@ -86,6 +86,7 @@ import {
   commandIdForRequest,
   attachmentIdsForRequest,
   parseAttachmentReferenceQuery,
+  parseAttachmentSelectionQuery,
   parseAttachmentUploadQuery,
   parseCommandInput,
   parseConfirmationInput,
@@ -103,6 +104,7 @@ import {
   steeringSendIdForRequest,
   stopTargetForRequest,
   tokenForRequest,
+  type ChatBridgeAttachmentSelectionInput,
   type ChatBridgeAttachmentDeleteInput,
   type ChatBridgeAttachmentInput,
   type ChatBridgeCommandInput,
@@ -121,6 +123,7 @@ export {
   ChatBridgePayloadTooLargeError,
 } from "./chat-bridge-http.js";
 export type {
+  ChatBridgeAttachmentSelectionInput,
   ChatBridgeAttachmentDeleteInput,
   ChatBridgeAttachmentInput,
   ChatBridgeCommandInput,
@@ -409,6 +412,7 @@ interface ChatBridgeOptions {
     input: ChatBridgeAttachmentInput,
     signal: AbortSignal,
   ): Promise<ChatDialogState>;
+  handleAttachmentSelection?(input: ChatBridgeAttachmentSelectionInput, signal: AbortSignal): Promise<ChatDialogState>;
   handleAttachmentDelete?(
     input: ChatBridgeAttachmentDeleteInput,
     signal: AbortSignal,
@@ -914,12 +918,14 @@ export async function createChatBridge(
 
   const readAttachmentRequestBody = async (
     request: IncomingMessage,
+    allowEmpty = false,
   ): Promise<Uint8Array> => {
     pendingRequestBodies.add(request);
     try {
       return await readRawAttachmentBody(
         request,
         options.attachmentBodyReadOptions,
+        allowEmpty,
       );
     } finally {
       pendingRequestBodies.delete(request);
@@ -1883,6 +1889,32 @@ export async function createChatBridge(
           stateSnapshotCutRevision,
         );
         sendJson(response, state, 201);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/attachments/")) {
+        if (!options.handleAttachmentSelection || !options.preflightAttachmentUpload) {
+          request.resume(); response.writeHead(404).end("Not found"); return;
+        }
+        const input = parseAttachmentSelectionQuery(request, url);
+        attachmentSessionId = input.sessionId;
+        if (activeCommandTerminal || activeAttachmentTerminals.has(input.sessionId)) {
+          request.resume(); sendJson(response, { error: "Another Live Smith operation is already in progress for this Session." }, 409); return;
+        }
+        inFlightMutationHandlers.add(handlerTerminal);
+        activeAttachmentTerminals.set(input.sessionId, handlerTerminal);
+        const controller = createHostAbortController();
+        activeAttachmentControllers.set(input.sessionId, controller);
+        const disconnect = () => { if (!response.writableEnded) controller.abort(); };
+        response.once("close", disconnect);
+        try {
+          await options.preflightAttachmentUpload(input, controller.signal);
+          const bytes = await readAttachmentRequestBody(request, input.mode !== "convert-mp3");
+          attachmentBodyMayBeUnread = false;
+          throwIfBridgeAborted(controller.signal);
+          const state = finalizeBridgeState(await options.handleAttachmentSelection({ ...input, bytes }, controller.signal), stateSnapshotCutRevision);
+          sendJson(response, state, 201);
+        } finally { response.removeListener("close", disconnect); }
         return;
       }
 

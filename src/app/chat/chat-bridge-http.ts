@@ -4,7 +4,7 @@ import type { MidiArtifactImportCommand } from "../midi-artifact-import.js";
 import { Buffer } from "node:buffer";
 import type { IncomingMessage } from "node:http";
 import { clearTimeout, setTimeout } from "node:timers";
-import type { URL } from "node:url";
+import { URL } from "node:url";
 
 import {
   isEditScopes,
@@ -78,6 +78,16 @@ export interface ChatBridgeAttachmentInput {
   sessionId: string;
   fileName: string;
   claimedMediaType?: string;
+  bytes: Uint8Array;
+}
+
+export interface ChatBridgeAttachmentSelectionInput {
+  sessionId: string;
+  attachmentId: string;
+  mode: "copy" | "original" | "excerpt" | "convert-mp3";
+  replace: boolean;
+  startSeconds?: number;
+  endSeconds?: number;
   bytes: Uint8Array;
 }
 
@@ -477,6 +487,7 @@ export async function readJsonBody<T>(
 export function readRawAttachmentBody(
   request: IncomingMessage,
   options: RawAttachmentBodyReadOptions = {},
+  allowEmpty = false,
 ): Promise<Uint8Array> {
   let declaredLength: number | undefined;
   try {
@@ -486,7 +497,7 @@ export function readRawAttachmentBody(
       "Attachment",
       MAX_ATTACHMENT_UPLOAD_BYTES,
     );
-    if (declaredLength === 0) {
+    if (declaredLength === 0 && !allowEmpty) {
       throw new ChatBridgeRequestValidationError("Attachment body must not be empty.");
     }
   } catch (error) {
@@ -496,6 +507,7 @@ export function readRawAttachmentBody(
 
   return readBoundedRawBody(request, declaredLength, {
     maximumBytes: MAX_ATTACHMENT_UPLOAD_BYTES,
+    allowEmpty,
     initialCapacity: initialUnknownAttachmentBodyCapacity,
     timeoutMs: options.timeoutMs ?? defaultAttachmentBodyReadTimeoutMs,
     allocateBuffer: options.allocateBuffer ?? Buffer.allocUnsafe,
@@ -579,6 +591,7 @@ export function readRawPluginBody(
 }
 
 interface BoundedRawBodyPolicy {
+  allowEmpty?: boolean;
   maximumBytes: number;
   initialCapacity: number;
   timeoutMs: number;
@@ -675,7 +688,7 @@ function readBoundedRawBody(
     const onEnd = () => {
       ended = true;
       if (settled) return;
-      if (actualLength === 0) {
+      if (actualLength === 0 && !policy.allowEmpty) {
         fail(new ChatBridgeRequestValidationError(policy.emptyMessage));
         return;
       }
@@ -685,7 +698,7 @@ function readBoundedRawBody(
       }
       settled = true;
       cleanup();
-      resolve(body!.subarray(0, actualLength));
+      resolve(body?.subarray(0, actualLength) ?? new Uint8Array());
     };
     const onAborted = () => fail(
       new ChatBridgeRequestValidationError(policy.incompleteMessage),
@@ -778,6 +791,31 @@ export function parseAttachmentUploadQuery(
 
 function isSingleMimeType(value: string): boolean {
   return mimeTypePattern.test(value);
+}
+
+export function parseAttachmentSelectionQuery(request: IncomingMessage, url: URL): Omit<ChatBridgeAttachmentSelectionInput, "bytes"> {
+  assertAttachmentQuery(request, url, ["token", "sessionId", "mode", "replace",
+    ...(url.searchParams.has("start") || url.searchParams.has("end") ? ["start", "end"] : [])]);
+  const referenceUrl = new URL(url);
+  for (const key of ["mode", "replace", "start", "end"]) referenceUrl.searchParams.delete(key);
+  const reference = parseAttachmentReferenceQuery(request, referenceUrl);
+  const mode = url.searchParams.get("mode");
+  const replace = url.searchParams.get("replace");
+  if (!["copy", "original", "excerpt", "convert-mp3"].includes(mode ?? "") || !["true", "false"].includes(replace ?? "")) {
+    throw new ChatBridgeRequestValidationError("Attachment selection mode is invalid.");
+  }
+  const start = url.searchParams.get("start");
+  const end = url.searchParams.get("end");
+  if (mode === "copy" || mode === "original") {
+    if (start !== null || end !== null) throw new ChatBridgeRequestValidationError("Whole-file reuse does not accept a time range.");
+    return { ...reference, mode, replace: replace === "true" };
+  }
+  const startSeconds = start === null || start.trim() === "" ? NaN : Number(start);
+  const endSeconds = end === null || end.trim() === "" ? NaN : Number(end);
+  if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds || endSeconds > 900) {
+    throw new ChatBridgeRequestValidationError("Select a valid audio time range.");
+  }
+  return { ...reference, mode: mode as "excerpt" | "convert-mp3", replace: replace === "true", startSeconds, endSeconds };
 }
 
 export function parseAttachmentReferenceQuery(

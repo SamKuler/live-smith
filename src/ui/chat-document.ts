@@ -275,7 +275,7 @@ export function composeChatDocument(
     __I18N_SCRIPT__: scripts.i18n.replace("__UI_I18N__", () => serializeUiI18nData()),
     __PROFILE_EDITOR_SCRIPT__: profileEditorScript,
     __ATTACHMENT_MEDIA_SCRIPT__: injectAttachmentContract(scripts.attachmentMedia ?? ""),
-    __ATTACHMENT_VIEWER_SCRIPT__: scripts.attachmentViewer,
+    __ATTACHMENT_VIEWER_SCRIPT__: injectAttachmentContract(scripts.attachmentViewer),
     __ATTACHMENTS_SCRIPT__: attachmentsScript,
     __COMPOSER_INPUT_SCRIPT__: scripts.composerInput,
     __SKILL_MANAGER_SCRIPT__: skillManagerScript,

@@ -300,7 +300,7 @@
           chip.className = "timeline-attachment-chip";
           chip.setAttribute("role", "listitem");
           chip.dataset.attachmentId = attachment.id;
-          const reference = { id: attachment.id, kind: attachment.kind, fileName: attachment.fileName, durationSeconds: attachment.durationSeconds };
+          const reference = attachment;
           const preview = attachmentViewer.createPreview(sessionId, reference);
           if (preview) {
             chip.dataset.mediaKind = attachment.kind;
@@ -318,6 +318,21 @@
           button.addEventListener("click", () => { void attachmentViewer.open(sessionId, reference); });
           if (attachment.kind === "audio") chip.prepend(button);
           else chip.append(button);
+          const reuse = document.createElement("button");
+          reuse.type = "button";
+          reuse.className = "attachment-reuse";
+          reuse.textContent = t("Use again");
+          reuse.setAttribute("aria-label", t("Use {fileName} in the next request", { fileName: attachment.fileName }));
+          reuse.addEventListener("click", () => { void attachmentViewer.reuse(sessionId, reference); });
+          const attachmentActions = preview?.querySelector(".attachment-audio-actions") || chip;
+          attachmentActions.append(reuse);
+          if (attachment.provenance?.startSeconds !== undefined) {
+            const original = document.createElement("button");
+            original.type = "button"; original.className = "attachment-reuse";
+            original.textContent = t("Use original file");
+            original.addEventListener("click", () => { void attachmentViewer.reuse(sessionId, reference, true); });
+            attachmentActions.append(original);
+          }
           list.append(chip);
         }
         content.append(list);

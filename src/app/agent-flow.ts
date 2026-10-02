@@ -1,3 +1,5 @@
+import { attachmentQuotaIsWithinLimits } from "../attachments/contracts.js";
+import { selectSavedAttachment } from "./attachments/attachment-selection.js";
 import { ModelInputTooLargeError } from "../model/connection-error.js";
 import {
   createDialogModelState,
@@ -150,6 +152,7 @@ import {
   createChatBridge,
   type ChatBridgeCommandContext,
   type ChatBridgeCommandInput,
+  type ChatBridgeAttachmentSelectionInput,
   type ChatBridgeAttachmentDeleteInput,
   type ChatBridgeAttachmentInput,
   type ChatBridgeSendInput,
@@ -2703,6 +2706,19 @@ export async function runAgentFlow(
     return buildStateAfterAttachmentMutation();
   };
 
+  const handleAttachmentSelection = async (input: ChatBridgeAttachmentSelectionInput, signal: AbortSignal) => {
+    await withAttachmentMutation(input.sessionId, signal, async () => {
+      throwIfAborted(signal);
+      await attachmentSession(input.sessionId);
+      const events = await loadSessionEvents(storageDirectory, input.sessionId);
+      const pending = await listPendingSessionAttachments(storageDirectory, input.sessionId, consumedAttachmentIds(events));
+      try {
+        await runSessionStateChange(input.sessionId, () => selectSavedAttachment(storageDirectory, input, pending, signal));
+      } catch (error) { throwMappedAttachmentError(error); }
+    });
+    return buildStateAfterAttachmentMutation();
+  };
+
   const handleAttachmentDelete = async (
     input: ChatBridgeAttachmentDeleteInput,
     signal: AbortSignal,
@@ -2721,15 +2737,21 @@ export async function runAgentFlow(
           "An attachment already referenced by a user event cannot be removed.",
         );
       }
-      const exists = (await listPendingSessionAttachments(
+      const target = (await listPendingSessionAttachments(
         storageDirectory,
         input.sessionId,
         consumedAttachmentIds(events),
-      )).some((attachment) => attachment.id === input.attachmentId);
-      if (!exists) {
+      )).find((attachment) => attachment.id === input.attachmentId);
+      if (!target) {
         throw new ChatBridgeResourceNotFoundError(
           "The requested attachment does not exist in this Session.",
         );
+      }
+      if (target.provenance?.replacedIds.length) {
+        const afterRemoval = await listPendingSessionAttachments(storageDirectory, input.sessionId, consumedAttachmentIds(events), input.attachmentId);
+        if (afterRemoval.length && !attachmentQuotaIsWithinLimits(afterRemoval)) {
+          throw new ChatBridgePayloadTooLargeError("Restoring the source would exceed pending attachment limits. Remove another draft file first.");
+        }
       }
       throwIfAborted(signal);
       try {
@@ -3116,6 +3138,7 @@ export async function runAgentFlow(
       lookupSteeringReceipt,
       preflightAttachmentUpload,
       handleAttachmentUpload,
+      handleAttachmentSelection,
       handleAttachmentDelete,
       handleSkillInstall,
       handleSkillDelete,

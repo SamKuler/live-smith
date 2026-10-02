@@ -1,4 +1,5 @@
 import { isCreativeBrief } from "../../../agent/creative-brief.js";
+import { isAttachmentProvenance } from "../../../attachments/provenance.js";
 import type { AgentActionPreview, MidiActionPreview, MidiPreviewNote } from "../../../agent/action-preview.js";
 import { isEditScopes as isWireEditScopes } from "../../../agent/edit-scopes.js";
 import type { ConversationScope, ModelCitation, ModelContextUsage, ModelHostedWebSearch } from "../../../model/contracts.js";
@@ -137,6 +138,7 @@ export function isWireSessionAttachment(value: unknown): value is SessionAttachm
   if (
     !isWireRecord(value) ||
     !isWireStorageId(value.id) ||
+    (value.provenance !== undefined && !isAttachmentProvenance(value.provenance, value.id)) ||
     !includes(["image", "document", "audio"], value.kind) ||
     !isWireAttachmentDisplayFileName(value.fileName) ||
     !isInteger(value.byteLength) ||
@@ -151,6 +153,7 @@ export function isWireSessionAttachment(value: unknown): value is SessionAttachm
     "mediaType",
     "byteLength",
     "sha256",
+    "provenance",
   ] as const;
   if (value.kind === "image") {
     return hasOnlyWireKeys<NonNullable<SessionAttachmentRef>>(value, commonKeys) &&

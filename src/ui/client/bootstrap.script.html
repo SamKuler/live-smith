@@ -273,6 +273,8 @@
 
         const attachmentViewer = factories.createAttachmentViewer({
           getState,
+          getComposerAttachments: bridgeClient.getComposerAttachments,
+          selectAttachment: bridgeClient.selectAttachment,
           loadAttachment: bridgeClient.loadAttachment,
           getAttachmentUrl: bridgeClient.getAttachmentUrl,
           openAttachment: bridgeClient.openAttachment,

@@ -1288,7 +1288,7 @@ export type AgentModelTurnRequester = (
 
 export function consumedAttachmentIds(events: readonly SessionEvent[]): string[] {
   return [...new Set(events.flatMap((event) =>
-    event.attachments?.map((attachment) => attachment.id) ?? []
+    event.attachments?.flatMap((attachment) => [attachment.id, ...(attachment.provenance?.replacedIds ?? [])]) ?? []
   ))];
 }
 

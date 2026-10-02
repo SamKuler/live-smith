@@ -337,7 +337,7 @@
 
       function removeConsumedPendingAttachments(state) {
         const consumed = new Set((state.events || []).flatMap((event) =>
-          (event.attachments || []).map((attachment) => attachment.id)));
+          (event.attachments || []).flatMap((attachment) => [attachment.id, ...(attachment.provenance?.replacedIds || [])])));
         state.pendingAttachments = (state.pendingAttachments || []).filter((attachment) => !consumed.has(attachment.id));
       }
 
@@ -5235,8 +5235,8 @@
         }
         const blob = await response.blob();
         if (!(__ATTACHMENT_REFERENCE_FORMATS__).some((format) =>
-          format.kind === "image" && format.mediaType === blob.type
-        )) throw new Error(t("This attachment cannot be previewed as an image."));
+          (format.kind === "image" || format.kind === "audio") && format.mediaType === blob.type
+        )) throw new Error(t("This attachment cannot be previewed."));
         return blob;
       }
 
@@ -5367,6 +5367,26 @@
       function attachmentFileLabel(file) {
         const name = file?.name || t("Unnamed file");
         return name.length <= 80 ? name : `${name.slice(0, 79)}…`;
+      }
+
+      function selectAttachment(sessionId, attachmentId, selection, signal) {
+        return runFileOperation("attachment", async (causalAttempt) => {
+          if (signal?.aborted) throw new Error(t("Audio selection cancelled."));
+          if (activeSessionId() !== sessionId) throw new Error(t("The active Session changed."));
+          if (selection.replace && !composerAttachments().some((item) => item.id === attachmentId)) {
+            throw new Error(t("This file is no longer in the next request. Open its current attachment before selecting again."));
+          }
+          recordComposerDraft(sessionId, currentComposerDraft(sessionId));
+          if (selection.replace) causalAttempt.ownedPendingAttachmentIds.add(attachmentId);
+          const query = new URLSearchParams({ sessionId, mode: selection.mode, replace: String(selection.replace) });
+          if (selection.startSeconds !== undefined) {
+            query.set("start", String(selection.startSeconds)); query.set("end", String(selection.endSeconds));
+          }
+          return requestAttachment(`/attachments/${encodeURIComponent(attachmentId)}?${query}`, {
+            method: "POST", headers: { "Content-Type": "application/octet-stream" },
+            body: selection.bytes || new Uint8Array(), signal,
+          }, causalAttempt);
+        });
       }
 
       function deleteAttachment(sessionId, attachmentId) {
@@ -7373,6 +7393,7 @@
         reloadAudioService,
         saveAudioServiceSettings,
         createCommandId: () => createCorrelationId("command"),
+        selectAttachment,
         deleteAttachment,
         loadAttachment,
         getAttachmentUrl,

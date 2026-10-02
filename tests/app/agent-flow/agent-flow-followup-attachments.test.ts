@@ -1,3 +1,7 @@
+import { consumedAttachmentIds } from "../../../src/app/agent-request.js";
+import { ModelInputTooLargeError } from "../../../src/model/connection-error.js";
+import { readSessionAttachmentBytes } from "../../../src/storage/attachments.js";
+import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
@@ -30,14 +34,15 @@ async function withFlow(
   dialog: (flow: Flow) => Promise<void>,
   model: (request: TransportRequest, turn: number) => ModelTurn | Promise<ModelTurn> = () => ({ content: "Ready.", toolCalls: [] }),
   openAttachment?: AgentFlowDependencies["openAttachment"],
+  audioInput = false,
 ) {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-followup-attachments-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await saveSavedProfile(directory, {
     id: "followup-profile", name: "Followup model", defaultModel: "fixture-model",
-    connection: { kind: "direct-api", apiFamily: "openai", apiMode: "responses", baseUrl: "https://example.test/v1", apiKey: "test-key" },
+    connection: { kind: "direct-api", apiFamily: "openai", apiMode: audioInput ? "chat-completions" : "responses", baseUrl: "https://example.test/v1", apiKey: "test-key" },
     models: [{ model: "fixture-model", parameters: { maxOutputTokens: 2048, reasoning: { mode: "default" } },
-      advanced: { capabilityOverrides: { inputs: { image: true } } } }],
+      advanced: { capabilityOverrides: { inputs: { image: true, ...(audioInput ? { audio: true } : {}) } } } }],
   });
   const requests: TransportRequest[] = [];
   const interaction: LiveInteractionContext = {
@@ -112,7 +117,7 @@ function remove(flow: Flow, id: string) {
 async function pending(flow: Flow) {
   const events = await loadSessionEvents(flow.directory, flow.sessionId);
   return listPendingSessionAttachments(flow.directory, flow.sessionId,
-    events.flatMap((event) => event.attachments?.map((attachment) => attachment.id) ?? []));
+    consumedAttachmentIds(events));
 }
 
 async function expectStatus(response: Response, status: number): Promise<string> {
@@ -350,4 +355,44 @@ test("stored attachment preview and native open remain available during generati
     assert.equal(file.attachment.fileName, "reference.png");
     assert.deepEqual(Buffer.from(file.bytes), png);
   });
+});
+
+
+test("oversized audio recovery stages and sends an excerpt, then reuses the original without uploading it", async (t) => {
+  await withFlow(t, async (flow) => {
+    const bytes = waveBytes(2);
+    const original = await upload(flow, "Reference.wav", bytes);
+    await expectStatus(await send(flow, "Listen to the reference", [original.id]), 500);
+    const failed = await loadSessionEvents(flow.directory, flow.sessionId);
+    assert.ok(failed.some((event) => event.name === "input_too_large"));
+    const select = async (id: string, mode: "copy" | "excerpt", replace: boolean) => {
+      const url = endpoint(flow.url, `/attachments/${id}`);
+      url.searchParams.set("sessionId", flow.sessionId); url.searchParams.set("mode", mode); url.searchParams.set("replace", String(replace));
+      if (mode === "excerpt") { url.searchParams.set("start", ".5"); url.searchParams.set("end", "1"); }
+      const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: new Uint8Array() });
+      return JSON.parse(await expectStatus(response, 201)) as ChatDialogState;
+    };
+    const selectedState = await select(original.id, "excerpt", false);
+    const excerpt = selectedState.pendingAttachments[0]!;
+    assert.notEqual(excerpt.id, original.id);
+    assert.equal(excerpt.kind === "audio" && excerpt.durationSeconds, .5);
+    await expectStatus(await send(flow, "Listen only to this excerpt", [excerpt.id]), 200);
+    const request = flow.requests.at(-1)!;
+    const audio = request.currentUserContent.filter((part) => part.type === "audio");
+    assert.equal(audio.length, 1);
+    assert.deepEqual(audio[0]!.bytes, await readSessionAttachmentBytes(flow.directory, flow.sessionId, excerpt.id));
+    assert.doesNotMatch(JSON.stringify(request), new RegExp(original.id));
+    assert.deepEqual(await readSessionAttachmentBytes(flow.directory, flow.sessionId, original.id), bytes);
+    assert.equal((await pending(flow)).length, 0);
+    const reused = (await select(original.id, "copy", false)).pendingAttachments[0]!;
+    assert.notEqual(reused.id, original.id); assert.equal(reused.sha256, original.sha256);
+    await expectStatus(await remove(flow, reused.id), 200);
+    assert.equal((await pending(flow)).length, 0);
+    const illegal = endpoint(flow.url, `/attachments/${original.id}`);
+    illegal.searchParams.set("sessionId", flow.sessionId); illegal.searchParams.set("mode", "copy"); illegal.searchParams.set("replace", "true");
+    await expectStatus(await fetch(illegal, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: new Uint8Array() }), 409);
+  }, (_, turn) => {
+    if (turn === 1) throw new ModelInputTooLargeError("The provider rejected this audio size.");
+    return { content: "The short excerpt is available.", toolCalls: [] };
+  }, undefined, true);
 });

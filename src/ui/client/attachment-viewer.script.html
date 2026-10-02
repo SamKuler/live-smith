@@ -1,6 +1,8 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createAttachmentViewer = function createAttachmentViewer({
         getState,
+        getComposerAttachments,
+        selectAttachment,
         getAttachmentUrl,
         loadAttachment,
         openAttachment,
@@ -8,6 +10,7 @@
       }) {
       const t = (message, params) => window.LiveSmithI18n.t(message, params);
       let active = null;
+      let activeAudio = null;
       const inlineMedia = new Set();
 
       function disposeInlineMedia(preview) {
@@ -88,8 +91,42 @@
         return player;
       }
 
+      function createAudioPlayer(sessionId, { fileName, durationSeconds }, sourceUrl) {
+        const element = document.createElement("div");
+        element.className = "attachment-media-preview";
+        const unavailable = document.createElement("span");
+        unavailable.className = "attachment-media-unavailable";
+        unavailable.setAttribute("role", "status");
+        unavailable.hidden = true;
+        unavailable.textContent = t("Audio playback unavailable. Open the file in the default app.");
+        const media = document.createElement("audio");
+        media.className = "attachment-inline-audio";
+        media.preload = "none";
+        media.hidden = true;
+        const preview = { container: element, media, unavailable, sessionId, kind: "audio", fileName };
+        element.append(media, createAudioControls(preview, durationSeconds), unavailable);
+        media.onerror = () => { unavailable.hidden = false; };
+        media.src = sourceUrl;
+        inlineMedia.add(preview);
+        return { element, media, dispose: () => disposeInlineMedia(preview) };
+      }
+
       function createPreview(sessionId, attachment) {
-        if (attachment.kind !== "image" && attachment.kind !== "audio") return null;
+        if (attachment.kind === "audio") {
+          const player = createAudioPlayer(sessionId, attachment, getAttachmentUrl(sessionId, attachment.id));
+          const select = document.createElement("button");
+          select.type = "button";
+          select.className = "attachment-audio-select";
+          select.textContent = t("Select excerpt");
+          select.setAttribute("aria-label", t("Select an excerpt from {fileName}", { fileName: attachment.fileName }));
+          select.addEventListener("click", () => { void openAudio(sessionId, attachment); });
+          const actions = document.createElement("div");
+          actions.className = "attachment-audio-actions";
+          actions.append(select);
+          player.element.append(actions);
+          return player.element;
+        }
+        if (attachment.kind !== "image") return null;
         const reference = { id: attachment.id, kind: attachment.kind, fileName: attachment.fileName };
         const container = document.createElement("div");
         container.className = "attachment-media-preview";
@@ -97,34 +134,21 @@
         unavailable.className = "attachment-media-unavailable";
         unavailable.setAttribute("role", "status");
         unavailable.hidden = true;
-        const media = document.createElement(attachment.kind === "image" ? "img" : "audio");
+        const media = document.createElement("img");
         const preview = { container, media, unavailable, sessionId, kind: attachment.kind, fileName: attachment.fileName };
-        if (attachment.kind === "image") {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "attachment-image-preview";
-          button.setAttribute("aria-label", t("Preview attached image {fileName}", { fileName: reference.fileName }));
-          button.addEventListener("click", () => { void open(sessionId, reference); });
-          media.className = "attachment-preview-image";
-          media.alt = reference.fileName;
-          media.loading = "lazy";
-          media.decoding = "async";
-          button.append(media, unavailable);
-          container.append(button);
-          media.onload = () => {
-            media.hidden = false;
-            unavailable.hidden = true;
-          };
-        } else {
-          media.className = "attachment-inline-audio";
-          media.preload = "none";
-          media.hidden = true;
-          container.append(media, createAudioControls(preview, attachment.durationSeconds), unavailable);
-        }
-        media.onerror = () => {
-          if (attachment.kind === "image") media.hidden = true;
-          unavailable.hidden = false;
-        };
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "attachment-image-preview";
+        button.setAttribute("aria-label", t("Preview attached image {fileName}", { fileName: reference.fileName }));
+        button.addEventListener("click", () => { void open(sessionId, reference); });
+        media.className = "attachment-preview-image";
+        media.alt = reference.fileName;
+        media.loading = "lazy";
+        media.decoding = "async";
+        button.append(media, unavailable);
+        container.append(button);
+        media.onload = () => { media.hidden = false; unavailable.hidden = true; };
+        media.onerror = () => { media.hidden = true; unavailable.hidden = false; };
         media.src = getAttachmentUrl(sessionId, reference.id);
         inlineMedia.add(preview);
         return container;
@@ -146,6 +170,7 @@
       }
 
       function close({ restoreFocus = true } = {}) {
+        closeAudio(restoreFocus);
         const view = active;
         if (!view) return;
         active = null;
@@ -175,6 +200,7 @@
       }
 
       function sync() {
+        if (activeAudio && activeAudio.sessionId !== getState().activeSessionId) closeAudio(false);
         for (const preview of inlineMedia) {
           if (!preview.container.isConnected || preview.sessionId !== getState().activeSessionId) {
             disposeInlineMedia(preview);
@@ -335,9 +361,254 @@
         await loadImage(view);
       }
 
+      async function reuse(sessionId, attachment, original = false) {
+        try {
+          await selectAttachment(sessionId, attachment.id, { mode: original ? "original" : "copy", replace: false });
+          showStatus(t("Added to the next request."));
+        } catch (error) { showStatus(error.message || String(error), true); }
+      }
+
+      function closeAudio(restoreFocus = true) {
+        const view = activeAudio;
+        if (!view) return;
+        activeAudio = null;
+        view.controller.abort();
+        view.player.dispose();
+        if (view.frame) window.cancelAnimationFrame(view.frame);
+        if (view.context) void view.context.close().catch(() => {});
+        view.decoded = null;
+        view.dialog.remove();
+        if (restoreFocus && view.previousFocus?.isConnected) view.previousFocus.focus({ preventScroll: true });
+      }
+
+      function checkAudioView(view) {
+        if (activeAudio !== view || view.controller.signal.aborted || getState().activeSessionId !== view.sessionId) {
+          throw new Error(t("Audio selection cancelled."));
+        }
+      }
+
+      async function audioYield(view) {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        checkAudioView(view);
+      }
+
+      async function wavePeaks(bytes, view) {
+        const data = new DataView(bytes);
+        const text = (offset, length) => String.fromCharCode(...new Uint8Array(bytes, offset, length));
+        if (text(0, 4) !== "RIFF" || text(8, 4) !== "WAVE") throw new Error(t("The saved audio could not be decoded."));
+        let format, audio;
+        for (let offset = 12; offset + 8 <= data.byteLength;) {
+          const size = data.getUint32(offset + 4, true);
+          if (offset + 8 + size > data.byteLength) throw new Error(t("The saved audio could not be decoded."));
+          if (text(offset, 4) === "fmt ") format = offset + 8;
+          if (text(offset, 4) === "data") audio = { offset: offset + 8, size };
+          offset += 8 + size + (size & 1);
+        }
+        if (!format || !audio) throw new Error(t("The saved audio could not be decoded."));
+        const code = data.getUint16(format, true);
+        const channels = data.getUint16(format + 2, true);
+        const rate = data.getUint32(format + 4, true);
+        const align = data.getUint16(format + 12, true);
+        const bits = data.getUint16(format + 14, true);
+        const frames = audio.size / align;
+        const peaks = new Float32Array(480);
+        for (let frame = 0; frame < frames; frame++) {
+          if (frame % 65536 === 0) await audioYield(view);
+          const bucket = Math.min(peaks.length - 1, Math.floor(frame * peaks.length / frames));
+          for (let channel = 0; channel < channels; channel++) {
+            const offset = audio.offset + frame * align + channel * bits / 8;
+            let sample;
+            if (code === 3) sample = bits === 64 ? data.getFloat64(offset, true) : data.getFloat32(offset, true);
+            else if (bits === 8) sample = (data.getUint8(offset) - 128) / 128;
+            else if (bits === 16) sample = data.getInt16(offset, true) / 32768;
+            else if (bits === 24) sample = ((data.getUint8(offset) | data.getUint8(offset + 1) << 8 | data.getUint8(offset + 2) << 16) << 8 >> 8) / 8388608;
+            else sample = data.getInt32(offset, true) / 2147483648;
+            if (Number.isFinite(sample)) peaks[bucket] = Math.max(peaks[bucket], Math.min(1, Math.abs(sample)));
+          }
+        }
+        return { peaks, duration: frames / rate };
+      }
+
+      async function mp3Peaks(bytes, view, attachment) {
+        const maxDecodedBytes = __MAX_AUDIO_ATTACHMENT_BYTES__;
+        if (attachment.durationSeconds * attachment.sampleRate * attachment.channels * 4 > maxDecodedBytes) {
+          throw new Error(t("This MP3 exceeds the 128 MiB decoded-audio budget. Export a shorter WAV in an audio editor, or use the whole original MP3."));
+        }
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) throw new Error(t("MP3 waveform decoding is unavailable in this browser. Use the original file or export a WAV in an audio editor."));
+        const context = new AudioContext({ sampleRate: attachment.sampleRate });
+        view.context = context;
+        let timeout;
+        let abort;
+        try {
+          view.decoded = await Promise.race([
+            context.decodeAudioData(bytes),
+            new Promise((_, reject) => {
+              timeout = window.setTimeout(() => reject(new Error(t("Audio decoding timed out after 30 seconds."))), 30000);
+              abort = () => reject(new Error(t("Audio selection cancelled.")));
+              view.controller.signal.addEventListener("abort", abort, { once: true });
+            }),
+          ]);
+          checkAudioView(view);
+          const decoded = view.decoded;
+          if (decoded.length * decoded.numberOfChannels * 4 > maxDecodedBytes || decoded.sampleRate !== attachment.sampleRate || decoded.numberOfChannels !== attachment.channels) {
+            view.decoded = null;
+            throw new Error(t("The browser cannot decode this MP3 within the audio budget while preserving its sample rate and channels."));
+          }
+          const peaks = new Float32Array(480);
+          for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
+            const samples = decoded.getChannelData(channel);
+            for (let frame = 0; frame < samples.length; frame++) {
+              if (frame % 65536 === 0) await audioYield(view);
+              const bucket = Math.min(peaks.length - 1, Math.floor(frame * peaks.length / samples.length));
+              peaks[bucket] = Math.max(peaks[bucket], Math.min(1, Math.abs(samples[frame]) || 0));
+            }
+          }
+          return { peaks, duration: Math.min(attachment.durationSeconds, decoded.duration) };
+        } finally {
+          window.clearTimeout(timeout);
+          if (abort) view.controller.signal.removeEventListener("abort", abort);
+          await context.close().catch(() => {});
+          if (view.context === context) view.context = null;
+        }
+      }
+
+      async function exportMp3Selection(view, start, end) {
+        const decoded = view.decoded;
+        const first = Math.round(start * decoded.sampleRate);
+        const last = Math.min(decoded.length, Math.round(end * decoded.sampleRate));
+        const channels = decoded.numberOfChannels;
+        const length = (last - first) * channels * 2;
+        if (length <= 0 || length + 44 > __MAX_AUDIO_ATTACHMENT_BYTES__) throw new Error(t("The WAV excerpt exceeds the 128 MiB attachment limit."));
+        const bytes = new Uint8Array(44 + length);
+        const data = new DataView(bytes.buffer);
+        const put = (offset, text) => { for (let i = 0; i < text.length; i++) bytes[offset + i] = text.charCodeAt(i); };
+        put(0, "RIFF"); data.setUint32(4, bytes.length - 8, true); put(8, "WAVEfmt ");
+        data.setUint32(16, 16, true); data.setUint16(20, 1, true); data.setUint16(22, channels, true);
+        data.setUint32(24, decoded.sampleRate, true); data.setUint32(28, decoded.sampleRate * channels * 2, true);
+        data.setUint16(32, channels * 2, true); data.setUint16(34, 16, true); put(36, "data"); data.setUint32(40, length, true);
+        const samples = Array.from({ length: channels }, (_, channel) => decoded.getChannelData(channel));
+        for (let frame = first; frame < last; frame++) {
+          if ((frame - first) % 65536 === 0) await audioYield(view);
+          for (let channel = 0; channel < channels; channel++) {
+            const sample = Math.max(-1, Math.min(1, samples[channel][frame] || 0));
+            data.setInt16(44 + ((frame - first) * channels + channel) * 2, Math.round(sample * (sample < 0 ? 32768 : 32767)), true);
+          }
+        }
+        checkAudioView(view);
+        return bytes;
+      }
+
+      async function openAudio(sessionId, attachment) {
+        if (getState().activeSessionId !== sessionId) return;
+        close({ restoreFocus: false });
+        const dialog = document.createElement("dialog");
+        dialog.className = "attachment-viewer attachment-audio-editor";
+        dialog.setAttribute("aria-label", t("Audio selection: {fileName}", { fileName: attachment.fileName }));
+        const make = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text) node.textContent = t(text); return node; };
+        const header = make("div", "attachment-viewer-header");
+        const title = make("h2", ""); title.textContent = attachment.fileName; title.setAttribute("translate", "no");
+        const closeButton = make("button", "icon-button attachment-viewer-close", "×"); closeButton.type = "button"; closeButton.setAttribute("aria-label", t("Close preview"));
+        header.append(title, closeButton);
+        const content = make("div", "attachment-audio-editor-content");
+        const status = make("p", "attachment-viewer-status", "Loading waveform…"); status.setAttribute("role", "status");
+        const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.classList.add("attachment-waveform"); svg.setAttribute("viewBox", "0 0 480 120"); svg.setAttribute("preserveAspectRatio", "none"); svg.setAttribute("aria-label", t("Audio waveform")); svg.setAttribute("role", "img");
+        const region = document.createElementNS(svg.namespaceURI, "rect"); region.setAttribute("y", "0"); region.setAttribute("height", "120"); region.classList.add("attachment-waveform-selection");
+        const path = document.createElementNS(svg.namespaceURI, "path"); svg.append(region, path);
+        const fields = make("div", "attachment-selection-fields");
+        const input = (label, className) => { const wrapper = make("label", "", label); const field = make("input", className); field.type = "number"; field.min = "0"; field.step = "0.001"; field.disabled = true; wrapper.append(field); fields.append(wrapper); return field; };
+        const startInput = input("Start (seconds)", "attachment-selection-start");
+        const endInput = input("End (seconds)", "attachment-selection-end");
+        const loopLabel = make("label", "attachment-selection-loop-label", "Loop selection");
+        const loop = make("input", "attachment-selection-loop"); loop.type = "checkbox"; loop.checked = true; loopLabel.prepend(loop); fields.append(loopLabel);
+        const player = createAudioPlayer(sessionId, attachment, getAttachmentUrl(sessionId, attachment.id));
+        const media = player.media;
+        media.classList.add("attachment-selection-audio");
+        media.preload = "metadata";
+        const note = make("p", "attachment-selection-note", attachment.mediaType === "audio/mpeg"
+          ? "MP3 excerpts are explicitly exported as 16-bit PCM WAV at the original sample rate and channel count. The original MP3 is kept."
+          : "WAV excerpts copy the selected samples with the same encoding, sample rate and channels. The original file is kept.");
+        const actions = make("div", "attachment-viewer-actions");
+        const whole = make("button", "secondary attachment-use-whole", "Use whole file"); whole.type = "button";
+        const excerpt = make("button", "secondary attachment-use-excerpt", attachment.mediaType === "audio/mpeg" ? "Export selection as WAV and attach" : "Use selected excerpt"); excerpt.type = "button"; excerpt.disabled = true;
+        const original = make("button", "secondary attachment-use-original", "Use original file"); original.type = "button"; original.hidden = attachment.provenance?.startSeconds === undefined;
+        actions.append(original, whole, excerpt); content.append(status, svg, fields, player.element, note); dialog.append(header, content, actions);
+        const view = { sessionId, attachmentId: attachment.id, dialog, media, player, controller: new window.AbortController(), previousFocus: document.activeElement, decoded: null, context: null, frame: null, duration: attachment.durationSeconds, busy: false, ready: false,
+          replace: getComposerAttachments().some((item) => item.id === attachment.id) };
+        activeAudio = view;
+        const range = () => ({ start: Number(startInput.value), end: Number(endInput.value) });
+        const update = () => {
+          const { start, end } = range();
+          const valid = startInput.value !== "" && endInput.value !== "" && Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end > start && end <= view.duration;
+          excerpt.disabled = view.busy || !view.ready || !valid;
+          startInput.setAttribute("aria-invalid", String(!valid)); endInput.setAttribute("aria-invalid", String(!valid));
+          region.setAttribute("x", String(valid ? start / view.duration * 480 : 0)); region.setAttribute("width", String(valid ? (end - start) / view.duration * 480 : 0));
+          if (valid && (media.currentTime < start || media.currentTime >= end)) media.currentTime = start;
+          if (view.ready && !view.busy) status.textContent = valid
+            ? t("Selection: {duration} s", { duration: (end - start).toFixed(3) }) : t("Enter a start and end within the audio duration.");
+        };
+        const constrainPlayback = () => {
+          const { start, end } = range();
+          if (!view.ready || !(end > start) || media.paused && !media.ended) return;
+          if (media.currentTime < start) media.currentTime = start;
+          if (media.currentTime >= end || media.ended) {
+            if (loop.checked && !view.busy) { media.currentTime = start; if (media.paused) void media.play().catch(() => {}); }
+            else { media.pause(); media.currentTime = end; }
+          }
+        };
+        const tick = () => { view.frame = null; if (activeAudio !== view) return; constrainPlayback(); if (!media.paused) view.frame = window.requestAnimationFrame(tick); };
+        media.addEventListener("play", () => {
+          for (const other of inlineMedia) if (other.kind === "audio" && other.media !== media) other.media.pause();
+          const { start, end } = range(); if (view.ready && (media.currentTime < start || media.currentTime >= end)) media.currentTime = start;
+          if (!view.frame) view.frame = window.requestAnimationFrame(tick);
+        });
+        media.addEventListener("timeupdate", constrainPlayback); media.addEventListener("ended", constrainPlayback);
+        startInput.addEventListener("input", update); endInput.addEventListener("input", update);
+        closeButton.addEventListener("click", () => closeAudio());
+        dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeAudio(); });
+        dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); closeAudio(); } });
+        const apply = async (useExcerpt, useOriginal = false) => {
+          if (view.busy || useExcerpt && excerpt.disabled) return;
+          view.busy = true; original.disabled = whole.disabled = true; excerpt.disabled = true; media.pause();
+          status.textContent = t("Preparing the next request…");
+          try {
+            checkAudioView(view);
+            if (view.replace && !getComposerAttachments().some((item) => item.id === attachment.id)) {
+              throw new Error(t("This file is no longer in the next request. Open its current attachment before selecting again."));
+            }
+            if (useExcerpt || useOriginal || !view.replace) {
+              const { start, end } = range();
+              const converted = useExcerpt && attachment.mediaType === "audio/mpeg";
+              const bytes = converted ? await exportMp3Selection(view, start, end) : undefined;
+              checkAudioView(view);
+              await selectAttachment(sessionId, attachment.id, {
+                mode: useOriginal ? "original" : !useExcerpt ? "copy" : converted ? "convert-mp3" : "excerpt", replace: view.replace,
+                ...(useExcerpt ? { startSeconds: start, endSeconds: end } : {}), ...(bytes ? { bytes } : {}),
+              }, view.controller.signal);
+            }
+            if (activeAudio === view) { closeAudio(); showStatus(t("Added to the next request.")); }
+          } catch (error) {
+            if (activeAudio === view) { view.busy = false; original.disabled = whole.disabled = false; update(); status.textContent = error.message || String(error); }
+          }
+        };
+        original.addEventListener("click", () => { void apply(false, true); });
+        whole.addEventListener("click", () => { void apply(false); }); excerpt.addEventListener("click", () => { void apply(true); });
+        document.body.append(dialog); if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", ""); closeButton.focus();
+        try {
+          const blob = await loadAttachment(sessionId, attachment.id, view.controller.signal); checkAudioView(view);
+          const bytes = await blob.arrayBuffer(); checkAudioView(view);
+          const waveform = attachment.mediaType === "audio/mpeg" ? await mp3Peaks(bytes, view, attachment) : await wavePeaks(bytes, view);
+          checkAudioView(view); view.duration = waveform.duration;
+          path.setAttribute("d", Array.from(waveform.peaks, (peak, index) => `M${index},${60 - Math.max(1, peak * 55)}v${Math.max(2, peak * 110)}`).join(""));
+          startInput.value = "0"; endInput.value = String(view.duration); startInput.max = endInput.max = String(view.duration);
+          startInput.disabled = endInput.disabled = false; view.ready = true; update();
+        } catch (error) { if (activeAudio === view) { view.decoded = null; status.textContent = error.message || String(error); } }
+      }
+
       window.addEventListener("pagehide", () => {
         close({ restoreFocus: false });
         for (const preview of inlineMedia) disposeInlineMedia(preview);
       });
-      return { open, createPreview, sync, close };
+      return { open, createPreview, createAudioPlayer, sync, close, reuse };
       };

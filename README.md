@@ -479,6 +479,23 @@ open a larger preview when clicked; audio includes playback and seek controls.
 Select another file's name to open it with the system's default application.
 External applications receive a temporary copy, so their edits do not replace
 the saved chat attachment. Text and code copies open as `.txt` files.
+**Select excerpt** opens an audio waveform with start/end times and loop audition.
+Choose **Use whole file** or **Use selected excerpt**; the **Next request** list
+shows the exact files and excerpt ranges being sent. WAV selection copies whole
+samples without changing encoding, sample rate or channels. MP3 selection requires
+**Export selection as WAV and attach**, which explicitly produces 16-bit PCM WAV
+at the original sample rate and channel count. MP3 preview/export depends on the
+browser decoder, has a 30-second decoding deadline and a 128 MiB decoded-sample
+budget. Files above that decoding budget can still be played and sent intact;
+export a shorter WAV in an audio editor to create an excerpt.
+
+The original remains saved in the Session. **Use original file** restores it to
+the next request; removing an unsent selection undoes that selection and restores
+the previous draft file. **Use again** on a history attachment creates a fresh
+reference to a saved copy without uploading the source again. Removing a history
+copy leaves its saved source unchanged. Selection and reuse share pending quotas
+and leave files already captured by Send, Steer or Queue unchanged.
+
 Supported categories include:
 
 | Category | Formats and handling |

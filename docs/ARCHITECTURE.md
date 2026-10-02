@@ -1301,6 +1301,28 @@ The shared browser attachment viewer owns inline image/audio elements, compact
 play/pause and seek controls, and the image dialog. Session changes, removed
 elements and dialog close release media resources; ordinary streaming updates
 preserve mounted playback controls.
+The audio selection dialog reduces WAV samples directly from the verified byte
+buffer into bounded waveform peaks; it does not expand the entire WAV to float
+samples. Server-side WAV extraction copies sample-aligned PCM/float data and its
+format chunk into a new WAV. MP3 waveform inspection uses the browser AudioContext
+at the source sample rate with a 128 MiB decoded-sample budget and a 30-second
+decode deadline. Only the explicit WAV-export action quantizes the selected
+samples to 16-bit PCM, preserving sample rate and channel count. Closing the
+dialog aborts reads and discards late decoder results.
+
+Saved copies and excerpts use fresh attachment IDs. Their immutable provenance
+records the source ID, optional range, and replaced draft IDs, bounded to 16 KiB
+per reference. The pending projection excludes replaced draft IDs; consuming a
+reference also excludes those IDs from subsequent pending projections without
+reading consumed historical metadata. Deleting an unsent replacement restores
+its previous draft source. Original bytes and source metadata remain private,
+readable Session attachments. Event and attachment snapshots deep-copy provenance.
+The existing attachment fence admits a replacement against the pending snapshot
+and quota in one create-only save. The browser rejects replacement of a reference
+reserved by its Send, Steer or Queue snapshot; queued work never owns mutable
+source bytes. A stale snapshot in another dialog fails send admission rather
+than changing an admitted request.
+
 Default-application opening is an explicit command using Session and attachment
 IDs. The host writes a private temporary copy with a MIME-derived extension and
 launches the OS handler without a shell. Text/code uses `.txt`. Copies handed

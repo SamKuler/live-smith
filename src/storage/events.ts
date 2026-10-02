@@ -1,3 +1,4 @@
+import { isAttachmentProvenance } from "../attachments/provenance.js";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -360,10 +361,12 @@ function isCurrentSessionAttachmentRef(
     "byteLength",
     "sha256",
   ];
+  if (record.provenance !== undefined) commonKeys.push("provenance");
   const allowedKeys = record.kind === "audio"
     ? [...commonKeys, "durationSeconds", "sampleRate", "channels"]
     : commonKeys;
-  return hasOnlyKeys(record, allowedKeys) &&
+  return (record.provenance === undefined || isAttachmentProvenance(record.provenance, record.id)) &&
+    hasOnlyKeys(record, allowedKeys) &&
     Object.keys(record).length === allowedKeys.length &&
     isSafeStorageId(record.id) &&
     (record.kind === "image" ||
@@ -534,7 +537,10 @@ function cloneSessionEvent(event: SessionEvent): SessionEvent {
     ...event,
     ...(event.attachments === undefined
       ? {}
-      : { attachments: event.attachments.map((attachment) => ({ ...attachment })) }),
+      : { attachments: event.attachments.map((attachment) => ({
+          ...attachment,
+          ...(attachment.provenance ? { provenance: { ...attachment.provenance, replacedIds: [...attachment.provenance.replacedIds] } } : {}),
+        })) }),
     ...(event.citations === undefined
       ? {}
       : { citations: event.citations.map((citation) => ({ ...citation })) }),

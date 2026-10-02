@@ -452,3 +452,46 @@ function invalidAudio(): AttachmentProcessingError {
     "The attachment is not a valid supported audio file.",
   );
 }
+
+/** Cuts validated PCM/float WAV samples without decoding, resampling or copying unrelated chunks. */
+export async function sliceWaveAttachment(input: {
+  bytes: Uint8Array; startSeconds: number; endSeconds: number; signal?: AbortSignal;
+}): Promise<{ bytes: Uint8Array; startSeconds: number; endSeconds: number }> {
+  const inspection = await inspectAudioAttachment(input);
+  if (inspection.mediaType !== "audio/wav") throw new AttachmentProcessingError("invalid_audio", "MP3 excerpts require explicit WAV conversion.");
+  if (!Number.isFinite(input.startSeconds) || !Number.isFinite(input.endSeconds) ||
+      input.startSeconds < 0 || input.endSeconds <= input.startSeconds || input.endSeconds > inspection.durationSeconds) {
+    throw new AttachmentProcessingError("invalid_audio", "Select a valid start and end within the audio duration.");
+  }
+  let formatOffset = 0;
+  let formatBytes = 0;
+  let dataOffset = 0;
+  for (let offset = 12; offset < input.bytes.byteLength;) {
+    const length = unsigned32LittleEndian(input.bytes, offset + 4);
+    const id = ascii(input.bytes, offset, offset + 4);
+    if (id === "fmt ") { formatOffset = offset + 8; formatBytes = length; }
+    if (id === "data") dataOffset = offset + 8;
+    offset += 8 + length + (length & 1);
+  }
+  const format = waveFormat(input.bytes, formatOffset, formatBytes);
+  const startFrame = Math.round(input.startSeconds * format.sampleRate);
+  const endFrame = Math.round(input.endSeconds * format.sampleRate);
+  if (endFrame <= startFrame) throw new AttachmentProcessingError("invalid_audio", "The selection must contain at least one sample.");
+  const dataLength = (endFrame - startFrame) * format.blockAlign;
+  const result = new Uint8Array(12 + 8 + formatBytes + 8 + dataLength + (dataLength & 1));
+  const view = new DataView(result.buffer);
+  const put = (offset: number, text: string) => { for (let i = 0; i < text.length; i++) result[offset + i] = text.charCodeAt(i); };
+  put(0, "RIFF"); view.setUint32(4, result.length - 8, true); put(8, "WAVE");
+  put(12, "fmt "); view.setUint32(16, formatBytes, true);
+  result.set(input.bytes.subarray(formatOffset, formatOffset + formatBytes), 20);
+  const outputOffset = 28 + formatBytes;
+  put(20 + formatBytes, "data"); view.setUint32(24 + formatBytes, dataLength, true);
+  const sourceOffset = dataOffset + startFrame * format.blockAlign;
+  for (let copied = 0; copied < dataLength; copied += scanYieldBytes) {
+    await yieldToHost(input.signal);
+    const end = Math.min(dataLength, copied + scanYieldBytes);
+    result.set(input.bytes.subarray(sourceOffset + copied, sourceOffset + end), outputOffset + copied);
+  }
+  throwIfAborted(input.signal);
+  return { bytes: result, startSeconds: startFrame / format.sampleRate, endSeconds: endFrame / format.sampleRate };
+}

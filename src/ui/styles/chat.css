@@ -3103,3 +3103,20 @@ label {
 .audio-parameter-optional { @apply shrink-0 whitespace-nowrap; }
 .audio-parameter-field input[type="checkbox"] { @apply m-0 size-[14px] shrink-0 p-0; }
 .audio-parameter-field input:is([type="checkbox"], [type="range"]):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+
+.pending-attachments-heading { @apply block w-full text-small text-muted; }
+.attachment-selection-label { @apply block text-small text-muted; grid-column: 1 / -1; }
+.attachment-audio-actions { @apply flex flex-wrap items-center gap-1; }
+.attachment-audio-select, .attachment-reuse { @apply shrink-0 border-0 bg-transparent px-2 py-1 text-small text-muted; }
+.attachment-audio-select:hover, .attachment-reuse:hover { @apply text-text; }
+.attachment-audio-editor { width: min(720px, calc(100% - 32px)); }
+.attachment-audio-editor-content { @apply flex min-w-0 flex-col gap-4 overflow-auto p-4; }
+.attachment-waveform { width: 100%; height: 140px; border-radius: 4px; background: #1d1d1d; }
+.attachment-waveform path { fill: none; stroke: var(--color-muted); stroke-width: 1; }
+.attachment-waveform-selection { fill: #739cba; opacity: .22; }
+.attachment-selection-fields { @apply flex flex-wrap items-end gap-4; }
+.attachment-selection-fields label { @apply flex flex-col gap-1 text-small text-muted; }
+.attachment-selection-fields input[type=number] { width: 120px; }
+.attachment-selection-fields .attachment-selection-loop-label { @apply flex-row items-center gap-2 self-center; }
+.attachment-selection-loop-label input { width: auto; }
+.attachment-selection-note { @apply m-0 text-small text-muted; }

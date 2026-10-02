@@ -46,6 +46,8 @@ import {
   writeJsonAtomicallyCreateOnly,
 } from "./persistence.js";
 
+import { isAttachmentProvenance, type AttachmentProvenance } from "../attachments/provenance.js";
+
 export type AttachmentKind = "image" | "document" | "audio";
 
 export type { AttachmentMediaType } from "../attachments/contracts.js";
@@ -53,6 +55,7 @@ export type { AttachmentMediaType } from "../attachments/contracts.js";
 export type ImageAttachmentMediaType = "image/png" | "image/jpeg" | "image/webp";
 
 export interface SessionAttachmentRefBase {
+  provenance?: AttachmentProvenance;
   id: string;
   fileName: string;
   byteLength: number;
@@ -116,6 +119,7 @@ interface AttachmentDirectoryBinding {
 export interface AttachmentSaveOptions {
   /** Test seam for proving collision handling; production always uses createStorageId. */
   createId?: () => string;
+  provenance?: AttachmentProvenance;
   /** Test seam for proving stable ordering when wall-clock timestamps collide. */
   now?: () => Date;
   /**
@@ -218,6 +222,8 @@ export async function saveSessionAttachment(
   const pendingSnapshot = options.preSavePendingAttachmentRefs.map(
     (attachment) => ({ ...attachment }),
   );
+  const provenance = options.provenance === undefined ? undefined : { ...options.provenance, replacedIds: [...options.provenance.replacedIds] };
+  if (provenance && !isAttachmentProvenance(provenance, undefined)) throw new AttachmentProcessingError("archive_limit", "The attachment selection history exceeds its 16 KiB metadata budget or contains an invalid source.");
   let storageCommitStarted = false;
   return withAttachmentStorageBoundary(async () => {
     throwIfAborted(signal);
@@ -253,6 +259,7 @@ export async function saveSessionAttachment(
             sessionId,
             fileName,
             ...classification,
+            ...(provenance ? { provenance } : {}),
             bytes,
             sha256,
             ordinal,
@@ -281,6 +288,7 @@ export async function saveSessionAttachment(
           sessionId,
           fileName,
           ...classification,
+          ...(provenance ? { provenance } : {}),
           bytes,
           sha256,
           ordinal,
@@ -345,6 +353,7 @@ export async function listPendingSessionAttachments(
   storageDirectory: string | undefined,
   sessionId: string,
   consumedAttachmentIds: readonly string[],
+  omittedAttachmentId?: string,
 ): Promise<StoredSessionAttachment[]> {
   requireSafeStorageId(sessionId, "Session ID");
   const consumedIds = new Set(
@@ -353,7 +362,7 @@ export async function listPendingSessionAttachments(
   if (!storageDirectory) {
     const items = [...(memoryAttachments.get(sessionId)?.values() ?? [])]
       .filter((item) => !consumedIds.has(item.metadata.id));
-    return sortMetadata(items.map((item) => cloneMetadata(item.metadata)));
+    return pendingMetadata(items.map((item) => cloneMetadata(item.metadata)), omittedAttachmentId);
   }
 
   return withAttachmentStorageBoundary(async () => {
@@ -364,8 +373,9 @@ export async function listPendingSessionAttachments(
       storageDirectory,
       sessionId,
     );
-    return sortMetadata(
+    return pendingMetadata(
       await readAllStoredMetadataBound(binding, sessionId, consumedIds),
+      omittedAttachmentId,
     );
   });
 }
@@ -533,6 +543,7 @@ export function sessionAttachmentRefFromStored(
     fileName: attachment.fileName,
     byteLength: attachment.byteLength,
     sha256: attachment.sha256,
+    ...(attachment.provenance ? { provenance: { ...attachment.provenance, replacedIds: [...attachment.provenance.replacedIds] } } : {}),
   };
   if (attachment.kind === "audio") {
     return {
@@ -745,6 +756,10 @@ function assertExpectedAttachmentRef(
     metadata.mediaType !== expectedRef.mediaType ||
     metadata.byteLength !== expectedRef.byteLength ||
     metadata.sha256 !== expectedRef.sha256 ||
+    metadata.provenance?.sourceId !== expectedRef.provenance?.sourceId ||
+    metadata.provenance?.startSeconds !== expectedRef.provenance?.startSeconds ||
+    metadata.provenance?.endSeconds !== expectedRef.provenance?.endSeconds ||
+    JSON.stringify(metadata.provenance?.replacedIds) !== JSON.stringify(expectedRef.provenance?.replacedIds) ||
     (
       metadata.kind === "audio" && expectedRef.kind === "audio" &&
       (
@@ -960,13 +975,15 @@ function isStoredSessionAttachment(value: unknown): value is StoredSessionAttach
     "durationSeconds",
     "sampleRate",
     "channels",
+    "provenance",
   ]);
   const keys = Object.keys(record);
   const hasOrdinal = record.ordinal !== undefined;
   const audioFields = record.kind === "audio" ? 3 : 0;
   if (
     !keys.every((key) => allowed.has(key)) ||
-    keys.length !== (hasOrdinal ? 9 : 8) + audioFields ||
+    keys.length !== (hasOrdinal ? 9 : 8) + audioFields + (record.provenance === undefined ? 0 : 1) ||
+    (record.provenance !== undefined && !isAttachmentProvenance(record.provenance, record.id)) ||
     !isSafeStorageId(record.id) ||
     !isSafeStorageId(record.sessionId) ||
     !Number.isInteger(record.byteLength) ||
@@ -1232,6 +1249,7 @@ function nextAttachmentId(options: AttachmentSaveOptions): string {
 }
 
 function attachmentMetadata(input: {
+  provenance?: AttachmentProvenance;
   id: string;
   sessionId: string;
   fileName: string;
@@ -1248,6 +1266,7 @@ function attachmentMetadata(input: {
     sha256: input.sha256,
     createdAt: input.createdAt,
     ordinal: input.ordinal,
+    ...(input.provenance ? { provenance: input.provenance } : {}),
   };
   if (input.kind === "audio") {
     return {
@@ -1442,7 +1461,7 @@ function isSymbolicLinkOpenError(error: unknown): boolean {
 }
 
 function cloneMetadata(metadata: StoredSessionAttachment): StoredSessionAttachment {
-  return { ...metadata };
+  return { ...metadata, ...(metadata.provenance ? { provenance: { ...metadata.provenance, replacedIds: [...metadata.provenance.replacedIds] } } : {}) };
 }
 
 function sortMetadata(
@@ -1456,4 +1475,10 @@ function sortMetadata(
     if (left.ordinal !== undefined && right.ordinal === undefined) return 1;
     return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
   });
+}
+
+function pendingMetadata(metadata: StoredSessionAttachment[], omittedAttachmentId?: string): StoredSessionAttachment[] {
+  metadata = metadata.filter((item) => item.id !== omittedAttachmentId);
+  const replaced = new Set(metadata.flatMap((item) => item.provenance?.replacedIds ?? []));
+  return sortMetadata(metadata.filter((item) => !replaced.has(item.id)));
 }
