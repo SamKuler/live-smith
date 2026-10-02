@@ -1,5 +1,3 @@
-import { URL } from "node:url";
-
 import { throwIfAborted } from "../runtime/host.js";
 import { runDocumentParserWorker } from "../runtime/document-parser.js";
 import { assertDocumentAttachmentBytesWithinLimit, type DocumentAttachmentMediaType } from "./contracts.js";
@@ -32,7 +30,7 @@ export async function extractOfficeDocumentText(input: {
   return runDocumentParserWorker({
     source: typeof __LIVE_SMITH_DOCUMENT_PARSER_SCRIPT__ === "string"
       ? __LIVE_SMITH_DOCUMENT_PARSER_SCRIPT__
-      : new URL("./office-parser.worker.ts", import.meta.url),
+      : (await import("./office-parser-worker-url.js")).officeParserWorkerUrl,
     job: { bytes: input.bytes, fileType: input.fileType, maxCharacters: MAX_DOCUMENT_TEXT_CHARACTERS,
       canonicalOdfContent: input.canonicalOdfContent },
     ...(input.signal ? { signal: input.signal } : {}),
