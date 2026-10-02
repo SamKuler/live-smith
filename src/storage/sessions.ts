@@ -1,3 +1,4 @@
+import { isCreativeBrief, requireCreativeBrief } from "../agent/creative-brief.js";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -49,6 +50,7 @@ export interface AgentSession {
   approvalMode?: ApprovalMode;
   editScopes?: EditScope[];
   modelSelection?: SessionModelSelection;
+  creativeBrief?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -67,12 +69,12 @@ const transientSessions = new Map<StorageScopeKey, AgentSession[]>();
 
 type CreateSessionInput = Pick<AgentSession, "title" | "projectKey" | "scope"> &
   Partial<
-    Pick<AgentSession, "activeSkillIds" | "approvalMode" | "editScopes" | "modelSelection">
+    Pick<AgentSession, "activeSkillIds" | "approvalMode" | "editScopes" | "modelSelection" | "creativeBrief">
   >;
 type SessionUpdate = Partial<
   Pick<
     AgentSession,
-    "title" | "activeSkillIds" | "approvalMode" | "editScopes" | "modelSelection"
+    "title" | "activeSkillIds" | "approvalMode" | "editScopes" | "modelSelection" | "creativeBrief"
   >
 >;
 
@@ -106,6 +108,7 @@ export async function createSession(
     ...(approvalMode === undefined ? {} : { approvalMode }),
     ...(editScopes === undefined ? {} : { editScopes }),
     ...(modelSelection === undefined ? {} : { modelSelection }),
+    ...(input.creativeBrief === undefined ? {} : { creativeBrief: requireCreativeBrief(input.creativeBrief) }),
     createdAt: now,
     updatedAt: now,
   };
@@ -383,6 +386,7 @@ function isAgentSession(value: unknown): value is AgentSession {
     "editScopes",
     "writeBoundary", // Obsolete saved metadata; cloneSession omits it without rewriting on read.
     "modelSelection",
+    "creativeBrief",
     "createdAt",
     "updatedAt",
   ]);
@@ -399,6 +403,7 @@ function isAgentSession(value: unknown): value is AgentSession {
       isPersistedActiveSkillIds(record.activeSkillIds)) &&
     (record.approvalMode === undefined || isApprovalMode(record.approvalMode)) &&
     (record.editScopes === undefined || isEditScopes(record.editScopes)) &&
+    (record.creativeBrief === undefined || isCreativeBrief(record.creativeBrief)) &&
     (record.modelSelection === undefined ||
       isPersistedModelSelection(record.modelSelection)) &&
     typeof record.createdAt === "string" &&
@@ -416,7 +421,7 @@ function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
       (key) =>
         key !== "title" && key !== "activeSkillIds" &&
         key !== "approvalMode" && key !== "editScopes" &&
-        key !== "modelSelection",
+        key !== "modelSelection" && key !== "creativeBrief",
     ) ||
     (Object.hasOwn(record, "title") && !isSessionTitle(record.title)) ||
     (Object.hasOwn(record, "approvalMode") &&
@@ -434,6 +439,9 @@ function normalizeSessionUpdate(update: SessionUpdate): SessionUpdate {
   }
 
   return {
+    ...(Object.hasOwn(record, "creativeBrief")
+      ? { creativeBrief: requireCreativeBrief(record.creativeBrief) }
+      : {}),
     ...(Object.hasOwn(record, "title")
       ? { title: requireSessionTitle(record.title) }
       : {}),
@@ -611,6 +619,7 @@ function cloneSession(session: AgentSession): AgentSession {
     ...(session.modelSelection === undefined
       ? {}
       : { modelSelection: cloneModelSelection(session.modelSelection) }),
+    ...(session.creativeBrief === undefined ? {} : { creativeBrief: session.creativeBrief }),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
   };

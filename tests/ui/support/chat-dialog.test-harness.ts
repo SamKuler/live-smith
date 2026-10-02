@@ -1539,6 +1539,8 @@ async function createDialogHarness(
                 .get("X-Live-Smith-Command-Id") ?? "";
               const command = body as {
                 kind?: string;
+                creativeBrief?: string;
+                expectedCreativeBrief?: string;
                 approvalMode?: "manual" | "low-risk" | "everything";
                 editScopes?: EditScope[];
                 defaultFollowUpBehavior?: "queue" | "steer";
@@ -1733,6 +1735,10 @@ async function createDialogHarness(
                   ...serverState.archivedSessions,
                 ].find((entry) => entry.id === command.sessionId);
                 if (session) session.editScopes = resolveEditScopes(command.editScopes);
+              } else if (command.kind === "set_session_creative_brief" &&
+                typeof command.sessionId === "string" && typeof command.creativeBrief === "string") {
+                const session = serverState.sessions.find((entry) => entry.id === command.sessionId);
+                if (session) session.creativeBrief = command.creativeBrief;
               } else if (command.kind === "start_oauth_login") {
                 if (!command.profileId || !command.provider) {
                   throw new Error("OAuth commands require a Profile and provider.");

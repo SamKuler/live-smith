@@ -71,6 +71,7 @@ for (const profile of profiles()) {
     t.after(() => fs.rm(storageDirectory, { recursive: true, force: true }));
     const session = await createSession(storageDirectory, {
       title: "Compaction",
+      creativeBrief: "Keep the original bass motif; sparse percussion.",
       projectKey: "project-context",
       scope: { kind: "track", identity: "track-1", label: "Bass" },
     });
@@ -117,6 +118,7 @@ for (const profile of profiles()) {
       },
       async (input) => {
         requests.push(input);
+        assert.equal(input.creativeBrief, session.creativeBrief);
         if (requests.length === 1) {
           assert.deepEqual(input.tools, []);
           assert.match(

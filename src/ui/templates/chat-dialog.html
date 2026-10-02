@@ -78,6 +78,7 @@
             <textarea id="prompt" name="prompt" rows="1" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="composerAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Describe your idea…" data-i18n-placeholder="Describe your idea…" data-i18n-aria-label="Message Live Smith"></textarea>
             <div class="composer-toolbar">
               <div class="composer-live-controls">
+                <button id="creativeBriefButton" class="composer-select composer-control" type="button" aria-label="Creative brief" aria-controls="creativeBriefSection" data-i18n-aria-label="Creative brief" data-i18n="Brief">Brief</button>
                 <div id="attachmentMenuShell" class="attachment-menu-shell">
                   <button id="attachmentMenuButton" class="attachment-menu-button composer-icon-control" type="button" aria-label="Add attachment" aria-controls="attachmentMenu" aria-describedby="attachmentCapabilityHint" aria-expanded="false" data-i18n-aria-label="Add attachment">+</button>
                   <div id="attachmentMenu" class="attachment-menu floating-surface" aria-label="Attachment options" hidden data-i18n-aria-label="Attachment options">
@@ -801,6 +802,25 @@
           </div>
           <div id="contextPanel" class="tab-panel" role="tabpanel" aria-labelledby="contextTab" tabindex="0" hidden>
             <div class="settings context-settings">
+              <section id="creativeBriefSection" class="settings-scope creative-brief-settings" aria-labelledby="creativeBriefHeading">
+                <div class="inspector-scope-header"><h2 id="creativeBriefHeading" data-i18n="Creative brief">Creative brief</h2></div>
+                <p class="field-hint" id="creativeBriefHint" data-i18n="Style, references, sections, track roles, and material to keep. Saved only for this Session and retained across model changes and compaction.">Style, references, sections, track roles, and material to keep. Saved only for this Session and retained across model changes and compaction.</p>
+                <label class="visually-hidden" for="creativeBrief" data-i18n="Creative brief">Creative brief</label>
+                <textarea id="creativeBrief" name="creativeBrief" rows="9" autocomplete="off" spellcheck="true" aria-describedby="creativeBriefHint creativeBriefCount creativeBriefStatus" placeholder="Style:&#10;References:&#10;Sections:&#10;Track roles:&#10;Keep:" data-i18n-placeholder="Style:&#10;References:&#10;Sections:&#10;Track roles:&#10;Keep:"></textarea>
+                <div class="custom-instructions-meta"><span id="creativeBriefStatus" class="draft-status" role="status" aria-live="polite"></span><span id="creativeBriefCount" class="field-hint"></span></div>
+                <div id="creativeBriefConflict" class="creative-brief-conflict" hidden>
+                  <p data-i18n="The saved brief changed. Review it before saving your draft.">The saved brief changed. Review it before saving your draft.</p>
+                  <pre id="creativeBriefSavedText"></pre>
+                  <button id="rebaseCreativeBriefButton" class="secondary" type="button" data-i18n="Keep my draft after review">Keep my draft after review</button>
+                </div>
+                <div class="creative-brief-actions"><button id="resetCreativeBriefButton" class="secondary" type="button" data-i18n="Use saved brief">Use saved brief</button><button id="saveCreativeBriefButton" class="primary" type="button" data-i18n="Save brief">Save brief</button></div>
+                <details id="creativeBriefProposal" class="creative-brief-proposal" hidden>
+                  <summary data-i18n="Model suggestion · not saved">Model suggestion · not saved</summary>
+                  <pre id="creativeBriefProposalText"></pre>
+                  <p class="field-hint" data-i18n="Review and edit this suggestion, then save to accept. Finish or discard any existing draft first.">Review and edit this suggestion, then save to accept. Finish or discard any existing draft first.</p>
+                  <button id="useCreativeBriefProposalButton" class="secondary" type="button" data-i18n="Edit suggestion">Edit suggestion</button>
+                </details>
+              </section>
               <div id="context" class="context"></div>
               <section class="settings-scope" aria-labelledby="contextInputsHeading">
                 <div class="inspector-scope-header"><h2 id="contextInputsHeading" data-i18n="Message context">Message context</h2></div>

@@ -378,6 +378,15 @@
         });
 
         const actionPreview = factories.createActionPreview();
+        const creativeBriefEditor = factories.createCreativeBriefEditor({
+          getState,
+          isBusy: () => Boolean(composerOperationState.commandKind) ||
+            composerOperationState.sendInProgress || composerOperationState.attachmentInProgress ||
+            composerOperationState.skillInProgress,
+          runCommand: bridgeClient.runCommand,
+          open: () => openInspectorSection("context", "creativeBriefSection"),
+        });
+
         const sessionTimeline = factories.createSessionTimeline({
           attachmentViewer,
           renderActionPreview: actionPreview.render,
@@ -390,7 +399,7 @@
           getPendingUserMessage: bridgeClient.getPendingUserMessage,
           editMessageDraft: bridgeClient.editMessageDraft,
           isMessageEditLocked: bridgeClient.isDraftEditLocked,
-          hasSessionLocalWork: bridgeClient.hasSessionLocalWork,
+          hasSessionLocalWork: (sessionId) => bridgeClient.hasSessionLocalWork(sessionId) || creativeBriefEditor.hasDraft(sessionId),
           isCommandInProgress: bridgeClient.isCommandInProgress,
           isConfirmationLocked: bridgeClient.isConfirmationLocked,
           resolveConfirm: bridgeClient.resolveConfirm,
@@ -1301,6 +1310,7 @@
           bridgeClient.renderAudioTools();
           profileEditor.renderApprovalMode();
           renderEditScopes();
+          creativeBriefEditor.render();
           sessionTimeline.renderSessions();
           sessionTimeline.renderTimeline();
           attachments.renderPending();
@@ -1671,6 +1681,7 @@
             approvalMode.disabled = sessionSettingDisabled;
           }
           renderEditScopes();
+          creativeBriefEditor.render();
           const defaultFollowUp = document.getElementById("defaultFollowUpBehavior");
           if (defaultFollowUp.disabled !== sessionSettingDisabled) {
             defaultFollowUp.disabled = sessionSettingDisabled;
@@ -1764,7 +1775,7 @@
           renderEditScopes,
           reconcileSettingsForm: reconcileSettingsFormFromState,
           renderSettingsForm: renderSettingsFormFromState,
-          renderTimeline: sessionTimeline.renderTimeline,
+          renderTimeline: () => { sessionTimeline.renderTimeline(); creativeBriefEditor.render(); },
           renderSendPresentation,
           renderPendingAttachments: () => { attachments.renderPending(); renderContextAttachments(); },
           setOperationState,
@@ -1844,6 +1855,7 @@
 
         window.addEventListener("DOMContentLoaded", () => {
           initializeAppConfirmation();
+          creativeBriefEditor.initialize();
           initializeEditScopes();
           composerInput.initialize();
           skillManager.initialize();

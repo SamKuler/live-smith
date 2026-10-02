@@ -1,3 +1,4 @@
+import { creativeBriefProposalTool } from "../context/creative-brief.js";
 import { liveSmithTools } from "../../agent/tool-definitions.js";
 import { Buffer } from "node:buffer";
 import type { PluginParameterPanel } from "../../plugins/parameter-panel.js";
@@ -80,7 +81,7 @@ export async function loadSessionToolCatalog(input: {
     projectedTools += 1;
   };
   const liveGroup: ToolGroup = { kind: "live", tools: [] };
-  for (const tool of liveSmithTools({ readArrangementAudio: audioInputSupported })) {
+  for (const tool of [...liveSmithTools({ readArrangementAudio: audioInputSupported }), creativeBriefProposalTool]) {
     addTool(liveGroup, tool.function.name, tool.function.description);
   }
   groups.push(liveGroup);

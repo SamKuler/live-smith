@@ -398,6 +398,17 @@ empty entries does not delete existing data.
 Previous Sessions can be restored explicitly; matching names alone do not make
 an old conversation the same Live object.
 
+**Creative brief** keeps the current Session's style, references, section structure,
+track roles, and material to preserve in one editable document. Open **Brief** in
+the composer or **Session → Context**, then choose **Save brief**. The limit is
+8,000 characters. Saved briefs remain available after model changes and context
+compaction. The model can offer a suggestion; **Edit suggestion** puts it into a
+local draft and **Save brief** explicitly accepts it. Suggestions never save
+preferences automatically. Unsaved drafts remain separate for each Session in
+that window. If another window changes the saved brief, review its current text
+before keeping or replacing your draft. The brief records creative intent;
+current BPM, meter, and other Live facts are read from the Set.
+
 Hover over a message, or focus its controls with the keyboard, to copy its
 original text. **Use as draft** puts a user message back in the composer;
 it does not change history or undo Live edits. Choose Send after editing.
@@ -548,9 +559,10 @@ with pending work.
 
 Profiles, Integration Connections, Sessions, attachments, imported Skills, and
 installed Plugin packages and private Plugin data are stored locally.
-Prompts, relevant Live context, selected Skill guidance, supported attachment
-content, any Arrangement audio range read by the agent, and any saved Session
-audio the user asks an audio-capable model to hear are sent to the model provider
+Prompts, the active Session's saved creative brief, relevant Live context,
+selected Skill guidance, supported attachment content, any Arrangement audio
+range read by the agent, and any saved Session audio the user asks an
+audio-capable model to hear are sent to the model provider
 you choose.
 
 Direct API keys are stored in local Profile settings as plain text. A separate

@@ -1,3 +1,4 @@
+import { creativeBriefProposalTool, proposeCreativeBrief } from "./context/creative-brief.js";
 import { ModelInputTooLargeError } from "../model/connection-error.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { uiMessage, type UiMessage } from "../i18n/ui-message.js";
@@ -351,6 +352,11 @@ export async function handleAgentRequest(
   let externalTools: ToolRegistry;
   try {
     externalTools = new ToolRegistry([
+      {
+        id: "live-smith.creative-brief",
+        tools: () => [creativeBriefProposalTool],
+        callTool: async (call) => proposeCreativeBrief(call.arguments, session.creativeBrief ?? ""),
+      },
       ...audioTools.toolsets,
       ...pluginTools.toolsets,
     ]);
@@ -448,6 +454,7 @@ export async function handleAgentRequest(
         : {}),
       skillContext: prepared.skillContext,
       editScopes,
+      creativeBrief: session.creativeBrief ?? "",
       ...(callbacks.customInstructionsSnapshot === undefined
         ? {}
         : { customInstructions: callbacks.customInstructionsSnapshot }),
@@ -471,6 +478,7 @@ export async function handleAgentRequest(
       attachmentParts: activeAttachmentParts,
       skillContext: prepared.skillContext,
       editScopes,
+      creativeBrief: session.creativeBrief ?? "",
       ...(callbacks.customInstructionsSnapshot === undefined
         ? {}
         : { customInstructions: callbacks.customInstructionsSnapshot }),
@@ -723,6 +731,7 @@ export async function handleAgentRequest(
                   : {}),
                 skillContext: prepared.skillContext,
                 editScopes: await readEditScopes(),
+                creativeBrief: session.creativeBrief ?? "",
                 ...(callbacks.customInstructionsSnapshot === undefined
                   ? {}
                   : { customInstructions: callbacks.customInstructionsSnapshot }),

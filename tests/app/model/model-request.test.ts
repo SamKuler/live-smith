@@ -165,3 +165,20 @@ test("runtime materialization rejects a model outside the saved Profile", () => 
     /not configured in this Profile/,
   );
 });
+
+
+test("saved creative intent is separate from history and fresh Live facts in every model request", () => {
+  const creativeBrief = "Style: minimal house\nKeep: original vocal";
+  const request = buildModelRequest({ prompt: "Arrange the bridge", liveContext: "Tempo: 123; meter: 7/8",
+    runtimeProfile, history: [{ role: "user", content: [{ type: "text", text: "Checkpoint omitting preferences" }] }],
+    agentMessages: [], tools: [], creativeBrief });
+  const text = request.currentUserContent.find((part) => part.type === "text");
+  assert.ok(text?.type === "text");
+  assert.ok(text.text.includes(JSON.stringify(creativeBrief)));
+  assert.ok(text.text.includes(JSON.stringify("Tempo: 123; meter: 7/8")));
+  assert.equal(JSON.stringify(request.history).includes("original vocal"), false);
+  assert.equal(request.systemInstructions.includes("original vocal"), false);
+  const otherSession = buildModelRequest({ prompt: "Inspect", liveContext: "Tempo: 98", runtimeProfile,
+    history: [], agentMessages: [], tools: [] });
+  assert.equal(JSON.stringify(otherSession).includes("original vocal"), false);
+});

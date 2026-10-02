@@ -1745,6 +1745,36 @@ export async function runAgentFlow(
         return buildStateAfterCommandMutation(undefined, { signal });
       });
     }
+    if (commandInput.kind === "set_session_creative_brief") {
+      if (sessionMutationFence.hasQueuedOrActive(
+        sessionMutationFenceKey(storageDirectory, commandInput.sessionId), "send",
+      )) {
+        throw new ChatBridgeConflictError("Wait for this Session's active request to finish before saving its creative brief.");
+      }
+      await withSessionMutation(commandInput.sessionId, signal, async () => {
+        try {
+          await withStorageTransaction(storageDirectory, async (transaction) => {
+            throwIfAborted(signal);
+            const session = (await listSessionsInTransaction(transaction, storageDirectory, projectKey))
+              .find((entry) => entry.id === commandInput.sessionId && !entry.archivedAt);
+            if (!session) throw new ChatBridgeResourceNotFoundError("That Session is not available in this Live Set.");
+            if ((session.creativeBrief ?? "") !== commandInput.expectedCreativeBrief) {
+              throw new ChatBridgeConflictError("The creative brief changed in another window. Review the saved brief before saving your draft.");
+            }
+            throwIfAborted(signal);
+            await (dependencies.updateSessionInTransaction ?? updateSessionInTransaction)(
+              transaction, storageDirectory, session.id, { creativeBrief: commandInput.creativeBrief },
+            );
+          });
+        } catch (error) {
+          if (isStorageCommitOutcomeUnknownError(error)) notifySessionStateChanged(commandInput.sessionId);
+          throw error;
+        }
+        notifySessionStateChanged(commandInput.sessionId);
+      });
+      status = undefined;
+      return buildStateAfterCommandMutation();
+    }
     if (commandInput.kind === "set_session_model_selection") {
       if (
         sessionMutationFence.hasQueuedOrActive(
@@ -2013,6 +2043,7 @@ export async function runAgentFlow(
                 ? {}
                 : { skillContext: snapshot.skillContext }),
               editScopes: resolveEditScopes(session.editScopes),
+              creativeBrief: session.creativeBrief ?? "",
               agentMessages: [],
               ...(commandInput.instructions === undefined
                 ? {}

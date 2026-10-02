@@ -1,3 +1,4 @@
+import { isCreativeBrief, MAX_CREATIVE_BRIEF_CODE_POINTS } from "../../agent/creative-brief.js";
 import { MAX_AUDIO_PARAMETER_BYTES } from "../../plugins/builtins/parameter-panel.js";
 import type { MidiArtifactImportCommand } from "../midi-artifact-import.js";
 import { Buffer } from "node:buffer";
@@ -228,6 +229,12 @@ export type ChatBridgeCommandInput =
       kind: "set_session_edit_scopes";
       sessionId: string;
       editScopes: EditScope[];
+    }
+  | {
+      kind: "set_session_creative_brief";
+      sessionId: string;
+      creativeBrief: string;
+      expectedCreativeBrief: string;
     }
   | {
       kind: "set_session_model_selection";
@@ -1208,6 +1215,16 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       sessionId: inputString(input, "sessionId"),
       editScopes: resolveEditScopes(input.editScopes),
     };
+  }
+  if (kind === "set_session_creative_brief") {
+    assertOnlyInputKeys(input, ["kind", "sessionId", "creativeBrief", "expectedCreativeBrief"], `${kind} command`);
+    if (!isCreativeBrief(input.creativeBrief) || !isCreativeBrief(input.expectedCreativeBrief)) {
+      throw new ChatBridgeRequestValidationError(
+        `Creative brief must be text of at most ${MAX_CREATIVE_BRIEF_CODE_POINTS} characters.`,
+      );
+    }
+    return { kind, sessionId: inputString(input, "sessionId"),
+      creativeBrief: input.creativeBrief, expectedCreativeBrief: input.expectedCreativeBrief };
   }
   if (kind === "set_session_model_selection") {
     assertOnlyInputKeys(

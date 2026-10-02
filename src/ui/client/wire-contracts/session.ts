@@ -1,3 +1,4 @@
+import { isCreativeBrief } from "../../../agent/creative-brief.js";
 import type { AgentActionPreview, MidiActionPreview, MidiPreviewNote } from "../../../agent/action-preview.js";
 import { isEditScopes as isWireEditScopes } from "../../../agent/edit-scopes.js";
 import type { ConversationScope, ModelCitation, ModelContextUsage, ModelHostedWebSearch } from "../../../model/contracts.js";
@@ -389,6 +390,7 @@ export function isWireAgentSession(value: unknown): value is ChatSessionSummary 
       "approvalMode",
       "editScopes",
       "modelSelection",
+      "creativeBrief",
       "hasContent",
       "createdAt",
       "updatedAt",
@@ -406,6 +408,7 @@ export function isWireAgentSession(value: unknown): value is ChatSessionSummary 
     (value.approvalMode === undefined ||
       isWireApprovalMode(value.approvalMode)) &&
     (value.editScopes === undefined || isWireEditScopes(value.editScopes)) &&
+    (value.creativeBrief === undefined || isCreativeBrief(value.creativeBrief)) &&
     (value.modelSelection === undefined ||
       isWireSessionModelSelection(value.modelSelection)) &&
     (value.hasContent === undefined || typeof value.hasContent === "boolean") &&

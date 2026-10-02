@@ -61,6 +61,7 @@ export function isReusableEmptySessionMetadata(
     session.originScope === undefined &&
     sessionScopeKey(session.scope) === sessionScopeKey(scope) &&
     session.title === "" &&
+    !(session.creativeBrief ?? "").trim() &&
     (session.activeSkillIds?.length ?? 0) === 0 &&
     (session.approvalMode === undefined || session.approvalMode === "manual") &&
     resolveEditScopes(session.editScopes).length === EDIT_SCOPES.length &&
@@ -197,7 +198,7 @@ export async function sessionSummaries(
   sessions: AgentSession[],
 ): Promise<ChatSessionSummary[]> {
   return Promise.all(sessions.map(async (session) => {
-    let hasContent = session.title.trim().length > 0;
+    let hasContent = session.title.trim().length > 0 || (session.creativeBrief ?? "").trim().length > 0;
     if (!hasContent) {
       try {
         hasContent = (await loadSessionEvents(storageDirectory, session.id)).length > 0 ||

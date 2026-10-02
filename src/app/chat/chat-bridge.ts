@@ -2149,6 +2149,7 @@ export async function createChatBridge(
             (
               input.kind === "delete_session" ||
               input.kind === "archive_session" ||
+              input.kind === "set_session_creative_brief" ||
               input.kind === "set_session_model_selection" ||
               input.kind === "load_session_model_capabilities" ||
               input.kind === "load_session_tools" ||
@@ -2157,7 +2158,9 @@ export async function createChatBridge(
             activeSendsBySession.has(input.sessionId)
           ) {
             sendJson(response, {
-              error: input.kind === "set_session_model_selection"
+              error: input.kind === "set_session_creative_brief"
+                ? "Wait for this Session's active request to finish before saving its creative brief."
+                : input.kind === "set_session_model_selection"
                 ? "Wait for this Session's active request to finish before changing its model."
                 : input.kind === "load_session_model_capabilities"
                 ? "Wait for this Session's active request to finish before loading model capabilities."
@@ -3278,6 +3281,7 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "unarchive_session" ||
     input.kind === "set_session_approval_mode" ||
     input.kind === "set_session_edit_scopes" ||
+    input.kind === "set_session_creative_brief" ||
     input.kind === "set_session_model_selection" ||
     input.kind === "load_session_model_capabilities" ||
     input.kind === "load_session_tools" ||

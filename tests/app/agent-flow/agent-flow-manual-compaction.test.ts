@@ -20,6 +20,7 @@ import {
   appendSessionEvent,
   loadSessionEvents,
 } from "../../../src/storage/events.js";
+import { updateSession, listSessions } from "../../../src/storage/sessions.js";
 import { saveSavedProfile } from "../../../src/storage/settings.js";
 import type { ChatDialogState } from "../../../src/ui/chat-state.js";
 import { runAgentFlow } from "../../../src/app/agent-flow.js";
@@ -90,6 +91,7 @@ for (const provider of ["direct", "openai", "anthropic", "google"] as const) {
           const state = await (
             await fetch(endpoint(url, "/state"))
           ).json() as ChatDialogState;
+          await updateSession(directory, state.activeSessionId, { creativeBrief: "Keep original vocal; introduce a contrasting bridge." });
           await appendSessionEvent(directory, state.activeSessionId, {
             kind: "user",
             content: "Build a 64-bar arrangement",
@@ -155,6 +157,8 @@ for (const provider of ["direct", "openai", "anthropic", "google"] as const) {
           assert.equal(response.status, 200, responseText);
           const result = JSON.parse(responseText) as ChatDialogState;
           assert.equal(result.status, "Session context compacted.");
+          assert.equal((await listSessions(directory)).find((entry) => entry.id === state.activeSessionId)?.creativeBrief, "Keep original vocal; introduce a contrasting bridge.");
+          assert.match(JSON.stringify(requests[0]?.currentUserContent), /Keep original vocal/);
 
           const redundant = await fetch(endpoint(url, "/command"), {
             method: "POST",

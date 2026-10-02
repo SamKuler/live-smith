@@ -2163,8 +2163,8 @@ New Session creation share a process-wide project-and-scope creation fence, so
 concurrent dialogs cannot both
 win the same find-or-create race. New Session reuses the current candidate first,
 then the newest matching candidate, only when its current state is
-pristine: blank title, no origin/archive marker, no model choice, no non-default
-Approval mode, unrestricted Edit Scope, no active Skills, no events, no
+pristine: blank title, no origin/archive marker, no model choice or creative
+brief, no non-default Approval mode, unrestricted Edit Scope, no active Skills, no events, no
 attachments, and no active or queued send. Event and attachment absence are
 rechecked under the candidate's Session mutation fence, and the final decision
 rejects any Session operation queued behind that check. Approval and Edit Scope
@@ -2180,8 +2180,8 @@ because that dialog may own an unsent draft or paused Queue that is intentionall
 absent from storage. The claim lasts until that dialog closes; explicit Session
 selection may still join a claimed Session.
 
-Current and History lists keep Sessions with a title, events, attachments, or
-window-local draft/queued/running work. The current dialog also keeps every
+Current and History lists keep Sessions with a title, creative brief, events,
+attachments, or window-local draft/queued/running work. The current dialog also keeps every
 Session that has been active in that dialog, so an untouched empty Session remains
 reachable after switching until the dialog closes. Unvisited empty Sessions stay
 hidden, and a new dialog does not inherit the prior dialog's visibility. Explicitly
@@ -2285,6 +2285,34 @@ requirement; only a later request carrying sufficient acknowledgements can pass.
 Full state advances target-Session coverage only when that Session is the
 state's `activeSessionId`, although an authoritative summary may prove that a
 deleted or archived target is no longer sendable.
+
+### Session creative brief
+
+`AgentSession.creativeBrief` is optional private Session metadata, bounded to
+8,000 Unicode code points. Missing historical metadata resolves to an empty
+brief. A nonblank brief counts as retained content and prevents automatic reuse
+of a pristine Session. New Sessions do not copy it from another Session or a
+Profile.
+
+The `set_session_creative_brief` command accepts only the Session ID, new text,
+and expected saved text. The Session mutation fence and storage transaction
+serialize its compare-and-set update; cancellation is checked before persistence.
+A mismatch returns a conflict without changing storage. Committed and uncertain
+writes publish the existing storage-scoped Session invalidation. Browser command
+responses own only the target Session's brief and update timestamp, while each
+window retains its separate per-Session draft. Explicit conflict review updates
+the draft's base; only Save submits the replacement. Saving waits for active
+requests to finish, while local editing remains available during generation.
+
+Each admitted request carries the saved brief separately from conversation
+history through the provider-neutral request builder. Automatic and manual
+compaction receive the same brief; their checkpoints never replace it. The
+next send reads the same saved brief when the Session selects another model.
+Current Live facts remain observational context and do not update the brief.
+`propose_creative_brief` has no storage or configuration write callback. It emits
+a bounded tool result containing the suggested text and its saved base. The
+Session editor validates that result and loads it into a draft only on explicit
+review; accepting it still uses the same compare-and-set Save command.
 
 ### Session Edit Scope
 

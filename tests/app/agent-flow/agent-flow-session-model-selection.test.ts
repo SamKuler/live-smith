@@ -108,6 +108,8 @@ test("each Session resolves its own configured model and reasoning at send admis
           await fetch(endpoint("/state"))
         ).json() as ChatDialogState;
         const firstSessionId = initial.activeSessionId;
+        await command({ kind: "set_session_creative_brief", sessionId: firstSessionId,
+          creativeBrief: "Keep lead melody across models", expectedCreativeBrief: "" });
         assert.deepEqual(
           initial.configuredModels.map((model) => model.model),
           ["gpt-5.4", "gpt-5.4-mini"],
@@ -205,6 +207,7 @@ test("each Session resolves its own configured model and reasoning at send admis
     },
     requestModelTurn: async (input) => {
       requestedRuntimes.push(input.runtimeProfile);
+      assert.equal(input.creativeBrief, "Keep lead melody across models");
       return { content: "The track is ready.", toolCalls: [] };
     },
     beforeSessionModelSelectionCommit: async () => {

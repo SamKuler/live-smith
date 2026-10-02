@@ -136,6 +136,7 @@
         "set_session_skills",
         "set_session_approval_mode",
         "set_session_edit_scopes",
+        "set_session_creative_brief",
         "set_session_model_selection",
         "load_session_model_capabilities",
         "load_session_tools",
@@ -2665,13 +2666,15 @@
               ? ["editScopes", "updatedAt"]
               : kind === "set_session_skills"
                 ? ["activeSkillIds", "updatedAt"]
-                : kind === "set_session_model_selection"
-                  ? ["modelSelection", "updatedAt"]
-                  : kind === "restore_session"
-                    ? ["projectKey", "scope", "originScope", "updatedAt"]
-                    : ["archive_session", "unarchive_session"].includes(kind)
-                      ? ["archivedAt", "updatedAt"]
-                      : [];
+                : kind === "set_session_creative_brief"
+                  ? ["creativeBrief", "updatedAt"]
+                  : kind === "set_session_model_selection"
+                    ? ["modelSelection", "updatedAt"]
+                    : kind === "restore_session"
+                      ? ["projectKey", "scope", "originScope", "updatedAt"]
+                      : ["archive_session", "unarchive_session"].includes(kind)
+                        ? ["archivedAt", "updatedAt"]
+                        : [];
         if (targetSessionId && fieldNames.length > 0) {
           ownedSessionFields.set(targetSessionId, new Set(fieldNames));
         }
