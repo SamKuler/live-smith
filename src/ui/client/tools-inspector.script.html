@@ -3,7 +3,7 @@
         getState, getCatalogOwner, loadCatalog, humanizeToolName, runCommand, pluginApps, resultActions, audioParameters,
       }) {
         const t = (source, params) => window.LiveSmithI18n.t(source, params);
-        const descriptors = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
+        const descriptors = Object.assign(Object.create(null), __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__);
         const parameterPanels = window.LiveSmithFactories.createPluginParameterPanels({ getState, runCommand, resultActions });
         let renderedKey = null;
         let disabled = false;

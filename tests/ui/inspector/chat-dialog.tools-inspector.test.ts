@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { pluginToolCallName } from "../../../src/plugins/mcp/package.js";
+import { pluginParameterPanel } from "../../../src/plugins/parameter-panel.js";
 import type { SessionToolCatalog } from "../../../src/ui/chat-state.js";
-import { cloneState, commandCalls, createDialogHarness, stateFixture } from "../support/chat-dialog.test-harness.js";
+import { cloneState, commandCalls, createDialogHarness, stateFixture, waitForCondition } from "../support/chat-dialog.test-harness.js";
 
 function toolsState() {
   const state = stateFixture();
@@ -45,6 +47,53 @@ test("Tools automatically loads a named MCP directory without executing a comman
     assert.equal(h.document.querySelector<HTMLButtonElement>("#loadSessionToolsButton")?.disabled, false);
     assert.equal(h.document.querySelector("#sessionTools")?.getAttribute("aria-busy"), "false");
     assert.equal(h.calls.some((call) => call.path === "/send"), false);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("a Plugin identity shared with an object prototype field retains its named MCP tool workflow", async () => {
+  const state = toolsState();
+  state.plugins[0]!.id = "constructor";
+  state.integrationConnections!.connections[0]!.pluginId = "constructor";
+  const loaded = catalog(state.activeSessionId);
+  loaded.groups[0]!.pluginId = "constructor";
+  const toolName = pluginToolCallName("constructor", "analysis", "analyze_audio", "studio-account");
+  const panel = pluginParameterPanel(toolName, {
+    type: "object", additionalProperties: false,
+    properties: { window: { type: "integer", minimum: 1, maximum: 16, default: 4 } },
+    required: ["window"],
+  }, { pluginId: "constructor", connectionId: "studio-account" })!;
+  loaded.groups[0]!.tools[0]!.panel = panel;
+  const h = await createDialogHarness(state, undefined, { toolCatalogResponse: async (snapshot) =>
+    ({ ...snapshot, sessionToolCatalog: loaded }) });
+  try {
+    h.click("#sessionInspectorScope");
+    h.click("#toolsTab");
+    assert.match(h.document.querySelector("#sessionToolSources")?.textContent ?? "", /constructor/);
+    assert.equal(h.document.querySelector(".tool-source-connections strong")?.textContent, "Studio account");
+    await h.settle();
+    assert.deepEqual(h.calls.find((call) => call.path === "/session-tools")?.jsonBody,
+      { kind: "load_session_tools", sessionId: state.activeSessionId });
+    const source = h.document.querySelector('[data-tool-source="mcp"][data-plugin-id="constructor"]');
+    assert.match(source?.querySelector("summary")?.textContent ?? "", /Studio account/);
+    assert.match(source?.textContent ?? "", /analyze_audio/);
+    h.click('[data-plugin-id="constructor"] > summary');
+    h.click('[data-plugin-id="constructor"] .tool-entry > summary');
+    h.input('.plugin-parameters input[type="number"]', "6");
+    const result = cloneState(state);
+    result.events.push({ id: "constructor-tool-result", createdAt: "2026-10-02T00:01:00.000Z",
+      kind: "tool_result", name: toolName,
+      content: JSON.stringify({ content: [{ type: "text", text: "Audio analysis complete." }] }) });
+    h.setServerState(result);
+    h.click('.plugin-parameters button[type="submit"]');
+    await h.settle();
+    await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-summary")),
+      "Expected the saved named MCP tool result after directory refresh.");
+    assert.deepEqual(commandCalls(h).map((call) => call.body), [{
+      kind: "run_plugin_tool", sessionId: state.activeSessionId,
+      toolName, signature: panel.signature, arguments: { window: 6 },
+    }]);
+    assert.equal(h.document.querySelector(".plugin-result-summary")?.textContent, "Audio analysis complete.");
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
