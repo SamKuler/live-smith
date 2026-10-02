@@ -51,9 +51,15 @@ Tools that provide an MCP App also offer **Open interface**. The Plugin supplies
 the layout and interaction; its interface runs in an isolated frame and uses the
 same approved MCP server. Closing the interface cancels pending operations.
 Completed tool results offer **Use in chat**, which adds a reference to the
-composer, and saved MIDI offers **Insert into Live**. Choose an existing MIDI
-track and the Arrangement start beat; import follows the Session's Edit Scope
-and approval mode, without requiring a model request.
+composer, and saved MIDI offers **Insert into Live**. Load its source parts and
+the current Live MIDI tracks, map each selected track/channel part to a different
+destination, and choose a common Arrangement start beat. The preview shows the
+resulting Clip boundaries, including source offsets and trailing silence. Choose
+**Merge all parts into one Clip** explicitly for a single destination. Tempo,
+meter and controller events remain in the saved file; import writes notes only
+and leaves the Set's tempo and meter unchanged. Import follows the Session's
+Edit Scope and approval mode, without requiring a model request. An interrupted
+import preserves recovery information and must be inspected before retrying.
 
 Choose **Settings → App → Interface language** to use **English**, **简体中文**, or follow the
 system language. The preference is shared across Live Smith windows. Switching

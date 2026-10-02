@@ -366,6 +366,7 @@ export interface ChatBridge {
 }
 
 interface ChatBridgeOptions {
+  prepareMidiImport?(input: { sessionId: string; artifactRef: string }, signal: AbortSignal): Promise<unknown>;
   readAttachment?(sessionId: string, attachmentId: string, signal: AbortSignal): Promise<{
     attachment: SessionAttachmentRef; bytes: Uint8Array;
   }>;
@@ -1580,6 +1581,7 @@ export async function createChatBridge(
         "/command",
         "/session-model-capabilities",
         "/session-tools",
+        "/midi-import-preview",
         "/confirm",
         "/send",
         "/steer",
@@ -1985,6 +1987,20 @@ export async function createChatBridge(
         } finally {
           if (activeCommandAbort === controller) activeCommandAbort = null;
         }
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/midi-import-preview") {
+        if (!options.prepareMidiImport) { request.resume(); response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token"], "MIDI import preview");
+        const input = await readRequestBody(request) as Record<string, unknown>;
+        if (!input || typeof input !== "object" || Array.isArray(input) ||
+            Object.keys(input).some((key) => !["sessionId", "artifactRef"].includes(key)) ||
+            !isSafeStorageId(input.sessionId) || !isSafeStorageId(input.artifactRef)) {
+          throw new ChatBridgeRequestValidationError("Choose a saved Session MIDI artifact.");
+        }
+        const signal = beginReadOnlyBuild(response, handlerTerminal);
+        sendJson(response, await options.prepareMidiImport({ sessionId: input.sessionId, artifactRef: input.artifactRef }, signal));
         return;
       }
 
@@ -2648,7 +2664,7 @@ export async function createChatBridge(
       if (pluginBodyMayBeUnread) request.resume();
       if (
         request.method === "POST" &&
-        ["/command", "/session-model-capabilities", "/session-tools", "/confirm", "/send", "/steer", "/stop",
+        ["/command", "/session-model-capabilities", "/session-tools", "/midi-import-preview", "/confirm", "/send", "/steer", "/stop",
           "/plugin-apps/open", "/plugin-apps/call", "/plugin-apps/resource", "/plugin-apps/close", "/plugin-apps/resources", "/plugin-apps/resource-templates"].includes(
           requestPath,
         )

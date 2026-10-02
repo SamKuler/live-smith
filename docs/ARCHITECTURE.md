@@ -822,6 +822,27 @@ MIDI artifacts use the existing grants and private staging path. A panel call
 cannot invoke the Live executor. Request resources close on success, failure,
 or cancellation.
 
+MIDI import reads and integrity-checks the immutable SMF to derive note-bearing
+parts identified by zero-based source track index and 1-based MIDI channel.
+Track names are labels, never identities. Part summaries and tempo/meter event
+counts are read-derived; historical artifact metadata requires no migration.
+The authenticated read-only `/midi-import-preview` endpoint returns part summaries
+and currently observed, uniquely named MIDI destinations without note arrays or
+filesystem paths. The browser maps selected parts to distinct destination handle
+IDs and names and previews each Clip at the common start beat with its source
+track duration. Duplicate destination names require renaming in Live.
+
+`create_midi_clip_from_artifact` materializes one exact `partId` into an ordinary
+validated `create_midi_clip` action. A multitrack source requires `partId` or
+explicit `mergeParts: true`; a single-part source retains its legacy whole-file
+duration when no part is selected. `import_midi_artifact` accepts part mappings
+or a single destination with explicit merging. It checks destination identities,
+then uses the existing observation, full-plan Edit Scope, approval, mutation
+queue, drift revalidation and per-action authorization boundaries. Partial
+failures persist the same recovery ledger as chat-driven edits and prevent blind
+retries. All positions are quarter-note beats; tempo, meter and controller events
+are retained only in the source artifact and never materialize Set mutations.
+
 `ui/client/plugin-parameters.script.html` renders the native controls inside
 Session Tools. Optional parameters have an explicit inclusion control; omitted
 fields stay absent from the request. Form drafts survive directory redraws while

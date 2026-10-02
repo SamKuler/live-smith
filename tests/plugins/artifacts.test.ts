@@ -12,6 +12,7 @@ import { createHostAbortController } from "../../src/runtime/host.js";
 import { audioStorageHarness, waveBytes } from "../storage/support/audio-storage-test-helpers.js";
 import { listMidiArtifacts } from "../../src/storage/midi-artifacts.js";
 import { saveMidiArtifact } from "../../src/storage/midi-artifacts.js";
+import { midiBytes, noteTrack, endTrack } from "../attachments/support/midi-test-helpers.js";
 import {
   LIVE_SMITH_ARTIFACT_META_KEY,
   callPluginToolWithArtifacts,
@@ -278,4 +279,32 @@ test("MIDI artifact actions materialize into the ordinary validated Live action 
       notes: [],
     }] }),
   }), /Action 1/u);
+});
+
+test("multitrack materialization selects exact source parts and requires explicit merging", async (t) => {
+  const h = await audioStorageHarness(t);
+  const artifact = await saveMidiArtifact(h.storage, h.session.id, {
+    pluginId: "audio-to-midi", serverId: "local", toolName: "transcribe", label: "Ensemble",
+    bytes: midiBytes({ tracks: [endTrack(1920), noteTrack({ pitch: 60, startTicks: 480 }), noteTrack({ pitch: 48, channel: 2 })] }), signal: h.signal,
+  });
+  const materialize = (actions: unknown[]) => materializeMidiArtifactActionPlan({ storageDirectory: h.storage,
+    sessionId: h.session.id, signal: h.signal, argumentsJson: JSON.stringify({ message: "Import parts", actions }) });
+  const base = { type: "create_midi_clip_from_artifact", artifactRef: artifact.id, trackName: "Lead", startBeat: 8 };
+  for (const extra of [{}, { partId: "track-9-channel-1" }, { partId: "track-1-channel-1", mergeParts: true }, { mergeParts: "yes" }]) {
+    await assert.rejects(materialize([{ ...base, ...extra }]), /Action 1/);
+  }
+  const plan = await materialize([{ ...base, partId: "track-1-channel-1" }, { ...base, trackName: "Bass", partId: "track-2-channel-2" }]);
+  assert.deepEqual(plan.actions, [
+    { type: "create_midi_clip", trackName: "Lead", startBeat: 8, durationBeats: 2,
+      notes: [{ pitch: 60, startTime: 1, duration: 1, velocity: 96 }] },
+    { type: "create_midi_clip", trackName: "Bass", startBeat: 8, durationBeats: 1,
+      notes: [{ pitch: 48, startTime: 0, duration: 1, velocity: 96 }] },
+  ]);
+  const merged = await materialize([{ ...base, mergeParts: true }]);
+  const action = merged.actions[0]!;
+  assert.equal(action.type, "create_midi_clip");
+  if (action.type === "create_midi_clip") {
+    assert.equal(action.notes.length, 2);
+    assert.equal(action.durationBeats, 4);
+  }
 });

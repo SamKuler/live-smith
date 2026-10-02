@@ -1991,6 +1991,11 @@ details.timeline-item > .timeline-content {
 .plugin-result-field > input[type="number"] { max-width: 8rem; }
 .plugin-result-import-form > .field-hint, .plugin-result-import-status { @apply m-0 text-small text-muted; }
 .plugin-result-apply { @apply justify-self-end; }
+.plugin-result-load { @apply justify-self-start; }
+.plugin-result-mapping { @apply grid min-w-0 gap-3; }
+.plugin-result-mapping select { width: 100%; min-width: 0; }
+.plugin-result-mapping .field-hint { @apply m-0 text-small text-muted; }
+.plugin-result-preview { @apply m-0 grid gap-1 pl-4 text-small text-muted; overflow-wrap: anywhere; }
 .app-confirmation-details { @apply max-h-96 overflow-auto text-label; }
 .app-confirmation-details h3 { @apply my-2 text-label font-medium; }
 .app-confirmation-details ul { @apply my-2 pl-5; }

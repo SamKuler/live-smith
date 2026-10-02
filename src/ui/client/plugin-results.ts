@@ -1,3 +1,7 @@
+import type { MidiArtifactImportCommand } from "../../app/midi-artifact-import.js";
+import type { MidiArtifactImportPreview, MidiImportMapping } from "../../app/midi-artifact-preview.js";
+import { isMidiArtifactImportPreview } from "./wire-contracts/midi-import.js";
+
 interface Artifact {
   kind: "midi";
   artifactRef: string;
@@ -14,7 +18,8 @@ export interface PluginResultActions {
 interface Dependencies {
   getState(): { activeSessionId?: string };
   useInChat(text: string): Promise<void>;
-  importMidi(input: { sessionId: string; artifactRef: string; trackName: string; startBeat: number }): Promise<boolean>;
+  prepareMidiImport(input: { sessionId: string; artifactRef: string }): Promise<unknown>;
+  importMidi(input: Omit<MidiArtifactImportCommand, "kind">): Promise<boolean>;
 }
 
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -79,35 +84,102 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
           selection.append(option);
         }
         field("Saved MIDI", selection);
-        const track = node("input", "plugin-result-track");
-        track.name = "trackName"; track.required = true; track.maxLength = 256;
-        track.autocomplete = "off";
-        field("Destination MIDI track", track);
+        const load = node("button", "secondary plugin-result-load", t("Load parts and Live tracks"));
+        load.type = "button";
+        form.append(load);
         const beat = node("input", "plugin-result-beat");
         beat.name = "startBeat"; beat.type = "number"; beat.required = true;
         beat.min = "1"; beat.step = "any"; beat.value = "1";
         field("Start beat (1-based)", beat);
-        form.append(node("p", "field-hint", t("Enter an existing MIDI track name. Import follows this Session's edit scope and approval mode.")));
+        const mode = node("select", "plugin-result-mode");
+        for (const [value, label] of [["parts", "Separate source parts"], ["merge", "Merge all parts into one Clip"]]) {
+          const option = node("option", "", t(label!)); option.value = value!; mode.append(option);
+        }
+        field("Import mode", mode);
+        const mapping = node("div", "plugin-result-mapping");
+        const preview = node("ul", "plugin-result-preview");
+        preview.setAttribute("aria-label", t("Clip preview"));
+        form.append(mapping, preview);
+        form.append(node("p", "field-hint", t("Quarter-note beats. Source offsets and track endings are preserved. Tempo, meter and controller events do not change the Live Set. Import follows this Session's edit scope and approval mode.")));
         const submit = node("button", "primary plugin-result-apply", t("Insert into Live"));
-        submit.type = "submit";
+        submit.type = "submit"; submit.disabled = true;
         form.append(submit);
         const status = node("p", "plugin-result-import-status");
-        status.setAttribute("role", "status");
-        form.append(status);
+        status.setAttribute("role", "status"); form.append(status);
+        let prepared: MidiArtifactImportPreview | undefined;
+        let pending = false;
+        let rows: { partId: string; label: string; duration: number; select: HTMLSelectElement }[] = [];
+        const mappings = (): MidiImportMapping[] => rows.flatMap((row) => {
+          const target = prepared?.targets.find((candidate) => candidate.trackId === row.select.value);
+          return target ? [{ partId: row.partId, ...target }] : [];
+        });
+        const updatePreview = () => {
+          preview.replaceChildren();
+          const chosen = mappings();
+          const repeated = new Set(chosen.map((entry) => entry.trackId)).size !== chosen.length;
+          const start = Number(beat.value);
+          for (const row of rows) {
+            const target = prepared?.targets.find((candidate) => candidate.trackId === row.select.value);
+            if (target) preview.append(node("li", "", `${row.label} → ${target.trackName} · ${t("Beats")} ${start}–${start + row.duration}`));
+          }
+          status.textContent = repeated ? t("Choose a different destination for each part, or use Merge all parts.") :
+            chosen.length > (prepared?.maxMappings ?? 64) ? t("Select at most 64 parts for one import.") : "";
+          submit.disabled = !prepared || !chosen.length || repeated || chosen.length > prepared.maxMappings || pending || !Number.isFinite(start) || start < 1;
+        };
+        const renderMapping = () => {
+          mapping.replaceChildren(); rows = [];
+          if (prepared) {
+            const parts = mode.value === "merge"
+              ? [{ id: "merged", label: t("All source parts"), durationBeats: prepared.durationBeats }]
+              : prepared.parts.map((part) => ({ ...part,
+                label: `${t("Track")} ${part.sourceTrackIndex + 1}${part.sourceTrackName ? " · " + part.sourceTrackName : ""} · ${t("Channel")} ${part.channel} · ${part.noteCount} ${t("notes")}` }));
+            for (const part of parts) {
+              const select = node("select", "plugin-result-track");
+              select.setAttribute("aria-label", part.label);
+              const skip = node("option", "", t("Skip this part")); skip.value = ""; select.append(skip);
+              for (const target of prepared.targets) {
+                const option = node("option", "", target.trackName); option.value = target.trackId; select.append(option);
+              }
+              const label = node("label", "plugin-result-field");
+              label.append(node("span", "", part.label), select); mapping.append(label);
+              rows.push({ partId: part.id, label: part.label, duration: part.durationBeats, select });
+              select.addEventListener("change", updatePreview);
+            }
+            if (!prepared.targets.length) mapping.append(node("p", "field-hint", t("No unambiguous MIDI destinations are available. Create or rename MIDI tracks in Live, then reload.")));
+            else if (prepared.unavailableTargetCount) mapping.append(node("p", "field-hint", t("Tracks with duplicate names are unavailable. Rename them in Live, then reload.")));
+            mapping.append(node("p", "field-hint", `${prepared.timing.tempoEventCount} ${t("tempo events")}, ${prepared.timing.timeSignatureEventCount} ${t("meter events")} · ${t("metadata only")}`));
+          }
+          updatePreview();
+        };
+        load.addEventListener("click", async () => {
+          if (!current() || !sessionId || pending) return;
+          const artifactRef = selection.value;
+          pending = true; prepared = undefined; renderMapping();
+          status.textContent = t("Reading saved MIDI and observing Live tracks…");
+          try {
+            const result = await deps.prepareMidiImport({ sessionId, artifactRef });
+            if (!current() || selection.value !== artifactRef) return;
+            if (!isMidiArtifactImportPreview(result) || result.sessionId !== sessionId || result.artifactRef !== artifactRef) throw new Error(t("MIDI import preview is unavailable."));
+            prepared = result;
+          } catch (error) { status.textContent = error instanceof Error ? error.message : t("MIDI import preview failed."); }
+          finally { pending = false; if (prepared) renderMapping(); }
+        });
+        selection.addEventListener("change", () => { prepared = undefined; renderMapping(); });
+        mode.addEventListener("change", renderMapping);
+        beat.addEventListener("input", updatePreview);
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
-          if (!current() || !sessionId || !form.reportValidity()) return;
-          track.setCustomValidity(track.value.trim() ? "" : t("Enter a MIDI track name."));
-          if (!form.reportValidity()) return;
-          const artifactRef = selection.value;
-          if (!saved.some((entry) => entry.artifactRef === artifactRef)) return;
-          controls.disabled = true;
+          if (!current() || !sessionId || pending || !prepared || !form.reportValidity()) return;
+          updatePreview(); if (submit.disabled) return;
+          const chosen = mappings();
+          pending = true; updatePreview();
           try {
-            const completed = await deps.importMidi({ sessionId, artifactRef, trackName: track.value.trim(), startBeat: Number(beat.value) - 1 });
+            const completed = await deps.importMidi({ sessionId, artifactRef: selection.value, startBeat: Number(beat.value) - 1,
+              ...(mode.value === "merge" ? { trackId: chosen[0]!.trackId, trackName: chosen[0]!.trackName, mergeParts: true } : { mappings: chosen }) });
+            prepared = undefined; renderMapping();
             status.textContent = t(completed ? "MIDI import finished. Review the Session result." : "MIDI was not imported. Review the Session status before retrying.");
-          } finally { controls.disabled = busy; }
+          } finally { pending = false; }
         });
-        track.addEventListener("input", () => track.setCustomValidity(""));
         details.append(form);
         controls.append(details);
       }

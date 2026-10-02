@@ -312,6 +312,7 @@
 
         const pluginResults = factories.createPluginResults({
           getState,
+          prepareMidiImport: bridgeClient.prepareMidiImport,
           useInChat: async (text) => {
             const sessionId = getState().activeSessionId;
             try { await pluginApps.close(); }

@@ -33,6 +33,9 @@ export const midiArtifactImportActionSchema: Record<string, unknown> = {
     laneName: { type: "string", minLength: 1 },
     startBeat: { type: "number" },
     name: { type: "string", minLength: 1 },
+    partId: { type: "string", pattern: "^track-[0-9]+-channel-[0-9]+$",
+      description: "Exact source part ID from list_session_artifacts. Required for a multitrack artifact unless mergeParts is explicitly true." },
+    mergeParts: { type: "boolean", description: "Explicitly combine every source part into one Clip on the destination track." },
     artifactRef: {
       type: "string",
       minLength: 1,
@@ -200,7 +203,7 @@ export async function materializeMidiArtifactActionPlan(input: {
       continue;
     }
     try {
-      const allowed = new Set(["type", "trackName", "trackRef", "laneIndex", "laneName", "startBeat", "name", "artifactRef"]);
+      const allowed = new Set(["type", "trackName", "trackRef", "laneIndex", "laneName", "startBeat", "name", "artifactRef", "partId", "mergeParts"]);
       if (Object.keys(raw).some((key) => !allowed.has(key)) || !isSafeStorageId(raw.artifactRef)) {
         throw new Error("MIDI artifact action fields are invalid.");
       }
@@ -210,6 +213,14 @@ export async function materializeMidiArtifactActionPlan(input: {
         raw.artifactRef,
         input.signal,
       );
+      if (raw.mergeParts !== undefined && typeof raw.mergeParts !== "boolean" ||
+          raw.partId !== undefined && typeof raw.partId !== "string" || raw.mergeParts === true && raw.partId !== undefined) {
+        throw new Error("Choose a source part or explicitly merge all parts.");
+      }
+      const part = raw.partId === undefined
+        ? parsed.parts.length === 1 ? parsed.parts[0] : undefined
+        : parsed.parts.find((candidate) => candidate.id === raw.partId);
+      if (raw.mergeParts !== true && !part) throw new Error("Choose an exact source part for this multitrack MIDI artifact, or explicitly merge all parts.");
       actions.push({
         type: "create_midi_clip",
         ...(raw.trackName === undefined ? {} : { trackName: raw.trackName }),
@@ -217,12 +228,12 @@ export async function materializeMidiArtifactActionPlan(input: {
         ...(raw.laneIndex === undefined ? {} : { laneIndex: raw.laneIndex }),
         ...(raw.laneName === undefined ? {} : { laneName: raw.laneName }),
         startBeat: raw.startBeat,
-        durationBeats: parsed.durationBeats,
+        durationBeats: raw.partId === undefined ? parsed.durationBeats : part!.durationBeats,
         ...(raw.name === undefined ? {} : { name: raw.name }),
-        notes: parsed.notes,
+        notes: raw.mergeParts === true ? parsed.notes : part!.notes,
       });
     } catch (error) {
-      throw new Error(`Action ${index + 1} could not load its saved MIDI artifact.`, { cause: error });
+      throw new Error(`Action ${index + 1} could not load its saved MIDI artifact or select a source part. Multitrack MIDI requires an exact partId or explicit mergeParts.`, { cause: error });
     }
   }
   return validateAgentPlan({ ...value, actions });

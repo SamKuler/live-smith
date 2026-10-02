@@ -16,7 +16,7 @@ import {
 import { loadAgentSettings } from "../../storage/settings.js";
 import { callPluginToolWithArtifacts, LIVE_SMITH_ARTIFACT_META_KEY } from "../../plugins/artifacts.js";
 import { throwIfAborted } from "../../runtime/host.js";
-import { inspectMidiArtifacts, type MidiArtifact } from "../../storage/midi-artifacts.js";
+import { inspectMidiArtifacts, readMidiArtifact, midiArtifactPartSummaries, type MidiArtifact } from "../../storage/midi-artifacts.js";
 import { canonicalStorageDirectory, storageScopeKey, type StorageScopeKey } from "../../storage/scope.js";
 import { pluginParameterPanel, type PluginParameterPanel } from "../../plugins/parameter-panel.js";
 import {
@@ -533,7 +533,7 @@ function sessionArtifactToolset(
       type: "function",
       function: {
         name: "list_session_artifacts",
-        description: "List validated non-audio artifacts saved in this Session. If saved MIDI data is unavailable, the result includes an unavailableCount and warning; do not use those missing artifacts. Use an exact listed MIDI artifactRef with create_midi_clip_from_artifact when that action is available. This reads local metadata only and does not run a Plugin or change Live.",
+        description: "List validated non-audio artifacts saved in this Session. If saved MIDI data is unavailable, the result includes an unavailableCount and warning; do not use those missing artifacts. Use an exact listed MIDI artifactRef with create_midi_clip_from_artifact when that action is available. This verifies saved MIDI bytes and returns read-derived source part summaries and timing event counts; it does not run a Plugin or change Live. For multitrack MIDI, select a listed partId per destination or explicitly request mergeParts.",
         parameters: { type: "object", properties: {}, additionalProperties: false },
       },
     }],
@@ -546,16 +546,23 @@ function sessionArtifactToolset(
         }
         const listing = await inspectMidiArtifacts(input.storageDirectory, input.sessionId);
         artifacts.clear();
-        for (const artifact of listing.artifacts) artifacts.set(artifact.id, artifact);
-        const current = listing.artifacts.map(midiArtifactView);
+        let unavailableCount = listing.unavailableCount;
+        const current = [];
+        for (const artifact of listing.artifacts) {
+          try {
+            const { parsed } = await readMidiArtifact(input.storageDirectory, input.sessionId, artifact.id);
+            current.push({ ...midiArtifactView(artifact), parts: midiArtifactPartSummaries(parsed), timing: parsed.timing });
+            artifacts.set(artifact.id, artifact);
+          } catch { unavailableCount += 1; }
+        }
         return {
-          content: JSON.stringify(listing.unavailableCount
-            ? { artifacts: current, unavailableCount: listing.unavailableCount,
+          content: JSON.stringify(unavailableCount
+            ? { artifacts: current, unavailableCount,
                 warning: "One or more saved MIDI artifacts are unavailable. Their metadata was preserved." }
             : current),
           progressKey: JSON.stringify([
             listing.artifacts.map((artifact) => [artifact.id, artifact.sha256]),
-            listing.unavailableCount,
+            unavailableCount,
           ]),
         };
       } catch {

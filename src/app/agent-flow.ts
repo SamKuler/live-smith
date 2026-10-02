@@ -15,6 +15,7 @@ import { createPluginLifecycle, inspectPluginPackage } from "./plugins/plugin-li
 import { createUserSkillLifecycle } from "./plugins/user-skill-lifecycle.js";
 import { createSessionLifecycle } from "./session/session-lifecycle.js";
 import { importMidiArtifact } from "./midi-artifact-import.js";
+import { prepareMidiArtifactImport } from "./midi-artifact-preview.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 
 import { audioJobViews, resumeAudioJob } from "./audio/audio-processing.js";
@@ -3056,6 +3057,12 @@ export async function runAgentFlow(
     bridge = await createChatBridge({
       readAttachment,
       handlePluginAppRequest: (input, signal) => pluginApps.request(input, signal),
+      prepareMidiImport: async (input, signal) => {
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the active Session before preparing MIDI import.");
+        const result = await prepareMidiArtifactImport({ ...input, context, storageDirectory, projectKey, signal });
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while preparing MIDI import.");
+        return result;
+      },
       closePluginApps: () => pluginApps.close(),
       readAudioAsset: async (sessionId, assetId, signal) => {
         const session = (await listSessions(storageDirectory, projectKey)).find((entry) => entry.id === sessionId);

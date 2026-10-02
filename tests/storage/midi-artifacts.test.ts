@@ -9,6 +9,8 @@ import {
   endTrack,
   event,
   midiBytes,
+  midiText,
+  meta,
   noteTrack,
   sequentialNotes,
 } from "../attachments/support/midi-test-helpers.js";
@@ -74,7 +76,31 @@ test("bounded Standard MIDI parsing produces the exact Live note contract", () =
     ticksPerQuarterNote: 480,
     durationBeats: 1.5,
     notes: [{ pitch: 64, startTime: 0, duration: 1.5, velocity: 111 }],
+    parts: [{ id: "track-0-channel-1", sourceTrackIndex: 0, channel: 1, durationBeats: 1.5,
+      notes: [{ pitch: 64, startTime: 0, duration: 1.5, velocity: 111 }] }],
+    timing: { tempoEventCount: 0, timeSignatureEventCount: 0 },
   });
+});
+
+test("source parts retain stable track/channel identity, names, offsets and track endings", () => {
+  const bytes = midiBytes({ tracks: [
+    [...meta(0, 0x51, [7, 161, 32]), ...meta(0, 0x58, [3, 2, 24, 8]), ...endTrack(1920)],
+    [...midiText(0, 3, "Strings"), ...event(480, 0x90, 60, 90), ...event(0, 0x91, 64, 80),
+      ...event(240, 0x80, 60, 0), ...event(240, 0x81, 64, 0), ...endTrack(480)],
+    [...midiText(0, 3, "Strings"), ...noteTrack({ channel: 1, pitch: 48 })],
+  ] });
+  const parsed = parseMidiArtifact(bytes);
+  assert.deepEqual(parsed.parts.map(({ notes, ...part }) => ({ ...part, notes })), [
+    { id: "track-1-channel-1", sourceTrackIndex: 1, sourceTrackName: "Strings", channel: 1, durationBeats: 3,
+      notes: [{ pitch: 60, startTime: 1, duration: 0.5, velocity: 90 }] },
+    { id: "track-1-channel-2", sourceTrackIndex: 1, sourceTrackName: "Strings", channel: 2, durationBeats: 3,
+      notes: [{ pitch: 64, startTime: 1, duration: 1, velocity: 80 }] },
+    { id: "track-2-channel-1", sourceTrackIndex: 2, sourceTrackName: "Strings", channel: 1, durationBeats: 1,
+      notes: [{ pitch: 48, startTime: 0, duration: 1, velocity: 96 }] },
+  ]);
+  assert.deepEqual(parsed.timing, { tempoEventCount: 1, timeSignatureEventCount: 1 });
+  assert.equal(parsed.durationBeats, 4);
+  assert.deepEqual(parseMidiArtifact(bytes), parsed);
 });
 
 test("MIDI parser rejects malformed chunks, unsupported timing, unfinished notes and trailing bytes", () => {
@@ -100,7 +126,8 @@ test("shared MIDI parsing preserves the exact multitrack Live projection and equ
     ],
     noteTrack({ pitch: 48, startTicks: 240, durationTicks: 240 }),
   ] });
-  assert.deepEqual(parseMidiArtifact(bytes), {
+  const { parts: _parts, timing: _timing, ...projection } = parseMidiArtifact(bytes);
+  assert.deepEqual(projection, {
     format: 1, trackCount: 3, ticksPerQuarterNote: 480, durationBeats: 2,
     notes: [
       { pitch: 60, startTime: 0, duration: 0.25, velocity: 80 },

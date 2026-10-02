@@ -6,7 +6,9 @@ import { createHostAbortController } from "../../src/runtime/host.js";
 import { createSession, updateSession } from "../../src/storage/sessions.js";
 import { saveMidiArtifact } from "../../src/storage/midi-artifacts.js";
 import { appendSessionEvent, loadSessionEvents } from "../../src/storage/events.js";
-import { importMidiArtifact } from "../../src/app/midi-artifact-import.js";
+import { importMidiArtifact, type MidiArtifactImportCommand } from "../../src/app/midi-artifact-import.js";
+import { prepareMidiArtifactImport } from "../../src/app/midi-artifact-preview.js";
+import { midiBytes, noteTrack, endTrack } from "../attachments/support/midi-test-helpers.js";
 import { LiveMutationQueue } from "../../src/app/live-mutation-queue.js";
 import { decidePlanApproval } from "../../src/app/agent-flow.js";
 import { liveContextPresentationFixture } from "./context/support/live-context.test-harness.js";
@@ -18,14 +20,14 @@ import { AgentPlanExecutionError } from "../../src/live/executor.js";
 import type { ChatDialogState } from "../../src/ui/chat-state.js";
 import { URL } from "node:url";
 
-async function setup(t: TestContext) {
+async function setup(t: TestContext, bytes?: Uint8Array) {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-import-midi-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const session = await createSession(directory, { title: "Import", projectKey: "set",
     scope: { kind: "selection", identity: "set", label: "Live Set" }, editScopes: ["midi"], approvalMode: "manual" });
   const controller = createHostAbortController();
   const saved = await saveMidiArtifact(directory, session.id, { connectionId: "connection", serverId: "server", toolName: "tool", label: "Notes",
-    bytes: new Uint8Array([77,84,104,100,0,0,0,6,0,0,0,1,1,224,77,84,114,107,0,0,0,13,0,144,60,96,131,96,128,60,64,0,255,47,0]), signal: controller.signal });
+    bytes: bytes ?? new Uint8Array([77,84,104,100,0,0,0,6,0,0,0,1,1,224,77,84,114,107,0,0,0,13,0,144,60,96,131,96,128,60,64,0,255,47,0]), signal: controller.signal });
   const mutationQueue = new LiveMutationQueue();
   let writes = 0;
   const clip = { name: "Untitled", notes: [] };
@@ -33,15 +35,109 @@ async function setup(t: TestContext) {
     handle: { id: 2n }, name: "Piano", arrangementClips: [], clipSlots: [], devices: [], takeLanes: [], mute: false, solo: false, arm: false, mutedViaSolo: false, groupTrack: null, isGrouped: false, isFoldable: false, color: 0,
     createMidiClip: async () => { writes += 1; return clip; },
   }).map(([key, value]) => [key, { value, writable: true, configurable: true }])));
-  const context = { application: { song: { handle: { id: 1n }, tempo: 120, tracks: [track], returnTracks: [], scenes: [] } } } as never;
-  const run = (confirm: () => Promise<boolean> = async () => true) => importMidiArtifact({
+  const song = { handle: { id: 1n }, tempo: 120, tracks: [track], returnTracks: [], scenes: [] };
+  const context = { application: { song } } as never;
+  const run = (confirm: () => Promise<boolean> = async () => true, command: Partial<MidiArtifactImportCommand> = {}) => importMidiArtifact({
     kind: "import_midi_artifact", sessionId: session.id, artifactRef: saved.id, trackName: "Piano", startBeat: 0,
     context, storageDirectory: directory, projectKey: "set", signal: controller.signal, mutationQueue,
     interaction: { presentation: liveContextPresentationFixture("Live Set", "other"), summary: "Live Set", scope: session.scope, target: {} },
     confirm: (plan) => decidePlanApproval(directory, session.id, plan, confirm),
+    ...command,
   });
-  return { run, directory, session, controller, track, clip, mutationQueue, get writes() { return writes; } };
+  return { run, directory, session, saved, context, song, controller, track, clip, mutationQueue, get writes() { return writes; } };
 }
+
+test("read-derived preview exposes parts and only unambiguous observed MIDI destinations", async (t) => {
+  const h = await setup(t, midiBytes({ tracks: [endTrack(1920), noteTrack(), noteTrack({ channel: 2, pitch: 48 })] }));
+  const preview = () => prepareMidiArtifactImport({ context: h.context, storageDirectory: h.directory, projectKey: "set",
+    sessionId: h.session.id, artifactRef: h.saved.id, signal: h.controller.signal });
+  const first = await preview();
+  assert.deepEqual(first.targets, [{ trackId: "2", trackName: "Piano" }]);
+  assert.deepEqual(first.parts.map((part) => part.id), ["track-1-channel-1", "track-2-channel-2"]);
+  assert.equal(first.parts.some((part) => "notes" in part), false);
+  assert.equal(h.writes, 0);
+  const duplicate = Object.create(h.track);
+  Object.defineProperty(duplicate, "handle", { value: { id: 3n } });
+  h.song.tracks.push(duplicate);
+  assert.deepEqual((await preview()).targets, []);
+  assert.equal((await preview()).unavailableTargetCount, 2);
+  await assert.rejects(prepareMidiArtifactImport({ context: h.context, storageDirectory: h.directory, projectKey: "other",
+    sessionId: h.session.id, artifactRef: h.saved.id, signal: h.controller.signal }), /not available/);
+});
+
+test("mapped import rejects a replaced observed destination before approval", async (t) => {
+  const h = await setup(t);
+  let confirmations = 0;
+  await assert.rejects(h.run(async () => { confirmations += 1; return true; }, {
+    mappings: [{ partId: "track-0-channel-1", trackId: "999", trackName: "Piano" }],
+  }), /destination changed/);
+  assert.equal(confirmations, 0); assert.equal(h.writes, 0);
+});
+
+test("mapped import revalidates observed handle and name after approval", async (t) => {
+  for (const change of ["rename", "replace"] as const) {
+    const h = await setup(t);
+    await assert.rejects(h.run(async () => {
+      if (change === "rename") h.track.name = "Changed";
+      else Object.defineProperty(h.track, "handle", { value: { id: 999n } });
+      return true;
+    }, { mappings: [{ partId: "track-0-channel-1", trackId: "2", trackName: "Piano" }] }), /destination changed/);
+    assert.equal(h.writes, 0);
+  }
+});
+
+test("mapped parts write distinct notes at a common Arrangement start", async (t) => {
+  const h = await setup(t, midiBytes({ tracks: [noteTrack({ startTicks: 480 }), noteTrack({ channel: 2, pitch: 48 })] }));
+  const second = Object.create(h.track);
+  const clips: { notes: unknown[] }[] = [];
+  const positions: number[][] = [];
+  const create = async (start: number, duration: number) => {
+    positions.push([start, duration]); const clip = { notes: [] }; clips.push(clip); return clip;
+  };
+  h.track.createMidiClip = create;
+  Object.defineProperties(second, { name: { value: "Bass" }, handle: { value: { id: 3n } }, createMidiClip: { value: create } });
+  h.song.tracks.push(second);
+  assert.equal(await h.run(undefined, { mappings: [
+    { partId: "track-0-channel-1", trackId: "2", trackName: "Piano" },
+    { partId: "track-1-channel-2", trackId: "3", trackName: "Bass" },
+  ], startBeat: 8 }), true);
+  assert.deepEqual(positions, [[8, 2], [8, 1]]);
+  assert.deepEqual(clips.map((clip) => clip.notes), [
+    [{ pitch: 60, startTime: 1, duration: 1, velocity: 96 }],
+    [{ pitch: 48, startTime: 0, duration: 1, velocity: 96 }],
+  ]);
+  assert.equal(h.song.tempo, 120);
+});
+
+test("multitrack partial failure records completed parts and blocks a blind retry", async (t) => {
+  const h = await setup(t, midiBytes({ tracks: [noteTrack(), noteTrack({ channel: 2, pitch: 48 })] }));
+  const second = Object.create(h.track);
+  let attempts = 0;
+  Object.defineProperties(second, { name: { value: "Bass" }, handle: { value: { id: 3n } },
+    createMidiClip: { value: async () => { attempts += 1; throw new Error("Disconnected"); } } });
+  h.song.tracks.push(second);
+  const command = { mappings: [
+    { partId: "track-0-channel-1", trackId: "2", trackName: "Piano" },
+    { partId: "track-1-channel-2", trackId: "3", trackName: "Bass" },
+  ], startBeat: 8 };
+  await assert.rejects(h.run(undefined, command), /Inspect Live/);
+  assert.equal(h.writes, 1); assert.equal(attempts, 1); assert.equal(h.song.tempo, 120);
+  const recovery = activeRecoveryLedgerFromEvents(await loadSessionEvents(h.directory, h.session.id));
+  assert.ok(recovery?.completedActionDigests.length);
+  await assert.rejects(h.run(undefined, command), /unfinished Live operation/);
+  assert.equal(h.writes, 1); assert.equal(attempts, 1);
+});
+
+test("MIDI mapped commands reject duplicate parts, duplicate targets and mixed modes", () => {
+  const mapping = { partId: "track-0-channel-1", trackId: "2", trackName: "Piano" };
+  const valid = { kind: "import_midi_artifact", sessionId: "session", artifactRef: "artifact", mappings: [mapping], startBeat: 8 };
+  assert.deepEqual(parseCommandInput(valid), valid);
+  for (const patch of [{ mappings: [] }, { mappings: [mapping, mapping] },
+    { mappings: [mapping, { ...mapping, partId: "track-1-channel-2" }] }, { trackName: "Piano" }, { mergeParts: true },
+    { mappings: [{ ...mapping, partId: "track-0-channel-17" }] }, { mappings: [{ ...mapping, secret: "no" }] }]) {
+    assert.throws(() => parseCommandInput({ ...valid, ...patch }));
+  }
+});
 
 test("explicit MIDI import materializes saved notes and records the applied result", async (t) => {
   const h = await setup(t);

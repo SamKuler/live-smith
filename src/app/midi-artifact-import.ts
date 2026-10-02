@@ -14,12 +14,16 @@ import { ChatBridgeCommandOutcomeUnknownError, ChatBridgeConflictError } from ".
 import { activeRecoveryLedgerFromEvents } from "./context/session-context.js";
 import type { LiveMutationQueue } from "./live-mutation-queue.js";
 import { subscribeSessionEditScopesChanges, subscribeSessionEditScopesInvalidations } from "./session/session-edit-scope-events.js";
+import { assertMidiImportTargets, type MidiImportMapping } from "./midi-artifact-preview.js";
 
 export interface MidiArtifactImportCommand {
   kind: "import_midi_artifact";
   sessionId: string;
   artifactRef: string;
-  trackName: string;
+  trackName?: string;
+  trackId?: string;
+  mergeParts?: boolean;
+  mappings?: MidiImportMapping[];
   startBeat: number;
   name?: string;
 }
@@ -51,6 +55,8 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
     );
     if (!session) throw new Error("That Session is not available in this Live Set.");
     throwIfAborted(input.signal);
+    assertMidiImportTargets(input.context, input.mappings ?? (input.trackId && input.trackName
+      ? [{ trackId: input.trackId, trackName: input.trackName }] : []));
     if (version === generation) scopes = resolveEditScopes(session.editScopes);
   };
   const unsubscribe = subscribeSessionEditScopesChanges(input.storageDirectory, (change) => {
@@ -73,9 +79,15 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
     await refresh();
     const importPlan = plan = await materializeMidiArtifactActionPlan({
       storageDirectory: input.storageDirectory, sessionId: input.sessionId, signal: input.signal,
-      argumentsJson: JSON.stringify({ message: "Import saved MIDI artifact", actions: [{
+      argumentsJson: JSON.stringify({ message: "Import saved MIDI artifact", actions: input.mappings
+        ? input.mappings.map((mapping) => ({
+          type: "create_midi_clip_from_artifact", artifactRef: input.artifactRef,
+          partId: mapping.partId, trackName: mapping.trackName, startBeat: input.startBeat,
+          ...(input.name === undefined ? {} : { name: input.name }),
+        })) : [{
         type: "create_midi_clip_from_artifact", artifactRef: input.artifactRef,
         trackName: input.trackName, startBeat: input.startBeat,
+        ...(input.mergeParts === undefined ? {} : { mergeParts: input.mergeParts }),
         ...(input.name === undefined ? {} : { name: input.name }),
       }] }),
     });

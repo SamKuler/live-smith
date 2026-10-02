@@ -4,6 +4,16 @@ import { URL } from "node:url";
 import { pluginParameterPanel } from "../../../src/plugins/parameter-panel.js";
 import { commandCalls, createDialogHarness, jsonCalls, stateFixture, waitForCondition } from "../support/chat-dialog.test-harness.js";
 
+const midiPreview = { sessionId: "", artifactRef: "midi-one", label: "Pattern", durationBeats: 12,
+  parts: [{ id: "track-0-channel-1", sourceTrackIndex: 0, sourceTrackName: "Lead", channel: 1, noteCount: 24, durationBeats: 12 }],
+  timing: { tempoEventCount: 1, timeSignatureEventCount: 1 },
+  targets: [{ trackId: "2", trackName: "Lead" }, { trackId: "3", trackName: "Bass" }], unavailableTargetCount: 0, maxMappings: 64 };
+
+async function loadMidiPreview(h: Awaited<ReturnType<typeof createDialogHarness>>) {
+  h.click(".plugin-result-load");
+  await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected observed MIDI targets.");
+}
+
 async function fixture(withApp = false, result: unknown = { content: [{ type: "text", text: "Three bars saved <img src=x>" }],
   artifacts: [{ kind: "midi", artifactRef: "midi-one", label: "Pattern", noteCount: 24, durationBeats: 12 }] }) {
   const state = stateFixture();
@@ -20,6 +30,11 @@ async function fixture(withApp = false, result: unknown = { content: [{ type: "t
   state.events.push({ id: "result-one", createdAt: "2026-09-30T00:01:00.000Z", kind: "tool_result", name: "mcp_pattern",
     content: JSON.stringify(result) });
   const h = await createDialogHarness(state);
+  const originalFetch = h.window.fetch;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === "/midi-import-preview") return { ok: true, json: async () => ({ ...midiPreview, sessionId: state.activeSessionId }) };
+    return originalFetch(input, init);
+  } });
   h.click("#sessionInspectorScope"); h.click("#toolsTab");
   h.click(".tool-group > summary"); h.click(".tool-entry > summary");
   return { h, state };
@@ -124,13 +139,14 @@ test("MIDI result requests a scoped import with host confirmation and never reru
   let held = false;
   try {
     h.click(".plugin-result-import > summary");
-    h.input(".plugin-result-track", "Lead");
+    await loadMidiPreview(h);
+    h.select(".plugin-result-track", "2");
     h.input(".plugin-result-beat", "9");
     h.holdNextCommand(); held = true;
     h.click(".plugin-result-apply");
     await waitForCondition(() => commandCalls(h).length === 1, "Expected explicit MIDI import command.");
     assert.deepEqual(commandCalls(h)[0]!.body, { kind: "import_midi_artifact", sessionId: state.activeSessionId,
-      artifactRef: "midi-one", trackName: "Lead", startBeat: 8 });
+      artifactRef: "midi-one", mappings: [{ partId: "track-0-channel-1", trackId: "2", trackName: "Lead" }], startBeat: 8 });
     const event = { type: "command_confirm_request", commandId: h.commandIds.at(-1), sessionId: state.activeSessionId,
       id: "approval-one", kind: "apply", message: "Import this MIDI clip", groups: [{ title: "Lead", rows: ["Create clip at beat 9"] }] };
     h.emitRawServerEvent({ ...event, commandId: "wrong-command" });
@@ -152,7 +168,8 @@ test("resolved command approval closes its dialog and cannot send a late accepta
   const { h, state } = await fixture();
   let held = false;
   try {
-    h.input(".plugin-result-track", "Lead");
+    await loadMidiPreview(h);
+    h.select(".plugin-result-track", "2");
     h.holdNextCommand(); held = true;
     h.click(".plugin-result-apply");
     await waitForCondition(() => commandCalls(h).length === 1, "Expected MIDI import command.");
@@ -169,4 +186,72 @@ test("resolved command approval closes its dialog and cannot send a late accepta
     await h.settle();
     assert.deepEqual(h.errors, []);
   } finally { if (held) h.releaseHeldCommand(); await h.settle(); h.close(); }
+});
+
+test("part mapping previews common starts and source boundaries, rejects overlap and supports explicit merge", async () => {
+  const { h, state } = await fixture();
+  const originalFetch = h.window.fetch;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === "/midi-import-preview") return { ok: true, json: async () => ({ ...midiPreview,
+      sessionId: state.activeSessionId, parts: [...midiPreview.parts,
+        { id: "track-1-channel-2", sourceTrackIndex: 1, sourceTrackName: "Bass", channel: 2, noteCount: 8, durationBeats: 8 }] }) };
+    return originalFetch(input, init);
+  } });
+  try {
+    assert.equal(h.document.querySelector<HTMLButtonElement>(".plugin-result-apply")!.disabled, true);
+    await loadMidiPreview(h);
+    assert.equal(h.document.querySelector<HTMLButtonElement>(".plugin-result-apply")!.disabled, true);
+    h.select('[aria-label="Track 1 · Lead · Channel 1 · 24 notes"]', "2");
+    h.select('[aria-label="Track 2 · Bass · Channel 2 · 8 notes"]', "2");
+    assert.equal(h.document.querySelector<HTMLButtonElement>(".plugin-result-apply")!.disabled, true);
+    assert.match(h.document.querySelector('[role="status"].plugin-result-import-status')!.textContent!, /different destination/);
+    h.select('[aria-label="Track 2 · Bass · Channel 2 · 8 notes"]', "3");
+    h.input(".plugin-result-beat", "9");
+    const preview = h.document.querySelector('[aria-label="Clip preview"]')!.textContent!;
+    assert.match(preview, /Lead · Channel 1 · 24 notes → Lead · Beats 9–21/);
+    assert.match(preview, /Bass · Channel 2 · 8 notes → Bass · Beats 9–17/);
+    assert.equal(commandCalls(h).length, 0);
+    h.click(".plugin-result-apply"); await h.settle();
+    assert.deepEqual(commandCalls(h)[0]!.body, { kind: "import_midi_artifact", sessionId: state.activeSessionId,
+      artifactRef: "midi-one", startBeat: 8, mappings: [
+        { partId: "track-0-channel-1", trackId: "2", trackName: "Lead" },
+        { partId: "track-1-channel-2", trackId: "3", trackName: "Bass" },
+      ] });
+    assert.equal(jsonCalls(h, "/send").length, 0);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+
+  const merged = await fixture();
+  try {
+    await loadMidiPreview(merged.h);
+    merged.h.select(".plugin-result-mode", "merge");
+    merged.h.select('[aria-label="All source parts"]', "2");
+    merged.h.click(".plugin-result-apply"); await merged.h.settle();
+    assert.deepEqual(commandCalls(merged.h)[0]!.body, { kind: "import_midi_artifact", sessionId: merged.state.activeSessionId,
+      artifactRef: "midi-one", startBeat: 0, trackId: "2", trackName: "Lead", mergeParts: true });
+  } finally { merged.h.close(); }
+});
+
+test("late MIDI preview cannot enable importing into a different Session", async () => {
+  const { h, state } = await fixture();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let loading = false;
+  const originalFetch = h.window.fetch;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === "/midi-import-preview") {
+      loading = true; await gate;
+      return { ok: true, json: async () => ({ ...midiPreview, sessionId: state.activeSessionId }) };
+    }
+    return originalFetch(input, init);
+  } });
+  try {
+    h.click(".plugin-result-load");
+    await waitForCondition(() => loading, "Expected pending preview.");
+    h.click('.session-entry[data-session-id="session-2"] .session-row'); await h.settle();
+    release(); await h.settle();
+    assert.equal(commandCalls(h).filter((call) => (call.body as { kind: string }).kind === "import_midi_artifact").length, 0);
+    assert.equal(h.document.querySelector(".plugin-result-track"), null);
+    assert.deepEqual(h.errors, []);
+  } finally { release(); h.close(); }
 });

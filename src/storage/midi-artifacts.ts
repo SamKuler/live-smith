@@ -62,6 +62,25 @@ export interface ParsedMidiArtifact {
   ticksPerQuarterNote: number;
   durationBeats: number;
   notes: NoteDescription[];
+  parts: MidiArtifactPart[];
+  timing: { tempoEventCount: number; timeSignatureEventCount: number };
+}
+
+/** A note-bearing SMF track/channel pair. Identity is independent of names. */
+export interface MidiArtifactPart {
+  id: string;
+  sourceTrackIndex: number;
+  sourceTrackName?: string;
+  channel: number;
+  durationBeats: number;
+  notes: NoteDescription[];
+}
+
+export type MidiArtifactPartSummary = Omit<MidiArtifactPart, "notes"> & { noteCount: number };
+
+export function midiArtifactPartSummaries(parsed: ParsedMidiArtifact): MidiArtifactPartSummary[] {
+  return parsed.parts.map(({ notes, ...part }) => ({ ...part,
+    ...(part.sourceTrackName ? { sourceTrackName: part.sourceTrackName.slice(0, 120) } : {}), noteCount: notes.length }));
 }
 
 export interface MidiArtifactListing {
@@ -103,6 +122,21 @@ export function parseMidiArtifact(bytes: Uint8Array, signal?: AbortSignal): Pars
     trackCount,
     ticksPerQuarterNote,
     durationBeats,
+    parts: midi.tracks.flatMap((track) => [...new Set(track.notes.map((note) => note.channel))]
+      .sort((a, b) => a - b).map((channel) => ({
+        id: `track-${track.index}-channel-${channel}`,
+        sourceTrackIndex: track.index,
+        ...(track.name ? { sourceTrackName: track.name } : {}),
+        channel,
+        durationBeats: track.durationBeats,
+        notes: tickNotes.filter((note) => note.trackIndex === track.index && note.channel === channel)
+          .map((note) => ({ pitch: note.pitch, startTime: note.startTick / ticksPerQuarterNote,
+            duration: note.durationTicks! / ticksPerQuarterNote, velocity: note.velocity })),
+      }))),
+    timing: {
+      tempoEventCount: midi.tracks.reduce((sum, track) => sum + track.events.filter((event) => event.type === "tempo").length, 0),
+      timeSignatureEventCount: midi.tracks.reduce((sum, track) => sum + track.events.filter((event) => event.type === "time_signature").length, 0),
+    },
     notes: tickNotes.map((note) => ({
       pitch: note.pitch,
       startTime: note.startTick / ticksPerQuarterNote,

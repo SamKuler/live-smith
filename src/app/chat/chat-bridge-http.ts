@@ -1251,15 +1251,36 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     return { kind, sessionId: input.sessionId };
   }
   if (kind === "import_midi_artifact") {
-    assertOnlyInputKeys(input, ["kind", "sessionId", "artifactRef", "trackName", "startBeat", "name"], `${kind} command`);
+    assertOnlyInputKeys(input, ["kind", "sessionId", "artifactRef", "trackName", "trackId", "mergeParts", "mappings", "startBeat", "name"], `${kind} command`);
+    const validName = (value: unknown): value is string => typeof value === "string" && Boolean(value.trim()) && value.length <= 256;
+    const validTrackId = (value: unknown): value is string => typeof value === "string" && /^[0-9]{1,30}$/u.test(value);
+    const mappings = input.mappings;
+    if (mappings !== undefined) {
+      if (input.trackName !== undefined || input.trackId !== undefined || input.mergeParts !== undefined ||
+          !Array.isArray(mappings) || !mappings.length || mappings.length > 64 ||
+          mappings.some((entry) => !entry || typeof entry !== "object" || Array.isArray(entry) ||
+            Object.keys(entry).some((key) => !["partId", "trackId", "trackName"].includes(key)) ||
+            typeof entry.partId !== "string" || !/^track-[0-9]{1,2}-channel-(?:[1-9]|1[0-6])$/u.test(entry.partId) ||
+            !validTrackId(entry.trackId) || !validName(entry.trackName)) ||
+          new Set(mappings.map((entry) => entry.partId)).size !== mappings.length ||
+          new Set(mappings.map((entry) => entry.trackId)).size !== mappings.length) {
+        throw new ChatBridgeRequestValidationError("Map each selected source part to a different observed MIDI track (at most 64 parts).");
+      }
+    } else if (!validName(input.trackName) || input.trackId !== undefined && !validTrackId(input.trackId) ||
+        input.mergeParts !== undefined && typeof input.mergeParts !== "boolean") {
+      throw new ChatBridgeRequestValidationError("Choose a MIDI destination and explicit import mode.");
+    }
     if (!isSafeStorageId(input.sessionId) || !isSafeStorageId(input.artifactRef) ||
-        typeof input.trackName !== "string" || !input.trackName.trim() ||
         typeof input.startBeat !== "number" || !Number.isFinite(input.startBeat) || input.startBeat < 0 ||
         (input.name !== undefined && (typeof input.name !== "string" || !input.name.trim()))) {
       throw new ChatBridgeRequestValidationError("Choose a MIDI artifact, target track, and non-negative start beat.");
     }
     return { kind, sessionId: input.sessionId, artifactRef: input.artifactRef,
-      trackName: input.trackName, startBeat: input.startBeat,
+      ...(mappings === undefined ? { trackName: input.trackName as string,
+        ...(input.trackId === undefined ? {} : { trackId: input.trackId as string }),
+        ...(input.mergeParts === undefined ? {} : { mergeParts: input.mergeParts as boolean }) }
+        : { mappings: mappings as NonNullable<MidiArtifactImportCommand["mappings"]> }),
+      startBeat: input.startBeat,
       ...(input.name === undefined ? {} : { name: input.name as string }) };
   }
   if (kind === "run_plugin_tool" || kind === "run_audio_tool") {
