@@ -1,4 +1,5 @@
 import { AudioToolOutcomeUnknownError } from "../contracts.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
 import type { LyricModelCatalog, LyricWritingRequest, LyricWritingResult } from "../contracts.js";
 import { createSunoHttp, SunoHttpError, type SunoSessionRefreshHandler } from "./suno-http.js";
 import { sunoObject, type SunoSession } from "./suno-catalog.js";
@@ -8,7 +9,10 @@ type Http = ReturnType<typeof createSunoHttp>;
 type Options = { fetchImpl?: typeof fetch; onSessionRefresh?: SunoSessionRefreshHandler };
 
 export class SunoLyricsOutcomeUnknownError extends AudioToolOutcomeUnknownError {
-  constructor() { super("Suno's lyric-writing result is unconfirmed. Do not submit it again automatically."); }
+  constructor(diagnostic?: NetworkProxyError) {
+    super("Suno's lyric-writing result is unconfirmed. Do not submit it again automatically." +
+      (diagnostic ? ` ${diagnostic.message}` : ""));
+  }
 }
 
 export function parseLyricWritingRequest(input: unknown): LyricWritingRequest {
@@ -103,6 +107,6 @@ export async function writeSunoLyrics(
     return http.publicResult(result);
   } catch (error) {
     if (!dispatched || error instanceof SunoHttpError && error.status !== undefined && [400, 401, 402, 403, 404, 409, 422, 429].includes(error.status)) throw error;
-    throw new SunoLyricsOutcomeUnknownError();
+    throw new SunoLyricsOutcomeUnknownError(error instanceof NetworkProxyError ? error : undefined);
   }
 }

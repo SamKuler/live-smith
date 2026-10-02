@@ -9,6 +9,7 @@ import {
   waitForPromiseWithSignal,
 } from "../../runtime/host.js";
 import { cancelStreamBestEffort } from "../../model/transports/stream-cancel.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
 import { MAX_AUDIO_ASSET_BYTES } from "../contracts.js";
 import { readAudioResponseBytes } from "../response-bytes.js";
 
@@ -120,7 +121,7 @@ export function createLalalHttp(apiKey: string, injected?: typeof fetch) {
       cancelStreamBestEffort(response?.body);
       if (signal.aborted) throw abortedError();
       if (timedOut) throw lalalError("request timed out; its remote outcome may be unknown.");
-      if (error instanceof LalalError) throw error;
+      if (error instanceof LalalError || error instanceof NetworkProxyError) throw error;
       // No reason phrase, response body, Fetch cause or abort reason crosses here.
       throw lalalError("request or response read failed; its remote outcome may be unknown.");
     } finally {

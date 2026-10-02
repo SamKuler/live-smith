@@ -4,6 +4,7 @@ import test, { type TestContext } from "node:test";
 import type { SunoSessionIdentity } from "../../../../src/audio-services/suno/suno-session-contracts.js";
 import { SunoSessionExpiredError } from "../../../../src/audio-services/suno/suno-session.js";
 import { createHostAbortController } from "../../../../src/runtime/host.js";
+import { NetworkProxyError } from "../../../../src/runtime/network-proxy-error.js";
 import { isStorageCommitOutcomeUnknownError, StorageCommitOutcomeUnknownError, withStorageTransaction } from "../../../../src/storage/persistence.js";
 import { loadAgentSettings, saveGlobalSettings } from "../../../../src/storage/settings.js";
 import { SunoSessions, SunoSessionStorageError } from "../../../../src/storage/suno-sessions.js";
@@ -96,6 +97,20 @@ test("failed replacement preserves the prior good credential and status; refresh
     assert.equal((await h.manager.views([connection]))[0]?.status, error instanceof SunoSessionExpiredError ? "expired" : "unavailable");
     h.fail(undefined); await h.manager.refresh(connection.id, h.signal);
   }
+});
+
+test("proxy failures retain their safe diagnostic and invalidate only refresh evidence", async (t) => {
+  const h = await harness(t);
+  await h.manager.importSession(connection.id, token, h.signal);
+  const failure = new NetworkProxyError("The Manual proxy could not be reached.");
+  h.fail(failure);
+  await assert.rejects(h.manager.importSession(connection.id, replacement, h.signal), (error: unknown) => error === failure);
+  assert.equal((await new SunoSessions(h.directory).load(connection.id))?.clientToken, token);
+  assert.equal((await h.manager.views([connection]))[0]?.status, "signed_in");
+
+  await assert.rejects(h.manager.refresh(connection.id, h.signal), (error: unknown) => error === failure);
+  assert.equal((await new SunoSessions(h.directory).load(connection.id))?.clientToken, token);
+  assert.deepEqual(await h.manager.views([connection]), [{ serviceId: connection.id, status: "unavailable" }]);
 });
 
 test("refresh cannot switch accounts but explicit verified replacement can; peer caches follow disk identity", async (t) => {

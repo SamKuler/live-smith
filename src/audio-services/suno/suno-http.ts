@@ -6,6 +6,7 @@ import { TextDecoder } from "node:util";
 
 import { cancelStreamBestEffort } from "../../model/transports/stream-cancel.js";
 import { createHostAbortController, resolveFetchImplementation, waitForPromiseWithSignal } from "../../runtime/host.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
 import { AudioSubmissionNotStartedError, MAX_AUDIO_ASSET_BYTES } from "../contracts.js";
 import { readAudioResponseBytes } from "../response-bytes.js";
 import { sunoErrorDiagnostic } from "./suno-errors.js";
@@ -173,7 +174,7 @@ export function createSunoHttp(
       if (error instanceof AudioSubmissionNotStartedError) throw error;
       active(signal);
       if (timedOut) throw fail("request timed out; its remote outcome may be unknown.");
-      if (error instanceof SunoHttpError) throw error;
+      if (error instanceof SunoHttpError || error instanceof NetworkProxyError) throw error;
       throw fail("request or response read failed; its remote outcome may be unknown.");
     } finally {
       clearTimeout(timer);
@@ -192,6 +193,7 @@ export function createSunoHttp(
       active(signal);
       if (error instanceof SunoSessionExpiredError) throw fail("session expired; import a current Suno session.");
       if (error instanceof SunoSessionTimeoutError) throw fail("session verification timed out.");
+      if (error instanceof NetworkProxyError) throw error;
       throw fail("session verification failed.");
     }
     active(signal);
@@ -266,7 +268,7 @@ export function createSunoHttp(
         beforeSend?.();
       } catch (error) {
         if (preserveReceipt && !(error instanceof AudioSubmissionNotStartedError)) {
-          const notStarted = new AudioSubmissionNotStartedError(error instanceof SunoHttpError ? error.message
+          const notStarted = new AudioSubmissionNotStartedError(error instanceof SunoHttpError || error instanceof NetworkProxyError ? error.message
             : "Suno.com audio service: preparation failed. No generation was submitted.");
           if (error instanceof SunoHttpError && error.name === "AbortError") notStarted.name = "AbortError";
           throw notStarted;

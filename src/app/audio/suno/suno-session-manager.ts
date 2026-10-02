@@ -6,6 +6,7 @@ import {
 } from "../../../plugins/integration-connections.js";
 import { normalizeSunoSessionIdentity, normalizeSunoSessionValue, SunoSessionExpiredError, SunoSessionUnavailableError } from "../../../audio-services/suno/suno-session.js";
 import { waitForPromiseWithSignal } from "../../../runtime/host.js";
+import { NetworkProxyError } from "../../../runtime/network-proxy-error.js";
 import { isStorageCommitOutcomeUnknownError, StorageCommitOutcomeUnknownError, withStorageTransaction, type StorageTransactionContext } from "../../../storage/persistence.js";
 import { loadAgentSettings } from "../../../storage/settings.js";
 import { storageScopeKey, type StorageScopeKey } from "../../../storage/scope.js";
@@ -118,6 +119,7 @@ export class SunoSessionManager {
       this.updateEvidence(serviceId, { fingerprint: identity(previous),
         status: error instanceof SunoSessionExpiredError ? "expired" : "unavailable" });
       if (error instanceof SunoSessionExpiredError) throw new SunoSessionExpiredError();
+      if (error instanceof NetworkProxyError) throw error;
       throw new SunoSessionUnavailableError();
     }
   }
@@ -146,6 +148,7 @@ export class SunoSessionManager {
     } catch (error) {
       active(signal);
       if (error instanceof SunoSessionExpiredError) throw new SunoSessionExpiredError();
+      if (error instanceof NetworkProxyError) throw error;
       throw new SunoSessionUnavailableError();
     }
   }

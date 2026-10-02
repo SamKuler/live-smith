@@ -5,6 +5,7 @@ import { TextDecoder } from "node:util";
 
 import { cancelStreamBestEffort } from "../../model/transports/stream-cancel.js";
 import { createHostAbortController, resolveFetchImplementation, waitForPromiseWithSignal } from "../../runtime/host.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
 import { readAudioResponseBytes } from "../response-bytes.js";
 import type { SunoSessionIdentity, SunoSessionVerifier } from "./suno-session-contracts.js";
 
@@ -299,6 +300,7 @@ function createClerkJsonReader(injected?: typeof fetch) {
       active(signal);
       if (error instanceof SunoSessionExpiredError) throw new SunoSessionExpiredError();
       if (timedOut) throw new SunoSessionTimeoutError();
+      if (error instanceof NetworkProxyError) throw error;
       throw new SunoSessionUnavailableError();
     } finally {
       clearTimeout(timer);

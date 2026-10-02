@@ -1,4 +1,5 @@
 import { AudioToolOutcomeUnknownError } from "../contracts.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
 import type { AudioGenerationAdapter } from "../contracts.js";
 import { createMurekaHttp, MurekaError, type MurekaTaskKind } from "./mureka-http.js";
 import { MUREKA_LYRICS_PROMPT_CHARACTERS, validateMurekaGenerationRequest, validMurekaText } from "./mureka-rules.js";
@@ -86,7 +87,10 @@ export function createMurekaAudioAdapter(
 }
 
 export class MurekaLyricsOutcomeUnknownError extends AudioToolOutcomeUnknownError {
-  constructor() { super("Mureka audio service: lyric-generation result is unconfirmed. Do not submit it again automatically."); }
+  constructor(diagnostic?: NetworkProxyError) {
+    super("Mureka audio service: lyric-generation result is unconfirmed. Do not submit it again automatically." +
+      (diagnostic ? ` ${diagnostic.message}` : ""));
+  }
 }
 
 export async function generateMurekaLyrics(
@@ -106,7 +110,7 @@ export async function generateMurekaLyrics(
   } catch (error) {
     const rejected = error instanceof MurekaError && error.status !== undefined &&
       error.status >= 400 && error.status < 500 && error.status !== 408;
-    if (dispatched && !rejected) throw new MurekaLyricsOutcomeUnknownError();
+    if (dispatched && !rejected) throw new MurekaLyricsOutcomeUnknownError(error instanceof NetworkProxyError ? error : undefined);
     throw error;
   }
 }

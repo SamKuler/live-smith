@@ -6,6 +6,7 @@ import { MAX_AUDIO_ASSET_BYTES, type AudioAsset } from "../contracts.js";
 import { createSunoHttp, type SunoSessionRefreshHandler } from "./suno-http.js";
 import { createHostAbortController, resolveFetchImplementation, resolveHostFormData, throwIfAborted, waitForPromiseWithSignal } from "../../runtime/host.js";
 import { cancelStreamBestEffort } from "../../model/transports/stream-cancel.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
 
 export interface SunoUploadSpec { uploadId: string; url: string; fields: Record<string, string> }
 export interface SunoUploadAdapter {
@@ -81,7 +82,10 @@ export function createSunoUploadAdapter(session: { clientToken: string; accountI
         void pending.then((late) => { if (controller.signal.aborted) cancelStreamBestEffort(late.body); }, () => undefined);
         response = await waitForPromiseWithSignal(pending, controller.signal);
         if (response.redirected || response.url && response.url !== url || !response.ok) throw new Error();
-      } catch { throw http.fail("storage upload did not return a confirmed result."); }
+      } catch (error) {
+        if (!signal.aborted && !controller.signal.aborted && error instanceof NetworkProxyError) throw error;
+        throw http.fail("storage upload did not return a confirmed result.");
+      }
       finally {
         clearTimeout(timer); signal.removeEventListener("abort", abort); cancelStreamBestEffort(response?.body);
       }

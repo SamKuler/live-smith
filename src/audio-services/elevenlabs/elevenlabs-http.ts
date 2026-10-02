@@ -6,6 +6,7 @@ import {
   waitForPromiseWithSignal,
 } from "../../runtime/host.js";
 import { cancelStreamBestEffort } from "../../model/transports/stream-cancel.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
 import { MAX_AUDIO_ASSET_BYTES } from "../contracts.js";
 import { readAudioResponseBytes } from "../response-bytes.js";
 
@@ -83,7 +84,7 @@ export function createElevenLabsHttp(apiKey: string, injected?: typeof fetch) {
       cancelStreamBestEffort(response?.body);
       assertElevenLabsActive(signal);
       if (timedOut) throw elevenLabsError("generation timed out; its remote outcome may be unknown.");
-      if (error instanceof ElevenLabsError) throw error;
+      if (error instanceof ElevenLabsError || error instanceof NetworkProxyError) throw error;
       // No response text, status phrase, transport cause or caller abort reason.
       throw elevenLabsError("generation request or response read failed; its remote outcome may be unknown.");
     } finally {

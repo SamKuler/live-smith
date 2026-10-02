@@ -5,6 +5,7 @@ import { URL } from "node:url";
 import { TextDecoder } from "node:util";
 
 import { cancelStreamBestEffort } from "../../model/transports/stream-cancel.js";
+import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
 import { createHostAbortController, resolveFetchImplementation, waitForPromiseWithSignal } from "../../runtime/host.js";
 import { MAX_AUDIO_ASSET_BYTES } from "../contracts.js";
 import { readAudioResponseBytes } from "../response-bytes.js";
@@ -113,7 +114,7 @@ export function createMurekaHttp(apiKey: string, injected?: typeof fetch) {
       if (error instanceof MurekaError && error.status !== undefined) throw error;
       active(signal);
       if (timedOut) throw fail("request timed out; its remote outcome may be unknown.");
-      if (error instanceof MurekaError) throw error;
+      if (error instanceof MurekaError || error instanceof NetworkProxyError) throw error;
       throw fail("request or response read failed; its remote outcome may be unknown.");
     } finally {
       clearTimeout(timer);
