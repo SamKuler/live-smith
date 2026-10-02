@@ -119,7 +119,7 @@ export async function listSessionCandidates(input: SessionInput & { offset?: num
   const continuation = pendingCandidateParentFromEvents(events);
   const jobMap = new Map(jobs.map((job) => [job.id, job]));
   const summaries: SessionCandidate[] = [
-    ...listing.artifacts.map((artifact): SessionCandidate => ({ ref: { kind: "midi", id: artifact.id }, label: artifact.label,
+    ...listing.artifacts.filter((artifact) => artifact.source?.kind !== "host").map((artifact): SessionCandidate => ({ ref: { kind: "midi", id: artifact.id }, label: artifact.label,
       createdAt: artifact.createdAt, sourceLabel: artifact.toolName, preferred: preferred?.kind === "midi" && preferred.id === artifact.id,
       ...generationAt(`midi:${artifact.id}`, artifact.createdAt),
       version: { ...midiArtifactVersion(artifact), groupLabel: listing.artifacts.find((entry) => entry.id === midiArtifactVersion(artifact).groupId)?.label ?? artifact.label } })),

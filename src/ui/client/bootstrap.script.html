@@ -436,6 +436,20 @@
           humanizeToolName: sessionTimeline.humanizeToolName,
           runCommand: bridgeClient.runCommand,
         });
+        const midiContinuation = factories.createMidiContinuation({
+          getState,
+          run: async ({ kind, ...input }) => {
+            let known = false;
+            const completed = await bridgeClient.runCommand(kind, input, {
+              cancellable: kind !== "load_midi_continuation", onOutcome: (outcome) => { known = outcome.known; },
+            });
+            return completed && known;
+          },
+          stop: bridgeClient.stopActiveCommand,
+          preview: bridgeClient.prepareMidiImport,
+          resultActions: pluginResults,
+          createParameterPanels: () => factories.createPluginParameterPanels({ getState, runCommand: bridgeClient.runCommand }),
+        });
 
         function renderStateStatus() {
           const state = getState();
@@ -1336,6 +1350,7 @@
           candidateComparison.render();
           audioParameters.sync();
           toolsInspector.render();
+          midiContinuation.render();
           renderProfileStateProjection();
           if (sessionControlsLocked) syncSessionControlsLock(true);
         }
@@ -1749,6 +1764,7 @@
           audioParameters.setBusy(operationBusy);
           pluginResults.setBusy(operationBusy);
           candidateComparison.setBusy(operationBusy);
+          midiContinuation.setOperation({ busy: operationBusy, commandKind, canStop: commandCanStop, stopping: commandStopInProgress });
 
           if (
             !settingsBusy &&

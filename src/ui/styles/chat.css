@@ -2038,6 +2038,26 @@ details.timeline-item > .timeline-content {
 }
 
 .session-tools > .inspector-scope-header { @apply mb-0; }
+.midi-continuation > .inspector-scope-header { @apply mb-0; }
+#midiContinuationContent, .midi-continuation-setup { @apply grid min-w-0 gap-3; }
+.midi-continuation h3, .midi-continuation p { @apply m-0; }
+.midi-continuation-field { @apply grid min-w-0 gap-1 text-label; }
+.midi-continuation-field :is(input, select, textarea) { @apply w-full min-w-0; }
+.midi-continuation-numbers { @apply grid grid-cols-2 gap-3; }
+.midi-continuation-sources { @apply grid max-h-56 gap-2 overflow-y-auto; }
+.midi-continuation-clip { display: grid; grid-template-columns: 14px minmax(0, 1fr); @apply items-start gap-2 text-label; }
+.midi-continuation-clip input[type="checkbox"] { @apply m-0 mt-1 size-[14px] shrink-0 p-0; accent-color: var(--color-accent); }
+.midi-continuation-clip-copy { @apply grid min-w-0 gap-1; overflow-wrap: anywhere; }
+.midi-continuation-clip-copy strong { @apply font-medium; }
+.midi-continuation-actions { @apply flex flex-wrap justify-end gap-2; }
+.midi-continuation-queue { @apply grid gap-2; }
+.midi-continuation-section { @apply min-w-0 rounded-panel border border-divider p-2 text-label; }
+.midi-continuation-section > summary { @apply cursor-pointer; overflow-wrap: anywhere; }
+.midi-continuation-section[open] > :not(summary) { @apply mt-2; }
+.midi-continuation-import { @apply m-0 min-w-0 border-0 p-0; }
+.midi-continuation-import > legend { @apply mb-1 text-label font-medium; }
+.midi-continuation-preview { @apply grid gap-1; }
+.midi-continuation [hidden] { @apply hidden; }
 
 .session-results {
   @apply mx-3 mb-2 mt-0 min-w-0 overflow-hidden rounded-panel border border-border bg-pane;

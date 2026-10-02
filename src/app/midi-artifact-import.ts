@@ -36,6 +36,8 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
   interaction: LiveInteractionContext;
   signal: AbortSignal;
   mutationQueue: LiveMutationQueue;
+  validateSource?(): void;
+  onApplied?(): Promise<void>;
   confirm(plan: AgentPlan, guard: Awaited<ReturnType<typeof preflightAgentPlan>>): Promise<AgentConfirmationDecision>;
 }): Promise<boolean> {
   let plan: AgentPlan | undefined;
@@ -55,6 +57,7 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
     );
     if (!session) throw new Error("That Session is not available in this Live Set.");
     throwIfAborted(input.signal);
+    input.validateSource?.();
     assertMidiImportTargets(input.context, input.mappings ?? (input.trackId && input.trackName
       ? [{ trackId: input.trackId, trackName: input.trackName }] : []));
     if (version === generation) scopes = resolveEditScopes(session.editScopes);
@@ -108,12 +111,14 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
       const bindings = await guard();
       return executeAgentPlanWithProgress(input.context, importPlan, input.interaction.target, input.signal, bindings,
         (index, action) => {
+          input.validateSource?.();
           assertEditScopesAllow(requiredEditScopesForAction(input.context, action, index, bindings), currentScopes());
           mutationStarted = true;
         });
     });
     completedActionCount = plan.actions.length;
     completedActionKeys = guard.actionKeys ?? [];
+    await input.onApplied?.();
     try {
       await record("apply_result", ["Applied:", ...outcome.results.map((result) => `- ${result}`)].join("\n"));
     } catch (cause) {

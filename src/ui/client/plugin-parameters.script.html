@@ -39,10 +39,11 @@
             return node;
           }
 
-          function defaults(panel) {
+          function defaults(panel, initialValues) {
             return new Map(panel.fields.map((field) => [field.name, {
-              included: field.required || field.default !== undefined,
-              value: field.default ?? (field.enum ? field.enum[0] : field.type === "boolean" ? false : ""),
+              included: field.required || (initialValues ? Object.hasOwn(initialValues, field.name) : field.default !== undefined),
+              value: initialValues && Object.hasOwn(initialValues, field.name) && typedScalar(field, initialValues[field.name])
+                ? initialValues[field.name] : field.default ?? (field.enum ? field.enum[0] : field.type === "boolean" ? false : ""),
             }]));
           }
 
@@ -78,12 +79,12 @@
             } catch { return content; }
           }
 
-          function create(panel) {
+          function create(panel, options = {}) {
             const nextOwner = currentOwner();
             if (owner !== nextOwner) { owner = nextOwner; drafts.clear(); }
             const sessionId = getState().activeSessionId;
             const key = panel.toolName + ":" + panel.signature;
-            if (!drafts.has(key)) drafts.set(key, defaults(panel));
+            if (!drafts.has(key)) drafts.set(key, defaults(panel, options.initialValues));
             const draft = drafts.get(key);
             const container = element("div", "plugin-parameter-panel");
             const form = element("form", "plugin-parameters");
@@ -193,14 +194,14 @@
             const actions = element("div", "plugin-parameter-actions");
             const reset = element("button", "secondary", t("Reset parameters"));
             reset.type = "button";
-            reset.addEventListener("click", () => { drafts.set(key, defaults(panel)); container.replaceWith(create(panel)); });
-            const run = element("button", "primary", t("Run tool"));
+            reset.addEventListener("click", () => { drafts.set(key, defaults(panel, options.initialValues)); container.replaceWith(create(panel, options)); });
+            const run = element("button", "primary", t(options.submitLabel || "Run tool"));
             run.type = "submit";
             run.disabled = disabled;
             actions.append(reset, run);
             fieldset.append(actions);
-            form.append(element("p", "field-hint", t("Runs this tool with these values. Results are saved in this Session.")));
-            const latest = [...getState().events].reverse().find((event) => event.kind === "tool_result" && event.name === panel.toolName);
+            form.append(element("p", "field-hint", t(options.description || "Runs this tool with these values. Results are saved in this Session.")));
+            const latest = options.showResult === false ? undefined : [...getState().events].reverse().find((event) => event.kind === "tool_result" && event.name === panel.toolName);
             if (latest) {
               let parsed;
               try { parsed = JSON.parse(latest.content); } catch {}
@@ -225,6 +226,10 @@
                 entries.push([field.name, value]);
               }
               if (!form.reportValidity()) return;
+              if (options.onSubmit) {
+                await options.onSubmit(Object.fromEntries(entries));
+                return;
+              }
               await runCommand("run_plugin_tool", {
                 sessionId, toolName: panel.toolName, signature: panel.signature, arguments: Object.fromEntries(entries),
               }, { cancellable: true });

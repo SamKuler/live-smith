@@ -77,13 +77,35 @@ same mapped import preview; audio import is prepared in chat and uses the existi
 scoped audio action and approval preview. Candidate comparison does not audition
 Live instruments or roll back applied changes.
 
-MIDI revisions are grouped as **v1, v2, …**. Creating a revision preserves every
+Ask the current model to save a MIDI candidate to generate a file without changing
+Live; no external MIDI generator is required. MIDI revisions are grouped as
+**v1, v2, …**. Creating a revision preserves every
 previous file, including when starting from an older version. **Attach to message**
 adds the selected version to the next message as a MIDI attachment. **Export MIDI**
 downloads that exact version as a standard `.mid` file with its original tracks,
 channels and events. Import the file into Live, Cubase or another compatible DAW,
 or drag it from the file manager. Direct file dragging out of the extension panel
 is not supported. Export does not include instruments, effects or rendered audio.
+
+**Session → Tools → MIDI continuation** builds an ordered buffer of up to four
+future sections from selected MIDI Clips. Choose the current Session model or an
+approved local Plugin/MCP tool that declares MIDI conditioning, then save the
+source selection, section length and capacity. **Fill buffer** generates only the
+vacant slots; each section uses the original context and its preceding section.
+The current model uses the Session's saved creative brief. **Import next section** offers the
+usual part-to-track import preview. Only a successful import advances the buffer;
+cancelling the preview leaves it intact. **Fill buffer** continues from the last saved
+section, and **Stop** retains completed candidates.
+
+Source notes, Clip markers/loops and Live tempo are checked again before generation
+and import. Changed sources or generator configuration require a new setup. The
+buffer has no playback clock or automatic Clip launch: auditioning and advancing
+sections are explicit actions. Source capture exports nominal MIDI notes with
+marker cropping and bounded loop expansion; instrument sound, probability and
+velocity randomization are not rendered. The context is limited to 16 source Clips
+and 4096 expanded notes. Each future section starts its own version group; revising
+one of its saved candidates does not replace a queued section. Local tool conditioning retains original and previous
+parts as separate SMF tracks within the existing 32-track/4096-note file limits.
 
 Choose **Settings → App → Interface language** to use **English**, **简体中文**, or follow the
 system language. The preference is shared across Live Smith windows. Switching

@@ -11,7 +11,11 @@ interface Artifact {
 }
 
 export interface PluginResultActions {
-  create(toolName: string, result: unknown, options?: { importOnly?: boolean }): HTMLElement;
+  create(toolName: string, result: unknown, options?: {
+    importOnly?: boolean;
+    initialStartBeat?: number;
+    onImport?: (input: Omit<MidiArtifactImportCommand, "kind">) => Promise<boolean>;
+  }): HTMLElement;
   setBusy(value: boolean): void;
 }
 
@@ -89,7 +93,7 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
         form.append(load);
         const beat = node("input", "plugin-result-beat");
         beat.name = "startBeat"; beat.type = "number"; beat.required = true;
-        beat.min = "1"; beat.step = "any"; beat.value = "1";
+        beat.min = "1"; beat.step = "any"; beat.value = String((options.initialStartBeat ?? 0) + 1);
         field("Start beat (1-based)", beat);
         const mode = node("select", "plugin-result-mode");
         for (const [value, label] of [["parts", "Separate source parts"], ["merge", "Merge all parts into one Clip"]]) {
@@ -174,7 +178,7 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
           const chosen = mappings();
           pending = true; updatePreview();
           try {
-            const completed = await deps.importMidi({ sessionId, artifactRef: selection.value, startBeat: Number(beat.value) - 1,
+            const completed = await (options.onImport ?? deps.importMidi)({ sessionId, artifactRef: selection.value, startBeat: Number(beat.value) - 1,
               ...(mode.value === "merge" ? { trackId: chosen[0]!.trackId, trackName: chosen[0]!.trackName, mergeParts: true } : { mappings: chosen }) });
             prepared = undefined; renderMapping();
             status.textContent = t(completed ? "MIDI import finished. Review the Session result." : "MIDI was not imported. Review the Session status before retrying.");

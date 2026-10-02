@@ -328,3 +328,20 @@ test("invalid Plugin output never creates a MIDI artifact directory", async (t) 
   }), MidiArtifactStorageError);
   assert.deepEqual(await listSessionMidiArtifactDirectoryIds(h.directory), []);
 });
+
+
+test("model and host MIDI artifact identities remain distinct from Plugin identities", async (t) => {
+  const h = await harness(t);
+  const source = { kind: "model" as const, profileId: "profile-main", model: "configured-model" };
+  const model = await saveMidiArtifact(h.directory, h.session.id, { source, serverId: "host", toolName: "save_midi_artifact", label: "Next section", bytes: midiFile(), signal: h.signal });
+  source.model = "caller mutation";
+  assert.deepEqual(model.source, { kind: "model", profileId: "profile-main", model: "configured-model" });
+  assert.equal(model.pluginId, undefined); assert.equal(model.connectionId, undefined);
+  if (model.source?.kind === "model") model.source.model = "returned mutation";
+  const read = await readMidiArtifact(h.directory, h.session.id, model.id, h.signal);
+  assert.deepEqual(read.artifact.source, { kind: "model", profileId: "profile-main", model: "configured-model" });
+  const host = await saveMidiArtifact(h.directory, h.session.id, { source: { kind: "host", operation: "live-midi-context" }, serverId: "host", toolName: "observe_midi_continuation", label: "Live source", bytes: midiFile(), signal: h.signal });
+  assert.deepEqual(host.source, { kind: "host", operation: "live-midi-context" });
+  await assert.rejects(saveMidiArtifact(h.directory, h.session.id, { source: { kind: "host", operation: "live-midi-context" }, pluginId: "forged-plugin", serverId: "host", toolName: "save_midi_artifact", label: "Invalid", bytes: midiFile(), signal: h.signal } as never), MidiArtifactStorageError);
+  assert.equal((await listMidiArtifacts(h.directory, h.session.id)).length, 2);
+});

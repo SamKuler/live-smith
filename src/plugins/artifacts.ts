@@ -13,11 +13,17 @@ import {
   readMidiArtifact,
   saveMidiArtifact,
   type MidiArtifact,
-  type MidiArtifactSource,
+  type MidiArtifactPluginSource as MidiArtifactSource,
 } from "../storage/midi-artifacts.js";
 import { isSafeStorageId } from "../storage/id.js";
 import { safeRegularFileOpenFlags } from "../live/safe-file-read.js";
 import type { PluginArtifactToolContract, PluginToolResult } from "./contracts.js";
+
+export interface MidiArtifactOutputPolicy {
+  validate(bytes: Uint8Array): Promise<void>;
+  beforeCommit(): void;
+  generationKind: "continuation";
+}
 
 export const LIVE_SMITH_ARTIFACT_META_KEY = "io.github.samkuler/live-smith-artifacts";
 const argumentPattern = /^[A-Za-z][A-Za-z0-9_]{0,63}$/u;
@@ -50,17 +56,17 @@ export const midiArtifactImportActionSchema: Record<string, unknown> = {
 export function pluginArtifactContract(tool: Tool): PluginArtifactToolContract | undefined {
   const raw = tool._meta?.[LIVE_SMITH_ARTIFACT_META_KEY];
   if (raw === undefined) return undefined;
-  if (!plainRecord(raw) || Object.keys(raw).some((key) => !["version", "inputs", "outputs"].includes(key)) ||
+  if (!plainRecord(raw) || Object.keys(raw).some((key) => !["version", "inputs", "outputs", "continuation"].includes(key)) ||
       raw.version !== 1 || !Array.isArray(raw.inputs) || !Array.isArray(raw.outputs) ||
       raw.inputs.length > MAX_ARTIFACT_INPUTS || raw.outputs.length !== 1) {
     throw new Error("Plugin artifact contract is invalid.");
   }
   const inputs = raw.inputs.map((entry) => {
     if (!plainRecord(entry) || Object.keys(entry).some((key) => !["argument", "kind"].includes(key)) ||
-        typeof entry.argument !== "string" || !argumentPattern.test(entry.argument) || entry.kind !== "audio") {
+        typeof entry.argument !== "string" || !argumentPattern.test(entry.argument) || (entry.kind !== "audio" && entry.kind !== "midi")) {
       throw new Error("Plugin artifact input is invalid.");
     }
-    return { argument: entry.argument as string, kind: "audio" as const };
+    return { argument: entry.argument as string, kind: entry.kind as "audio" | "midi" };
   });
   const outputs = raw.outputs.map((entry) => {
     if (!plainRecord(entry) || Object.keys(entry).some((key) => !["argument", "kind", "label"].includes(key)) ||
@@ -72,7 +78,13 @@ export function pluginArtifactContract(tool: Tool): PluginArtifactToolContract |
   });
   const argumentsSet = new Set([...inputs, ...outputs].map((entry) => entry.argument));
   if (argumentsSet.size !== inputs.length + outputs.length) throw new Error("Plugin artifact arguments conflict.");
-  return { inputs, outputs };
+  const continuation = raw.continuation;
+  if (continuation !== undefined && (!plainRecord(continuation) || Object.keys(continuation).length !== 1 ||
+      typeof continuation.lengthArgument !== "string" || !argumentPattern.test(continuation.lengthArgument) ||
+      argumentsSet.has(continuation.lengthArgument) || inputs.length !== 1 || inputs[0]?.kind !== "midi")) {
+    throw new Error("MIDI continuation requires one MIDI conditioning input and a distinct length argument.");
+  }
+  return { inputs, outputs, ...(continuation ? { continuation: { lengthArgument: (continuation as { lengthArgument: string }).lengthArgument } } : {}) };
 }
 
 export function modelSchemaForArtifactTool(
@@ -96,7 +108,7 @@ export function modelSchemaForArtifactTool(
       type: "string",
       minLength: 1,
       maxLength: 128,
-      description: "Opaque Session audio artifact reference from Live Smith. This is not a filesystem path.",
+      description: `Opaque Session ${input.kind} artifact reference from Live Smith. This is not a filesystem path.`,
     };
     required.add(input.argument);
   }
@@ -104,6 +116,13 @@ export function modelSchemaForArtifactTool(
     if (!Object.hasOwn(properties, output.argument)) throw new Error("Plugin artifact output argument is missing from its schema.");
     delete properties[output.argument];
     required.delete(output.argument);
+  }
+  if (contract.continuation) {
+    const length = properties[contract.continuation.lengthArgument];
+    if (!plainRecord(length) || length.type !== "number" && length.type !== "integer") {
+      throw new Error("MIDI continuation length argument must be numeric.");
+    }
+    required.add(contract.continuation.lengthArgument);
   }
   return {
     ...schema,
@@ -114,6 +133,7 @@ export function modelSchemaForArtifactTool(
 
 export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
   contract: PluginArtifactToolContract;
+  outputPolicy?: MidiArtifactOutputPolicy;
   argumentsValue: unknown;
   storageDirectory: string | undefined;
   temporaryDirectory: string | undefined;
@@ -143,13 +163,12 @@ export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
     for (const [index, descriptor] of input.contract.inputs.entries()) {
       const artifactRef = argumentsValue[descriptor.argument];
       if (typeof artifactRef !== "string") throw new Error("Plugin artifact input reference is invalid.");
-      const { asset, bytes } = await readAudioAsset(
-        input.storageDirectory,
-        input.sessionId,
-        artifactRef,
-        input.signal,
-      );
-      const target = path.join(inputDirectory, `${index + 1}.${asset.mediaType === "audio/mpeg" ? "mp3" : "wav"}`);
+      const file = descriptor.kind === "midi"
+        ? await readMidiArtifact(input.storageDirectory, input.sessionId, artifactRef, input.signal)
+        : await readAudioAsset(input.storageDirectory, input.sessionId, artifactRef, input.signal);
+      const bytes = file.bytes;
+      const extension = "asset" in file ? file.asset.mediaType === "audio/mpeg" ? "mp3" : "wav" : "mid";
+      const target = path.join(inputDirectory, `${index + 1}.${extension}`);
       await fs.writeFile(target, bytes, { flag: "wx", mode: 0o400 });
       argumentsValue[descriptor.argument] = target;
     }
@@ -171,12 +190,15 @@ export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
     if (entries.length !== 1 || entries[0] !== outputName) throw new Error("Plugin produced undeclared artifact output.");
     const bytes = await readRegularOutput(outputPath, input.signal);
     parseMidiArtifact(bytes, input.signal);
+    await input.outputPolicy?.validate(bytes);
     const artifact = await saveMidiArtifact(input.storageDirectory, input.sessionId, {
       ...(input.pluginId === undefined ? { connectionId: input.connectionId } : { pluginId: input.pluginId }),
       serverId: input.serverId,
       toolName: input.toolName,
       label: output.label,
       ...(input.revisionOf ? { revisionOf: input.revisionOf } : {}),
+
+      ...(input.outputPolicy ? { generationKind: input.outputPolicy.generationKind, beforeCommit: input.outputPolicy.beforeCommit } : {}),
       bytes,
       signal: input.signal,
     });

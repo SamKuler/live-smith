@@ -56,7 +56,7 @@ test("standalone artifacts require independent grants and preserve only Connecti
       });
       t.after(() => request.close());
       if (!input || !output) {
-        assert.deepEqual(request.tools().map((entry) => entry.function.name), ["list_session_artifacts", "inspect_midi_artifact"]);
+        assert.deepEqual(request.tools().map((entry) => entry.function.name), []);
         assert.deepEqual(request.catalogTools(), []);
         assert.deepEqual(request.issues, [{ connectionId: "transcription", serverId: "server",
           code: "artifact_permission_required", message: "MCP artifact tool requires separate input or output approval." }]);

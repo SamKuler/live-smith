@@ -107,6 +107,8 @@ export interface AgentActionPreflightGuard<ExecutionBindings = undefined> {
 }
 
 export interface AgentLoopOptions<ExecutionBindings = undefined> {
+  /** An explicit execution boundary for restricted host workflows, including built-in tools. */
+  admittedToolNames?: readonly string[];
   /** Host-registered tools with external effects, independent of Live recovery. */
   externalTools?: {
     names: readonly string[];
@@ -323,6 +325,7 @@ export class AgentSteeringBeforeApplyError extends Error {
 export async function runAgentLoop(
   options: AgentLoopOptions<unknown>,
 ): Promise<AgentLoopResult> {
+  if (options.admittedToolNames) options = { ...options, admittedToolNames: [...options.admittedToolNames] };
   const messages: ModelConversationMessage[] = [];
   const maxIterations = options.maxIterations ?? 12;
   const maxToolCallsPerTurn = options.maxToolCallsPerTurn ?? 32;
@@ -883,6 +886,9 @@ async function executeToolCall(
   let applyPlan: AgentPlan | undefined;
   let applyActionKeys: readonly (readonly string[])[] | undefined;
   try {
+    if (options.admittedToolNames && !options.admittedToolNames.includes(toolCall.name)) {
+      throw new AgentToolArgumentsError(new Error("This tool is not admitted for the current request."));
+    }
     if (options.externalTools?.names.includes(toolCall.name)) {
       throwIfAborted(options.signal);
       let result: AgentExternalToolResult;

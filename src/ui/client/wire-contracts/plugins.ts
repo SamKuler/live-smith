@@ -5,6 +5,7 @@ import type { AudioParameterPanel, AudioParameterSuggestions } from "../../../pl
 import type { IntegrationConnectionsView } from "../../../plugins/integration-connections.js";
 import type { StandaloneMcpConfig } from "../../../plugins/mcp/config.js";
 import type { PluginParameterPanel } from "../../../plugins/parameter-panel.js";
+import { isWireMidiContinuation as validateMidiContinuation } from "./midi-continuation.js";
 import type { PluginConfigView } from "../../../plugins/user-config.js";
 import type { InstalledPluginView, PluginInstallPreview } from "../../../plugins/view.js";
 import type { SessionToolCatalog, SunoModelCatalogView } from "../../chat-state.js";
@@ -47,6 +48,7 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
   isPluginConfigView(value: unknown): value is PluginConfigView;
   isPluginParameterPanel(value: unknown): value is PluginParameterPanel;
 }) {
+  const isWireMidiContinuation = (value: unknown, sessionId: unknown) => validateMidiContinuation(value, sessionId, isPluginParameterPanel);
   function isWireAudioModelId(value: unknown): value is string | undefined {
     return value === undefined || typeof value === "string" && /^[\x21-\x7e]{1,128}$/.test(value);
   }
@@ -414,5 +416,5 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
       typeof issue.message === "string" && issue.message.length <= WIRE_MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH &&
       !issue.message.includes("\0"));
   }
-  return { isWireAudioModelId, isAudioServiceCallbackUrl, isWireAudioCallback, isWireIntegrationConnections, isWireStandaloneMcpConfig, isWireAudioAsset, isWireSunoAccounts, audioJobOutputLimit, isWireRemoteAudioOutputs, isWireSunoModelCatalog, isWireAudioJobs, isWireInstalledPlugin, isWirePluginInstallPreview, isWireAudioParameterSuggestions, isWireAudioParameterPanel, isWireSessionToolCatalog };
+  return { isWireMidiContinuation, isWireAudioModelId, isAudioServiceCallbackUrl, isWireAudioCallback, isWireIntegrationConnections, isWireStandaloneMcpConfig, isWireAudioAsset, isWireSunoAccounts, audioJobOutputLimit, isWireRemoteAudioOutputs, isWireSunoModelCatalog, isWireAudioJobs, isWireInstalledPlugin, isWirePluginInstallPreview, isWireAudioParameterSuggestions, isWireAudioParameterPanel, isWireSessionToolCatalog };
 }

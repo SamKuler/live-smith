@@ -143,6 +143,10 @@
         "run_plugin_tool",
         "run_audio_tool",
         "import_midi_artifact",
+        "load_midi_continuation",
+        "configure_midi_continuation",
+        "fill_midi_continuation",
+        "import_midi_continuation",
         "select_candidate",
         "compact_session",
         "resume_audio_job",
@@ -464,6 +468,7 @@
           pendingAttachments: state.pendingAttachments,
           plugins: state.plugins,
           audioJobs: state.audioJobs,
+          midiContinuation: state.midiContinuation,
           contextSummary: state.contextSummary,
           liveContext: state.liveContext,
           sessionContinueTarget: state.sessionContinueTarget,
@@ -1202,6 +1207,7 @@
         if (authoritativeOwnsSelection) {
           merged.activeSessionId = state.activeSessionId;
           merged.audioJobs = state.audioJobs;
+          merged.midiContinuation = state.midiContinuation;
           merged.events = state.events;
           merged.pendingAttachments = state.pendingAttachments;
           const contextState = state.activeSessionId !== current.activeSessionId || incomingContextIsCurrent
@@ -1212,6 +1218,7 @@
         } else {
           merged.activeSessionId = current.activeSessionId;
           merged.audioJobs = current.audioJobs;
+          merged.midiContinuation = current.midiContinuation;
           merged.events = current.events;
           merged.pendingAttachments = current.pendingAttachments;
           merged.contextSummary = current.contextSummary;
@@ -1243,6 +1250,9 @@
         ) {
           if (sameJsonValue(current.audioJobs, baseline.audioJobs) || contextCutOrder > 0) {
             merged.audioJobs = state.audioJobs;
+          }
+          if (sameJsonValue(current.midiContinuation, baseline.midiContinuation) || contextCutOrder > 0) {
+            merged.midiContinuation = state.midiContinuation;
           }
           if (attempt.ownedActiveSessionContentId === merged.activeSessionId) {
             merged.events = state.events;
@@ -7453,6 +7463,7 @@
         setUiLanguage,
         renderNetworkProxySettings,
         runCommand,
+        stopActiveCommand,
         handleNetworkProxyModeChange,
         handleNetworkProxyUrlInput,
         handleCustomInstructionsInput,

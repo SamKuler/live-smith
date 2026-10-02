@@ -68,9 +68,7 @@ test("real stdio App preserves saved defaults and call state while hiding App to
   assert.equal(source.app.resourceUri, "ui://pattern-lab/app.html");
   assert.match(source.app.signature, /^[a-f0-9]{64}$/u);
   assert.equal(catalog.some((entry) => entry.name === "get_settings"), false);
-  assert.equal(request.tools().length, 4);
-  assert.ok(request.tools().some((entry) => entry.function.name === "list_session_artifacts"));
-  assert.ok(request.tools().some((entry) => entry.function.name === "inspect_midi_artifact"));
+  assert.equal(request.tools().length, 2);
   assert.equal(request.tools().some((entry) => entry.function.description.includes("current server call count")), false);
   const owner = source.app.toolName;
   const document = appResourceDocument(await request.readAppResource(owner, source.app.resourceUri, signal), source.app.resourceUri);

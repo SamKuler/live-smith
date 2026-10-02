@@ -843,7 +843,69 @@ failures persist the same recovery ledger as chat-driven edits and prevent blind
 retries. All positions are quarter-note beats; tempo, meter and controller events
 are retained only in the source artifact and never materialize Set mutations.
 
+### Bounded MIDI continuation
+
+`app/midi/` owns observed Clip context, generation, and ordered buffer commands.
+The shared `agent/midi-continuation-contracts.ts` DTO is consumed by command
+parsing, storage and browser validation. The Session's private MIDI directory
+owns one atomic `continuation.json` record; immutable source/candidate SMFs use
+the existing artifact store and quotas. The Session send fence serializes setup,
+Fill and import. Stop and Session admission use the existing command lifecycle.
+
+`live/midi-clip-timing.ts` crops nominal note intervals at Clip markers and loop
+boundaries and expands loops within the selected Clip span. Capture preserves
+Arrangement offsets, fingerprints musical note properties and selected Clip
+timing plus tempo, and excludes editor note selection. It does not synthesize
+probability, velocity variation, instruments or audio. Both raw and expanded
+context are bounded to 4096 notes. Importing a new Clip outside the selected
+source ranges leaves that fingerprint unchanged.
+
+Each generated section is conditioned on the original saved source and the
+previous section. Model generation reuses the provider-neutral agent loop and
+Session model admission with only artifact list, inspect and save tools.
+`admittedToolNames` is checked before every dispatch, including built-in Live
+and recovery tools. `save_midi_artifact` validates structured tracks and writes
+format-1 SMF at 960 ticks per quarter note through the shared MIDI writer. Its
+provenance identifies the actual Profile/model. Host context exports have explicit
+host provenance; future sections carry `generationKind: continuation`.
+
+Local Plugin/MCP generation uses the existing artifact grants and staging path.
+A tool declares one `kind: midi` input, one MIDI output and
+`continuation: { lengthArgument }` in its artifact contract; that argument must
+have a numeric schema. Native parameter controls hide the host-owned input and
+length fields. Later calls stage the original and preceding section as independent
+tracks in one conditioning file, retaining their names/channels and avoiding
+inferred voice identities. Output length, the combined 32-track/4096-note budget,
+current tool authorization and source fingerprint are checked before publishing
+the next slot. Remote MCP endpoints cannot use this local file contract.
+
+Fill records explicit tool-call/result events, never synthetic chat user events.
+Per-section calls bind `parentCandidate` to the actual preceding artifact and
+`requestEventId` to the Fill event, leaving the next-chat candidate selection
+intact. Each completed slot is saved before generating another. Failure or Stop
+preserves completed slots and immutable artifacts. Source checks around byte
+persistence cannot make external Live edits atomic; publication and import
+revalidate again and reject stale context without deleting saved material.
+
+The head uses the existing MIDI mapping preview and import workflow. A source
+revalidation callback runs after approval in the mutation queue and before each
+action. Successful execution consumes that exact head inside the import recovery
+boundary; cancellation does not consume it. Explicit placement updates the anchor
+for subsequent suggested positions. There is no playback clock, launch scheduler
+or automatic replenishment; Fill/Refill and Use next are user actions.
+
 ### Saved candidate comparison and lineage
+
+Ordinary chat registers `app/midi/midi-artifact-tools.ts` alongside the existing
+artifact list/inspect tools whenever private storage is available. Plugin discovery
+contains only Plugin tools; the chat and continuation registries compose the host
+MIDI toolsets explicitly. Structured
+tracks use the same authoring parser and SMF writer as continuation generation.
+Saving needs no Live write scope; import retains its separate approval boundary.
+The selected request parent fixes the revision source for model and Plugin saves.
+Host-owned source/conditioning snapshots remain readable by artifact tools but
+are excluded from candidate comparison. Each future section is an independent
+version group, while explicit revisions of a section preserve its existing group.
 
 MIDI metadata stores a version group, monotonic number and optional parent ID.
 Version allocation runs in the existing storage transaction; metadata with an
@@ -1009,7 +1071,7 @@ timeouts, and cancellation are bounded; package paths, private data paths, and
 raw process or network errors cannot enter model-visible results.
 
 MCP tools cannot call the Live executor. An approved artifact-input contract
-replaces an opaque Session audio reference with one read-only temporary file for
+replaces an opaque Session audio or MIDI reference with one read-only temporary file for
 the duration of the call. An independently approved artifact-output contract
 supplies one host-owned temporary destination, accepts only a regular contained
 file, parses bounded Standard MIDI, and stores an immutable Session artifact.
@@ -1020,7 +1082,7 @@ metadata and are reported as unavailable while healthy artifacts remain usable.
 An unavailable artifact cannot be imported, and ordinary Session sends continue
 with a warning. Import verifies the bytes and parsed MIDI against the saved
 metadata; malformed or substituted files fail validation.
-MIDI provenance records the installed Plugin or standalone Connection identity.
+MIDI provenance records the installed Plugin, standalone Connection, actual model or host operation identity.
 The model receives only its opaque artifact reference. A later
 `create_midi_clip_from_artifact` action still passes the ordinary schema, Edit
 Scope, Approval, preflight, cancellation, mutation queue, and drift checks.

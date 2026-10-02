@@ -1,3 +1,4 @@
+import { createMidiArtifactAuthoringToolset, createSessionMidiArtifactToolset } from "./midi/midi-artifact-tools.js";
 import { creativeBriefProposalTool, proposeCreativeBrief } from "./context/creative-brief.js";
 import { ModelInputTooLargeError } from "../model/connection-error.js";
 import { candidateSourceInstructions, pendingCandidateParentFromEvents, type CandidateRef } from "../agent/candidate-contracts.js";
@@ -364,6 +365,11 @@ export async function handleAgentRequest(
         tools: () => [creativeBriefProposalTool],
         callTool: async (call) => proposeCreativeBrief(call.arguments, session.creativeBrief ?? ""),
       },
+      ...(storageDirectory ? [createSessionMidiArtifactToolset({ storageDirectory, sessionId: session.id, signal: callbacks.signal }),
+        createMidiArtifactAuthoringToolset({ storageDirectory, sessionId: session.id,
+        runtimeProfile, signal: callbacks.signal,
+        ...(prepared.userEvent.parentCandidate?.kind === "midi" ? { revisionOf: prepared.userEvent.parentCandidate.id } : {}),
+      })] : []),
       ...audioTools.toolsets,
       ...pluginTools.toolsets,
     ]);
@@ -692,7 +698,7 @@ export async function handleAgentRequest(
           runtimeProfile,
           [...liveSmithTools({
             readArrangementAudio: canReadArrangementAudio(),
-            ...(pluginTools.midiArtifacts().length
+            ...(storageDirectory
               ? { additionalActionSchemas: [midiArtifactImportActionSchema] }
               : {}),
           }), ...externalTools.tools()],

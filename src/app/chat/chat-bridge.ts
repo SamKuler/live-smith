@@ -3344,6 +3344,8 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "open_audio_download" || input.kind === "export_midi_artifact" || input.kind === "attach_midi_artifact" ||
     input.kind === "open_attachment" ||
     input.kind === "import_midi_artifact" ||
+    input.kind === "load_midi_continuation" || input.kind === "configure_midi_continuation" ||
+    input.kind === "fill_midi_continuation" || input.kind === "import_midi_continuation" ||
     input.kind === "select_candidate" ||
     input.kind === "set_session_skills";
 }

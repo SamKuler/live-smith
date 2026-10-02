@@ -1,3 +1,4 @@
+import { midiArtifactView } from "../midi/midi-artifact-tools.js";
 import type { McpAuthProvider } from "../../plugins/mcp/oauth-contract.js";
 import { createMcpOAuthAuthProvider } from "./mcp-oauth.js";
 import { ToolRegistry, type Toolset } from "../../plugins/registry.js";
@@ -16,10 +17,9 @@ import {
   type StandaloneMcpConnection,
 } from "../../plugins/integration-connections.js";
 import { loadAgentSettings } from "../../storage/settings.js";
-import { callPluginToolWithArtifacts, LIVE_SMITH_ARTIFACT_META_KEY } from "../../plugins/artifacts.js";
+import { callPluginToolWithArtifacts, LIVE_SMITH_ARTIFACT_META_KEY, type MidiArtifactOutputPolicy } from "../../plugins/artifacts.js";
 import { throwIfAborted } from "../../runtime/host.js";
-import { inspectMidiArtifacts, readMidiArtifact, midiArtifactPartSummaries, midiArtifactVersion, type MidiArtifact } from "../../storage/midi-artifacts.js";
-import { isSafeStorageId } from "../../storage/id.js";
+import { inspectMidiArtifacts, type MidiArtifact } from "../../storage/midi-artifacts.js";
 import { canonicalStorageDirectory, storageScopeKey, type StorageScopeKey } from "../../storage/scope.js";
 import { pluginParameterPanel, type PluginParameterPanel } from "../../plugins/parameter-panel.js";
 import {
@@ -35,6 +35,7 @@ export interface RequestPluginToolResult extends AgentExternalToolResult {
 }
 
 export interface RequestPluginTools extends Toolset {
+  assertToolCurrent(name: string): Promise<void>;
   callTool(call: ModelToolCall): Promise<RequestPluginToolResult>;
   toolsets: readonly Toolset[];
   catalogTools(): readonly RequestPluginCatalogTool[];
@@ -51,6 +52,7 @@ export interface RequestPluginTools extends Toolset {
 }
 
 export interface RequestPluginCatalogTool {
+  continuation?: { inputArgument: string; lengthArgument: string };
   pluginId?: string;
   serverId: string;
   connectionId?: string;
@@ -149,6 +151,7 @@ function manageMcpSource(
 }
 
 export async function createRequestPluginTools(input: {
+  midiOutputPolicy?: MidiArtifactOutputPolicy;
   storageDirectory: string | undefined;
   sessionId: string;
   signal: AbortSignal;
@@ -164,7 +167,6 @@ export async function createRequestPluginTools(input: {
   const toolsets: Toolset[] = [];
   const catalogRoutes: Map<string, McpRoute>[] = [];
   const issues: PluginToolIssue[] = [];
-  let hasArtifactTool = false;
   const artifactListing = await inspectMidiArtifacts(
     input.storageDirectory,
     input.sessionId,
@@ -249,7 +251,6 @@ export async function createRequestPluginTools(input: {
             throwIfAborted(input.signal);
             issues.push(...discovery.issues);
             for (const definition of discovery.tools) {
-              if (definition.artifactContract) hasArtifactTool = true;
               if ((definition.artifactContract?.inputs.length &&
                   !admission.approvedArtifactInputServerIds.includes(definition.serverId)) ||
                   (definition.artifactContract?.outputs.length &&
@@ -325,7 +326,6 @@ export async function createRequestPluginTools(input: {
           issues.push(...discovery.issues);
           const routes = new Map<string, McpRoute>();
           for (const definition of discovery.tools) {
-            if (definition.artifactContract) hasArtifactTool = true;
             if (definition.artifactContract?.inputs.length && !connection.artifactInputApproved ||
                 definition.artifactContract?.outputs.length && !connection.artifactOutputApproved) {
               issues.push({ connectionId: connection.id, serverId: definition.serverId,
@@ -354,9 +354,6 @@ export async function createRequestPluginTools(input: {
             message: "MCP connection tools could not be loaded." });
         }
       }
-    }
-    if (midiArtifacts.size || artifactListing.unavailableCount || hasArtifactTool) {
-      toolsets.unshift(createSessionMidiArtifactToolset(input, midiArtifacts));
     }
     const registry = new ToolRegistry(toolsets);
     const allRoutes = new Map(catalogRoutes.flatMap((routes) => [...routes]));
@@ -404,6 +401,7 @@ export async function createRequestPluginTools(input: {
           ...(connection ? { connectionId: connection.id, connectionName: connection.name } : {}),
           name: definition.name,
           description: definition.description,
+          ...(definition.artifactContract?.continuation ? { continuation: { inputArgument: definition.artifactContract.inputs[0]!.argument, lengthArgument: definition.artifactContract.continuation.lengthArgument } } : {}),
           ...(panel ? { panel } : {}),
           ...(app ? { app } : {}),
         };
@@ -413,6 +411,15 @@ export async function createRequestPluginTools(input: {
       midiArtifacts: () => [...midiArtifacts.values()].map((artifact) => ({ ...artifact })),
       tools: () => registry.tools(),
       callTool: (call) => registry.callTool(call),
+      async assertToolCurrent(name) {
+        const route = allRoutes.get(name);
+        if (!route || !input.withAuthorization) throw new Error("The MIDI generator is no longer admitted.");
+        await input.withAuthorization(input.signal, async () => {
+          if (route.runtime) await assertPluginAdmission(input.storageDirectory, route.runtime.plugin, route.definition,
+            route.connection as PluginIntegrationConnection | undefined, route.runtime.userConfig?.revision ?? "0");
+          else await assertStandaloneAdmission(input.storageDirectory, route.connection as StandaloneMcpConnection);
+        });
+      },
       appTool: (owner, name) => appRoute(owner, name).definition,
       async readAppResource(owner, uri, signal) {
         return withAppResourceRoute(owner, signal, async (route) => {
@@ -447,6 +454,7 @@ async function callMcpTool(
   routes: ReadonlyMap<string, McpRoute>,
   call: ModelToolCall,
   input: {
+    midiOutputPolicy?: MidiArtifactOutputPolicy;
     storageDirectory: string | undefined;
     temporaryDirectory?: string;
     sessionId: string;
@@ -492,6 +500,8 @@ async function callMcpTool(
       return callPluginToolWithArtifacts({
         contract: definition.artifactContract,
         ...(input.midiRevisionOf ? { revisionOf: input.midiRevisionOf } : {}),
+
+        ...(input.midiOutputPolicy ? { outputPolicy: input.midiOutputPolicy } : {}),
         argumentsValue,
         storageDirectory: input.storageDirectory,
         temporaryDirectory: input.temporaryDirectory,
@@ -541,80 +551,6 @@ async function callMcpTool(
   }
 }
 
-export function createSessionMidiArtifactToolset(
-  input: { storageDirectory: string | undefined; sessionId: string; signal?: AbortSignal },
-  artifacts: Map<string, MidiArtifact> = new Map(),
-): Toolset {
-  return {
-    id: "live-smith.artifacts",
-    tools: () => [{
-      type: "function",
-      function: {
-        name: "list_session_artifacts",
-        description: "List validated non-audio artifacts saved in this Session. If saved MIDI data is unavailable, the result includes an unavailableCount and warning; do not use those missing artifacts. Use an exact listed MIDI artifactRef with create_midi_clip_from_artifact when that action is available. This verifies saved MIDI bytes and returns read-derived source part summaries and timing event counts; it does not run a Plugin or change Live. For multitrack MIDI, select a listed partId per destination or explicitly request mergeParts.",
-        parameters: { type: "object", properties: {}, additionalProperties: false },
-      },
-    }, {
-      type: "function",
-      function: {
-        name: "inspect_midi_artifact",
-        description: "Read exact saved MIDI notes for one source part from list_session_artifacts. Notes use source-relative quarter-note beats; channel and source track identity remain in the part summary. Returns at most 256 notes with nextOffset for pagination. Reads this Session only; does not change Live or run a generator.",
-        parameters: { type: "object", properties: {
-          artifactRef: { type: "string" }, partId: { type: "string" }, offset: { type: "integer", minimum: 0 },
-        }, required: ["artifactRef", "partId"], additionalProperties: false },
-      },
-    }],
-    async callTool(call) {
-      if (call.name !== "list_session_artifacts" && call.name !== "inspect_midi_artifact") return invalidArguments();
-      try {
-        const value: unknown = JSON.parse(call.arguments || "{}");
-        if (call.name === "inspect_midi_artifact") {
-          if (!value || typeof value !== "object" || Array.isArray(value)) return invalidArguments();
-          const args = value as Record<string, unknown>;
-          if (Object.keys(args).some((key) => !["artifactRef", "partId", "offset"].includes(key)) ||
-              !isSafeStorageId(args.artifactRef) || typeof args.partId !== "string" ||
-              args.offset !== undefined && (!Number.isInteger(args.offset) || (args.offset as number) < 0)) return invalidArguments();
-          const { artifact, parsed } = await readMidiArtifact(input.storageDirectory, input.sessionId, args.artifactRef, input.signal);
-          const part = parsed.parts.find((part) => part.id === args.partId);
-          const offset = args.offset as number ?? 0;
-          if (!part || offset > part.notes.length) return invalidArguments();
-          return { content: JSON.stringify({ artifactRef: artifact.id, label: artifact.label,
-            part: midiArtifactPartSummaries(parsed).find((part) => part.id === args.partId),
-            offset, notes: part.notes.slice(offset, offset + 256),
-            ...(offset + 256 < part.notes.length ? { nextOffset: offset + 256 } : {}), timing: parsed.timing }),
-          progressKey: JSON.stringify([artifact.id, artifact.sha256, part.id, offset]) };
-        }
-        if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length) {
-          return invalidArguments();
-        }
-        const listing = await inspectMidiArtifacts(input.storageDirectory, input.sessionId);
-        artifacts.clear();
-        let unavailableCount = listing.unavailableCount;
-        const current = [];
-        for (const artifact of listing.artifacts) {
-          try {
-            const { parsed } = await readMidiArtifact(input.storageDirectory, input.sessionId, artifact.id, input.signal);
-            current.push({ ...midiArtifactView(artifact), parts: midiArtifactPartSummaries(parsed), timing: parsed.timing });
-            artifacts.set(artifact.id, artifact);
-          } catch { throwIfAborted(input.signal); unavailableCount += 1; }
-        }
-        return {
-          content: JSON.stringify(unavailableCount
-            ? { artifacts: current, unavailableCount,
-                warning: "One or more saved MIDI artifacts are unavailable. Their metadata was preserved." }
-            : current),
-          progressKey: JSON.stringify([
-            listing.artifacts.map((artifact) => [artifact.id, artifact.sha256]),
-            unavailableCount,
-          ]),
-        };
-      } catch {
-        throwIfAborted(input.signal);
-        return invalidArguments();
-      }
-    },
-  };
-}
 
 async function assertPluginAdmission(
   storageDirectory: string | undefined,
@@ -661,22 +597,4 @@ export function appToolResultWithArtifacts(result: PluginToolResult, artifacts: 
   return { ...result, _meta: { ...result._meta,
     [LIVE_SMITH_ARTIFACT_META_KEY]: { version: 1, artifacts: artifacts.map(midiArtifactView) },
   } };
-}
-
-function midiArtifactView(artifact: MidiArtifact) {
-  return {
-    kind: "midi" as const,
-    version: midiArtifactVersion(artifact),
-    artifactRef: artifact.id,
-    label: artifact.label,
-    format: artifact.format,
-    trackCount: artifact.trackCount,
-    noteCount: artifact.noteCount,
-    durationBeats: artifact.durationBeats,
-    createdAt: artifact.createdAt,
-  };
-}
-
-function invalidArguments(): AgentExternalToolResult {
-  return { content: "Invalid Plugin tool arguments.", failed: true, invalidArguments: true };
 }

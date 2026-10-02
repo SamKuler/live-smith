@@ -7,7 +7,7 @@ import { appendSessionEvent, loadSessionEvents, type SessionEvent } from "../../
 import { createSession } from "../../../src/storage/sessions.js";
 import { listSessionCandidates, selectSessionCandidate, candidateGenerationsFromEvents } from "../../../src/app/session/session-candidates.js";
 import { candidateKey, pendingCandidateParentFromEvents, preferredCandidateFromEvents } from "../../../src/agent/candidate-contracts.js";
-import { createRequestPluginTools } from "../../../src/app/plugins/request-plugin-tools.js";
+import { createSessionMidiArtifactToolset } from "../../../src/app/midi/midi-artifact-tools.js";
 import { parseCommandInput } from "../../../src/app/chat/chat-bridge-http.js";
 
 test("candidates project owned audio/MIDI, parameters and parent from persisted Session events", async (t) => {
@@ -81,8 +81,7 @@ test("saved MIDI inspection pages exact notes without provider calls and rejects
   const h = await audioStorageHarness(t);
   const saved = await saveMidiArtifact(h.storage, h.session.id, { connectionId: "generator", serverId: "midi", toolName: "make",
     label: "Long pattern", bytes: midiBytes({ tracks: [sequentialNotes(300)] }), signal: h.signal });
-  const tools = await createRequestPluginTools({ storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal });
-  t.after(() => tools.close());
+  const tools = createSessionMidiArtifactToolset({ storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal });
   const inspect = (args: unknown) => tools.callTool({ id: "inspect", name: "inspect_midi_artifact", arguments: JSON.stringify(args) });
   const first = JSON.parse((await inspect({ artifactRef: saved.id, partId: "track-0-channel-1" })).content);
   assert.equal(first.notes.length, 256); assert.equal(first.nextOffset, 256); assert.equal(first.part.noteCount, 300);

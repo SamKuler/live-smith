@@ -1,4 +1,5 @@
 import type { AudioParameterPanel } from "../plugins/builtins/parameter-panel.js";
+import type { MidiContinuationView } from "../agent/midi-continuation-contracts.js";
 import { safeAttachmentDisplayFileName } from "../attachments/contracts.js";
 import type { AudioJobView } from "../audio-services/contracts.js";
 import { isStandaloneMcpConnection, type IntegrationConnectionsView } from "../plugins/integration-connections.js";
@@ -108,6 +109,7 @@ export interface ChatDialogState {
   settings: AgentSettings;
   integrationConnections?: IntegrationConnectionsView;
   audioJobs?: AudioJobView[];
+  midiContinuation?: MidiContinuationView;
   /** Imported website-session evidence, not a generation capability or credential. */
   sunoAccounts?: SunoAccountView[];
   /** Modal-only catalog for one saved connection; omission clears prior results. */

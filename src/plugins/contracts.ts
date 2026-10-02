@@ -40,7 +40,9 @@ export interface PluginToolDefinition {
 }
 
 export interface PluginArtifactToolContract {
-  inputs: readonly { argument: string; kind: "audio" }[];
+  inputs: readonly { argument: string; kind: "audio" | "midi" }[];
+  /** Explicit MIDI conditioning with a host-bound duration argument. */
+  continuation?: { lengthArgument: string };
   outputs: readonly { argument: string; kind: "midi"; label: string }[];
 }
 

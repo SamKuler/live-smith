@@ -1,3 +1,4 @@
+import type { MidiContinuationCommand } from "../../agent/midi-continuation-contracts.js";
 import { isCreativeBrief, MAX_CREATIVE_BRIEF_CODE_POINTS } from "../../agent/creative-brief.js";
 import { MAX_AUDIO_PARAMETER_BYTES } from "../../plugins/builtins/parameter-panel.js";
 import type { MidiArtifactImportCommand } from "../midi-artifact-import.js";
@@ -132,6 +133,7 @@ export interface RawSkillBodyReadOptions {
 export interface RawPluginBodyReadOptions extends RawAttachmentBodyReadOptions {}
 
 export type ChatBridgeCommandInput =
+  | MidiContinuationCommand
   | MidiArtifactImportCommand
   | { kind: "select_candidate"; sessionId: string; selection: CandidateSelection }
   | {
@@ -1323,6 +1325,40 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       throw new ChatBridgeRequestValidationError("Choose one valid Session before loading tools.");
     }
     return { kind, sessionId: input.sessionId };
+  }
+  if (kind === "load_midi_continuation" || kind === "fill_midi_continuation") {
+    assertOnlyInputKeys(input, kind === "load_midi_continuation" ? ["kind", "sessionId"] : ["kind", "sessionId", "bufferId"], `${kind} command`);
+    if (!isSafeStorageId(input.sessionId) || kind === "fill_midi_continuation" && !isSafeStorageId(input.bufferId)) throw new ChatBridgeRequestValidationError("Choose the active MIDI continuation Session and buffer.");
+    return kind === "load_midi_continuation" ? { kind, sessionId: input.sessionId } : { kind, sessionId: input.sessionId, bufferId: input.bufferId as string };
+  }
+  if (kind === "configure_midi_continuation") {
+    assertOnlyInputKeys(input, ["kind", "sessionId", "expectedBufferId", "sourceClips", "segmentBeats", "capacity", "prompt", "generator"], `${kind} command`);
+    const generator = input.generator;
+    if (!isSafeStorageId(input.sessionId) || input.expectedBufferId !== null && !isSafeStorageId(input.expectedBufferId) ||
+        !Array.isArray(input.sourceClips) || !input.sourceClips.length || input.sourceClips.length > 16 ||
+        !input.sourceClips.every((ref) => ref && typeof ref === "object" && !Array.isArray(ref) && Object.keys(ref).length === 2 && isSafeStorageId(ref.trackId) && isSafeStorageId(ref.clipId)) ||
+        new Set(input.sourceClips.map((ref) => `${ref.trackId}:${ref.clipId}`)).size !== input.sourceClips.length ||
+        typeof input.segmentBeats !== "number" || !Number.isFinite(input.segmentBeats) || input.segmentBeats < 1 || input.segmentBeats > 256 ||
+        !Number.isInteger(input.capacity) || Number(input.capacity) < 1 || Number(input.capacity) > 4 ||
+        typeof input.prompt !== "string" || input.prompt.length > 8000 || !generator || typeof generator !== "object" || Array.isArray(generator)) {
+      throw new ChatBridgeRequestValidationError("Choose 1–16 MIDI sources, a section length of 1–256 beats and a buffer capacity of 1–4.");
+    }
+    const source = generator as Record<string, unknown>;
+    if (source.kind === "model") assertOnlyInputKeys(source, ["kind"], "MIDI model generator");
+    else if (source.kind === "plugin") {
+      assertOnlyInputKeys(source, ["kind", "toolName", "signature", "arguments"], "MIDI Plugin generator");
+      if (typeof source.toolName !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(source.toolName) ||
+          typeof source.signature !== "string" || !/^[a-f0-9]{64}$/u.test(source.signature) || !source.arguments || typeof source.arguments !== "object" || Array.isArray(source.arguments) ||
+          Buffer.byteLength(JSON.stringify(source.arguments), "utf8") > 32 * 1024 || input.prompt !== "") throw new ChatBridgeRequestValidationError("Choose a declared MIDI conditioning tool and its current parameters.");
+    } else throw new ChatBridgeRequestValidationError("Choose the current model or a declared MIDI conditioning tool.");
+    return input as unknown as Extract<MidiContinuationCommand, { kind: "configure_midi_continuation" }>;
+  }
+  if (kind === "import_midi_continuation") {
+    if (!isSafeStorageId(input.bufferId)) throw new ChatBridgeRequestValidationError("Choose the current MIDI buffer.");
+    const { bufferId, ...rest } = input;
+    const imported = parseCommandInput({ ...rest, kind: "import_midi_artifact" });
+    if (imported.kind !== "import_midi_artifact") throw new ChatBridgeRequestValidationError("Invalid MIDI import.");
+    return { ...imported, kind, bufferId };
   }
   if (kind === "import_midi_artifact") {
     assertOnlyInputKeys(input, ["kind", "sessionId", "artifactRef", "trackName", "trackId", "mergeParts", "mappings", "startBeat", "name"], `${kind} command`);
