@@ -28,24 +28,3 @@ export function mcpCredentialFields(server: PluginMcpServer): McpCredentialField
   }
   return [...fields].map(([name, required]) => ({ name, required }));
 }
-
-export function bindMcpServerCredentials(
-  server: PluginMcpServer,
-  secrets: Readonly<Record<string, string>>,
-): PluginMcpServer {
-  const bind = (value: string): string => value.replace(placeholder, (whole, name: string, fallback: string | undefined) => {
-    if (server.type === "stdio" && pathVariables.has(name)) return whole;
-    const secret = Object.hasOwn(secrets, name) ? secrets[name] : undefined;
-    if (secret) return secret;
-    if (fallback !== undefined) return fallback;
-    throw new Error(`MCP credential ${name} is not configured.`);
-  });
-  if (server.type === "stdio") {
-    return { ...server, env: Object.fromEntries(Object.entries(server.env).map(([name, value]) => [name, bind(value)])) };
-  }
-  const headers = Object.fromEntries(Object.entries(server.headers).map(([name, value]) => [name, bind(value)]));
-  if (Object.values(headers).some((value) => /[\u0000\r\n]/u.test(value))) {
-    throw new Error("MCP credential produces an invalid HTTP header.");
-  }
-  return { ...server, headers };
-}

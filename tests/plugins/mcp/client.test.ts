@@ -115,6 +115,40 @@ function remoteFetch(options: {
   }) as typeof fetch;
 }
 
+test("remote MCP credentials require own values and reach the declared HTTP header", async (t) => {
+  const server: PluginMcpRemoteServer = { ...remoteServer, headers: { Authorization: "Bearer ${__proto__}" } };
+  const paths = { pluginRoot: "/plugin", pluginData: "/data" };
+  const headers: Array<string | null> = [];
+  const respond = remoteFetch();
+  const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    headers.push(new Headers(init?.headers).get("Authorization"));
+    return respond(input, init);
+  }) as typeof fetch;
+  await assert.rejects(connectPluginMcpServer(server, { ...paths, secrets: {} },
+    createHostAbortController().signal, { fetchImpl }), /not configured/u);
+  assert.deepEqual(headers, []);
+  const connection = await connectPluginMcpServer(server, {
+    ...paths, secrets: Object.fromEntries([["__proto__", "owned-secret"]]),
+  }, createHostAbortController().signal, { fetchImpl });
+  t.after(() => connection.close());
+  assert.deepEqual(await connection.listTools(createHostAbortController().signal), []);
+  assert.ok(headers.length > 0);
+  assert.ok(headers.every((header) => header === "Bearer owned-secret"));
+});
+
+test("remote MCP rejects invalid headers produced by user configuration before connecting", async () => {
+  let requests = 0;
+  const fetchImpl = (async () => { requests += 1; throw new Error("Unexpected request."); }) as typeof fetch;
+  const server: PluginMcpRemoteServer = { ...remoteServer, headers: { Authorization: "${user_config.header}" } };
+  await assert.rejects(connectPluginMcpServer(server, {
+    pluginRoot: "/plugin", pluginData: "/data", userConfig: {
+      fields: [{ name: "header", type: "string", title: "Header", description: "HTTP header" }],
+      stored: { revision: "0", values: { header: "Bearer value\r\nX-Forged: value" }, secrets: {} },
+    },
+  }, createHostAbortController().signal, { fetchImpl }), PluginMcpConnectionError);
+  assert.equal(requests, 0);
+});
+
 test("MCP resource lists preserve each page and opaque cursor beyond sixteen pages", async (t) => {
   for (const templates of [false, true]) {
     await t.test(templates ? "templates" : "resources", async (t) => {

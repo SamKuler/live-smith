@@ -65,15 +65,6 @@ export interface AudioServiceConnectionView extends Omit<AudioServiceConnection,
   apiKeyConfigured: boolean;
 }
 
-export interface AudioServicesView {
-  connections: AudioServiceConnectionView[];
-  revision: string;
-}
-
-export type AudioServicesSettingsPatch =
-  | { action: "upsert"; expectedRevision: string; connection: Omit<AudioServiceConnection, "apiKey"> & { apiKey?: string } }
-  | { action: "remove"; expectedRevision: string; serviceId: string };
-
 export interface MusicGenerationOptions {
   mode: "custom";
   title?: string;

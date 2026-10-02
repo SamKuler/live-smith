@@ -2,10 +2,10 @@ import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { Buffer } from "node:buffer";
 import type { UiMessage } from "../../i18n/ui-message.js";
 import {
+  isAudioTextToolRequest,
   type AudioProcessingSource,
   type AudioToolRequest,
-} from "../../agent/audio-tools.js";
-import { isAudioTextToolRequest } from "../../agent/audio-tool-parser.js";
+} from "../../agent/audio-tool-parser.js";
 import type { AgentExternalToolResult } from "../../agent/loop.js";
 import {
   audioJobRemoteSettled, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,

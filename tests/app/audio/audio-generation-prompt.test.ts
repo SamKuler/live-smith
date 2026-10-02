@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseAudioToolRequest, validateAudioServiceRequest } from "../../../src/agent/audio-tools.js";
+import { parseAudioToolRequest } from "../../../src/agent/audio-tool-parser.js";
 import { createElevenLabsAudioAdapter } from "../../../src/audio-services/elevenlabs/elevenlabs.js";
 import { createSunoApiAudioAdapter } from "../../../src/audio-services/sunoapi/sunoapi.js";
 import { mp3Bytes } from "../../storage/support/audio-storage-test-helpers.js";
@@ -53,7 +53,7 @@ for (const provider of ["sunoapi", "elevenlabs"] as const) {
     const tooLong = { ...args, prompt: prompt + "𝄞" };
     const rejected = await tools.execute({ id: "too-long", name: toolName, arguments: JSON.stringify(tooLong) });
     assert.equal(rejected.invalidArguments, true);
-    assert.throws(() => validateAudioServiceRequest({ kind: "generate_music", ...tooLong }, [{
+    assert.throws(() => builtInAudioPlugin(h.connection.provider).tools.parse("generate_music", JSON.stringify(tooLong), [{
       id: h.connection.id,
       name: h.connection.name,
       pluginId: builtInAudioPlugin(h.connection.provider).id,

@@ -1,4 +1,4 @@
-import type { AudioToolRequest } from "../../agent/audio-tools.js";
+import type { AudioToolRequest } from "../../agent/audio-tool-parser.js";
 import type { BuiltInIntegrationConnectionChoice } from "./contracts.js";
 import {
   MUREKA_LYRICS_CHARACTERS, MUREKA_LYRICS_PROMPT_CHARACTERS,

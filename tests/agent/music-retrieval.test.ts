@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseAudioToolRequest, validateAudioServiceRequest } from "../../src/agent/audio-tools.js";
 import {
   builtInAudioLocalToolName,
   createBuiltInAudioToolsets,
 } from "../../src/plugins/builtins/audio-toolsets.js";
 import type { BuiltInIntegrationConnectionChoice } from "../../src/plugins/builtins/contracts.js";
-import { builtInAudioPluginId } from "../../src/plugins/builtins/index.js";
+import { builtInAudioPlugin, builtInAudioPluginId } from "../../src/plugins/builtins/index.js";
 
 const choice = <Choice extends Omit<BuiltInIntegrationConnectionChoice, "pluginId">>(
   value: Choice,
@@ -16,7 +15,8 @@ const choice = <Choice extends Omit<BuiltInIntegrationConnectionChoice, "pluginI
 });
 const service = choice({ id: "website", name: "Suno", provider: "suno" as const });
 const clipIds = ["aaaaaaaa-1111-4111-8111-111111111111", "bbbbbbbb-2222-4222-8222-222222222222"];
-const parse = (value: unknown) => parseAudioToolRequest("retrieve_music", JSON.stringify(value));
+const parse = (value: unknown, connection: BuiltInIntegrationConnectionChoice = service) =>
+  builtInAudioPlugin(connection.provider).tools.parse("retrieve_music", JSON.stringify(value), [connection]);
 
 test("retrieve_music exposes only a connection and one or two unique canonical UUIDs", () => {
   const toolsFor = (connections: BuiltInIntegrationConnectionChoice[]) => createBuiltInAudioToolsets({
@@ -38,13 +38,12 @@ test("retrieve_music exposes only a connection and one or two unique canonical U
   for (const count of [1, 2]) {
     const input = { connectionId: service.id, clipIds: clipIds.slice(0, count) };
     assert.deepEqual(parse(input), { kind: "retrieve_music", ...input });
-    validateAudioServiceRequest(parse(input), [service]);
   }
   for (const provider of ["elevenlabs", "sunoapi", "lalal"] as const) {
     const other = [choice({ ...service, provider })];
     assert.ok(!toolsFor(other).some((entry) =>
       builtInAudioLocalToolName(entry.function.name) === "retrieve_music"));
-    assert.throws(() => validateAudioServiceRequest(parse({ connectionId: service.id, clipIds }), other));
+    assert.throws(() => parse({ connectionId: service.id, clipIds }, other[0]!));
   }
 });
 

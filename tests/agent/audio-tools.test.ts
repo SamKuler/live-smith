@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseAudioToolRequest, validateAudioServiceRequest } from "../../src/agent/audio-tools.js";
+import { parseAudioToolRequest } from "../../src/agent/audio-tool-parser.js";
 import { AgentExternalToolReportingError, runAgentLoop } from "../../src/agent/loop.js";
 import type { BuiltInIntegrationConnectionChoice } from "../../src/plugins/builtins/contracts.js";
 import type { ModelFunctionTool } from "../../src/model/provider.js";
@@ -8,7 +8,7 @@ import {
   builtInAudioLocalToolName,
   createBuiltInAudioToolsets,
 } from "../../src/plugins/builtins/audio-toolsets.js";
-import { builtInAudioPluginId } from "../../src/plugins/builtins/index.js";
+import { builtInAudioPlugin, builtInAudioPluginId } from "../../src/plugins/builtins/index.js";
 
 type ChoiceInput = Omit<BuiltInIntegrationConnectionChoice, "pluginId">;
 const choices = (services: readonly ChoiceInput[]): BuiltInIntegrationConnectionChoice[] =>
@@ -16,6 +16,14 @@ const choices = (services: readonly ChoiceInput[]): BuiltInIntegrationConnection
     ...service,
     pluginId: builtInAudioPluginId(service.provider),
   }));
+
+function parseForService(
+  service: BuiltInIntegrationConnectionChoice,
+  name: string,
+  args: unknown,
+) {
+  return builtInAudioPlugin(service.provider).tools.parse(name, JSON.stringify(args), [service]);
+}
 
 function pluginTools(
   services: readonly ChoiceInput[],
@@ -95,10 +103,10 @@ test("third-party Suno music declares its prompt limit and does not silently dis
   assert.match(JSON.stringify(music.function.parameters), /3000/);
   assert.doesNotMatch(JSON.stringify(music.function.parameters), /durationSeconds/);
   assert.ok(!localTool(tools, "generate_sound_effect"));
-  const parsed = parseAudioToolRequest("generate_music", JSON.stringify({ connectionId: services[0]!.id, prompt: "Ambient piano", instrumental: true }));
-  validateAudioServiceRequest(parsed, services);
-  assert.throws(() => validateAudioServiceRequest({ ...parsed, kind: "generate_music", connectionId: services[0]!.id, prompt: "Ambient piano", instrumental: true, durationSeconds: 10 }, services));
-  assert.throws(() => validateAudioServiceRequest({ kind: "generate_music", connectionId: services[0]!.id, prompt: "a".repeat(3001), instrumental: false }, services));
+  const args = { connectionId: services[0]!.id, prompt: "Ambient piano", instrumental: true };
+  assert.equal(parseForService(services[0]!, "generate_music", args).kind, "generate_music");
+  assert.throws(() => parseForService(services[0]!, "generate_music", { ...args, durationSeconds: 10 }));
+  assert.throws(() => parseForService(services[0]!, "generate_music", { ...args, prompt: "a".repeat(3001), instrumental: false }));
 });
 
 test("Mureka exposes bounded prompt, lyric-writing and lyrics-to-song tools", () => {
@@ -112,14 +120,12 @@ test("Mureka exposes bounded prompt, lyric-writing and lyrics-to-song tools", ()
   assert.ok(!localTool(tools, "generate_sound_effect"));
   assert.ok(localTool(tools, "generate_lyrics"));
   assert.ok(localTool(tools, "generate_song_from_lyrics"));
-  const parsed = parseAudioToolRequest("generate_music", JSON.stringify({
+  const args = {
     connectionId: services[0]!.id, prompt: "Ambient piano", instrumental: false,
-  }));
-  assert.equal(parsed.kind, "generate_music");
-  if (parsed.kind !== "generate_music") assert.fail("expected music generation");
-  validateAudioServiceRequest(parsed, services);
-  assert.throws(() => validateAudioServiceRequest({ ...parsed, prompt: "🎵".repeat(1025) }, services));
-  assert.throws(() => validateAudioServiceRequest({ ...parsed, durationSeconds: 30 }, services));
+  };
+  assert.equal(parseForService(services[0]!, "generate_music", args).kind, "generate_music");
+  assert.throws(() => parseForService(services[0]!, "generate_music", { ...args, prompt: "🎵".repeat(1025) }));
+  assert.throws(() => parseForService(services[0]!, "generate_music", { ...args, durationSeconds: 30 }));
 });
 
 test("official Suno Platform exposes only its supported custom fields", () => {
@@ -133,15 +139,13 @@ test("official Suno Platform exposes only its supported custom fields", () => {
   const variants = tool.function.parameters?.oneOf as Array<{ properties: { connectionId: { const: string }; options?: { required?: string[] } } }>;
   assert.deepEqual(variants.find((entry) => entry.properties.connectionId.const === services[0]!.id && entry.properties.options)?.properties.options?.required,
     ["mode", "styles"]);
-  const request = parseAudioToolRequest("generate_music", JSON.stringify({ connectionId: services[0]!.id,
-    prompt: "lyrics", instrumental: false, options: { mode: "custom", styles: "dream pop" } }));
-  assert.equal(request.kind, "generate_music");
-  if (request.kind !== "generate_music") assert.fail("expected music generation");
-  validateAudioServiceRequest(request, services);
-  assert.throws(() => validateAudioServiceRequest({ ...request, options: { mode: "custom" } }, services));
-  assert.throws(() => validateAudioServiceRequest({ ...request, options: {
+  const args = { connectionId: services[0]!.id,
+    prompt: "lyrics", instrumental: false, options: { mode: "custom", styles: "dream pop" } };
+  assert.equal(parseForService(services[0]!, "generate_music", args).kind, "generate_music");
+  assert.throws(() => parseForService(services[0]!, "generate_music", { ...args, options: { mode: "custom" } }));
+  assert.throws(() => parseForService(services[0]!, "generate_music", { ...args, options: {
     mode: "custom", styles: "dream pop", weirdness: 50,
-  } }, services));
+  } }));
 });
 
 test("Suno.com exposes its bounded duration and vocal controls only on that connection", () => {
@@ -153,17 +157,21 @@ test("Suno.com exposes its bounded duration and vocal controls only on that conn
   const custom = variants.find((entry) => entry.properties.connectionId.const === website.id && entry.properties.options)!;
   assert.deepEqual(custom.properties.durationSeconds, { type: "number", minimum: 10, maximum: 480 });
   assert.ok(Object.hasOwn(custom.properties.options!.properties!, "vocalGender"));
-  const request = parseAudioToolRequest("generate_music", JSON.stringify({
+  const args = {
     connectionId: website.id, prompt: "[Verse]\nHello", durationSeconds: 10, instrumental: false,
     options: { mode: "custom", styles: "dream pop", vocalGender: "female" },
-  }));
-  assert.equal(request.kind, "generate_music");
-  if (request.kind !== "generate_music") assert.fail("expected music generation");
-  validateAudioServiceRequest(request, [website]);
-  validateAudioServiceRequest({ ...request, durationSeconds: 480 }, [website]);
-  assert.throws(() => validateAudioServiceRequest({ ...request, durationSeconds: 9 }, [website]));
-  assert.throws(() => validateAudioServiceRequest({ ...request, durationSeconds: 481 }, [website]));
-  assert.throws(() => validateAudioServiceRequest(request, [{ ...website, provider: "elevenlabs" }]));
+  };
+  assert.equal(parseForService(website, "generate_music", args).kind, "generate_music");
+  assert.equal(parseForService(website, "generate_music", { ...args, durationSeconds: 480 }).kind, "generate_music");
+  assert.throws(() => parseForService(website, "generate_music", { ...args, durationSeconds: 9 }));
+  assert.throws(() => parseForService(website, "generate_music", { ...args, durationSeconds: 481 }));
+  const mismatched = createBuiltInAudioToolsets({
+    services: [{ ...website, provider: "elevenlabs" }],
+    includeModelAudioInput: false,
+    execute: async () => ({ content: "unused" }),
+  }).flatMap((toolset) => toolset.tools());
+  assert.deepEqual(localNames(mismatched),
+    ["resume_audio_job", "list_audio_jobs"]);
 });
 
 test("external music generation follows the user-selected rendered-audio deliverable", () => {

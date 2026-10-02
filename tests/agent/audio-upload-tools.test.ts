@@ -1,21 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseAudioToolRequest, validateAudioServiceRequest } from "../../src/agent/audio-tools.js";
+import { builtInAudioPlugin } from "../../src/plugins/builtins/index.js";
 import { audioParameterGroups, parseAudioParameters } from "../../src/plugins/builtins/parameter-panel.js";
 
 const service = { id: "suno-account", name: "Suno account", pluginId: "live-smith.suno-website", provider: "suno" as const };
+const parse = (args: unknown) => builtInAudioPlugin(service.provider).tools.parse(
+  "upload_music", JSON.stringify(args), [service],
+);
 
 test("upload requires explicit rights confirmation and a host-owned source locator", () => {
   const args = { connectionId: service.id, source: { kind: "audio_asset", assetRef: "saved-audio" }, rightsConfirmed: true };
-  const parsed = parseAudioToolRequest("upload_music", JSON.stringify(args));
+  const parsed = parse(args);
   assert.deepEqual(parsed, { kind: "upload_music", ...args });
-  validateAudioServiceRequest(parsed, [service]);
   for (const invalid of [
     { ...args, rightsConfirmed: false }, { ...args, rightsConfirmed: undefined },
     { ...args, source: { kind: "url", url: "https://example.com/audio.wav" } },
     { ...args, source: { kind: "audio_asset", assetRef: "../other-session" } },
     { ...args, source: { kind: "arrangement_audio", startBeat: 8, endBeat: 4 } },
-  ]) assert.throws(() => parseAudioToolRequest("upload_music", JSON.stringify(invalid)));
+  ]) assert.throws(() => parse(invalid));
 });
 
 test("manual upload exposes a confirmation control and excludes request-only attachments", async () => {

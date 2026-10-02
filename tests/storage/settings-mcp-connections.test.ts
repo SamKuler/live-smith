@@ -5,7 +5,6 @@ import test from "node:test";
 import { strToU8, zipSync } from "fflate/browser";
 
 import { integrationConnectionsView } from "../../src/plugins/integration-connections.js";
-import { bindMcpServerCredentials } from "../../src/plugins/mcp/credentials.js";
 import { installPlugin } from "../../src/storage/plugins.js";
 import { loadAgentSettings, saveGlobalSettings } from "../../src/storage/settings.js";
 
@@ -84,12 +83,4 @@ test("prototype-like placeholder names require own saved credentials", async (t)
   await assert.rejects(saveGlobalSettings(directory, { integrationConnections: {
     action: "upsert", expectedRevision: "0", connection,
   } }), /credentials/u);
-  const server = { id: "account", type: "streamable-http" as const, url: "https://example.test/mcp",
-    headers: { Authorization: "Bearer ${__proto__}" } };
-  assert.throws(() => bindMcpServerCredentials(server, {}), /not configured/u);
-  const secrets = Object.fromEntries([["__proto__", "owned-secret"]]);
-  const bound = bindMcpServerCredentials(server, secrets);
-  assert.equal(bound.type, "streamable-http");
-  if (bound.type !== "streamable-http") throw new Error("Expected remote MCP server.");
-  assert.equal(bound.headers.Authorization, "Bearer owned-secret");
 });

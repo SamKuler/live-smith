@@ -1,4 +1,4 @@
-import type { AudioToolRequest } from "../../agent/audio-tools.js";
+import type { AudioToolRequest } from "../../agent/audio-tool-parser.js";
 import { parseLyricWritingRequest } from "../../audio-services/suno/suno-lyrics.js";
 import type { ModelFunctionTool } from "../../model/provider.js";
 import { isSafeStorageId } from "../../storage/id.js";

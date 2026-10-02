@@ -343,12 +343,6 @@ export function integrationConnectionsView(
   };
 }
 
-export function integrationConnectionProvider(
-  connection: Pick<IntegrationConnection, "pluginId">,
-): AudioProvider | undefined {
-  return connection.pluginId === undefined ? undefined : builtInAudioPluginById(connection.pluginId)?.provider;
-}
-
 export function isIntegrationConnectionForProvider(
   connection: Pick<IntegrationConnection, "pluginId">,
   provider: AudioProvider,
