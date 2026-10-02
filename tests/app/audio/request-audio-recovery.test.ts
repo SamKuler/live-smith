@@ -22,7 +22,7 @@ test("a verified audio-capable model can listen to an exact saved Session asset"
   assert.deepEqual(checkedBytes, [expected.byteLength]);
   assert.equal(result.modelInputPart?.type, "audio");
   assert.equal(result.modelInputPart?.mediaType, expected.mediaType);
-  assert.ok(result.modelInputPart?.base64.length);
+  assert.ok(result.modelInputPart?.bytes.byteLength);
   assert.match(result.content, /complete audio asset.*untrusted audio input/i);
 
   const bounded = await createRequestAudioTools({

@@ -7,6 +7,7 @@ import type { OAuthCredential } from "../../../src/storage/oauth-credentials.js"
 import { NetworkProxyError } from "../../../src/runtime/network-proxy-error.js";
 import {
   ModelConnectionError,
+  ModelInputTooLargeError,
   ModelRetryableError,
 } from "../../../src/model/connection-error.js";
 import type { TransportRequest } from "../../../src/model/provider.js";
@@ -890,6 +891,31 @@ test("ChatGPT OAuth classifies transient HTTP generation failures", async () => 
       String(status),
     );
   }
+});
+
+test("ChatGPT OAuth preserves request-size rejection for attachment recovery", async () => {
+  let requests = 0;
+  const protocol = createOpenAICodexProtocol({
+    fetchImpl: async () => {
+      requests += 1;
+      return new Response(JSON.stringify({ error: {
+        type: "invalid_request_error", message: "private upstream detail openai-access",
+      } }), { status: 413, headers: { "content-type": "application/json" } });
+    },
+  });
+  const input = request();
+  input.currentUserContent.push({
+    type: "image", fileName: "reference.png", mediaType: "image/png", base64: "AQID",
+  });
+
+  await assert.rejects(protocol.createToolTurn(input, credential), (failure: unknown) => {
+    assert.ok(failure instanceof ModelInputTooLargeError);
+    assert.equal(failure instanceof ModelRetryableError, false);
+    assert.match(failure.message, /ChatGPT Codex HTTP 413.*Choose fewer files/u);
+    assert.doesNotMatch(failure.message, /private upstream detail|openai-access/u);
+    return true;
+  });
+  assert.equal(requests, 1);
 });
 
 test("ChatGPT OAuth decodes bounded headerless HTTP errors", async () => {

@@ -797,9 +797,9 @@ test("current audio context requires compatible saved Chat capability evidence b
     }),
   });
   assert.deepEqual(resolved.parts.map((part) => part.type), ["audio"]);
-  assert.equal(
-    resolved.parts[0]?.type === "audio" ? resolved.parts[0].base64 : "",
-    Buffer.from(wavBytes()).toString("base64"),
+  assert.deepEqual(
+    resolved.parts[0]?.type === "audio" ? resolved.parts[0].bytes : undefined,
+    wavBytes(),
   );
 
   await assert.rejects(
@@ -961,7 +961,7 @@ test("attachment context applies exact and one-over mixed audio request quotas",
     imageRef(0),
     imageRef(1),
     imageRef(2),
-    audioRef(0, 15 * 1024 * 1024),
+    audioRef(0, 113 * 1024 * 1024),
   ];
   assert.deepEqual(
     await resolveConversationHistory({
@@ -980,7 +980,7 @@ test("attachment context applies exact and one-over mixed audio request quotas",
   );
 
   for (const refs of [
-    [...exact.slice(0, 3), audioRef(1, 15 * 1024 * 1024 + 1)],
+    [...exact.slice(0, 3), audioRef(1, 113 * 1024 * 1024 + 1)],
     [audioRef(0, 1), audioRef(1, 1), audioRef(2, 1)],
   ]) {
     await assert.rejects(
@@ -996,7 +996,7 @@ test("attachment context applies exact and one-over mixed audio request quotas",
           audioEvidence: "supported",
         }),
       }),
-      /Attachments exceed the model request limit/,
+      /Attachments exceed Live Smith/,
     );
   }
 });
@@ -1035,7 +1035,7 @@ test("current context defensively rejects count, total, and image-subtotal overf
         refs,
         runtimeProfile: runtimeProfile({ image: true, pdf: true }),
       }),
-      /Attachments exceed the model request limit/,
+      /Attachments exceed Live Smith/,
     );
   }
 });
@@ -1449,4 +1449,70 @@ test("attachment context preserves cancellation reasons", async () => {
     }),
     (error: unknown) => error === reason,
   );
+});
+
+test("a three-minute WAV above 20 MiB is retained byte-for-byte for both native audio transports", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-original-audio-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const bytes = wavBytes(180 * 48_000 * 4);
+  const header = new DataView(bytes.buffer);
+  header.setUint16(22, 2, true);
+  header.setUint32(24, 48_000, true);
+  header.setUint32(28, 48_000 * 4, true);
+  header.setUint16(32, 4, true);
+  header.setUint16(34, 16, true);
+  bytes[bytes.length - 2] = 0x21;
+  bytes[bytes.length - 1] = 0x65;
+  const stored = await saveSessionAttachment(directory, "large-original", {
+    fileName: "LoveTheme.wav", bytes,
+  }, { preSavePendingAttachmentRefs: [] });
+  assert.equal(stored.kind, "audio");
+  if (stored.kind !== "audio") return;
+  assert.equal(stored.durationSeconds, 180);
+  assert.equal(stored.sampleRate, 48_000);
+  assert.equal(stored.channels, 2);
+  for (const runtime of [
+    runtimeProfile({ apiMode: "chat-completions", audio: true, audioEvidence: "supported" }),
+    runtimeProfile({ subscription: true, subscriptionProvider: "google", audio: true, audioEvidence: "supported" }),
+  ]) {
+    const resolved = await resolveCurrentAttachmentParts({
+      storageDirectory: directory, sessionId: "large-original", refs: [stored], runtimeProfile: runtime,
+    });
+    const part = resolved.parts[0];
+    assert.equal(part?.type, "audio");
+    if (part?.type !== "audio") continue;
+    assert.deepEqual(part.bytes, bytes);
+    assert.equal("base64" in part, false);
+  }
+});
+
+test("a size rejection stops older binary replay while preserving text and a newly attached excerpt", async () => {
+  const sessionId = `size-rejection-${Date.now()}`;
+  const original = await saveSessionAttachment(undefined, sessionId, {
+    fileName: "original.wav", bytes: wavBytes(),
+  }, { preSavePendingAttachmentRefs: [] });
+  const excerpt = await saveSessionAttachment(undefined, sessionId, {
+    fileName: "excerpt.wav", bytes: wavBytes(4_000),
+  }, { preSavePendingAttachmentRefs: [] });
+  const profile = runtimeProfile({ apiMode: "chat-completions", audio: true, audioEvidence: "supported" });
+  const events: SessionEvent[] = [
+    { id: "original-message", kind: "user", content: "Analyze this melody", attachments: [original], createdAt: "2026-10-02T00:00:00Z" },
+    { id: "size-error", kind: "error", name: "input_too_large", content: "Choose a shorter audio excerpt", createdAt: "2026-10-02T00:00:01Z" },
+    { id: "excerpt-message", kind: "user", content: "Use this excerpt", attachments: [excerpt], createdAt: "2026-10-02T00:00:02Z" },
+  ];
+  const history = await resolveConversationHistory({ storageDirectory: undefined, sessionId,
+    events, currentAttachmentRefs: [], currentDocumentTextCharacters: 0, runtimeProfile: profile });
+  assert.equal(history.length, 2);
+  assert.equal(history[0]!.role, "user");
+  assert.equal(history[1]!.role, "user");
+  if (history[0]!.role !== "user" || history[1]!.role !== "user") return;
+  assert.match(JSON.stringify(history[0]!.content), /Analyze this melody/);
+  assert.match(JSON.stringify(history[0]!.content), /omitted_from_request/);
+  assert.equal(history[0]!.content.some(part => part.type === "audio"), false);
+  const part = history[1]!.content.find(part => part.type === "audio");
+  assert.equal(part?.type, "audio");
+  if (part?.type === "audio") assert.deepEqual(part.bytes, wavBytes(4_000));
+  const reread = await resolveCurrentAttachmentParts({ storageDirectory: undefined, sessionId,
+    refs: [original], runtimeProfile: profile });
+  assert.equal(reread.parts[0]?.type, "audio");
 });

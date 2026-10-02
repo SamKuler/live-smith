@@ -10,7 +10,7 @@ import {
   resolveEditScopes,
   type EditScope,
 } from "../../agent/edit-scopes.js";
-import { MAX_DOCUMENT_ATTACHMENT_BYTES, MAX_PENDING_ATTACHMENT_COUNT } from "../../attachments/contracts.js";
+import { MAX_ATTACHMENT_UPLOAD_BYTES, MAX_DOCUMENT_ATTACHMENT_BYTES, MAX_PENDING_ATTACHMENT_COUNT } from "../../attachments/contracts.js";
 import {
   isSafeSkillId,
   isSafeSkillReferenceId,
@@ -477,7 +477,7 @@ export function readRawAttachmentBody(
     declaredLength = boundedContentLength(
       request,
       "Attachment",
-      MAX_DOCUMENT_ATTACHMENT_BYTES,
+      MAX_ATTACHMENT_UPLOAD_BYTES,
     );
     if (declaredLength === 0) {
       throw new ChatBridgeRequestValidationError("Attachment body must not be empty.");
@@ -488,14 +488,14 @@ export function readRawAttachmentBody(
   }
 
   return readBoundedRawBody(request, declaredLength, {
-    maximumBytes: MAX_DOCUMENT_ATTACHMENT_BYTES,
+    maximumBytes: MAX_ATTACHMENT_UPLOAD_BYTES,
     initialCapacity: initialUnknownAttachmentBodyCapacity,
     timeoutMs: options.timeoutMs ?? defaultAttachmentBodyReadTimeoutMs,
     allocateBuffer: options.allocateBuffer ?? Buffer.allocUnsafe,
     acquirePermit: acquireAttachmentBodyReadPermit,
     emptyMessage: "Attachment body must not be empty.",
     tooLargeMessage:
-      `Attachment uploads may not exceed ${MAX_DOCUMENT_ATTACHMENT_BYTES} bytes.`,
+      `Attachment uploads may not exceed ${MAX_ATTACHMENT_UPLOAD_BYTES} bytes.`,
     mismatchMessage: "Attachment Content-Length does not match the received body.",
     timeoutMessage: "Attachment upload timed out before the complete body was received.",
     incompleteMessage: "Attachment upload ended before the complete body was received.",

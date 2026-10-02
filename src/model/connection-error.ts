@@ -1,6 +1,14 @@
 const defaultConnectionErrorMessage = "The model connection was interrupted.";
 const defaultRetryableErrorMessage = "The model provider returned a retryable failure.";
 
+export function modelInputTooLargeError(context: string): Error {
+  return new ModelInputTooLargeError(`${context}: the provider rejected the request size. Choose fewer files or a shorter audio excerpt. The original attachments are unchanged.`);
+}
+
+export class ModelInputTooLargeError extends Error {
+  constructor(message: string) { super(message); this.name = "ModelInputTooLargeError"; }
+}
+
 export class ModelRetryableError extends Error {
   readonly retryAfterMs: number | undefined;
 

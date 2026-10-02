@@ -1,5 +1,7 @@
+import { Buffer } from "node:buffer";
+import { types } from "node:util";
+
 import {
-  MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
   MAX_REQUEST_AUDIO_ATTACHMENT_BYTES,
@@ -40,7 +42,8 @@ export function assertBinaryInputWithinLimits(
     }
 
     assertBinaryPartMediaType(part);
-    const byteLength = canonicalBase64DecodedByteLength(part.base64);
+    const byteLength = part.type === "audio"
+      ? audioInputByteLength(part.bytes) : canonicalBase64DecodedByteLength(part.base64);
     if (part.type === "image") {
       if (byteLength > MAX_IMAGE_ATTACHMENT_BYTES) {
         throw new Error("Image input may not exceed 5 MiB per attachment.");
@@ -58,9 +61,6 @@ export function assertBinaryInputWithinLimits(
         throw new Error("PDF input subtotal may not exceed 20 MiB.");
       }
     } else {
-      if (byteLength > MAX_AUDIO_ATTACHMENT_BYTES) {
-        throw new Error("Audio input may not exceed 20 MiB per attachment.");
-      }
       audioBytes += byteLength;
       audioCount += 1;
       if (audioCount > MAX_REQUEST_AUDIO_ATTACHMENT_COUNT) {
@@ -69,15 +69,26 @@ export function assertBinaryInputWithinLimits(
         );
       }
       if (audioBytes > MAX_REQUEST_AUDIO_ATTACHMENT_BYTES) {
-        throw new Error("Audio input subtotal may not exceed 30 MiB.");
+        throw new Error(`Audio input exceeds Live Smith's ${MAX_REQUEST_AUDIO_ATTACHMENT_BYTES / (1024 * 1024)} MiB inline request budget. Choose a shorter audio excerpt. The original attachment is unchanged.`);
       }
     }
 
     totalBytes += byteLength;
     if (totalBytes > MAX_REQUEST_BINARY_ATTACHMENT_BYTES) {
-      throw new Error("Binary input subtotal may not exceed 30 MiB.");
+      throw inlineRequestLimitError();
     }
   }
+}
+
+function audioInputByteLength(value: unknown): number {
+  if (!types.isUint8Array(value) || value.byteLength === 0) {
+    throw new Error("Audio input must contain original binary bytes.");
+  }
+  return value.byteLength;
+}
+
+function inlineRequestLimitError(): Error {
+  return new Error(`Binary input exceeds Live Smith's ${MAX_REQUEST_BINARY_ATTACHMENT_BYTES / (1024 * 1024)} MiB inline request budget. Choose fewer files or a shorter audio excerpt. The original attachments are unchanged.`);
 }
 
 function assertBinaryPartMediaType(
@@ -117,7 +128,7 @@ export function* allModelInputParts(
 
 function canonicalBase64DecodedByteLength(value: unknown): number {
   if (typeof value === "string" && value.length > MAX_BINARY_BASE64_CHARACTERS) {
-    throw new Error("Binary input subtotal may not exceed 30 MiB.");
+    throw inlineRequestLimitError();
   }
   if (
     typeof value !== "string" ||
@@ -219,7 +230,7 @@ export function openAIChatAudioPart(
   return {
     type: "input_audio",
     input_audio: {
-      data: part.base64,
+      data: Buffer.from(part.bytes.buffer, part.bytes.byteOffset, part.bytes.byteLength).toString("base64"),
       format: part.mediaType === "audio/wav" ? "wav" : "mp3",
     },
   };

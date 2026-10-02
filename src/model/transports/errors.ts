@@ -4,6 +4,7 @@ import {
   ModelAuthenticationError,
   ModelConnectionError,
   ModelRetryableError,
+  ModelInputTooLargeError,
 } from "../connection-error.js";
 import {
   profileApiMode,
@@ -30,6 +31,7 @@ export async function withTransportContext<T>(
       ? `${profileProvider(profile)}/${apiMode}`
       : `${profileProvider(profile)}/${profile.connection.kind}`;
     const contextualMessage = `${context} ${operation} failed: ${message}`;
+    if (cause instanceof ModelInputTooLargeError) throw new ModelInputTooLargeError(contextualMessage);
     if (cause instanceof ModelConnectionError) {
       throw new ModelConnectionError(contextualMessage);
     }

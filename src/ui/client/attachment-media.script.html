@@ -4,7 +4,6 @@
       const formats = __ATTACHMENT_FORMATS__;
       const importFormats = __ATTACHMENT_IMPORT_FORMATS__;
       const conversionTimeoutMs = 30_000;
-      const outputSampleRate = 32_000;
 
       function fileExtension(file) {
         return /\.([^.]+)$/u.exec(String(file?.name || "").toLowerCase())?.[1] || "";
@@ -151,138 +150,13 @@
         return { file: new File([blob], convertedFileName(file, "png"), { type: "image/png" }) };
       }
 
-      async function audioMetadataDuration(file, signal, addCleanup) {
-        if (typeof Audio !== "function" || typeof URL.createObjectURL !== "function" ||
-            typeof URL.revokeObjectURL !== "function") return null;
-        let element;
-        let sourceUrl;
-        let released = false;
-        const release = () => {
-          if (released) return;
-          released = true;
-          try {
-            if (element) {
-              element.onloadedmetadata = null;
-              element.onerror = null;
-              element.removeAttribute("src");
-              element.load();
-            }
-          } catch {} finally {
-            if (sourceUrl) URL.revokeObjectURL(sourceUrl);
-          }
-        };
-        addCleanup(release);
-        try {
-          element = new Audio();
-          element.preload = "metadata";
-          element.autoplay = false;
-          element.muted = true;
-          sourceUrl = URL.createObjectURL(file);
-          const duration = await new Promise((resolve) => {
-            element.onloadedmetadata = () => resolve(element.duration);
-            element.onerror = () => resolve(null);
-            element.src = sourceUrl;
-            element.load();
-          });
-          checkCancelled(signal);
-          return Number.isFinite(duration) ? duration : null;
-        } catch {
-          checkCancelled(signal);
-          return null;
-        } finally {
-          release();
-        }
-      }
-
-      async function convertAudio(file, signal, addCleanup) {
-        const AudioDecoder = window.AudioContext || window.webkitAudioContext;
-        if (typeof AudioDecoder !== "function") {
-          throw new Error(t("Audio conversion is unavailable in this browser."));
-        }
-        const metadataDuration = await audioMetadataDuration(file, signal, addCleanup);
-        checkCancelled(signal);
-        if (metadataDuration > __MAX_AUDIO_DURATION_SECONDS__) {
-          throw new Error(t("Audio attachments may not exceed 120 seconds."));
-        }
-        let context;
-        try { context = new AudioDecoder({ sampleRate: outputSampleRate }); } catch {
-          throw new Error(t("Audio conversion is unavailable in this browser."));
-        }
-        addCleanup(() => {
-          if (typeof context.close === "function") {
-            Promise.resolve(context.close()).catch(() => {});
-          }
-        });
-        const bytes = await file.arrayBuffer();
-        checkCancelled(signal);
-        let decoded;
-        try { decoded = await context.decodeAudioData(bytes); } catch {
-          checkCancelled(signal);
-          throw new Error(t("This browser cannot decode the audio format."));
-        }
-        checkCancelled(signal);
-        const duration = decoded.length / decoded.sampleRate;
-        if (!Number.isInteger(decoded.length) || decoded.length <= 0 ||
-            !Number.isFinite(decoded.sampleRate) || decoded.sampleRate <= 0 ||
-            !Number.isInteger(decoded.numberOfChannels) || decoded.numberOfChannels < 1 ||
-            decoded.numberOfChannels > 32 || !Number.isFinite(duration) || duration <= 0) {
-          throw new Error(t("The browser returned invalid decoded audio."));
-        }
-        if (duration > __MAX_AUDIO_DURATION_SECONDS__) {
-          throw new Error(t("Audio attachments may not exceed 120 seconds."));
-        }
-        const channels = decoded.numberOfChannels === 2 ? 2 : 1;
-        const frames = Math.ceil(duration * outputSampleRate);
-        const dataBytes = frames * channels * 2;
-        const samples = Array.from({ length: decoded.numberOfChannels }, (_, index) => decoded.getChannelData(index));
-        if (samples.some((channel) => channel.length !== decoded.length)) {
-          throw new Error(t("The browser returned invalid decoded audio."));
-        }
-        const outputChannels = channels === 1 ? [samples] : samples.map((channel) => [channel]);
-        const output = new ArrayBuffer(44 + dataBytes);
-        const wav = new DataView(output);
-        const writeTag = (offset, tag) => {
-          for (let index = 0; index < tag.length; index += 1) wav.setUint8(offset + index, tag.charCodeAt(index));
-        };
-        writeTag(0, "RIFF"); wav.setUint32(4, 36 + dataBytes, true);
-        writeTag(8, "WAVE"); writeTag(12, "fmt "); wav.setUint32(16, 16, true);
-        wav.setUint16(20, 1, true); wav.setUint16(22, channels, true);
-        wav.setUint32(24, outputSampleRate, true); wav.setUint32(28, outputSampleRate * channels * 2, true);
-        wav.setUint16(32, channels * 2, true); wav.setUint16(34, 16, true);
-        writeTag(36, "data"); wav.setUint32(40, dataBytes, true);
-        for (let frame = 0; frame < frames; frame += 1) {
-          const sourcePosition = Math.min(frame * decoded.sampleRate / outputSampleRate, decoded.length - 1);
-          const before = Math.floor(sourcePosition);
-          const after = Math.min(before + 1, decoded.length - 1);
-          const fraction = sourcePosition - before;
-          for (let channel = 0; channel < channels; channel += 1) {
-            const sources = outputChannels[channel];
-            let value = 0;
-            for (const source of sources) {
-              value += source[before] + (source[after] - source[before]) * fraction;
-            }
-            value = Math.max(-1, Math.min(1, value / sources.length));
-            wav.setInt16(44 + (frame * channels + channel) * 2,
-              Math.round(value * (value < 0 ? 32_768 : 32_767)), true);
-          }
-          if (frame % 32_768 === 0) {
-            await new Promise((resolve) => window.setTimeout(resolve, 0));
-            checkCancelled(signal);
-          }
-        }
-        return {
-          file: new File([output], convertedFileName(file, "wav"), { type: "audio/wav" }),
-          ...(decoded.numberOfChannels > 2
-            ? { notice: t("Multichannel audio was converted to mono WAV.") } : {}),
-        };
-      }
-
       async function normalize(file, classification, signal) {
         if (!classification.conversion) return { file };
+        if (classification.conversion === "audio") {
+          throw new Error(t("This audio format requires conversion. Export WAV or MP3 explicitly before attaching it; Live Smith preserves the original audio."));
+        }
         return convertWithinDeadline(file, signal, (conversionSignal, addCleanup) =>
-          classification.conversion === "image"
-            ? convertImage(file, conversionSignal, addCleanup)
-            : convertAudio(file, conversionSignal, addCleanup));
+          convertImage(file, conversionSignal, addCleanup));
       }
 
       return { classify, fileExtension, normalize };

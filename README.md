@@ -470,11 +470,11 @@ Supported categories include:
 | Documents and tables | PDF; DOCX, XLSX, PPTX; RTF; ODT, ODS, and ODP. Non-PDF documents are extracted as text. |
 | MIDI | MID and MIDI Standard MIDI Files with format 0, 1, or 2 and PPQN timing. Context retains tracks, channels, note timing and velocity, tempo, meter, instruments, and control events. |
 | Images | PNG, JPEG, and WebP are retained directly. Additional browser-decodable images, including GIF, BMP, SVG, AVIF, TIFF, and HEIC/HEIF, are converted to a static PNG. |
-| Audio | WAV and MP3 are retained directly. Additional browser-decodable formats, including FLAC, OGG/Opus, M4A/AAC, AIFF, and WebM/MP4 audio, are converted to 32-kHz PCM WAV. Mono/stereo are retained; more channels are mixed to mono with a notice. |
+| Audio | WAV and MP3 retain their original bytes, sample rate, bit depth, and channels. Other audio formats require an explicit WAV/MP3 export before attaching; Live Smith does not automatically transcode audio. |
 
 Browser conversion depends on the codecs available in the Ableton window. A
 conversion failure names the file and leaves other files in the batch available
-to add. Converted attachments use the new PNG/WAV filename and bytes; the source
+to add. Converted images use the new PNG filename and bytes; the source
 file is not changed. Animated images contribute one static frame. MIDI uses at
 most 8 MiB; its context is symbolic music data and does not require an audio
 model. SMPTE-timed MIDI, RMID, and MIDI 2 UMP are not supported.
@@ -487,10 +487,13 @@ provider covers Live Smith's concrete formats and the selected protocol can
 encode them; missing or coarse-only evidence stays unverified. Provider-reported
 video capability is shown, but Live Smith does not yet accept video attachments.
 Use paste or drag-and-drop rather than a system file picker. Each Session may
-hold up to four pending files and 30 MiB total. Images are limited to 5 MiB each;
+hold up to four pending files and 256 MiB total. Images are limited to 5 MiB each;
 their subtotal is 16 MiB. Documents are limited to 20 MiB total; audio to two
-files, 20 MiB each, and 120 seconds each.
-Browser-conversion source files are limited to 20 MiB. Locally extracted context
+files, 128 MiB each, and 15 minutes each.
+Image-conversion source files are limited to 20 MiB. Model requests have a separate
+128 MiB inline binary budget, including history. Provider limits can be lower;
+if a request is too large, select a shorter audio excerpt or fewer files. Original
+audio is not automatically compressed or truncated. Locally extracted context
 is bounded and labels truncation.
 Modern Office and OpenDocument extraction uses bundled `officeparser` and
 SheetJS libraries. No additional runtime or local service is required. Parsing
@@ -504,7 +507,7 @@ Office formatting, embedded images, and chart geometry are not
 rendered by local text extraction. Legacy DOC/XLS/PPT, XLSB, and video frames
 are not accepted as model context; historical legacy Office references remain
 in saved Sessions and are marked unsupported during context assembly;
-WebM/MP4 import extracts only their decodable audio.
+WebM/MP4 audio also requires an explicit WAV/MP3 export.
 The Extensions SDK does not expose selected Audio Clip, Sample, or Simpler source
 bytes to extensions, so export or locate the source file and drop it into the
 chat when you need the original file as an attachment.

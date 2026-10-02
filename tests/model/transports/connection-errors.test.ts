@@ -913,3 +913,20 @@ test("JSON, protocol, oversize, and callback failures remain ordinary", async (t
     );
   });
 });
+
+test("Direct API request-size rejection gives excerpt guidance without retrying or reflecting provider content", async () => {
+  let calls = 0;
+  for (const entry of directCases(async () => {
+    calls++;
+    return new Response(JSON.stringify({ error: { message: "private-api-key", code: "request_too_large" } }), { status: 413 });
+  })) {
+    await assert.rejects(entry.transport.createToolTurn(request(entry.profile)), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error instanceof ModelRetryableError, false);
+      assert.match(error.message, /413.*shorter audio excerpt/);
+      assert.doesNotMatch(error.message, /private-api-key/);
+      return true;
+    });
+  }
+  assert.equal(calls, 3);
+});

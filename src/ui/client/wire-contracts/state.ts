@@ -262,7 +262,7 @@ export function createStateValidators({ isWireIntegrationConnections, isWireSuno
         !isWireStorageId(payload.sessionId) ||
         !includes(["persisted", "not_persisted", "unknown"], payload.promptPersistence) ||
         (payload.sendFailureKind !== undefined &&
-          !includes(["session_unavailable", "state_stale"], payload.sendFailureKind)) ||
+          !includes(["session_unavailable", "state_stale", "input_too_large"], payload.sendFailureKind)) ||
         (payload.state !== undefined &&
           !isWireChatBridgeState(payload.state))
       ) return null;

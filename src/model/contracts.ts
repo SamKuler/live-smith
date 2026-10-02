@@ -16,7 +16,8 @@ export type ModelInputPart =
       type: "audio";
       fileName: string;
       mediaType: "audio/wav" | "audio/mpeg";
-      base64: string;
+      /** Owned original bytes; each transport chooses its wire encoding. */
+      bytes: Uint8Array;
     };
 
 export type ModelToolInputPart = Extract<ModelInputPart, { type: "audio" }>;

@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { modelMessageText } from "../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -792,7 +793,7 @@ test("runAgentLoop binds rendered audio to its tool result for the next model tu
     type: "audio" as const,
     fileName: "live-render.wav",
     mediaType: "audio/wav" as const,
-    base64: "AAAA",
+    bytes: Uint8Array.from(Buffer.from("AAAA", "base64")),
   };
   const result = await runAgentLoop({
     maxConsecutiveFailures: 3,
@@ -846,7 +847,7 @@ test("tool-produced audio is accepted only after its trace result succeeds", asy
     type: "audio" as const,
     fileName: "live-render.wav",
     mediaType: "audio/wav" as const,
-    base64: "AAAA",
+    bytes: Uint8Array.from(Buffer.from("AAAA", "base64")),
   };
   let accepted = 0;
   let rejectFirstTrace = true;

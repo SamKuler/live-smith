@@ -48,12 +48,12 @@ test("oversized rendered audio is rejected before allocation", async (t) => {
   const directory = await temporaryDirectory(t, "oversized");
   const sourcePath = path.join(directory, "oversized.wav");
   const source = await fs.open(sourcePath, "w");
-  await source.truncate(20 * 1024 * 1024 + 1);
+  await source.truncate(128 * 1024 * 1024 + 1);
   await source.close();
 
   await assert.rejects(
     copyAudioFileSafely(sourcePath, createHostAbortController().signal),
-    attachmentError("archive_limit", /20 MiB/, directory),
+    attachmentError("archive_limit", /128 MiB/, directory),
   );
 });
 

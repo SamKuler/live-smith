@@ -1753,6 +1753,20 @@ test("a zero-completion Apply failure is labeled failed and opened by default", 
   }
 });
 
+test("a persisted provider size rejection keeps actionable excerpt guidance visible", async () => {
+  const harness = await createDialogHarness();
+  try {
+    const message = "Provider HTTP 413: choose a shorter audio excerpt. Original attachments are unchanged.";
+    harness.failNextSend(message, "persisted", { sendFailureKind: "input_too_large" });
+    harness.input("#prompt", "Analyze the full audio");
+    harness.click("#sendButton");
+    await harness.settle();
+    assert.match(harness.document.querySelector("#status")!.textContent!, /shorter audio excerpt/);
+    assert.equal(harness.document.querySelector<HTMLTextAreaElement>("#prompt")!.disabled, false);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
 test("a reconciled persisted failure keeps full detail in timeline instead of status", async () => {
   const state = stateFixture();
   const failureDetail = "HOST-FAILURE-DETAIL: failed action 10 on FB Lead.";

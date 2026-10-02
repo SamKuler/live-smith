@@ -62,9 +62,11 @@ export async function resolveCurrentAttachmentParts(input: {
   if (!input.refs.length) {
     return { parts: [], documentTextCharacters: 0 };
   }
-  assertAttachmentRequestBudget(input.refs);
+  const modelRefs = input.audioProcessingOnly
+    ? input.refs.filter((ref) => ref.kind !== "audio") : input.refs;
+  if (modelRefs.length) assertAttachmentRequestBudget(modelRefs);
   assertCurrentProfileCompatibility(
-    input.audioProcessingOnly ? input.refs.filter((ref) => ref.kind !== "audio") : input.refs,
+    modelRefs,
     input.runtimeProfile,
   );
 
@@ -130,6 +132,8 @@ export async function resolveConversationHistory(input: {
     ? undefined
     : input.events[checkpointIndex];
   const events = input.events.slice(checkpointIndex + 1);
+  const rejectedInputIndex = events.findLastIndex((event) =>
+    event.kind === "error" && event.name === "input_too_large");
   let remainingDocumentText =
     MAX_REQUEST_DOCUMENT_TEXT_CHARACTERS -
     input.currentDocumentTextCharacters;
@@ -149,6 +153,11 @@ export async function resolveConversationHistory(input: {
       const ref = attachments[attachmentIndex]!;
       if (seenIds.has(ref.id)) continue;
       seenIds.add(ref.id);
+      if (eventIndex < rejectedInputIndex &&
+          (ref.kind === "audio" || ref.kind === "image" || ref.mediaType === "application/pdf")) {
+        resolved.set(occurrence, historicalMarker("omitted_from_request", ref.fileName));
+        continue;
+      }
       const preflightMarker = historicalPreflightMarker(
         ref,
         input.runtimeProfile,
@@ -452,7 +461,7 @@ function audioPart(
     type: "audio",
     fileName: ref.fileName,
     mediaType: ref.mediaType,
-    base64: Buffer.from(bytes).toString("base64"),
+    bytes,
   };
 }
 
@@ -575,7 +584,7 @@ function assertAttachmentRequestBudget(
   if (
     !attachmentRequestQuotaIsWithinLimits(refs.map(attachmentQuotaItem))
   ) {
-    throw new Error("Attachments exceed the model request limit.");
+    throw new Error(`Attachments exceed Live Smith's ${MAX_REQUEST_BINARY_ATTACHMENT_BYTES / (1024 * 1024)} MiB inline model request budget. Choose fewer files or a shorter audio excerpt. The original attachments are unchanged.`);
   }
 }
 

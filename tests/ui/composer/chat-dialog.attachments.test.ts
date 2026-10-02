@@ -198,7 +198,7 @@ test("audio count and per-kind pending limits are enforced before upload", async
   }
 });
 
-test("audio local preflight accepts 20 MiB and 30 MiB mixed totals exactly", async () => {
+test("audio local preflight accepts 128 MiB and 256 MiB mixed totals exactly", async () => {
   const perFileHarness = await createDialogHarness();
   try {
     perFileHarness.dispatchDrop([
@@ -206,13 +206,13 @@ test("audio local preflight accepts 20 MiB and 30 MiB mixed totals exactly", asy
         perFileHarness.window,
         "exact.wav",
         "audio/wav",
-        20 * 1024 * 1024,
+        128 * 1024 * 1024,
       ),
       audioFile(
         perFileHarness.window,
         "over.mp3",
         "audio/mpeg",
-        20 * 1024 * 1024 + 1,
+        128 * 1024 * 1024 + 1,
       ),
     ]);
     await perFileHarness.settleAttachmentOperation();
@@ -224,7 +224,7 @@ test("audio local preflight accepts 20 MiB and 30 MiB mixed totals exactly", asy
     );
     assert.match(
       perFileHarness.document.querySelector("#status")?.textContent ?? "",
-      /over\.mp3.*larger than 20 MiB/i,
+      /over\.mp3.*larger than 128 MiB/i,
     );
   } finally {
     perFileHarness.close();
@@ -232,30 +232,25 @@ test("audio local preflight accepts 20 MiB and 30 MiB mixed totals exactly", asy
 
   const exactState = imageCapableState();
   exactState.pendingAttachments = [
-    pendingImage("image-1", "reference.png", "image/png", 5 * 1024 * 1024),
-    pendingDocument(
-      "document-1",
-      "score.pdf",
-      "application/pdf",
-      20 * 1024 * 1024,
-    ),
+    pendingAudio("audio-1", "reference.wav", "audio/wav", 128 * 1024 * 1024),
+    pendingAudio("audio-2", "second.wav", "audio/wav", 123 * 1024 * 1024),
   ];
   const exactHarness = await createDialogHarness(exactState);
   try {
     exactHarness.dispatchDrop([
-      audioFile(exactHarness.window, "exact-total.wav", "audio/wav", 5 * 1024 * 1024),
-      audioFile(exactHarness.window, "over-total.wav", "audio/wav", 1),
+      documentFile(exactHarness.window, "exact-total.pdf", "application/pdf", 5 * 1024 * 1024),
+      documentFile(exactHarness.window, "over-total.pdf", "application/pdf", 1),
     ]);
     await exactHarness.settleAttachmentOperation();
     assert.deepEqual(
       exactHarness.calls
         .filter((call) => call.path === "/attachments")
         .map((call) => new URL(call.url).searchParams.get("fileName")),
-      ["exact-total.wav"],
+      ["exact-total.pdf"],
     );
     assert.match(
       exactHarness.document.querySelector("#status")?.textContent ?? "",
-      /over-total\.wav.*exceed 30 MiB/i,
+      /over-total\.pdf.*exceed 256 MiB/i,
     );
   } finally {
     exactHarness.close();

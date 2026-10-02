@@ -25,13 +25,6 @@ interface DecoderOptions {
   imageOutputBytes?: number;
   rejectImages?: boolean;
   holdImages?: boolean;
-  audioDuration?: number;
-  audioChannels?: number;
-  rejectAudio?: boolean;
-  holdAudio?: boolean;
-  audioMetadataDuration?: number;
-  unavailableAudioMetadata?: boolean;
-  holdAudioMetadata?: boolean;
 }
 
 function browserDecoders(options: DecoderOptions = {}) {
@@ -41,12 +34,7 @@ function browserDecoders(options: DecoderOptions = {}) {
     imageLoads: 0,
     imageDraws: 0,
     audioDecodes: 0,
-    audioCloses: 0,
-    audioMetadataLoads: 0,
-    audioMetadataCloses: 0,
     releaseImages: [] as Array<() => void>,
-    releaseAudio: [] as Array<() => void>,
-    releaseAudioMetadata: [] as Array<() => void>,
     expireConversion: null as (() => void) | null,
   };
   const beforeParse = (window: JSDOM["window"]) => {
@@ -76,43 +64,8 @@ function browserDecoders(options: DecoderOptions = {}) {
       value: (callback: (blob: Blob) => void) => callback(new window.Blob([
         new Uint8Array(options.imageOutputBytes ?? 68),
       ], { type: "image/png" })) });
-    Object.defineProperty(window, "Audio", { configurable: true, value: class {
-      duration = options.audioMetadataDuration ?? Number.NaN;
-      onloadedmetadata: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-      private hasSource = false;
-      set src(value: string) {
-        this.hasSource = Boolean(value);
-        if (value) probe.audioMetadataLoads += 1;
-      }
-      removeAttribute(name: string) {
-        if (name !== "src" || !this.hasSource) return;
-        this.hasSource = false;
-        probe.audioMetadataCloses += 1;
-      }
-      load() {
-        if (!this.hasSource) return;
-        const finish = () => options.unavailableAudioMetadata ? this.onerror?.() : this.onloadedmetadata?.();
-        if (options.holdAudioMetadata) probe.releaseAudioMetadata.push(finish);
-        else queueMicrotask(finish);
-      }
-    } });
     Object.defineProperty(window, "AudioContext", { configurable: true, value: class {
-      async decodeAudioData() {
-        probe.audioDecodes += 1;
-        if (options.holdAudio) {
-          await new Promise<void>((resolve) => probe.releaseAudio.push(resolve));
-        }
-        if (options.rejectAudio) throw new Error("Unsupported codec");
-        const sampleRate = 48_000;
-        const length = Math.round((options.audioDuration ?? 0.1) * sampleRate);
-        const numberOfChannels = options.audioChannels ?? 2;
-        return {
-          sampleRate, length, numberOfChannels,
-          getChannelData: (channel: number) => new Float32Array(length).fill(channel ? -0.25 : 0.5),
-        };
-      }
-      async close() { probe.audioCloses += 1; }
+      decodeAudioData() { probe.audioDecodes++; throw new Error("Audio must not be converted"); }
     } });
     const setTimeout = window.setTimeout.bind(window);
     Object.defineProperty(window, "setTimeout", { configurable: true, value: (
@@ -229,8 +182,8 @@ test("the attachment drop handler preserves a Skill drop's ownership", async () 
   } finally { harness.close(); }
 });
 
-test("import extensions and MIME aliases normalize images and audio before upload", async () => {
-  for (const format of ATTACHMENT_IMPORT_FORMATS) {
+test("import extensions and MIME aliases normalize images before upload", async () => {
+  for (const format of ATTACHMENT_IMPORT_FORMATS.filter((format) => format.kind === "image")) {
     const entries = [
       ...format.extensions.filter((extension) => extension !== "svg").map((extension) => ["sample." + extension, ""]),
       ...format.mediaTypes.filter((mediaType) => mediaType !== "image/svg+xml").map((mediaType) => ["sample", mediaType]),
@@ -248,16 +201,9 @@ test("import extensions and MIME aliases normalize images and audio before uploa
           const file = call.body as File;
           assert.equal(file.type, format.kind === "image" ? "image/png" : "audio/wav");
           assert.equal(new URL(call.url).searchParams.get("fileName"), format.kind === "image" ? "sample.png" : "sample.wav");
-          if (format.kind === "audio") {
-            const wav = new DataView(await file.arrayBuffer());
-            assert.equal(wav.getUint16(20, true), 1);
-            assert.equal(wav.getUint32(24, true), 32_000);
-            assert.equal(wav.getUint16(22, true), 2);
-            assert.equal(wav.getUint16(34, true), 16);
-          }
+
         }
         assert.deepEqual(decoders.probe.revokedUrls, decoders.probe.createdUrls);
-        assert.equal(decoders.probe.audioCloses, decoders.probe.audioDecodes);
         assert.deepEqual(harness.errors, []);
       } finally { harness.close(); }
     }
@@ -265,7 +211,7 @@ test("import extensions and MIME aliases normalize images and audio before uploa
 });
 
 test("supported image and audio uploads preserve their original bytes without browser decoding", async () => {
-  const decoders = browserDecoders({ rejectImages: true, rejectAudio: true });
+  const decoders = browserDecoders({ rejectImages: true });
   const harness = await createDialogHarness(imageCapableState(), undefined, decoders);
   try {
     const files = [
@@ -331,7 +277,7 @@ test("image capability and attachment counts reject imports before a decoder sta
 });
 
 test("decoder failures are explicit and mixed batches retain ordinary files", async () => {
-  const decoders = browserDecoders({ rejectImages: true, rejectAudio: true });
+  const decoders = browserDecoders({ rejectImages: true });
   const harness = await createDialogHarness(imageCapableState(), undefined, decoders);
   try {
     harness.dispatchDrop([
@@ -343,10 +289,9 @@ test("decoder failures are explicit and mixed batches retain ordinary files", as
     assert.deepEqual(uploads(harness).map((call) => new URL(call.url).searchParams.get("fileName")), ["source.wav"]);
     const status = harness.document.querySelector("#status")?.textContent ?? "";
     assert.match(status, /image\.heic.*cannot decode the image format/i);
-    assert.match(status, /music\.flac.*cannot decode the audio format/i);
+    assert.match(status, /music\.flac.*requires conversion/i);
     assert.doesNotMatch(status, /Unconfirmed uploads/i);
     assert.deepEqual(decoders.probe.revokedUrls, decoders.probe.createdUrls);
-    assert.equal(decoders.probe.audioCloses, 1);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });
@@ -357,14 +302,14 @@ test("an absent platform decoder leaves controls usable and names the unsupporte
     harness.dispatchDrop([importFile(harness, "image.heif", "image/heif"), importFile(harness, "music.m4a", "audio/mp4")]);
     await harness.settleAttachmentOperation();
     assert.equal(uploads(harness).length, 0);
-    assert.match(harness.document.querySelector("#status")?.textContent ?? "", /Image conversion is unavailable.*Audio conversion is unavailable/is);
+    assert.match(harness.document.querySelector("#status")?.textContent ?? "", /Image conversion is unavailable.*audio format requires conversion/is);
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled, false);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });
 
-test("decoded dimension and duration bounds are checked before output is allocated", async () => {
-  for (const options of [{ imageWidth: 16_385 }, { imageWidth: 10_001, imageHeight: 10_000 }, { audioDuration: 120.01 }]) {
+test("decoded dimension bounds are checked before output is allocated", async () => {
+  for (const options of [{ imageWidth: 16_385 }, { imageWidth: 10_001, imageHeight: 10_000 }]) {
     const decoders = browserDecoders(options);
     const harness = await createDialogHarness(imageCapableState(), undefined, decoders);
     try {
@@ -373,51 +318,15 @@ test("decoded dimension and duration bounds are checked before output is allocat
       await harness.settleAttachmentOperation();
       assert.equal(uploads(harness).length, 0);
       assert.equal(decoders.probe.imageDraws, 0);
-      assert.match(harness.document.querySelector("#status")?.textContent ?? "", image ? /dimensions or pixel count/i : /120 seconds/i);
+      assert.match(harness.document.querySelector("#status")?.textContent ?? "", /dimensions or pixel count/i);
       assert.deepEqual(decoders.probe.revokedUrls, decoders.probe.createdUrls);
-      assert.equal(decoders.probe.audioCloses, decoders.probe.audioDecodes);
       assert.deepEqual(harness.errors, []);
     } finally { harness.close(); }
   }
 });
 
-test("multichannel decoded audio includes every channel and reports its mono conversion", async () => {
-  for (const channels of [4, 9]) {
-    const decoders = browserDecoders({ audioChannels: channels });
-    const harness = await createDialogHarness(imageCapableState(), undefined, decoders);
-    try {
-      harness.dispatchDrop([importFile(harness, "surround.flac", "audio/flac")]);
-      await harness.settleAttachmentOperation();
-      const wav = new DataView(await (uploads(harness)[0]!.body as File).arrayBuffer());
-      assert.equal(wav.getUint16(22, true), 1);
-      assert.equal(wav.getInt16(44, true), Math.round((0.5 - 0.25 * (channels - 1)) / channels * 32_768));
-      assert.match(harness.document.querySelector("#status")?.textContent ?? "", /Multichannel audio was converted to mono WAV/i);
-      assert.equal(decoders.probe.audioCloses, 1);
-    } finally { harness.close(); }
-  }
-});
-
-test("mono audio at the exact duration limit preserves the readable basename and remains bounded", async () => {
-  const decoders = browserDecoders({ audioMetadataDuration: 120, audioDuration: 120, audioChannels: 1 });
-  const harness = await createDialogHarness(imageCapableState(), undefined, decoders);
-  try {
-    harness.dispatchDrop([importFile(harness, "作品 v2.final.m4a", "audio/mp4")]);
-    await harness.settleAttachmentOperation();
-    const uploaded = uploads(harness)[0]!;
-    const file = uploaded.body as File;
-    assert.equal(new URL(uploaded.url).searchParams.get("fileName"), "作品 v2.final.wav");
-    assert.equal(file.size, 44 + 120 * 32_000 * 2);
-    const wav = new DataView(await file.arrayBuffer());
-    assert.equal(wav.getUint16(22, true), 1);
-    assert.equal(wav.getUint32(24, true), 32_000);
-    assert.match(harness.document.querySelector("#pendingAttachments")?.textContent ?? "", /作品 v2.final\.wav.*2:00/);
-    assert.equal(decoders.probe.audioCloses, 1);
-    assert.deepEqual(harness.errors, []);
-  } finally { harness.close(); }
-});
-
 test("conversion owns the upload busy state and cancellation releases decoding resources", async () => {
-  for (const options of [{ holdImages: true }, { holdAudio: true }, { holdAudioMetadata: true }]) {
+  for (const options of [{ holdImages: true }]) {
     const decoders = browserDecoders(options);
     const harness = await createDialogHarness(imageCapableState(), undefined, decoders);
     try {
@@ -433,8 +342,7 @@ test("conversion owns the upload busy state and cancellation releases decoding r
       assert.equal(uploads(harness).length, 0);
       assert.equal(harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled, false);
       assert.deepEqual(decoders.probe.revokedUrls, decoders.probe.createdUrls);
-      assert.equal(decoders.probe.audioCloses, decoders.probe.audioDecodes);
-      for (const release of [...decoders.probe.releaseImages, ...decoders.probe.releaseAudio, ...decoders.probe.releaseAudioMetadata]) release();
+      for (const release of decoders.probe.releaseImages) release();
       await harness.settle();
       assert.equal(uploads(harness).length, 0);
       assert.deepEqual(harness.errors, []);
@@ -443,10 +351,10 @@ test("conversion owns the upload busy state and cancellation releases decoding r
 });
 
 test("conversion timeout releases controls and allows the next document in a mixed drop", async () => {
-  const decoders = browserDecoders({ holdAudio: true });
+  const decoders = browserDecoders({ holdImages: true });
   const harness = await createDialogHarness(imageCapableState(), undefined, decoders);
   try {
-    harness.dispatchDrop([importFile(harness, "stalled.aac", "audio/aac"), new harness.window.File(["A note"], "note.txt")]);
+    harness.dispatchDrop([importFile(harness, "stalled.gif", "image/gif"), new harness.window.File(["A note"], "note.txt")]);
     await harness.settle();
     assert.ok(decoders.probe.expireConversion);
     decoders.probe.expireConversion();
@@ -454,8 +362,7 @@ test("conversion timeout releases controls and allows the next document in a mix
     assert.deepEqual(uploads(harness).map((call) => new URL(call.url).searchParams.get("fileName")), ["note.txt"]);
     assert.match(harness.document.querySelector("#status")?.textContent ?? "", /30 seconds/i);
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled, false);
-    assert.equal(decoders.probe.audioCloses, 1);
-    decoders.probe.releaseAudio[0]!();
+    decoders.probe.releaseImages[0]!();
     await harness.settle();
     assert.equal(uploads(harness).length, 1);
     assert.deepEqual(harness.errors, []);
@@ -559,67 +466,6 @@ test("MIDI uses its local byte limit while readable text keeps the document limi
   } finally { harness.close(); }
 });
 
-test("finite long audio metadata rejects compressed input before any PCM decode", async () => {
-  const decoders = browserDecoders({ audioMetadataDuration: 3_600 });
-  const harness = await createDialogHarness(imageCapableState(), undefined, decoders);
-  try {
-    harness.dispatchDrop([importFile(harness, "long.flac", "audio/flac")]);
-    await harness.settleAttachmentOperation();
-    assert.equal(uploads(harness).length, 0);
-    assert.equal(decoders.probe.audioMetadataLoads, 1);
-    assert.equal(decoders.probe.audioMetadataCloses, 1);
-    assert.equal(decoders.probe.audioDecodes, 0);
-    assert.equal(decoders.probe.audioCloses, 0);
-    assert.match(harness.document.querySelector("#status")?.textContent ?? "", /120 seconds/i);
-    assert.deepEqual(decoders.probe.revokedUrls, decoders.probe.createdUrls);
-    assert.equal(harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled, false);
-    assert.deepEqual(harness.errors, []);
-  } finally { harness.close(); }
-});
-
-test("unavailable audio metadata falls back to decode while decoded duration remains authoritative", async () => {
-  const cases = [
-    { options: { unavailableAudioMetadata: true, audioDuration: 120.01 }, expected: 0 },
-    { options: { audioMetadataDuration: Number.POSITIVE_INFINITY }, expected: 1 },
-  ];
-  for (const entry of cases) {
-    const decoders = browserDecoders(entry.options);
-    const harness = await createDialogHarness(imageCapableState(), undefined, decoders);
-    try {
-      harness.dispatchDrop([importFile(harness, "reference.webm", "audio/webm")]);
-      await harness.settleAttachmentOperation();
-      assert.equal(uploads(harness).length, entry.expected);
-      assert.equal(decoders.probe.audioDecodes, 1);
-      assert.equal(decoders.probe.audioCloses, 1);
-      assert.equal(decoders.probe.audioMetadataCloses, 1);
-      assert.deepEqual(decoders.probe.revokedUrls, decoders.probe.createdUrls);
-      if (!entry.expected) assert.match(harness.document.querySelector("#status")?.textContent ?? "", /120 seconds/i);
-      assert.deepEqual(harness.errors, []);
-    } finally { harness.close(); }
-  }
-});
-
-test("metadata preflight timeout releases its element and permits later documents", async () => {
-  const decoders = browserDecoders({ holdAudioMetadata: true });
-  const harness = await createDialogHarness(imageCapableState(), undefined, decoders);
-  try {
-    harness.dispatchDrop([importFile(harness, "stalled.ogg", "audio/ogg"), new harness.window.File(["Read me"], "note.txt")]);
-    await harness.settle();
-    assert.equal(decoders.probe.audioMetadataLoads, 1);
-    assert.equal(decoders.probe.audioDecodes, 0);
-    decoders.probe.expireConversion!();
-    await harness.settleAttachmentOperation();
-    assert.deepEqual(uploads(harness).map((call) => new URL(call.url).searchParams.get("fileName")), ["note.txt"]);
-    assert.equal(decoders.probe.audioMetadataCloses, 1);
-    assert.deepEqual(decoders.probe.revokedUrls, decoders.probe.createdUrls);
-    assert.equal(harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled, false);
-    decoders.probe.releaseAudioMetadata[0]!();
-    await harness.settle();
-    assert.equal(decoders.probe.audioDecodes, 0);
-    assert.deepEqual(harness.errors, []);
-  } finally { harness.close(); }
-});
-
 test("catalog-verified Google subscription accepts PDF and audio together", async () => {
   const state = verifiedProfileState(profileFixture({ connection: { kind: "oauth-subscription", provider: "google" } }));
   state.pendingAttachments = [pendingDocument("pdf", "score.pdf", "application/pdf"), pendingAudio("audio", "source.wav")];
@@ -693,6 +539,20 @@ test("Google subscription text and MIDI remain sendable with unsupported native 
     harness.click("#sendButton");
     await harness.settle();
     assert.equal(harness.calls.some((call) => call.path === "/send"), true);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
+test("audio formats requiring conversion fail explicitly without decoding or changing the next original file", async () => {
+  const decoders = browserDecoders();
+  const harness = await createDialogHarness(stateFixture(), undefined, decoders);
+  try {
+    const source = importFile(harness, "original.wav", "audio/wav");
+    harness.dispatchDrop([importFile(harness, "source.flac", "audio/flac"), source]);
+    await harness.settleAttachmentOperation();
+    assert.deepEqual(uploads(harness).map(call => call.body), [source]);
+    assert.equal(decoders.probe.audioDecodes, 0);
+    assert.match(harness.document.querySelector("#status")!.textContent!, /source\.flac.*requires conversion/);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });

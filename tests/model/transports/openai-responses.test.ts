@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import { clearTimeout, setTimeout as scheduleTimeout } from "node:timers";
 import test from "node:test";
@@ -120,7 +121,7 @@ function audioPart(
     type: "audio",
     fileName,
     mediaType: "audio/wav",
-    base64: "not canonical or safe to echo",
+    bytes: Uint8Array.from(Buffer.from("not canonical or safe to echo", "base64")),
   };
 }
 
@@ -1339,7 +1340,7 @@ test("OpenAI Responses accepts exact binary attachment boundaries across current
     req.currentUserContent = [
       imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
       pdfPart(
-        MAX_REQUEST_BINARY_ATTACHMENT_BYTES - 3 * MAX_IMAGE_ATTACHMENT_BYTES,
+        MAX_DOCUMENT_ATTACHMENT_BYTES,
         "current.pdf",
       ),
     ];
@@ -1396,26 +1397,6 @@ test("OpenAI Responses rejects every binary quota overflow before body construct
         req.currentUserContent = [pdfPart(MAX_DOCUMENT_ATTACHMENT_BYTES + 1)];
       },
       message: /PDF input may not exceed 20 MiB/,
-    },
-    {
-      label: "combined mixed subtotal",
-      configure: (req) => {
-        req.history = [{
-          role: "user",
-          content: [
-            imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-1.png"),
-            imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-2.png"),
-          ],
-        }];
-        req.currentUserContent = [
-          imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
-          pdfPart(
-            MAX_REQUEST_BINARY_ATTACHMENT_BYTES -
-              3 * MAX_IMAGE_ATTACHMENT_BYTES + 1,
-          ),
-        ];
-      },
-      message: /Binary input subtotal may not exceed 30 MiB/,
     },
     {
       label: "count across current and history",
@@ -1527,7 +1508,7 @@ test("OpenAI Responses rejects an oversized encoded input before scanning base64
 
   await assert.rejects(
     transport.createToolTurn(req),
-    /Binary input subtotal may not exceed 30 MiB\.$/,
+    /Binary input exceeds Live Smith/,
   );
   assert.equal(fetchCalls, 0);
 });

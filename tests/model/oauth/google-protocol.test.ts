@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import { ReadableStream } from "node:stream/web";
 import test from "node:test";
@@ -629,7 +630,7 @@ test("Google Antigravity maps every advertised Live Smith binary input", async (
       type: "audio",
       fileName: "reference.wav",
       mediaType: "audio/wav",
-      base64: "AA==",
+      bytes: Uint8Array.from(Buffer.from("AA==", "base64")),
     },
   ];
 
@@ -664,7 +665,7 @@ test("Google Antigravity maps multimodal steering after tool results", async () 
       { type: "text", text: "Use these references" },
       { type: "image", fileName: "image.png", mediaType: "image/png", base64: "AA==" },
       { type: "document", fileName: "score.pdf", mediaType: "application/pdf", base64: "AA==" },
-      { type: "audio", fileName: "reference.wav", mediaType: "audio/wav", base64: "AA==" },
+      { type: "audio", fileName: "reference.wav", mediaType: "audio/wav", bytes: Uint8Array.from(Buffer.from("AA==", "base64")) },
     ] },
   ];
   await protocol.createToolTurn(target, credential);
@@ -715,7 +716,7 @@ test("Google Antigravity forwards verified tool-produced audio", async () => {
       type: "audio",
       fileName: "render.wav",
       mediaType: "audio/wav",
-      base64: "AA==",
+      bytes: Uint8Array.from(Buffer.from("AA==", "base64")),
     },
   }];
 
@@ -915,6 +916,15 @@ test("Google generation treats explicit stream errors as provider failures", asy
 
 test("Google generation classifies HTTP authentication, retryable, and fatal failures", async (t) => {
   const cases = [
+    {
+      status: 413,
+      assertError(error: unknown) {
+        assert.ok(error instanceof Error);
+        assert.equal(error instanceof ModelRetryableError, false);
+        assert.match(error.message, /Google Antigravity HTTP 413.*shorter audio excerpt/);
+        assert.doesNotMatch(error.message, /credential-bearing|secret-access-token/);
+      },
+    },
     {
       status: 401,
       assertError(error: unknown) {

@@ -1125,21 +1125,26 @@ correlation and authoritative-state reconciliation. `/send` stays exactly
 browser import formats. Storage, event validation, and composed WebView scripts
 consume that same format contract. The supported categories and concrete
 formats are listed in [Sessions, Skills, and attachments](../README.md#sessions-skills-and-attachments).
-Shared policy constants allow at most 4 attachments and 30 MiB of raw bytes in
-pending Session state or one model request. Each image is limited to 5 MiB and
-the image subtotal to 16 MiB. Each document and the document subtotal are
-limited to 20 MiB. Each audio attachment is limited to 20 MiB and 120 seconds;
-the audio subtotal is 30 MiB and the audio count is at most 2. The combined
-30-MiB and 4-file limits still apply. These are intentional cross-provider
-limits: parsing, base64 wire encoding, and multi-round replay must remain
-bounded in the Extension Host even when a provider accepts more. The server
+Pending Session state allows 4 attachments and 256 MiB of raw bytes. Audio is
+limited to 2 files, 128 MiB and 15 minutes each. Each image is limited to 5 MiB,
+with a 16 MiB subtotal; documents retain their 20 MiB per-file and subtotal limits.
+Inline model requests have a separate 128 MiB binary budget, 4-file count and
+2-audio count. Audio used only by processing tools does not consume this inline
+budget. These are host resource budgets, not claims about remote provider limits.
+Audio model input carries original bytes; protocol adapters perform Base64 encoding
+only where their wire format requires it. Remote size rejection is reported without
+transcoding, truncating or replacing the saved source. A request-size rejection
+is persisted as an error named `input_too_large`. Subsequent requests omit
+earlier native binary history from automatic replay, retaining its text markers
+and local files; newly attached excerpts remain eligible. The server
 detects the actual file type and is authoritative over WebView extension/MIME
 hints.
 
 MIDI is a locally extracted document with canonical media type `audio/midi`,
 limited to 8 MiB. Its MIME name does not grant audio model input or an audio
-SampleSource. Browser conversion reads at most 20 MiB of source data and applies
-the ordinary stored-format quotas to its resulting PNG/WAV bytes. It runs inside
+SampleSource. Image conversion reads at most 20 MiB of source data and applies
+the ordinary stored-format quotas to its resulting PNG bytes. Audio formats
+requiring conversion are rejected with an explicit export instruction. It runs inside
 the serialized attachment operation, so hashing, response reconciliation,
 Session controls, and Send admission refer to the converted file. A failed
 conversion does not prevent the remaining files in its batch from being added.
@@ -1257,12 +1262,11 @@ import.
 
 Additional images are rasterized to a static PNG only when the WebView can
 decode them; SVG rasterization excludes active content and external resource
-references. Additional audio is decoded locally and encoded as 32-kHz PCM16
-WAV. Mono/stereo remain separate channels; larger channel layouts are mixed to
-mono with an explicit notice. Both conversion paths have a 30-second deadline,
-observe cancellation, and release object URLs, canvas buffers, and audio
-contexts. Stored conversion output is authoritative; source files are not
-modified or uploaded alongside it.
+references. Image conversion has a 30-second deadline, observes cancellation,
+and releases object URLs and canvas buffers. Stored PNG output is authoritative;
+source image files are not modified or uploaded alongside it. Audio ingestion
+preserves WAV/MP3 bytes without decoding, resampling or channel mixing. Other
+audio formats require explicit conversion before ingestion.
 
 ### Attachment viewing
 
@@ -1524,7 +1528,7 @@ For a runtime with function tools plus verified audio-input delivery,
 the current Session. The tool is absent for incompatible Profiles. Admission
 checks the shared request binary quota before reading, revalidates the exact
 metadata and content hash, records the textual tool result, and only then attaches
-the base64 WAV or MP3 to the next model turn. The accepted-input callback updates
+the original WAV or MP3 bytes to the next model turn. The accepted-input callback updates
 quota only after trace reporting, so a failed trace cannot admit the audio part.
 Remote-only outputs and preview frames are never eligible.
 

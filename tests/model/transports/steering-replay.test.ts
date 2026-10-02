@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -262,7 +263,7 @@ for (const testCase of cases) {
       { type: "text", text: steeringContent },
       { type: "image", fileName: "reference.png", mediaType: "image/png", base64: "AA==" },
       chat
-        ? { type: "audio", fileName: "reference.wav", mediaType: "audio/wav", base64: "AA==" }
+        ? { type: "audio", fileName: "reference.wav", mediaType: "audio/wav", bytes: Uint8Array.from(Buffer.from("AA==", "base64")) }
         : { type: "document", fileName: "score.pdf", mediaType: "application/pdf", base64: "AA==" },
     ];
     target.agentMessages = [...agentMessages.slice(0, -1), { role: "user", content: parts }];

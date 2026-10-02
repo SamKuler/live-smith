@@ -1633,7 +1633,7 @@
         if (envelope.promptPersistence !== undefined) {
           error.promptPersistence = envelope.promptPersistence;
         }
-        if (["session_unavailable", "state_stale"].includes(
+        if (["session_unavailable", "state_stale", "input_too_large"].includes(
           envelope.sendFailureKind,
         )) {
           error.sendFailureKind = envelope.sendFailureKind;
@@ -1791,7 +1791,7 @@
             ["persisted", "not_persisted", "unknown"]
               .includes(value.promptPersistence) &&
             (value.sendFailureKind === undefined ||
-              ["session_unavailable", "state_stale"].includes(
+              ["session_unavailable", "state_stale", "input_too_large"].includes(
                 value.sendFailureKind,
               )) &&
             (value.state === undefined || isWireChatBridgeState(value.state))
@@ -2402,7 +2402,7 @@
           ...(typeof terminal?.field === "string"
             ? { field: terminal.field }
             : {}),
-          ...(["session_unavailable", "state_stale"].includes(
+          ...(["session_unavailable", "state_stale", "input_too_large"].includes(
               terminal?.sendFailureKind,
             )
             ? { sendFailureKind: terminal.sendFailureKind }
@@ -5073,7 +5073,7 @@
           !sendAttemptsBySession.has(attempt.sessionId)
         ) {
           showStatus(
-            persistence === "persisted"
+            persistence === "persisted" && sendFailureKind !== "input_too_large"
               ? window.LiveSmithI18n.message("Request stopped. The prompt and error are saved in this Session; check the timeline before continuing.")
               : `${message} ${guidance}`,
             true,

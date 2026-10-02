@@ -577,15 +577,16 @@ test("attachment save rejects a non-byte proxy before copying caller bytes", asy
 
 test("pending attachment quotas are validated atomically from the pre-save snapshot", async () => {
   const exactSession = `memory-pending-exact-${Date.now()}`;
-  const threeFiveMiBImages = [0, 1, 2].map((index) =>
-    pendingImageRef(`attachment-pending-${index}`, MAX_IMAGE_ATTACHMENT_BYTES)
-  );
+  const existingAudio = [
+    pendingAudioRef("attachment-pending-one", MAX_AUDIO_ATTACHMENT_BYTES),
+    pendingAudioRef("attachment-pending-two", MAX_PENDING_ATTACHMENT_BYTES - MAX_AUDIO_ATTACHMENT_BYTES - 15 * 1024 * 1024),
+  ];
   const exactDocument = await saveSessionAttachment(undefined, exactSession, {
     fileName: "exact.pdf",
     bytes: pdfBytesAtSize(15 * 1024 * 1024),
-  }, { preSavePendingAttachmentRefs: threeFiveMiBImages });
+  }, { preSavePendingAttachmentRefs: existingAudio });
   assert.equal(
-    threeFiveMiBImages.reduce((total, ref) => total + ref.byteLength, 0) +
+    existingAudio.reduce((total, ref) => total + ref.byteLength, 0) +
       exactDocument.byteLength,
     MAX_PENDING_ATTACHMENT_BYTES,
   );
@@ -594,7 +595,7 @@ test("pending attachment quotas are validated atomically from the pre-save snaps
     saveSessionAttachment(undefined, `memory-pending-over-${Date.now()}`, {
       fileName: "over.pdf",
       bytes: pdfBytesAtSize(15 * 1024 * 1024 + 1),
-    }, { preSavePendingAttachmentRefs: threeFiveMiBImages }),
+    }, { preSavePendingAttachmentRefs: existingAudio }),
     (error: unknown) => error instanceof AttachmentPendingQuotaError,
   );
 
@@ -639,7 +640,7 @@ test("pending attachment quotas are validated atomically from the pre-save snaps
   ownedPending[0]!.byteLength = MAX_PENDING_ATTACHMENT_BYTES;
   assert.equal((await ownedPendingSave).kind, "document");
 
-  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_BYTES, 30 * 1024 * 1024);
+  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_BYTES, 256 * 1024 * 1024);
   assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_COUNT, 2);
   const exactAudio = await saveSessionAttachment(
     undefined,

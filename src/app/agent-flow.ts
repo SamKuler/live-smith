@@ -1,3 +1,4 @@
+import { ModelInputTooLargeError } from "../model/connection-error.js";
 import {
   createDialogModelState,
   effectiveSessionModelSelection,
@@ -2916,6 +2917,7 @@ export async function runAgentFlow(
           "The active send ended before steering was accepted.",
         ));
         if (error instanceof ChatBridgeSendFailureError) throw error;
+        if (error instanceof ModelInputTooLargeError) sendFailureKind = "input_too_large";
         if (shouldOpenSettingsForAgentError(error)) openSettingsOnLoad = true;
         let authoritativeState: ChatDialogState | undefined;
         try {

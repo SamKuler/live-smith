@@ -18,6 +18,7 @@ import {
   isLegacyAttachmentFileName,
   isSafeAttachmentFileName,
   MAX_ATTACHMENT_FILE_NAME_BYTES,
+  MAX_ATTACHMENT_UPLOAD_BYTES,
   MAX_AUDIO_ATTACHMENT_BYTES,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
@@ -204,10 +205,10 @@ export async function saveSessionAttachment(
   if (!isUint8Array(input.bytes)) {
     throw new TypeError("Attachment bytes must be binary data.");
   }
-  if (input.bytes.byteLength > MAX_DOCUMENT_ATTACHMENT_BYTES) {
+  if (input.bytes.byteLength > MAX_ATTACHMENT_UPLOAD_BYTES) {
     throw new AttachmentProcessingError(
       "archive_limit",
-      "Attachment uploads may not exceed 20 MiB.",
+      `Attachment uploads may not exceed ${MAX_ATTACHMENT_UPLOAD_BYTES / (1024 * 1024)} MiB.`,
     );
   }
   const signal = input.signal;

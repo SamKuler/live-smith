@@ -1,5 +1,4 @@
 import type { ExtensionContext } from "@ableton-extensions/sdk";
-import { Buffer } from "node:buffer";
 import type { UiMessage } from "../../i18n/ui-message.js";
 import {
   isAudioTextToolRequest,
@@ -167,7 +166,7 @@ export async function createRequestAudioTools(input: {
               type: "audio",
               fileName: `session-audio-${expected.id}.${expected.mediaType === "audio/mpeg" ? "mp3" : "wav"}`,
               mediaType: expected.mediaType,
-              base64: Buffer.from(bytes).toString("base64"),
+              bytes,
             },
             progressKey: `${expected.id}:${expected.sha256}`,
           };

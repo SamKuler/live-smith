@@ -1,5 +1,5 @@
+import { ModelInputTooLargeError } from "../model/connection-error.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
-import { Buffer } from "node:buffer";
 import { uiMessage, type UiMessage } from "../i18n/ui-message.js";
 
 import {
@@ -235,13 +235,15 @@ export async function handleAgentRequest(
       audioProcessingOnly,
       signal: callbacks.signal,
     });
-    const attachmentQuota = attachmentRefs.map(attachmentQuotaItem);
+    const modelAttachmentRefs = audioProcessingOnly
+      ? attachmentRefs.filter((ref) => ref.kind !== "audio") : attachmentRefs;
+    const attachmentQuota = modelAttachmentRefs.map(attachmentQuotaItem);
     let documentTextCharacters = resolvedAttachments.documentTextCharacters;
     const history = await resolveConversationHistory({
       storageDirectory: storageDirectory,
       sessionId: session.id,
       events: priorEvents,
-      currentAttachmentRefs: attachmentRefs,
+      currentAttachmentRefs: modelAttachmentRefs,
       currentDocumentTextCharacters:
         resolvedAttachments.documentTextCharacters,
       runtimeProfile,
@@ -565,9 +567,9 @@ export async function handleAgentRequest(
                 const refs = await resolvePendingAttachmentRefs(
                   storageDirectory, session.id, events, entry.attachmentIds ?? [],
                 );
-                if (refs.length && !attachmentRequestQuotaIsWithinLimits([
-                  ...requestAttachmentQuota,
-                  ...refs.map(attachmentQuotaItem),
+                const modelRefs = refs.filter((ref) => !audioProcessingOnly || ref.kind !== "audio");
+                if (modelRefs.length && !attachmentRequestQuotaIsWithinLimits([
+                  ...requestAttachmentQuota, ...modelRefs.map(attachmentQuotaItem),
                 ])) {
                   throw new AttachmentProcessingError(
                     "archive_limit", "Attachments exceed the model request limit.",
@@ -609,7 +611,8 @@ export async function handleAgentRequest(
                 if (appendStarted) throw error;
                 continue;
               }
-              requestAttachmentQuota.push(...steered.refs.map(attachmentQuotaItem));
+              requestAttachmentQuota.push(...steered.refs
+                .filter((ref) => !audioProcessingOnly || ref.kind !== "audio").map(attachmentQuotaItem));
               requestDocumentTextCharacters += steered.resolved.documentTextCharacters;
               requestAudioAttachmentRefs.push(...steered.refs.filter(
                 (ref): ref is AudioSessionAttachmentRef => ref.kind === "audio",
@@ -837,7 +840,7 @@ export async function handleAgentRequest(
               type: "audio",
               fileName: rendered.fileName,
               mediaType: rendered.inspection.mediaType,
-              base64: Buffer.from(rendered.bytes).toString("base64"),
+              bytes: rendered.bytes,
             },
           };
         }
@@ -853,7 +856,7 @@ export async function handleAgentRequest(
       onModelInputPartAccepted: (part) => {
         requestAttachmentQuota.push({
           kind: "audio",
-          byteLength: decodedBase64ByteLength(part.base64),
+          byteLength: part.bytes.byteLength,
         });
       },
       preflightActions: (plan) =>
@@ -1015,6 +1018,7 @@ export async function handleAgentRequest(
         session.id,
         {
           kind: "error",
+          ...(error instanceof ModelInputTooLargeError ? { name: "input_too_large" } : {}),
           content: sessionErrorMessage(error, profileSecrets(profile)),
         },
       );
@@ -1035,11 +1039,6 @@ export async function handleAgentRequest(
 
 function attachmentQuotaItem(ref: SessionAttachmentRef): AttachmentQuotaItem {
   return { kind: ref.kind, byteLength: ref.byteLength };
-}
-
-function decodedBase64ByteLength(value: string): number {
-  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
-  return value.length / 4 * 3 - padding;
 }
 
 function isAbortCause(error: unknown, signal: AbortSignal): boolean {

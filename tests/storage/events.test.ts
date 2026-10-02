@@ -285,7 +285,7 @@ test("event attachment limits reject duplicate, oversized, and malformed refs", 
   );
   for (const malformedAudio of [
     { ...audioRef, durationSeconds: undefined },
-    { ...audioRef, durationSeconds: 120.001 },
+    { ...audioRef, durationSeconds: 900.001 },
     { ...audioRef, sampleRate: 0 },
     { ...audioRef, channels: 0 },
     { ...audioRef, mediaType: "audio/mpeg", channels: 3 },
@@ -420,11 +420,11 @@ test("mixed image and document event refs enforce shared and per-kind quotas", a
   const event = await appendSessionEvent(undefined, sessionId, {
     kind: "user",
     content: "exact mixed boundary",
-    attachments: [...exactMixed, documentRef],
+    attachments: [...exactMixed, { ...documentRef, byteLength: MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES }],
   });
   assert.equal(
     event.attachments?.reduce((total, attachment) => total + attachment.byteLength, 0),
-    MAX_USER_EVENT_ATTACHMENT_BYTES,
+    3 * MAX_IMAGE_ATTACHMENT_BYTES + MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES,
   );
 
   await assert.rejects(
@@ -433,7 +433,7 @@ test("mixed image and document event refs enforce shared and per-kind quotas", a
       content: "one over shared boundary",
       attachments: [
         ...exactMixed,
-        { ...documentRef, id: "attachment-document-over", byteLength: documentRef.byteLength + 1 },
+        { ...documentRef, id: "attachment-document-over", byteLength: MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES + 1 },
       ],
     }),
     /invalid/i,
@@ -490,7 +490,7 @@ test("mixed image and document event refs enforce shared and per-kind quotas", a
 
 test("audio event refs enforce single, subtotal, count, and mixed raw quotas", async () => {
   const sessionId = `memory-event-audio-${Date.now()}`;
-  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_BYTES, 30 * 1024 * 1024);
+  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_BYTES, 256 * 1024 * 1024);
   assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_COUNT, 2);
   const exactAudio = [0, 1].map((index) => ({
     ...audioRef,

@@ -17,6 +17,7 @@ import {
   ModelAuthenticationError,
   ModelConnectionError,
   ModelRetryableError,
+  modelInputTooLargeError,
 } from "../connection-error.js";
 import type { ModelTurn } from "../contracts.js";
 import { openAIResponsesInputSupport } from "../input-support.js";
@@ -196,6 +197,7 @@ async function assertCodexResponse(
     signal,
   );
   const label = `ChatGPT Codex HTTP ${response.status}`;
+  if (generationRequest && response.status === 413) throw modelInputTooLargeError(label);
   const diagnostic = openAIErrorDiagnostic(payload);
   const hasDiagnostic = diagnostic.code !== undefined || diagnostic.type !== undefined;
   const retryAfterMs = providerRetryAfterMs(response.headers);

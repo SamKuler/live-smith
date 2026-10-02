@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Buffer } from "node:buffer";
 
 import type { OAuthCredential } from "../../storage/oauth-credentials.js";
 import {
@@ -10,6 +11,7 @@ import {
   ModelAuthenticationError,
   ModelConnectionError,
   ModelRetryableError,
+  modelInputTooLargeError,
 } from "../connection-error.js";
 import {
   requireModelContextUsage,
@@ -206,6 +208,7 @@ async function fetchGoogleAntigravity(
   }
   if (!response.ok) {
     const payload = await readGoogleErrorPayload(response, request.signal);
+    if (response.status === 413) throw modelInputTooLargeError("Google Antigravity HTTP 413");
     const providerError = googleErrorValue(payload);
     if (response.status === 401) {
       throw googleAuthenticationError(providerError, response.status);
@@ -432,7 +435,7 @@ function mapGoogleInputParts(
         return {
           inlineData: {
             mimeType: part.mediaType,
-            data: part.base64,
+            data: Buffer.from(part.bytes.buffer, part.bytes.byteOffset, part.bytes.byteLength).toString("base64"),
           },
         };
       default:

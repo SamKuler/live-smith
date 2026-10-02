@@ -7,6 +7,7 @@ import {
   ModelAuthenticationError,
   ModelConnectionError,
   ModelRetryableError,
+  modelInputTooLargeError,
 } from "../connection-error.js";
 import {
   assertApiKeyCanBeUsedInHttpHeader,
@@ -205,6 +206,7 @@ async function assertOpenAIResponse(
     signal,
   );
   const label = `OpenAI-compatible HTTP ${response.status}`;
+  if (generationRequest && response.status === 413) throw modelInputTooLargeError(label);
   const diagnostic = openAIErrorDiagnostic(payload);
   const hasDiagnostic = diagnostic.code !== undefined || diagnostic.type !== undefined;
   const retryAfterMs = providerRetryAfterMs(response.headers);

@@ -14,6 +14,7 @@ import {
   ModelAuthenticationError,
   ModelConnectionError,
   ModelRetryableError,
+  modelInputTooLargeError,
 } from "../connection-error.js";
 import {
   assertServerSentEventResponse,
@@ -212,6 +213,7 @@ async function assertAnthropicResponse(
   const payload = await readAnthropicErrorPayload(response, signal);
   const providerError = safeAnthropicError(payload);
   const context = anthropicHttpErrorContext(response.status, providerError);
+  if (response.status === 413) throw modelInputTooLargeError(context);
   if (response.status === 401) {
     throw new ModelAuthenticationError(`${context}: request failed`);
   }

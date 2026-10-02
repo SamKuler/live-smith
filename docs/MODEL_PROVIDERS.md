@@ -572,10 +572,11 @@ the loaded metadata explicitly supports WAV or MP3. Other subscription
 backends, OpenAI Responses, and Anthropic Messages reject audio locally. Plain
 text, code, rich documents, spreadsheets, presentations, and MIDI are extracted
 locally into bounded untrusted text and do not require native provider document
-or audio support. Additional browser-decodable images and audio are normalized
-to PNG and WAV before upload, so the provider receives the existing image/audio
-parts and capability checks. Conversion codec availability is a local WebView
-property; it does not change provider capability evidence.
+or audio support. Additional browser-decodable images are normalized to PNG
+before upload. Audio stays in its original WAV/MP3 representation; unsupported
+audio formats require explicit export before attachment. Image conversion codec
+availability is a local WebView property; it does not change provider capability
+evidence.
 
 Modern Office and OpenDocument use bundled parser workers without an installed
 helper runtime. Formula caches are read without evaluation; missing cached
@@ -1128,8 +1129,10 @@ not audio bytes. With a verified audio-input Profile, the model may call
 analyze, compare, or transcribe that audio.
 
 Audio processing files are limited to 128 MiB and 15 minutes each, with a 1 GiB
-total and 40 processing jobs per Session. Composer audio attachments retain
-their separate 20 MiB/120-second input limit. LALAL.AI keeps WAV sources lossless
+total and 40 processing jobs per Session. Composer audio attachments use the same per-file size and duration bounds.
+Inline model input has a separate 128 MiB host request budget; remote provider
+limits may be lower. Original WAV/MP3 bytes reach the selected protocol adapter,
+which owns their wire encoding. LALAL.AI keeps WAV sources lossless
 and requests MP3 output for MP3 sources so a valid long compressed input is not
 expanded past the per-file result limit. Media transfer has a ten-minute deadline;
 API metadata calls retain a two-minute deadline. Results are inspected as WAV or MP3,

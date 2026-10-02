@@ -202,7 +202,7 @@ export interface ChatBridgePluginInspectResult {
 
 
 export type PromptPersistence = "persisted" | "not_persisted" | "unknown";
-export type ChatBridgeSendFailureKind = "session_unavailable" | "state_stale";
+export type ChatBridgeSendFailureKind = "session_unavailable" | "state_stale" | "input_too_large";
 type ChatBridgeCommandOutcome = "stopped" | "unknown";
 
 export class ChatBridgePromptPersistenceUnknownError extends Error {

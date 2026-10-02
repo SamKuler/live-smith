@@ -78,7 +78,7 @@ interface DialogHarness {
     error: string,
     promptPersistence?: string,
     details?: {
-      sendFailureKind?: "session_unavailable" | "state_stale";
+      sendFailureKind?: "session_unavailable" | "state_stale" | "input_too_large";
       state?: ChatBridgeState;
     },
   ): void;
@@ -490,7 +490,7 @@ async function createDialogHarness(
   let nextSendError: {
     error: string;
     promptPersistence?: string;
-    sendFailureKind?: "session_unavailable" | "state_stale";
+    sendFailureKind?: "session_unavailable" | "state_stale" | "input_too_large";
     state?: ChatBridgeState;
   } | null = null;
   let nextSteerError: {

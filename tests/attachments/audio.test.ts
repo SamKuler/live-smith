@@ -249,7 +249,7 @@ test("WAVE inspection rejects malformed structure and inconsistent format math",
   }
 });
 
-test("WAVE duration accepts exactly 120 seconds and rejects one sample more", async () => {
+test("WAVE duration accepts exactly 900 seconds and rejects one sample more", async () => {
   const sampleRate = 8_000;
   const exact = await inspectAudioAttachment({
     bytes: waveBytes({
@@ -270,7 +270,7 @@ test("WAVE duration accepts exactly 120 seconds and rejects one sample more", as
         dataBytes: sampleRate * MAX_AUDIO_DURATION_SECONDS + 1,
       }),
     }),
-    audioError("audio_duration_limit", /120 seconds/),
+    audioError("audio_duration_limit", /900 seconds/),
   );
 });
 
@@ -380,7 +380,7 @@ test("audio inspection enforces the byte boundary before copying caller input", 
   const backing = new Uint8Array(MAX_AUDIO_ATTACHMENT_BYTES + 1);
   await assert.rejects(
     inspectAudioAttachment({ bytes: backing }),
-    audioError("archive_limit", /20 MiB/),
+    audioError("archive_limit", /128 MiB/),
   );
   let copyPathTouched = false;
   const oversized = new Proxy(backing, {

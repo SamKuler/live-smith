@@ -247,7 +247,7 @@ test("an audio-capable chat model can listen to a generated Session asset in the
       assert.equal(heard?.role, "tool");
       assert.equal(heard?.modelInputPart?.type, "audio");
       assert.equal(heard?.modelInputPart?.mediaType, "audio/wav");
-      assert.ok(heard?.modelInputPart?.base64.length);
+      assert.ok(heard?.modelInputPart?.bytes.byteLength);
       return { content: "I heard the generated idea.", toolCalls: [] };
     });
   assert.equal(result, "I heard the generated idea.");

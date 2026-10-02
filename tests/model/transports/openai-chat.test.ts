@@ -138,7 +138,7 @@ function audioPart(
     type: "audio",
     fileName,
     mediaType,
-    base64: canonicalBase64ForByteLength(byteLength),
+    bytes: new Uint8Array(byteLength),
   };
 }
 
@@ -566,11 +566,11 @@ test("OpenAI Chat applies audio and mixed binary request limits before body cons
     const req = makeRequest();
     req.history = [{
       role: "user",
-      content: [audioPart(MAX_AUDIO_ATTACHMENT_BYTES, "history.wav")],
+      content: [audioPart(MAX_REQUEST_AUDIO_ATTACHMENT_BYTES / 2, "history.wav")],
     }];
     req.currentUserContent = [
       audioPart(
-        MAX_REQUEST_AUDIO_ATTACHMENT_BYTES - MAX_AUDIO_ATTACHMENT_BYTES,
+        MAX_REQUEST_AUDIO_ATTACHMENT_BYTES / 2,
         "current.mp3",
         "audio/mpeg",
       ),
@@ -593,7 +593,7 @@ test("OpenAI Chat applies audio and mixed binary request limits before body cons
   overSingle.currentUserContent = [audioPart(MAX_AUDIO_ATTACHMENT_BYTES + 1)];
   await assert.rejects(
     transport.createToolTurn(overSingle),
-    /Audio input may not exceed 20 MiB/,
+    /Audio input exceeds Live Smith/,
   );
 
   const mixedExact = makeRequest();
@@ -629,7 +629,7 @@ test("OpenAI Chat applies audio and mixed binary request limits before body cons
   ];
   await assert.rejects(
     transport.createToolTurn(mixedOver),
-    /Binary input subtotal may not exceed 30 MiB/,
+    /Binary input exceeds Live Smith/,
   );
   assert.equal(fetchCalls, 2);
 });

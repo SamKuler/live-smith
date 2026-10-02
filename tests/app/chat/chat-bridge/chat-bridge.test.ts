@@ -1,3 +1,4 @@
+import { MAX_ATTACHMENT_UPLOAD_BYTES } from "../../../../src/attachments/contracts.js";
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
 import { IncomingMessage } from "node:http";
@@ -8,7 +9,6 @@ import test from "node:test";
 import type { ChatBridgeState, ChatDialogState } from "../../../../src/ui/chat-state.js";
 import { ProfileValidationError } from "../../../../src/model/profile.js";
 import { StorageCommitOutcomeUnknownError } from "../../../../src/storage/persistence.js";
-import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "../../../../src/attachments/contracts.js";
 import { MAX_SKILL_FILE_BYTES } from "../../../../src/skills/format.js";
 import type { SessionEvent } from "../../../../src/storage/events.js";
 import {
@@ -3040,7 +3040,7 @@ test("attachment routes reject malformed, duplicate, oversized, and empty inputs
 
     const tooLarge = await upload(
       "sessionId=session-1&fileName=large.png",
-      new Uint8Array(MAX_DOCUMENT_ATTACHMENT_BYTES + 1),
+      new Uint8Array(MAX_ATTACHMENT_UPLOAD_BYTES + 1),
     );
     assert.equal(tooLarge.status, 413);
     assert.equal(handlerCalls, 0);
@@ -3357,14 +3357,14 @@ test("raw attachment reader allocates declared lengths exactly and validates the
     headers: { "content-type": "application/octet-stream" },
   });
   const overflowRead = readRawAttachmentBody(overflow as never);
-  overflow.end(new Uint8Array(MAX_DOCUMENT_ATTACHMENT_BYTES + 1));
+  overflow.end(new Uint8Array(MAX_ATTACHMENT_UPLOAD_BYTES + 1));
   await assert.rejects(
     overflowRead,
     (error: unknown) => {
       assert.ok(error instanceof ChatBridgePayloadTooLargeError);
       assert.equal(
         error.message,
-        `Attachment uploads may not exceed ${MAX_DOCUMENT_ATTACHMENT_BYTES} bytes.`,
+        `Attachment uploads may not exceed ${MAX_ATTACHMENT_UPLOAD_BYTES} bytes.`,
       );
       assert.equal("cause" in error, false);
       return true;
@@ -3407,7 +3407,7 @@ test("unknown-length attachment bodies grow from a small bounded buffer", async 
   const bytes = await read;
   assert.equal(bytes.byteLength, 70 * 1024 + 1);
   assert.deepEqual(allocations, [64 * 1024, 128 * 1024]);
-  assert.equal(allocations.includes(MAX_DOCUMENT_ATTACHMENT_BYTES), false);
+  assert.equal(allocations.includes(MAX_ATTACHMENT_UPLOAD_BYTES), false);
 });
 
 test("raw attachment reads enforce a process-wide cap and release permits", async () => {
@@ -3506,20 +3506,20 @@ test("raw attachment read timeout is fixed, safe, and releases its permit", asyn
   assert.deepEqual([...(await read)], [1]);
 });
 
-test("raw attachment reader accepts exactly 20 MiB and rejects one byte over", async () => {
+test("raw attachment reader accepts exactly 128 MiB and rejects one byte over", async () => {
   const exact = Object.assign(new PassThrough(), {
     headers: { "content-type": "application/octet-stream" },
   });
   const exactRead = readRawAttachmentBody(exact as never);
-  exact.end(new Uint8Array(MAX_DOCUMENT_ATTACHMENT_BYTES));
+  exact.end(new Uint8Array(MAX_ATTACHMENT_UPLOAD_BYTES));
   const exactBytes = await exactRead;
-  assert.equal(exactBytes.byteLength, MAX_DOCUMENT_ATTACHMENT_BYTES);
+  assert.equal(exactBytes.byteLength, MAX_ATTACHMENT_UPLOAD_BYTES);
   assert.equal(NodeBuffer.isBuffer(exactBytes), true);
 
   const over = Object.assign(new PassThrough(), {
     headers: {
       "content-type": "application/octet-stream",
-      "content-length": String(MAX_DOCUMENT_ATTACHMENT_BYTES + 1),
+      "content-length": String(MAX_ATTACHMENT_UPLOAD_BYTES + 1),
     },
   });
   assert.throws(

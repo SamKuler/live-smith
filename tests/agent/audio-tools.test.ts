@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseAudioToolRequest } from "../../src/agent/audio-tool-parser.js";
@@ -186,7 +187,7 @@ test("external audio result returns to the next model turn without a Live observ
   let turns = 0;
   let executions = 0;
   let accepted = 0;
-  const audio = { type: "audio" as const, fileName: "session-audio.wav", mediaType: "audio/wav" as const, base64: "AAAA" };
+  const audio = { type: "audio" as const, fileName: "session-audio.wav", mediaType: "audio/wav" as const, bytes: Uint8Array.from(Buffer.from("AAAA", "base64")) };
   const result = await runAgentLoop({
     maxConsecutiveFailures: 2,
     externalTools: { names: ["separate_stems"], execute: async () => { executions++; return { content: "asset_result", progressKey: "job", modelInputPart: audio }; } },
@@ -204,7 +205,7 @@ test("external audio result returns to the next model turn without a Live observ
 });
 
 test("external audio is not admitted when its tool-result trace cannot be recorded", async () => {
-  const audio = { type: "audio" as const, fileName: "session-audio.wav", mediaType: "audio/wav" as const, base64: "AAAA" };
+  const audio = { type: "audio" as const, fileName: "session-audio.wav", mediaType: "audio/wav" as const, bytes: Uint8Array.from(Buffer.from("AAAA", "base64")) };
   let accepted = 0;
   await assert.rejects(runAgentLoop({
     maxConsecutiveFailures: 2,

@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import { clearTimeout, setTimeout as scheduleTimeout } from "node:timers";
 import test from "node:test";
@@ -5,7 +6,6 @@ import test from "node:test";
 import {
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
-  MAX_REQUEST_BINARY_ATTACHMENT_BYTES,
 } from "../../../src/attachments/contracts.js";
 import type { ModelInputPart } from "../../../src/model/contracts.js";
 import { resolveModelCapabilities } from "../../../src/model/capabilities.js";
@@ -66,7 +66,7 @@ function audioPart(
     type: "audio",
     fileName,
     mediaType: "audio/wav",
-    base64: "not canonical or safe to echo",
+    bytes: Uint8Array.from(Buffer.from("not canonical or safe to echo", "base64")),
   };
 }
 
@@ -1206,7 +1206,7 @@ test("Anthropic Messages accepts the exact mixed binary quota across current and
   req.currentUserContent = [
     imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
     pdfPart(
-      MAX_REQUEST_BINARY_ATTACHMENT_BYTES - 3 * MAX_IMAGE_ATTACHMENT_BYTES,
+      MAX_DOCUMENT_ATTACHMENT_BYTES,
       "current.pdf",
     ),
   ];
@@ -1230,27 +1230,6 @@ test("Anthropic Messages rejects mixed, PDF, and base64 violations before body c
     return req;
   };
   const cases: Array<{ request: TransportRequest; message: RegExp }> = [];
-  {
-    const req = makeRequest();
-    req.history = [{
-      role: "user",
-      content: [
-        imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-1.png"),
-        imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "history-2.png"),
-      ],
-    }];
-    req.currentUserContent = [
-      imagePart(MAX_IMAGE_ATTACHMENT_BYTES, "current.png"),
-      pdfPart(
-        MAX_REQUEST_BINARY_ATTACHMENT_BYTES -
-          3 * MAX_IMAGE_ATTACHMENT_BYTES + 1,
-      ),
-    ];
-    cases.push({
-      request: req,
-      message: /Binary input subtotal may not exceed 30 MiB/,
-    });
-  }
   {
     const req = makeRequest();
     req.currentUserContent = [pdfPart(MAX_DOCUMENT_ATTACHMENT_BYTES + 1)];

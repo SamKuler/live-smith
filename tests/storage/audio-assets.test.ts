@@ -8,7 +8,6 @@ import { platform } from "node:process";
 import test from "node:test";
 
 import { inspectAudioAttachment, isAudioAttachmentInspection } from "../../src/attachments/audio.js";
-import { MAX_AUDIO_ATTACHMENT_BYTES } from "../../src/attachments/contracts.js";
 import {
   MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_SESSION_BYTES, SEPARATION_STEMS, type AudioAsset,
 } from "../../src/audio-services/contracts.js";
@@ -270,21 +269,21 @@ test("atomic audio remnant names and symlinks retain the storage safety checks",
   await assert.rejects(h.save("vocals"), AudioStorageError);
 });
 
-test("asset inspection allows 15 minutes and keeps ordinary attachment and copied-file defaults intact", async (t) => {
+test("audio assets and attachments preserve 15-minute originals while explicit read budgets still apply", async (t) => {
   const h = await audioStorageHarness(t);
   const long = waveBytes(900);
   const asset = await h.save("source", long);
   assert.equal(asset.durationSeconds, 900);
-  assert.equal(isAudioAttachmentInspection(asset), false);
+  assert.equal(isAudioAttachmentInspection(asset), true);
   assert.equal(isAudioAttachmentInspection(asset, audioAssetInspectionLimits), true);
-  await assert.rejects(inspectAudioAttachment({ bytes: long }), /120 seconds/);
+  assert.equal((await inspectAudioAttachment({ bytes: long })).durationSeconds, 900);
   await assert.rejects(h.save("vocals", waveBytes(901)), /900 seconds/);
   await assert.rejects(h.save("vocals", new Uint8Array([1, 2, 3])), /valid supported audio/);
   const renderPath = path.join(h.storage, "render.wav");
-  await fs.writeFile(renderPath, new Uint8Array(MAX_AUDIO_ATTACHMENT_BYTES + 1));
-  await assert.rejects(copyAudioFileSafely(renderPath, h.signal), /20 MiB/);
-  assert.equal((await copyAudioFileSafely(renderPath, h.signal, MAX_AUDIO_ASSET_BYTES)).length, MAX_AUDIO_ATTACHMENT_BYTES + 1);
-  await assert.rejects(copyAudioFileSafely(renderPath, h.signal, MAX_AUDIO_ATTACHMENT_BYTES), /20 MiB/);
+  await fs.writeFile(renderPath, new Uint8Array(24 * 1024 * 1024));
+  assert.equal((await copyAudioFileSafely(renderPath, h.signal)).length, 24 * 1024 * 1024);
+  assert.equal((await copyAudioFileSafely(renderPath, h.signal, MAX_AUDIO_ASSET_BYTES)).length, 24 * 1024 * 1024);
+  await assert.rejects(copyAudioFileSafely(renderPath, h.signal, 20 * 1024 * 1024), /20 MiB/);
   await assert.rejects(inspectAudioAttachment({ bytes: waveBytes(), limits: { maxBytes: 10, maxDurationSeconds: 900 } }), /may not exceed/);
   await assert.rejects(inspectAudioAttachment({ bytes: waveBytes(), limits: { maxBytes: Infinity, maxDurationSeconds: 900 } }), /limits are invalid/);
 });
