@@ -6,10 +6,7 @@ import { argv, pid as processId } from "node:process";
 import * as vm from "node:vm";
 import ts from "typescript";
 
-import { buildMarkdownRendererScript } from "./scripts/build-markdown-renderer.js";
-import { buildPluginAppsScript } from "./scripts/build-plugin-apps.js";
-import { buildAudioParametersScript } from "./scripts/build-audio-parameters.js";
-import { buildBridgeContractsScript } from "./scripts/build-bridge-contracts.js";
+import { buildClientScript } from "./scripts/build-client-script.js";
 import { buildDocumentParserScript } from "./scripts/build-document-parser.js";
 import { compileUiStyles } from "./scripts/build-ui-styles.js";
 import { readNativeVerifierCapsule } from "./scripts/build-native-verifier.js";
@@ -23,10 +20,10 @@ const thirdPartyNotices = fs.readFileSync("THIRD_PARTY_NOTICES.md", "utf8");
 const networkRuntimeInject = "src/runtime/network-node-globals.ts";
 
 verifySourceRuntimeBoundaries("src");
-const markdownRendererScript = await buildMarkdownRendererScript(production);
-const pluginAppsScript = await buildPluginAppsScript(production);
-const audioParametersScript = await buildAudioParametersScript(production);
-const bridgeContractsScript = await buildBridgeContractsScript(production);
+const markdownRendererScript = await buildClientScript("src/ui/client/markdown-renderer.ts", production);
+const pluginAppsScript = await buildClientScript("src/ui/client/plugin-apps.ts", production);
+const audioParametersScript = await buildClientScript("src/ui/client/audio-parameters.ts", production);
+const bridgeContractsScript = await buildClientScript("src/ui/client/bridge-contracts.ts", production);
 const documentParserScript = await buildDocumentParserScript(production);
 const chatStyles = await compileUiStyles("src/ui/styles/chat.css", production);
 const resultStyles = await compileUiStyles("src/ui/styles/result.css", production);

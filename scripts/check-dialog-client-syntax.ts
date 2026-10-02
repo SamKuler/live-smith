@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { buildBridgeContractsScript } from "./build-bridge-contracts.js";
+import { buildClientScript } from "./build-client-script.js";
 import { buildSunoVerificationScript } from "../src/ui/native/suno-verification.js";
 
 const clientFragments = [
@@ -29,7 +29,7 @@ const source = clientFragments
   ))
   .join("\n");
 
-new Function(await buildBridgeContractsScript(false));
+new Function(await buildClientScript("src/ui/client/bridge-contracts.ts", false));
 new Function(source);
 for (const version of [1, 2] as const) for (const locale of ["en", "zh-CN", "system"]) {
   new Function(buildSunoVerificationScript(version, locale, ""));

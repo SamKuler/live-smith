@@ -44,7 +44,7 @@ assertPackagedBundleMatches(currentBundle, extraction.stdout);
 assertPackagedBundleContainsThirdPartyNotices(extraction.stdout);
 await verifyTrackedPluginFixtures(projectDirectory);
 console.log(
-  `Verified ${path.basename(archivePath)} contains the current ${manifest.entry} and tracked Plugin fixtures.`,
+  `Verified ${path.basename(archivePath)} contains the current ${manifest.entry}; tracked Plugin fixtures passed release checks.`,
 );
 
 function packageSlug(name: string): string {

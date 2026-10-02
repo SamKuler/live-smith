@@ -118,7 +118,7 @@ manifest, tracked package data, non-executable files, and credential-shaped
 content.
 
 Typed bridge validators and Connection state/editor code are compiled through
-`scripts/build-bridge-contracts.ts` for both the production dialog and its DOM
+`scripts/build-client-script.ts` for both the production dialog and its DOM
 harness. `tsc` checks their public DTO references and field names. The composer
 injects host-owned constants into this browser bundle before registering the
 legacy bridge factory and bootstrapping the UI. Translation coverage scans both

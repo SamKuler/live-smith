@@ -26,10 +26,7 @@ import { builtInAudioPluginById } from "../../../src/plugins/builtins/index.js";
 import { liveSmithTools } from "../../../src/agent/tool-definitions.js";
 import { sessionToolCatalogOwner } from "../../../src/app/session/session-tool-catalog.js";
 import { ATTACHMENT_FORMATS } from "../../../src/attachments/contracts.js";
-import { buildMarkdownRendererScript } from "../../../scripts/build-markdown-renderer.js";
-import { buildPluginAppsScript } from "../../../scripts/build-plugin-apps.js";
-import { buildAudioParametersScript } from "../../../scripts/build-audio-parameters.js";
-import { buildBridgeContractsScript } from "../../../scripts/build-bridge-contracts.js";
+import { buildClientScript } from "../../../scripts/build-client-script.js";
 import type { ChatBridgeState, ChatDialogState } from "../../../src/ui/chat-state.js";
 import { composeChatDocument } from "../../../src/ui/chat-document.js";
 import { isEditScopes, resolveEditScopes, type EditScope } from "../../../src/agent/edit-scopes.js";
@@ -161,10 +158,10 @@ const chatTemplate = fs.readFileSync(
   new URL("../../../src/ui/templates/chat-dialog.html", import.meta.url),
   "utf8",
 );
-const markdownRendererScript = await buildMarkdownRendererScript(false);
-const pluginAppsScript = await buildPluginAppsScript(false);
-const audioParametersScript = await buildAudioParametersScript(false);
-const bridgeContractsScript = await buildBridgeContractsScript(false);
+const markdownRendererScript = await buildClientScript("src/ui/client/markdown-renderer.ts", false);
+const pluginAppsScript = await buildClientScript("src/ui/client/plugin-apps.ts", false);
+const audioParametersScript = await buildClientScript("src/ui/client/audio-parameters.ts", false);
+const bridgeContractsScript = await buildClientScript("src/ui/client/bridge-contracts.ts", false);
 const clientScripts = {
   actionPreview: readClientScript("action-preview"),
   i18n: readClientScript("i18n"),
