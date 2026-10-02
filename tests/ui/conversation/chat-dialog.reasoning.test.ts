@@ -51,6 +51,7 @@ test("reasoning stream shows a stage, visible text, reconnect state, and rejects
     assert.equal(live.open, true);
     assert.match(live.querySelector("summary")?.textContent ?? "", /Thinking/u);
     assert.doesNotMatch(live.querySelector("summary")?.textContent ?? "", /\*\*/u);
+    assert.equal(live.querySelector("summary")?.getAttribute("aria-label"), "Thinking…: Checking clip state.");
     assert.equal(live.querySelector("strong")?.textContent, "clip state");
 
     harness.emitServerEvent({
@@ -72,6 +73,7 @@ test("reasoning stream shows a stage, visible text, reconnect state, and rejects
       )?.textContent,
       "route",
     );
+    assert.equal(live.querySelector("summary")?.getAttribute("aria-label"), "Thinking…: Summarized route.");
 
     harness.emitServerEvent({
       type: "model_turn_state",

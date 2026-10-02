@@ -1506,16 +1506,23 @@
         return item;
       }
 
-      function reasoningSummary(content, streaming) {
-        if (!content) return streaming ? t("Thinking…") : t("Thinking");
+      function renderReasoningSummary(element, content, streaming) {
+        const label = streaming ? t("Thinking…") : t("Thinking");
+        const title = document.createElement("span");
+        title.className = "timeline-activity-title";
+        title.textContent = label;
+        element.replaceChildren(title);
         const firstLine = content.split("\n")[0] || "";
         const rendered = document.createElement("span");
         renderMarkdown(rendered, firstLine);
-        const summary = rendered.textContent?.trim() || firstLine;
-        return t("{label} — {summary}", {
-          label: t("Thinking"),
-          summary: truncate(summary, 96),
-        });
+        const excerptText = truncate(rendered.textContent?.trim() || firstLine, 112);
+        if (excerptText) {
+          const excerpt = document.createElement("span");
+          excerpt.className = "timeline-activity-excerpt";
+          excerpt.textContent = excerptText;
+          element.append(excerpt);
+        }
+        element.setAttribute("aria-label", [label, excerptText].filter(Boolean).join(": "));
       }
 
       function buildReasoningItem(content, { eventId = "", streaming = false } = {}) {
@@ -1525,8 +1532,8 @@
           if (eventId) item.dataset.eventId = eventId;
           if (streaming) item.dataset.messageKey = "reasoning-streaming";
           const label = document.createElement("div");
-          label.className = "timeline-label";
-          label.textContent = reasoningSummary(content, streaming);
+          label.className = "timeline-label timeline-activity-summary";
+          label.textContent = streaming ? t("Thinking…") : t("Thinking");
           item.append(label);
           return item;
         }
@@ -1537,8 +1544,8 @@
         if (streaming) item.dataset.messageKey = "reasoning-streaming";
         item.open = streaming;
         const summary = document.createElement("summary");
-        summary.className = "timeline-label";
-        summary.textContent = reasoningSummary(content, streaming);
+        summary.className = "timeline-activity-summary";
+        renderReasoningSummary(summary, content, streaming);
         const body = document.createElement("div");
         body.className = "timeline-content";
         renderMarkdown(body, content);
@@ -1659,8 +1666,9 @@
               markMessageArrival(reasoningItem);
             }
           } else if (reasoningDraft) {
-            reasoningItem.querySelector("summary").textContent =
-              reasoningSummary(reasoningDraft, true);
+            renderReasoningSummary(
+              reasoningItem.querySelector("summary"), reasoningDraft, true,
+            );
             renderMarkdown(
               reasoningItem.querySelector(".timeline-content"),
               reasoningDraft,
@@ -2345,7 +2353,7 @@
         const titleText = activityStepTitle(step, status);
         const excerptText = activityStepExcerpt(step);
         const summary = document.createElement("summary");
-        summary.className = className;
+        summary.className = `timeline-activity-summary ${className}`;
         summary.setAttribute(
           "aria-label",
           [activityStatusLabel(status), titleText, excerptText]

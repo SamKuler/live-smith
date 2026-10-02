@@ -875,7 +875,7 @@ input.attachment-audio-seek {
 }
 
 .timeline-item.reasoning {
-  @apply mb-2;
+  @apply block mb-2;
 }
 
 .timeline-item.reasoning > .timeline-label,
@@ -888,11 +888,12 @@ input.attachment-audio-seek {
   @apply text-accent;
 }
 
-.timeline-item.reasoning .timeline-content {
-  @apply px-[10px] py-2 text-muted;
-  background: rgba(120, 185, 232, 0.05);
-  border-color: rgba(120, 185, 232, 0.22);
-  border-left-width: 2px;
+.timeline-item.reasoning .timeline-activity-title {
+  color: inherit;
+}
+
+.timeline-item.reasoning > .timeline-label {
+  @apply font-medium;
 }
 
 details.timeline-item {
@@ -935,18 +936,21 @@ details.timeline-item > summary:hover {
 }
 
 .timeline-activity-group > summary,
-.timeline-activity-step > summary {
+.timeline-activity-step > summary,
+.timeline-item.reasoning > summary {
   @apply relative cursor-pointer list-none rounded-control normal-case;
   letter-spacing: normal;
 }
 
 .timeline-activity-group > summary::-webkit-details-marker,
-.timeline-activity-step > summary::-webkit-details-marker {
+.timeline-activity-step > summary::-webkit-details-marker,
+.timeline-item.reasoning > summary::-webkit-details-marker {
   display: none;
 }
 
 .timeline-activity-group > summary::before,
-.timeline-activity-step > summary::before {
+.timeline-activity-step > summary::before,
+.timeline-item.reasoning > summary::before {
   content: "";
   position: absolute;
   left: 6px;
@@ -961,12 +965,14 @@ details.timeline-item > summary:hover {
 }
 
 .timeline-activity-group[open] > summary::before,
-.timeline-activity-step[open] > summary::before {
+.timeline-activity-step[open] > summary::before,
+.timeline-item.reasoning[open] > summary::before {
   transform: rotate(90deg);
 }
 
 .timeline-activity-group > summary:hover,
-.timeline-activity-step > summary:hover {
+.timeline-activity-step > summary:hover,
+.timeline-item.reasoning > summary:hover {
   background: rgba(255, 255, 255, 0.045);
 }
 
@@ -976,15 +982,20 @@ details.timeline-item > summary:hover {
   margin: 2px 0 4px 9px;
 }
 
-.timeline-activity-group-summary,
-.timeline-activity-step-summary {
-  @apply grid min-h-6 items-baseline text-body text-muted;
+.timeline-activity-summary {
+  @apply text-muted;
+}
+
+.timeline-activity-summary,
+details.timeline-item.reasoning > summary {
+  @apply grid min-h-6 items-baseline text-body;
   grid-template-columns: minmax(105px, max-content) minmax(0, 1fr) auto;
   gap: 7px;
   line-height: 1.35;
 }
 
-.timeline-activity-group-summary {
+.timeline-activity-group-summary,
+.timeline-item.reasoning > .timeline-activity-summary {
   padding: 4px 8px 4px 18px;
 }
 
@@ -1029,11 +1040,21 @@ details.timeline-item > summary:hover {
 .activity-state[data-status="failed"] { @apply text-danger; }
 .activity-state[data-status="stopped"] { @apply text-quiet; }
 
-.timeline-activity-detail {
-  @apply grid rounded-control border border-border bg-surface-subtle;
-  gap: 7px;
+.timeline-activity-detail,
+.timeline-item.reasoning .timeline-content {
+  @apply rounded-control border border-border bg-surface-subtle;
   margin: 2px 4px 5px 17px;
   padding: 7px 9px;
+}
+
+.timeline-activity-detail {
+  @apply grid;
+  gap: 7px;
+}
+
+.timeline-item.reasoning .timeline-content {
+  @apply text-label text-muted;
+  line-height: 1.45;
 }
 
 .timeline-activity-detail-section {
