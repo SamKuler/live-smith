@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { AudioProvider } from "../../audio-services/contracts.js";
@@ -20,7 +21,7 @@ export class AudioPollScheduler {
     now?: () => number;
     wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   } = {}) {
-    this.now = options.now ?? Date.now;
+    this.now = options.now ?? (() => performance.now());
     this.sleep = options.wait ?? ((milliseconds, signal) => delay(milliseconds, undefined, { signal }));
   }
 

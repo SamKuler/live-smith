@@ -2,7 +2,7 @@ import { isIP } from "node:net";
 import { URL } from "node:url";
 
 import type { NetworkProxySettings } from "../model/profile.js";
-import { throwIfAborted, waitForPromiseWithSignal } from "./host.js";
+import { fetchRequestSignal, throwIfAborted, waitForPromiseWithSignal } from "./host.js";
 import { NetworkProxyError } from "./network-proxy-error.js";
 import {
   readSystemProxyConfiguration,
@@ -44,12 +44,7 @@ export function createProxyAwareFetch(
     bundledNetworkFetch;
 
   const proxyFetch: typeof fetch = async (input, init) => {
-    const signal = init?.signal === null
-      ? undefined
-      : init?.signal ??
-      (typeof input === "object" && !(input instanceof URL)
-        ? input.signal
-        : undefined);
+    const signal = fetchRequestSignal(input, init);
     const route = await resolveNetworkRoute(loadSelection, signal, { readSystemProxy });
     return fetchWithNetworkRoute(
       input,

@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -15,8 +16,8 @@ for (const elapsed of [1, 30 * 60_000]) {
     const controller = createHostAbortController();
     const stopped = new Error("synthetic Stop");
     h.context.signal = controller.signal;
-    let now = Date.now();
-    t.mock.method(Date, "now", () => now);
+    let now = performance.now();
+    t.mock.method(performance, "now", () => now);
     h.adapter.inspect = async () => {
       h.calls.push("inspect");
       now += elapsed;
@@ -53,8 +54,8 @@ for (const elapsed of [1, 30 * 60_000]) {
 
 test("separation wait expiry without Stop retains its task without cancelling it", async (t) => {
   const h = await audioRecoveryHarness(t, "lalal");
-  let now = Date.now();
-  t.mock.method(Date, "now", () => now);
+  let now = performance.now();
+  t.mock.method(performance, "now", () => now);
   h.adapter.inspect = async () => {
     now += 30 * 60_000;
     return { status: "running", progress: 50 };
@@ -72,8 +73,8 @@ test("Stop during separation timeout bookkeeping still cancels even when the pro
   const controller = createHostAbortController();
   const stopped = new Error("Stop during timeout bookkeeping");
   h.context.signal = controller.signal;
-  let now = Date.now();
-  t.mock.method(Date, "now", () => now);
+  let now = performance.now();
+  t.mock.method(performance, "now", () => now);
   const probe = await fs.open(h.storage);
   const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
   const writeFile = prototype.writeFile;
@@ -106,8 +107,8 @@ test("Stop at separation wait expiry bounds a stalled cancellation to three seco
   const controller = createHostAbortController();
   const stopped = new Error("Stop at wait expiry");
   h.context.signal = controller.signal;
-  let now = Date.now();
-  t.mock.method(Date, "now", () => now);
+  let now = performance.now();
+  t.mock.method(performance, "now", () => now);
   h.adapter.inspect = async () => {
     now += 30 * 60_000;
     return { status: "running", progress: 50 };
@@ -146,3 +147,28 @@ test("Stop at separation wait expiry bounds a stalled cancellation to three seco
     syncBuiltinESMExports();
   }
 });
+
+for (const provider of ["lalal", "sunoapi"] as const) {
+  test(`${provider} task polling ignores wall-clock changes and expires by elapsed time`, async (t) => {
+    const h = await audioRecoveryHarness(t, provider);
+    let elapsed = 0;
+    let wallTime = Date.now();
+    t.mock.method(performance, "now", () => elapsed);
+    t.mock.method(Date, "now", () => wallTime);
+    const adapter = provider === "lalal" ? h.adapter : h.generationAdapter;
+    let inspections = 0;
+    adapter.inspect = async () => {
+      inspections += 1;
+      wallTime += inspections === 1 ? 2 * 60 * 60_000 : -4 * 60 * 60_000;
+      elapsed += 10 * 60_000;
+      return { status: "running" as const, progress: 50 };
+    };
+    h.context.wait = async () => undefined;
+    const job = await h.run();
+    assert.equal(inspections, 3);
+    assert.equal(job.status, "interrupted");
+    assert.equal(job.remoteTaskId, "fixture-task");
+    assert.equal(h.calls.filter((call) => call === "submit").length, 1);
+    assert.equal((await audioJobViews(h.storage, h.session.id))[0]!.resumable, true);
+  });
+}

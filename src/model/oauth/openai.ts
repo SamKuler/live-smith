@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
@@ -160,10 +161,10 @@ async function completeDeviceLogin(
   },
   signal: AbortSignal,
 ): Promise<OAuthCredential> {
-  const deadline = Date.now() + deviceTimeoutMs;
+  const deadline = performance.now() + deviceTimeoutMs;
   for (;;) {
     throwIfAborted(signal);
-    if (Date.now() >= deadline) {
+    if (performance.now() >= deadline) {
       throw new Error("OpenAI device authorization expired.");
     }
     if (device.intervalMilliseconds > 0) {

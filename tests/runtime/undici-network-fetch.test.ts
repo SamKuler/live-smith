@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import test from "node:test";
@@ -10,6 +11,7 @@ import {
 
 test("the bundled fetch keeps direct and proxy routes isolated", async (t) => {
   let redirectUrl = "";
+  const receivedBodies: string[] = [];
   const origin = createServer((request, response) => {
     if (request.url === "/redirect") {
       response.writeHead(302, { location: redirectUrl });
@@ -23,7 +25,12 @@ test("the bundled fetch keeps direct and proxy routes isolated", async (t) => {
       setTimeout(() => response.destroy(), 5);
       return;
     }
-    response.end(`${request.method}:${request.headers["x-probe"] ?? ""}`);
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      receivedBodies.push(Buffer.concat(chunks).toString("utf8"));
+      response.end(`${request.method}:${request.headers["x-probe"] ?? ""}`);
+    });
   });
   const redirectTarget = createServer((_request, response) => {
     response.end("redirected");
@@ -78,6 +85,14 @@ test("the bundled fetch keeps direct and proxy routes isolated", async (t) => {
       .text(),
     "POST:request",
   );
+  assert.equal(receivedBodies.at(-1), "payload");
+  assert.equal(request.bodyUsed, true);
+  const replacement = new Request(originUrl, { method: "POST", body: "old body", headers: { "x-probe": "old" } });
+  assert.equal(await (await fetchWithNetworkRoute(replacement, {
+    body: "new body", headers: new Headers({ "X-Probe": "replacement" }),
+  }, "direct", () => null)).text(), "POST:replacement");
+  assert.equal(receivedBodies.at(-1), "new body");
+  assert.equal(await replacement.text(), "old body");
   const inheritedMethod = new Request(originUrl, {
     method: "POST",
     headers: { "x-probe": "undefined-init" },

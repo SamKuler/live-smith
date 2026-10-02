@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { setTimeout, clearTimeout } from "node:timers";
 import { isDeepStrictEqual } from "node:util";
@@ -272,7 +273,7 @@ async function runGeneration(
     if (!acceptedTaskId || !adapter.inspect || !explicitCollection && !adapter.download) {
       throw new Error("This generation has no resumable remote task. It will not be submitted again automatically.");
     }
-    const deadline = Date.now() + 30 * 60_000;
+    const deadline = performance.now() + 30 * 60_000;
     for (;;) {
       throwIfAborted(context.signal);
       const remote = await adapter.inspect(acceptedTaskId, context.signal, acceptedOutputs);
@@ -330,7 +331,7 @@ async function runGeneration(
         return job;
       }
       await context.onProgress?.(m("Waiting for generated audio"));
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         await update({ status: "interrupted", message: m("Stopped waiting. Resume this job to check its existing remote task.") });
         return job;
       }

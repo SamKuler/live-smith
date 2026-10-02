@@ -1,11 +1,10 @@
-import { Buffer } from "node:buffer";
-import { randomUUID } from "node:crypto";
+import { Blob, Buffer } from "node:buffer";
 import { URL } from "node:url";
 import { clearTimeout, setTimeout } from "node:timers";
 import { types } from "node:util";
 import { MAX_AUDIO_ASSET_BYTES, type AudioAsset } from "../contracts.js";
 import { createSunoHttp, type SunoSessionRefreshHandler } from "./suno-http.js";
-import { createHostAbortController, resolveFetchImplementation, throwIfAborted, waitForPromiseWithSignal } from "../../runtime/host.js";
+import { createHostAbortController, resolveFetchImplementation, resolveHostFormData, throwIfAborted, waitForPromiseWithSignal } from "../../runtime/host.js";
 import { cancelStreamBestEffort } from "../../model/transports/stream-cancel.js";
 
 export interface SunoUploadSpec { uploadId: string; url: string; fields: Record<string, string> }
@@ -34,6 +33,7 @@ const extension = (mediaType: AudioAsset["mediaType"]) => mediaType === "audio/w
 export function createSunoUploadAdapter(session: { clientToken: string; accountId: string }, options: {
   fetchImpl?: typeof fetch; onSessionRefresh?: SunoSessionRefreshHandler;
 } = {}): SunoUploadAdapter {
+  const HostFormData = resolveHostFormData();
   const http = createSunoHttp(session, options.fetchImpl, options.onSessionRefresh);
   const route = (id: string, suffix = "") => `/api/uploads/audio/${identifier(id)}/${suffix}`;
   return {
@@ -64,13 +64,10 @@ export function createSunoUploadAdapter(session: { clientToken: string; accountI
     async upload(spec, bytes, mediaType, signal) {
       if (!types.isUint8Array(bytes) || !bytes.byteLength || bytes.byteLength > MAX_AUDIO_ASSET_BYTES) throw http.fail("upload exceeds the host audio limit.");
       const url = uploadUrl(spec.url);
-      const boundary = `live-smith-${randomUUID()}`;
-      const chunks: Buffer[] = [];
-      for (const [name, value] of Object.entries(spec.fields)) chunks.push(Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`, "utf8"));
-      chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.${extension(mediaType)}"\r\nContent-Type: ${mediaType}\r\n\r\n`, "utf8"),
-        Buffer.from(bytes), Buffer.from(`\r\n--${boundary}--\r\n`, "utf8"));
-      const body = Buffer.concat(chunks);
+      const body = new HostFormData();
+      for (const [name, value] of Object.entries(spec.fields)) body.append(name, value);
+      // The host accepts Node Blobs; Node and DOM declarations differ on bytes().
+      body.append("file", new Blob([bytes], { type: mediaType }) as globalThis.Blob, `audio.${extension(mediaType)}`);
       const controller = createHostAbortController();
       const abort = () => controller.abort();
       const timer = setTimeout(abort, 10 * 60_000);
@@ -79,8 +76,7 @@ export function createSunoUploadAdapter(session: { clientToken: string; accountI
       try {
         throwIfAborted(signal);
         const pending = Promise.resolve(resolveFetchImplementation(options.fetchImpl)(url, {
-          method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
-          body: body as unknown as BodyInit, signal: controller.signal, redirect: "error", credentials: "omit", referrerPolicy: "no-referrer",
+          method: "POST", body, signal: controller.signal, redirect: "error", credentials: "omit", referrerPolicy: "no-referrer",
         }));
         void pending.then((late) => { if (controller.signal.aborted) cancelStreamBestEffort(late.body); }, () => undefined);
         response = await waitForPromiseWithSignal(pending, controller.signal);

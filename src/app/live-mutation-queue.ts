@@ -1,4 +1,4 @@
-import { throwIfAborted } from "../runtime/host.js";
+import { throwIfAborted, waitForPromiseWithSignal } from "../runtime/host.js";
 
 /**
  * Model turns and Live observations may overlap, but Live mutations must not.
@@ -20,28 +20,11 @@ export class LiveMutationQueue {
     );
 
     try {
-      await waitForTurn(previous, signal);
+      await waitForPromiseWithSignal(previous, signal);
       throwIfAborted(signal);
       return await operation();
     } finally {
       release();
     }
-  }
-}
-
-async function waitForTurn(
-  previous: Promise<void>,
-  signal: AbortSignal,
-): Promise<void> {
-  if (signal.aborted) throwIfAborted(signal);
-  let onAbort!: () => void;
-  const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(signal.reason ?? new Error("Operation aborted."));
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-  try {
-    await Promise.race([previous, aborted]);
-  } finally {
-    signal.removeEventListener("abort", onAbort);
   }
 }

@@ -1,4 +1,4 @@
-import { clearTimeout, setTimeout } from "node:timers";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   ModelConnectionError,
@@ -111,25 +111,5 @@ function waitForReconnectDelay(
   delayMs: number,
   signal: AbortSignal,
 ): Promise<void> {
-  throwIfAborted(signal);
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      resolve();
-    }, delayMs);
-    const onAbort = (): void => {
-      cleanup();
-      try {
-        throwIfAborted(signal);
-      } catch (error) {
-        reject(error);
-      }
-    };
-    const cleanup = (): void => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) onAbort();
-  });
+  return delay(delayMs, undefined, { signal });
 }

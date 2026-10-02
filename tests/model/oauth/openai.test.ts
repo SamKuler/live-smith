@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 
 import { createOpenAIOAuthAdapter } from "../../../src/model/oauth/openai.js";
@@ -127,4 +128,28 @@ test("OpenAI OAuth refresh preserves an unrotated refresh token and uses JWT exp
   assert.equal(credential.refreshToken, "refresh-1");
   assert.equal(credential.expiresAt, expiresAtSeconds * 1_000);
   assert.equal(credential.accountId, "account-2");
+});
+
+test("device authorization wait expires by elapsed time despite wall-clock adjustments", async (t) => {
+  let elapsed = 0;
+  let wallTime = Date.now();
+  let polls = 0;
+  t.mock.method(performance, "now", () => elapsed);
+  t.mock.method(Date, "now", () => wallTime);
+  const adapter = createOpenAIOAuthAdapter({
+    fetchImpl: async (input) => {
+      if (String(input).endsWith("/deviceauth/usercode")) {
+        return response({ device_auth_id: "device-clock", user_code: "CLOCK", interval: 0 });
+      }
+      assert.ok(String(input).endsWith("/deviceauth/token"));
+      polls += 1;
+      elapsed += 5 * 60_000;
+      wallTime += polls === 1 ? 2 * 60 * 60_000 : -4 * 60 * 60_000;
+      return response({}, 403);
+    },
+    wait: async () => undefined,
+  });
+  const attempt = await adapter.beginLogin(new AbortController().signal);
+  await assert.rejects(attempt.completion, /device authorization expired/);
+  assert.equal(polls, 3);
 });

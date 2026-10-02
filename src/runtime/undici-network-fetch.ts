@@ -7,7 +7,7 @@ import WrapHandler from "undici/lib/handler/wrap-handler.js";
 import connectDispatcher from "undici/lib/api/api-connect.js";
 import type { Dispatcher } from "undici";
 
-import { resolveFetchImplementation, throwIfAborted } from "./host.js";
+import { fetchRequestSignal, resolveFetchImplementation, throwIfAborted } from "./host.js";
 import { NetworkProxyError } from "./network-proxy-error.js";
 
 // ProxyAgent expects the public entrypoint's connect mixin on its private Pool.
@@ -35,7 +35,7 @@ export function fetchWithNetworkRoute(
   selectProxy: (target: URL) => string | null,
   proxyFailureMessage?: string,
 ): Promise<Response> {
-  const request = proxyRequest(input, init);
+  const signal = fetchRequestSignal(input, init);
   const lease = acquireDispatcher(
     routeKey,
     selectProxy,
@@ -53,15 +53,15 @@ export function fetchWithNetworkRoute(
     },
   };
   const throwNetworkError = (error: unknown): never => {
-    throwIfAborted(request.init.signal ?? undefined);
+    throwIfAborted(signal);
     if (proxyFailureDetected && proxyFailureMessage !== undefined) {
       throw new NetworkProxyError(proxyFailureMessage);
     }
     throw error;
   };
   try {
-    const response = hostFetch(request.url, {
-      ...request.init,
+    const response = hostFetch(input, {
+      ...init,
       dispatcher: requestDispatcher,
     } as unknown as RequestInit & { dispatcher: Dispatcher })
       .catch(throwNetworkError);
@@ -223,38 +223,4 @@ class NetworkProxyFailureHandler {
     this.onProxyFailure();
     return new NetworkProxyError(this.message);
   }
-}
-
-function proxyRequest(
-  input: URL | RequestInfo,
-  init: RequestInit | undefined,
-): { url: string | URL; init: RequestInit } {
-  if (typeof input === "string" || input instanceof URL) {
-    return { url: input, init: init ?? {} };
-  }
-  const inherited: RequestInit = {
-    method: input.method,
-    headers: input.headers,
-    mode: input.mode,
-    credentials: input.credentials,
-    cache: input.cache,
-    redirect: input.redirect,
-    referrer: input.referrer,
-    referrerPolicy: input.referrerPolicy,
-    integrity: input.integrity,
-    keepalive: input.keepalive,
-    signal: input.signal,
-    ...(input.body === null ? {} : { body: input.body }),
-  };
-  const definedInit = Object.fromEntries(
-    Object.entries(init ?? {}).filter(([, value]) => value !== undefined),
-  ) as RequestInit;
-  const merged = {
-    ...inherited,
-    ...definedInit,
-  } as RequestInit & { duplex?: "half" };
-  if (merged.body !== undefined && merged.body !== null) {
-    merged.duplex = "half";
-  }
-  return { url: input.url, init: merged };
 }

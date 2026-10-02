@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -31,4 +32,24 @@ test("poll scheduling does not delay unrelated credentials or providers", async 
     scheduler.wait("suno", "first", signal),
   ]);
   assert.equal(waits, 0);
+});
+
+test("poll spacing is unchanged by forward and backward wall-clock adjustments", async (t) => {
+  let elapsed = 0;
+  let wallTime = Date.now();
+  t.mock.method(performance, "now", () => elapsed);
+  t.mock.method(Date, "now", () => wallTime);
+  const waits: number[] = [];
+  const scheduler = new AudioPollScheduler({ wait: async (milliseconds) => {
+    waits.push(milliseconds);
+    elapsed += milliseconds;
+  } });
+  const signal = new AbortController().signal;
+  await scheduler.wait("lalal", "same-account", signal);
+  for (const adjustment of [60 * 60_000, -2 * 60 * 60_000]) {
+    wallTime += adjustment;
+    elapsed += 500;
+    await scheduler.wait("lalal", "same-account", signal);
+  }
+  assert.deepEqual(waits, [1_600, 1_600]);
 });

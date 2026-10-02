@@ -19,6 +19,27 @@ export function createHostAbortController(): AbortController {
   return new HostAbortController();
 }
 
+export function resolveHostFormData(): typeof FormData {
+  const HostFormData = globalThis.FormData;
+  if (typeof HostFormData !== "function") {
+    throw new Error("File uploads require Ableton Live 12.4.15b5 or later (FormData is unavailable).");
+  }
+  return HostFormData;
+}
+
+export function combineHostAbortSignals(signals: AbortSignal[]): AbortSignal {
+  const HostAbortSignal = globalThis.AbortSignal;
+  if (typeof HostAbortSignal?.any !== "function") {
+    throw new Error("This operation requires Ableton Live 12.4.15b5 or later (AbortSignal.any is unavailable).");
+  }
+  return HostAbortSignal.any(signals);
+}
+
+export function fetchRequestSignal(input: Parameters<typeof fetch>[0], init?: RequestInit): AbortSignal | undefined {
+  if (init?.signal === null) return undefined;
+  return init?.signal ?? (typeof input === "object" && "signal" in input ? input.signal : undefined);
+}
+
 export function throwIfAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
   if ("reason" in signal) throw signal.reason;

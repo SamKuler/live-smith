@@ -53,8 +53,12 @@ async function waitFor(condition: () => Promise<boolean>, message: string): Prom
   }
 }
 
-for (const stage of ["server/discover", "tools/list", "resources/read"] as const) for (const cancellation of ["disconnect", "close"] as const) {
-  test(`HTTP App opening ${cancellation} releases a pending ${stage} process and its capacity`, { timeout: 15_000 }, async (t) => {
+const cancellationCases = [
+  ...(["server/discover", "tools/list", "resources/read"] as const).map((stage) => ({ stage, operation: "open" as const })),
+  { stage: "resources/read", operation: "resource" as const },
+];
+for (const { stage, operation } of cancellationCases) for (const cancellation of ["disconnect", "close"] as const) {
+  test(`HTTP App ${operation} ${cancellation} releases a pending ${stage} process and its capacity`, { timeout: 15_000 }, async (t) => {
     const directory = await fs.mkdtemp("/private/tmp/live-smith-app-cancellation-");
     const pendingDirectory = path.join(directory, "pending");
     const gatePath = path.join(directory, "gate");
@@ -85,12 +89,12 @@ for (const stage of ["server/discover", "tools/list", "resources/read"] as const
       sessionChanged() {},
     });
     const state = { status: "Ready" } as ChatDialogState;
-    let settledOpens = 0;
+    let settledRequests = 0;
     const bridge = await createChatBridge({ buildState: async () => state, renderHtml: () => "<html></html>",
       handleCommand: async () => state, handleSend: async () => {}, closePluginApps: () => apps.close(),
       async handlePluginAppRequest(request, signal) {
         try { return await apps.request(request, signal); }
-        finally { if (request.operation === "open") settledOpens += 1; }
+        finally { if (request.operation === operation) settledRequests += 1; }
       },
     });
     t.after(async () => {
@@ -111,7 +115,15 @@ for (const stage of ["server/discover", "tools/list", "resources/read"] as const
       const controller = createHostAbortController();
       const id = randomUUID();
       controllers.push(controller);
-      const pending = post("open", { id, ...input }, controller.signal).then((response) => ({ response }), (error: unknown) => ({ error }));
+      if (operation === "resource") {
+        await fs.rm(gatePath, { force: true });
+        const opened = await post("open", { id, ...input });
+        assert.equal(opened.status, 200);
+        await opened.json();
+        await fs.writeFile(gatePath, stage);
+      }
+      const pending = post(operation, operation === "open" ? { id, ...input } : { id, uri: resourceUri }, controller.signal)
+        .then((response) => ({ response }), (error: unknown) => ({ error }));
       await waitFor(async () => {
         const names = await fs.readdir(pendingDirectory);
         const next = names.find((entry) => !seenProcesses.has(entry));
@@ -137,13 +149,22 @@ for (const stage of ["server/discover", "tools/list", "resources/read"] as const
         assert.notEqual(outcome.response.status, 200);
         await outcome.response.json();
       }
+      if (operation === "resource" && cancellation === "disconnect") {
+        await fs.rm(gatePath);
+        const retained = await post("resource", { id, uri: resourceUri });
+        assert.equal(retained.status, 200, "Cancelling one request must keep the App connection usable.");
+        await retained.json();
+        const closed = await post("close", { id });
+        assert.equal(closed.status, 200);
+        await closed.json();
+      }
       await waitFor(async () => {
         try { process.kill(Number(processId), 0); return false; }
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
       }, "The cancelled App retained its MCP process.");
-      await waitFor(async () => settledOpens === attempt + 1, "The cancelled App retained its opening handler.");
+      await waitFor(async () => settledRequests === (attempt + 1) * (operation === "resource" && cancellation === "disconnect" ? 2 : 1), "The cancelled App retained its opening handler.");
     }
-    await fs.rm(gatePath);
+    await fs.rm(gatePath, { force: true });
     const reopened = await post("open", { id: randomUUID(), ...input });
     assert.equal(reopened.status, 200, "Four cancelled opens must not consume the App capacity.");
     const body = await reopened.json() as { id: string; html: string };

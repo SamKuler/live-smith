@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { appResourceDocument } from "../../plugins/mcp/apps.js";
 import { configRecord } from "../../plugins/user-config.js";
-import { createHostAbortController, throwIfAborted } from "../../runtime/host.js";
+import { combineHostAbortSignals, createHostAbortController, throwIfAborted } from "../../runtime/host.js";
 import { appendSessionEvent, loadSessionEvents } from "../../storage/events.js";
 import { inspectMidiArtifacts } from "../../storage/midi-artifacts.js";
 import { MAX_PLUGIN_MCP_MESSAGE_BYTES, type PluginToolResult } from "../../plugins/contracts.js";
@@ -122,25 +122,21 @@ export function createPluginAppSessions(input: {
       if (!app?.tools || app.opening) throw new ChatBridgeConflictError("Plugin app is no longer open.");
       const tools = app.tools;
       await input.validateSession(app.sessionId, signal);
-      const controller = createHostAbortController();
-      const abort = () => controller.abort(new Error("Plugin app operation stopped."));
-      signal.addEventListener("abort", abort, { once: true });
-      app.controller.signal.addEventListener("abort", abort, { once: true });
-      if (signal.aborted || app.controller.signal.aborted) abort();
+      const operationSignal = combineHostAbortSignals([signal, app.controller.signal]);
       try {
-        if (request.operation === "resource") return await tools.readAppResource(app.toolName, request.uri, controller.signal);
+        if (request.operation === "resource") return await tools.readAppResource(app.toolName, request.uri, operationSignal);
         if (request.operation === "resources" || request.operation === "resource-templates") {
-          return await tools.listAppResources(app.toolName, request.operation === "resource-templates", request.cursor, controller.signal);
+          return await tools.listAppResources(app.toolName, request.operation === "resource-templates", request.cursor, operationSignal);
         }
-        return await input.mutateSession(app.sessionId, controller.signal, async () => {
-          await input.validateSession(app.sessionId, controller.signal);
+        return await input.mutateSession(app.sessionId, operationSignal, async () => {
+          await input.validateSession(app.sessionId, operationSignal);
           const definition = tools.appTool(app.toolName, request.name);
-          throwIfAborted(controller.signal);
+          throwIfAborted(operationSignal);
           await appendSessionEvent(input.storageDirectory, app.sessionId, {
             kind: "tool_call", name: definition.tool.function.name, content: JSON.stringify(request.arguments),
           });
           try {
-            const result = await tools.callAppTool(app.toolName, request.name, request.arguments, controller.signal);
+            const result = await tools.callAppTool(app.toolName, request.name, request.arguments, operationSignal);
             if (result.history.outcomeUnknown) throw new Error("Plugin App tool outcome is unconfirmed.");
             await appendSessionEvent(input.storageDirectory, app.sessionId, {
               kind: "tool_result", name: definition.tool.function.name, content: result.history.content,
@@ -154,9 +150,11 @@ export function createPluginAppSessions(input: {
             throw new ChatBridgeConflictError("The Plugin app tool outcome is unconfirmed. Check its state before retrying.");
           } finally { input.sessionChanged(app.sessionId); }
         });
-      } finally {
-        signal.removeEventListener("abort", abort);
-        app.controller.signal.removeEventListener("abort", abort);
+      } catch (error) {
+        if (operationSignal.aborted && error === operationSignal.reason) {
+          throw new Error("Plugin app operation stopped.");
+        }
+        throw error;
       }
     },
     async close() {

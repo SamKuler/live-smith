@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { setTimeout, clearTimeout } from "node:timers";
@@ -179,7 +180,7 @@ async function ownJob(
     throwIfAborted(context.signal);
     const taskId = job.remoteTaskId;
     if (!taskId) throw new Error("Audio processing has no confirmed remote task.");
-    const deadline = Date.now() + 30 * 60_000;
+    const deadline = performance.now() + 30 * 60_000;
     for (;;) {
       throwIfAborted(context.signal);
       if (!context.wait) await audioPollScheduler.wait(settings.provider,
@@ -233,7 +234,7 @@ async function ownJob(
         return job;
       }
       await context.onProgress?.(remote.progress === undefined ? m("Separating stems") : m("Separating stems ({progress}%)", { progress: remote.progress }));
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         await update({ status: "interrupted", message: m("Stopped waiting for audio processing. Resume this job to check the existing remote task.") });
         return job;
       }
