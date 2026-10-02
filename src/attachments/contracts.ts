@@ -81,10 +81,6 @@ export const ATTACHMENT_IMPORT_FORMATS = [
 /** Stored references and display labels include formats retired from ingestion. */
 export const ATTACHMENT_REFERENCE_FORMATS = [...ATTACHMENT_FORMATS, ...HISTORICAL_DOCUMENT_FORMATS] as const;
 
-export function isDocumentAttachmentMediaType(value: unknown): value is DocumentAttachmentMediaType {
-  return ATTACHMENT_REFERENCE_FORMATS.some((format) => format.kind === "document" && format.mediaType === value);
-}
-
 export function isAttachmentMediaType(value: unknown): value is AttachmentMediaType {
   return ATTACHMENT_REFERENCE_FORMATS.some((format) => format.mediaType === value);
 }

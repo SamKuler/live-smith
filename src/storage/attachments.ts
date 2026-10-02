@@ -688,7 +688,6 @@ async function readAllStoredMetadata(
 ): Promise<StoredSessionAttachment[]> {
   const names = await fs.readdir(directory);
   const metadata: StoredSessionAttachment[] = [];
-  const seenIds = new Set<string>();
   const seenOrdinals = new Set<number>();
   for (const name of names.filter((entry) => entry.endsWith(".json")).sort()) {
     const fileId = name.slice(0, -".json".length);
@@ -698,12 +697,10 @@ async function readAllStoredMetadata(
     if (
       item.id !== fileId ||
       item.sessionId !== sessionId ||
-      seenIds.has(item.id) ||
       (item.ordinal !== undefined && seenOrdinals.has(item.ordinal))
     ) {
       throw new AttachmentStorageCorruptionError();
     }
-    seenIds.add(item.id);
     if (item.ordinal !== undefined) seenOrdinals.add(item.ordinal);
     metadata.push(item);
   }

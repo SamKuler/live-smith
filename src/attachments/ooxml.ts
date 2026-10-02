@@ -152,12 +152,6 @@ function resolvePackageKind(
   if (matching.length !== 1 || supportedMainOverrides.length !== 1) {
     throw invalidDocument("OOXML content types do not identify one supported document kind.");
   }
-  if ([...entries.keys()].some((name) => /(?:^|\/)vbaProject\.bin$/i.test(name))) {
-    throw new AttachmentProcessingError(
-      "macro_enabled",
-      "Macro-enabled Office documents are not supported.",
-    );
-  }
   return kind;
 }
 

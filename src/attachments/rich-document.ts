@@ -1,20 +1,9 @@
 import { assertDocumentAttachmentBytesWithinLimit, AttachmentProcessingError } from "./contracts.js";
-import type { ExtractedDocumentText } from "./document-text.js";
 import { throwIfAborted } from "../runtime/host.js";
 import { openOdfPackage, type OdfMediaType } from "./odf.js";
-import { extractOfficeDocumentText, officeParserFileType } from "./office-parser.js";
 import { inspectBoundedZipEntryNames } from "./ooxml-zip.js";
-import { extractRtfText } from "./rich-rtf.js";
 
 export type RichDocumentMediaType = "application/rtf" | OdfMediaType;
-
-export async function classifyRichDocumentAttachment(input: {
-  bytes: Uint8Array;
-  fileName: string;
-  signal?: AbortSignal;
-}): Promise<RichDocumentMediaType | undefined> {
-  return (await inspectRichDocumentAttachment(input))?.mediaType;
-}
 
 export async function inspectRichDocumentAttachment(input: {
   bytes: Uint8Array;
@@ -38,20 +27,4 @@ export async function inspectRichDocumentAttachment(input: {
     };
   }
   return undefined;
-}
-
-export async function extractRichDocumentText(input: {
-  bytes: Uint8Array;
-  fileName: string;
-  mediaType: RichDocumentMediaType;
-  signal?: AbortSignal;
-}): Promise<ExtractedDocumentText> {
-  const inspected = await inspectRichDocumentAttachment(input);
-  if (inspected?.mediaType !== input.mediaType) {
-    throw new AttachmentProcessingError("invalid_document", "The document content does not match its format.");
-  }
-  if (input.mediaType === "application/rtf") return extractRtfText(input.bytes, input.signal);
-  return extractOfficeDocumentText({ bytes: input.bytes, fileType: officeParserFileType(input.mediaType)!,
-    ...(inspected.canonicalOdfContent ? { canonicalOdfContent: inspected.canonicalOdfContent } : {}),
-    ...(input.signal ? { signal: input.signal } : {}) });
 }

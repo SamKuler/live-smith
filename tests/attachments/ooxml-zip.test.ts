@@ -6,7 +6,7 @@ import { strToU8, zipSync } from "fflate/browser";
 
 import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "../../src/attachments/contracts.js";
 import { odfBytes } from "./support/rich-document-test-helpers.js";
-import { extractRichDocumentText } from "../../src/attachments/rich-document.js";
+import { processAttachment } from "../../src/attachments/processor.js";
 import {
   asStructurallyValidZip64,
   centralHeaders,
@@ -87,7 +87,8 @@ test("ZIP accepts validated signed and unsigned data descriptors for Office and 
     const office = await openOoxmlPackage(withDataDescriptor(packageBytes("docx"), 0, { includeSignature }));
     assert.equal(office.kind, "docx");
     const bytes = withDataDescriptor(odfBytes("text", "<text:p>Document text</text:p>"), 2, { includeSignature });
-    const text = await extractRichDocumentText({ bytes, fileName: "export.odt", mediaType: "application/vnd.oasis.opendocument.text" });
+    const text = await processAttachment({ bytes, fileName: "export.odt", nativePdfAllowed: false });
+    assert.ok(text.type === "text");
     assert.equal(text.text, "Document text");
   }
 });
@@ -104,7 +105,7 @@ test("ZIP accepts Deflate option flags only for Deflate and retains reserved-fla
       assert.equal(readU16(bytes, central + 10), 0);
       writeU16(bytes, central + 8, option); writeU16(bytes, local + 6, option);
     });
-    await assert.rejects(extractRichDocumentText({ bytes: stored, fileName: "bad.odt", mediaType: "application/vnd.oasis.opendocument.text" }), processingError("invalid_document"));
+    await assert.rejects(processAttachment({ bytes: stored, fileName: "bad.odt", nativePdfAllowed: false }), processingError("invalid_document"));
   }
   const reserved = mutateEntry(packageBytes("docx"), 0, (bytes, central, local) => {
     writeU16(bytes, central + 8, 0x10); writeU16(bytes, local + 6, 0x10);

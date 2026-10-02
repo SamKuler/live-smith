@@ -6,20 +6,24 @@ import { zipSync, strToU8 } from "fflate/browser";
 
 import { processingError, mutateEntry, writeU16 } from "./support/ooxml-test-helpers.js";
 import { odfBytes, rtfBytes } from "./support/rich-document-test-helpers.js";
-import { classifyRichDocumentAttachment, extractRichDocumentText, type RichDocumentMediaType } from "../../src/attachments/rich-document.js";
+import { inspectRichDocumentAttachment, type RichDocumentMediaType } from "../../src/attachments/rich-document.js";
+import { processAttachment } from "../../src/attachments/processor.js";
 
-function extract(bytes: Uint8Array, mediaType: RichDocumentMediaType) {
-  return extractRichDocumentText({ bytes, fileName: "renamed.bin", mediaType });
+async function extract(bytes: Uint8Array, mediaType: RichDocumentMediaType) {
+  const result = await processAttachment({ bytes, fileName: "renamed.bin", nativePdfAllowed: false });
+  assert.ok(result.type === "text");
+  assert.equal(result.mediaType, mediaType);
+  return result;
 }
 
 test("rich documents are classified from content instead of filename", async () => {
   for (const kind of ["text", "spreadsheet", "presentation"] as const) {
     const bytes = odfBytes(kind, "");
-    assert.equal(await classifyRichDocumentAttachment({ bytes, fileName: "fake.txt" }), `application/vnd.oasis.opendocument.${kind}`);
+    assert.equal((await inspectRichDocumentAttachment({ bytes, fileName: "fake.txt" }))?.mediaType, `application/vnd.oasis.opendocument.${kind}`);
   }
-  assert.equal(await classifyRichDocumentAttachment({ bytes: rtfBytes("{\\rtf1 Hello}"), fileName: "file.doc" }), "application/rtf");
-  assert.equal(await classifyRichDocumentAttachment({ bytes: Buffer.from("plain text"), fileName: "file.rtf" }), undefined);
-  assert.equal(await classifyRichDocumentAttachment({ bytes: zipSync({ "file.txt": strToU8("hi") }), fileName: "file.odt" }), undefined);
+  assert.equal((await inspectRichDocumentAttachment({ bytes: rtfBytes("{\\rtf1 Hello}"), fileName: "file.doc" }))?.mediaType, "application/rtf");
+  assert.equal(await inspectRichDocumentAttachment({ bytes: Buffer.from("plain text"), fileName: "file.rtf" }), undefined);
+  assert.equal(await inspectRichDocumentAttachment({ bytes: zipSync({ "file.txt": strToU8("hi") }), fileName: "file.odt" }), undefined);
 });
 
 test("RTF preserves Unicode, code pages, lines and tables while omitting object and metadata data", async () => {
@@ -179,7 +183,10 @@ test("ODF recognizes namespace aliases and rejects spoofed namespace content", a
 
 test("rich extraction rejects format mismatch, invalid XML, encrypted and active content", async () => {
   const mime: RichDocumentMediaType = "application/vnd.oasis.opendocument.text";
-  await assert.rejects(extract(odfBytes("presentation", ""), mime), processingError("invalid_document"));
+  const mismatched = odfBytes("text", "", { "content.xml":
+    `<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0">` +
+    `<office:body><office:presentation/></office:body></office:document-content>` });
+  await assert.rejects(extract(mismatched, mime), processingError("invalid_document"));
   await assert.rejects(extract(odfBytes("text", "", { "content.xml": "<!DOCTYPE x [<!ENTITY x 'a'>]><x>&x;</x>" }), mime), processingError("invalid_document"));
   await assert.rejects(extract(odfBytes("text", "", { "Basic/Standard/Module1.xml": "source" }), mime), processingError("macro_enabled"));
   const encrypted = `<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><manifest:file-entry manifest:full-path="/" manifest:media-type="${mime}"/><manifest:file-entry manifest:full-path="content.xml"><manifest:encryption-data/></manifest:file-entry></manifest:manifest>`;
@@ -201,10 +208,10 @@ test("rich extraction bounds Unicode output, repeated spreadsheets and nested RT
 
 test("rich extraction honors cancellation before and during ZIP or RTF parsing", async () => {
   const before = new AbortController(); before.abort(new Error("cancel rich before"));
-  await assert.rejects(extractRichDocumentText({ bytes: rtfBytes("{\\rtf1 hi}"), fileName: "x", mediaType: "application/rtf", signal: before.signal }), /cancel rich before/);
-  for (const [bytes, mediaType] of [[rtfBytes(`{\\rtf1 ${"x".repeat(2_000_000)}}`), "application/rtf"], [odfBytes("text", `<text:p>${"x".repeat(2_000_000)}</text:p>`), "application/vnd.oasis.opendocument.text"]] as const) {
+  await assert.rejects(processAttachment({ bytes: rtfBytes("{\\rtf1 hi}"), fileName: "x", nativePdfAllowed: false, signal: before.signal }), /cancel rich before/);
+  for (const bytes of [rtfBytes(`{\\rtf1 ${"x".repeat(2_000_000)}}`), odfBytes("text", `<text:p>${"x".repeat(2_000_000)}</text:p>`)]) {
     const during = new AbortController();
-    const pending = extractRichDocumentText({ bytes, fileName: "x", mediaType, signal: during.signal });
+    const pending = processAttachment({ bytes, fileName: "x", nativePdfAllowed: false, signal: during.signal });
     await yieldImmediate(); during.abort(new Error("cancel rich during"));
     await assert.rejects(pending, /cancel rich during/);
   }
