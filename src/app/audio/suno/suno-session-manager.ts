@@ -66,25 +66,37 @@ export class SunoSessionManager {
   async views(connections: readonly IntegrationConnection[]): Promise<SunoAccountView[]> {
     const sunoConnections = connections.filter((connection) =>
       isIntegrationConnectionForProvider(connection, "suno"));
-    const owners = new Set(sunoConnections.map(({ id }) => id));
-    for (const id of evidenceByStorage.get(this.scopeKey)?.keys() ?? []) {
-      if (!owners.has(id)) this.updateEvidence(id);
+    if (!this.storageDirectory) return sunoConnections.map(({ id }) => ({ serviceId: id, status: "signed_out" }));
+    try {
+      return await withStorageTransaction(this.storageDirectory, async (transaction) => {
+        // A requested UI snapshot may precede another dialog's saved connections.
+        // Reconcile evidence only against current owners and credentials under their write lock.
+        const current = (await loadAgentSettings(this.storageDirectory)).integrationConnections?.connections
+          .filter((connection) => isIntegrationConnectionForProvider(connection, "suno")) ?? [];
+        const owners = new Set(current.map(({ id }) => id));
+        for (const id of evidenceByStorage.get(this.scopeKey)?.keys() ?? []) {
+          if (!owners.has(id)) this.updateEvidence(id);
+        }
+        const views = await Promise.all(current.map(async ({ id }): Promise<SunoAccountView> => {
+          try {
+            const saved = await this.store.load(id, transaction);
+            if (!saved) { this.updateEvidence(id); return { serviceId: id, status: "signed_out" }; }
+            const cached = evidenceByStorage.get(this.scopeKey)?.get(id);
+            const status = cached?.fingerprint === identity(saved) ? cached.status : "saved";
+            if (status === "saved") this.updateEvidence(id);
+            return { serviceId: id, status, ...(["signed_in", "saved"].includes(status)
+              ? { accountId: saved.accountId, ...(saved.accountName ? { accountName: saved.accountName } : {}) } : {}) };
+          } catch {
+            this.updateEvidence(id);
+            return { serviceId: id, status: "unavailable" };
+          }
+        }));
+        const byId = new Map(views.map((view) => [view.serviceId, view]));
+        return sunoConnections.map(({ id }) => byId.get(id) ?? { serviceId: id, status: "signed_out" as const });
+      });
+    } catch {
+      return sunoConnections.map(({ id }) => ({ serviceId: id, status: "unavailable" }));
     }
-    return Promise.all(sunoConnections.map(async ({ id }) => {
-      try {
-        if (!this.storageDirectory) return { serviceId: id, status: "signed_out" as const };
-        const saved = await this.store.load(id);
-        if (!saved) { this.updateEvidence(id); return { serviceId: id, status: "signed_out" as const }; }
-        const cached = evidenceByStorage.get(this.scopeKey)?.get(id);
-        const status = cached?.fingerprint === identity(saved) ? cached.status : "saved";
-        if (status === "saved") this.updateEvidence(id);
-        return { serviceId: id, status, ...(["signed_in", "saved"].includes(status)
-          ? { accountId: saved.accountId, ...(saved.accountName ? { accountName: saved.accountName } : {}) } : {}) };
-      } catch {
-        this.updateEvidence(id);
-        return { serviceId: id, status: "unavailable" as const };
-      }
-    }));
   }
 
   async importSession(serviceId: string, sessionValue: unknown, signal: AbortSignal): Promise<void> {
@@ -111,13 +123,27 @@ export class SunoSessionManager {
       const { sessionValue: refreshed, ...identity } = account;
       await this.commit(serviceId, { clientToken: refreshed ?? previous.clientToken, ...identity }, previous, signal);
     } catch (error) {
-      if (isStorageCommitOutcomeUnknownError(error)) {
-        this.updateEvidence(serviceId);
+      const commitUnknown = isStorageCommitOutcomeUnknownError(error);
+      if (!commitUnknown) active(signal);
+      try {
+        await withStorageTransaction(this.storageDirectory, async (transaction) => {
+          const current = await this.store.load(serviceId, transaction);
+          if (!commitUnknown) active(signal);
+          // A read-only tool may have already persisted a newer verified rotation.
+          // Publish failure evidence only for the credential this refresh checked.
+          if (identity(current) !== identity(previous)) return;
+          this.updateEvidence(serviceId, commitUnknown ? undefined : {
+            fingerprint: identity(previous),
+            status: error instanceof SunoSessionExpiredError ? "expired" : "unavailable",
+          });
+        });
+      } catch {
+        // Views report unreadable credentials; retain the original refresh failure.
+      }
+      if (commitUnknown) {
         throw new StorageCommitOutcomeUnknownError(new SunoSessionStorageError());
       }
       active(signal);
-      this.updateEvidence(serviceId, { fingerprint: identity(previous),
-        status: error instanceof SunoSessionExpiredError ? "expired" : "unavailable" });
       if (error instanceof SunoSessionExpiredError) throw new SunoSessionExpiredError();
       if (error instanceof NetworkProxyError) throw error;
       throw new SunoSessionUnavailableError();

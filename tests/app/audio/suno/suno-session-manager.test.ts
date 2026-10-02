@@ -190,6 +190,31 @@ test("refresh preserves uncertain commit classification without propagating a ra
     assert.ok(error.cause instanceof SunoSessionStorageError);
     assert.equal(error.cause.cause, undefined); return true;
   });
+  assert.equal((await h.manager.views([connection]))[0]?.status, "saved");
+});
+
+test("a late refresh failure preserves a newer verified Cookie rotation", { timeout: 5_000 }, async (t) => {
+  const h = await harness(t);
+  await h.manager.importSession(connection.id, token, h.signal);
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const peer = new SunoSessionManager(h.directory, async () => {
+    started.resolve();
+    await release.promise;
+    throw new SunoSessionExpiredError();
+  });
+  const rejected = assert.rejects(peer.refresh(connection.id, h.signal), SunoSessionExpiredError);
+  await started.promise;
+  await persistRotatedSunoSession(h.directory, connection.id, "user_fixture", token, replacement, h.signal);
+  assert.equal((await h.manager.views([connection]))[0]?.status, "signed_in");
+  release.resolve();
+  await rejected;
+  for (const manager of [h.manager, peer]) {
+    assert.deepEqual(await manager.views([connection]), [{
+      serviceId: connection.id, status: "signed_in", accountId: "user_fixture", accountName: "Fixture",
+    }]);
+  }
 });
 
 for (const status of ["expired", "unavailable"] as const) {
@@ -221,6 +246,15 @@ test("shared evidence is pruned for retired connections and follows changed or c
   const saved = { clientToken: token, accountId: "user_fixture", accountName: "Fixture" };
   await h.manager.importSession(connection.id, token, h.signal);
   assert.deepEqual(await peer.views([]), []);
+  assert.equal((await h.manager.views([connection]))[0]?.status, "signed_in", "a stale view cannot retire a saved owner");
+  await saveGlobalSettings(h.directory, { integrationConnections: {
+    action: "remove", expectedRevision: "1", connectionId: connection.id,
+  } });
+  assert.deepEqual(await peer.views([connection]), [{ serviceId: connection.id, status: "signed_out" }]);
+  await saveGlobalSettings(h.directory, { integrationConnections: {
+    action: "upsert", expectedRevision: "2", connection,
+  } });
+  await store.save(connection.id, saved);
   assert.equal((await h.manager.views([connection]))[0]?.status, "saved");
   await h.manager.refresh(connection.id, h.signal);
   await store.save(connection.id, { ...saved, clientToken: replacement });

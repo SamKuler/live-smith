@@ -6,7 +6,9 @@ import type { LiveInteractionContext } from "../../../src/live/context.js";
 import { chatDialogStateForWire, type ChatDialogState } from "../../../src/ui/chat-state.js";
 import { runAgentFlow } from "../../../src/app/agent-flow.js";
 import { SunoSessionManager } from "../../../src/app/audio/suno/suno-session-manager.js";
+import { SunoSessionExpiredError } from "../../../src/audio-services/suno/suno-session.js";
 import { liveContextPresentationFixture } from "../context/support/live-context.test-harness.js";
+import { loadSessionEvents } from "../../../src/storage/events.js";
 import { SunoSessions } from "../../../src/storage/suno-sessions.js";
 import { subscribeGlobalStateInvalidations } from "../../../src/app/session/session-state-events.js";
 import {
@@ -121,3 +123,61 @@ test("partial Cookie cleanup returns authoritative disconnected state and invali
     } },
   } as never, interaction, { renderHtml: () => "<html></html>" });
 });
+
+for (const status of ["signed_in", "expired", "unavailable"] as const) {
+  test(`an older state snapshot preserves a peer's new Suno ${status} evidence`, { timeout: 5_000 }, async (t) => {
+    const storage = await fs.mkdtemp("/private/tmp/live-smith-suno-state-evidence-");
+    t.after(() => fs.rm(storage, { recursive: true, force: true }));
+    const captured = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    let pause = false;
+    let paused = false;
+    const interaction: LiveInteractionContext = { presentation: liveContextPresentationFixture("Audio"),
+      summary: "Track: Audio", target: {}, scope: { kind: "track", identity: "track-evidence", label: "Audio" } };
+    interaction.selectionContext = { refresh: () => interaction };
+    await runAgentFlow({
+      application: { song: { handle: { id: 1n } } }, environment: { storageDirectory: storage },
+      ui: { showModalDialog: async (url: string) => {
+        const endpoint = new URL(url); endpoint.pathname = "/state";
+        const state = async () => {
+          const response = await fetch(endpoint);
+          const result = await response.json() as ChatDialogState;
+          assert.equal(response.status, 200);
+          return result;
+        };
+        assert.deepEqual((await state()).sunoAccounts, []);
+        pause = true;
+        const olderState = state();
+        await captured.promise;
+        try {
+          await saveIntegrationConnection(storage, "0", connection);
+          let failure: Error | undefined;
+          const peer = new SunoSessionManager(storage, async () => {
+            if (failure) throw failure;
+            return { accountId: "user_fixture" };
+          });
+          const signal = new AbortController().signal;
+          await peer.importSession(connection.id, sessionValue, signal);
+          if (status !== "signed_in") {
+            failure = status === "expired" ? new SunoSessionExpiredError() : new Error("Synthetic network failure");
+            await assert.rejects(peer.refresh(connection.id, signal));
+          }
+          assert.equal((await peer.views([integrationConnectionFixture(connection)]))[0]!.status, status);
+          release.resolve();
+          assert.deepEqual((await olderState).sunoAccounts, []);
+          assert.deepEqual((await state()).sunoAccounts, [{ serviceId: connection.id, status,
+            ...(status === "signed_in" ? { accountId: "user_fixture" } : {}) }]);
+        } finally {
+          release.resolve();
+          await olderState;
+        }
+      } },
+    } as never, interaction, { renderHtml: () => "<html></html>",
+      loadSessionEvents: async (...args) => {
+        if (pause && !paused) { paused = true; captured.resolve(); await release.promise; }
+        return loadSessionEvents(...args);
+      },
+    });
+  });
+}
