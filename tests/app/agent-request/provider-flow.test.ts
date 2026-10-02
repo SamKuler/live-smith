@@ -1,3 +1,4 @@
+import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
@@ -3170,11 +3171,11 @@ test("a tenth device rejection preserves nine completed actions and repairs in t
   assert.equal(modelCalls, 4);
   assert.deepEqual(attemptedDevices, [...plannedDevices, "Delay"]);
   assert.match(
-    modelInputs[1]?.at(-1)?.content ?? "",
+    modelMessageText(modelInputs[1]?.at(-1)),
     /partially completed after 9 operation\(s\).*Current Live state after the failure:.*Wavetable.*EQ Eight/is,
   );
   assert.match(
-    modelInputs[2]?.at(-1)?.content ?? "",
+    modelMessageText(modelInputs[2]?.at(-1)),
     /repeats work already completed.*Wavetable/is,
   );
   const [session] = await listSessions(dir, "project-a");
@@ -3359,7 +3360,7 @@ test("completed action replay protection persists across sends and clears after 
   );
   assert.equal(secondResult, "The missing device is now in place.");
   assert.match(
-    secondInputs[1]?.at(-1)?.content ?? "",
+    modelMessageText(secondInputs[1]?.at(-1)),
     /repeats work already completed.*Auto Filter/is,
   );
   assert.deepEqual(attemptedDevices, [

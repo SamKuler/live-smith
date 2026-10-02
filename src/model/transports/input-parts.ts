@@ -107,8 +107,11 @@ export function* allModelInputParts(
     yield part;
   }
   for (const message of request.agentMessages) {
-    if (message.role !== "tool") continue;
-    if (message.modelInputPart) yield message.modelInputPart;
+    if (message.role === "user" && Array.isArray(message.content)) {
+      yield* message.content;
+    } else if (message.role === "tool" && message.modelInputPart) {
+      yield message.modelInputPart;
+    }
   }
 }
 

@@ -1,3 +1,4 @@
+import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as fs from "node:fs/promises";
@@ -66,7 +67,7 @@ test("a text-only chat model separates an attached file and reuses saved stems i
       assert.ok(match?.[1]);
       return { content: null, toolCalls: [{ id: "split", name: separateStemsTool, arguments: JSON.stringify({ connectionId: "splitter", source: JSON.parse(match[1]), stems: ["vocals"] }) }] };
     }
-    const result = JSON.parse(request.agentMessages.at(-1)!.content!);
+    const result = JSON.parse(modelMessageText(request.agentMessages.at(-1)));
     assert.equal(result.status, "completed");
     assetId = result.outputs[0].id;
     assert.match(request.requestAudioSampleSourceInstructions ?? "", new RegExp(assetId));
@@ -114,7 +115,7 @@ test("a text-only chat model generates music through a named connection and expo
     if (++turns === 1) return { content: null, toolCalls: [{ id: "music-call", name: elevenMusicTool, arguments: JSON.stringify({
       connectionId: "music-account", prompt: "Ambient piano", durationSeconds: 10, instrumental: true,
     }) }] };
-    const result = JSON.parse(request.agentMessages.at(-1)!.content!);
+    const result = JSON.parse(modelMessageText(request.agentMessages.at(-1)));
     assert.equal(result.status, "completed"); assert.equal(result.serviceId, "music-account");
     assert.equal(result.operation, "generate_music"); assetId = result.outputs[0].id;
     assert.match(request.requestAudioSampleSourceInstructions ?? "", new RegExp(assetId));
@@ -191,7 +192,7 @@ test("a chat model can select Suno rendered audio with bounded advanced controls
       if (turns === 1) return { content: null, toolCalls: [{ id: "suno-generate",
         name: sunoMusicTool, arguments: JSON.stringify({ connectionId: "suno-account", ...expected,
           operation: undefined }) }] };
-      const toolResult = JSON.parse(request.agentMessages.at(-1)!.content!);
+      const toolResult = JSON.parse(modelMessageText(request.agentMessages.at(-1)));
       assert.equal(toolResult.status, "ready");
       assert.equal(toolResult.remoteOutputs.length, 2);
       return { content: "Suno render is ready for preview.", toolCalls: [] };
@@ -238,7 +239,7 @@ test("an audio-capable chat model can listen to a generated Session asset in the
         arguments: JSON.stringify({ connectionId: "music-account", prompt: "Short ambient idea", durationSeconds: 10,
           instrumental: true }) }] };
       if (turns === 2) {
-        const generated = JSON.parse(request.agentMessages.at(-1)!.content!);
+        const generated = JSON.parse(modelMessageText(request.agentMessages.at(-1)));
         return { content: null, toolCalls: [{ id: "listen", name: "listen_to_audio_asset",
           arguments: JSON.stringify({ assetRef: generated.outputs[0].id }) }] };
       }

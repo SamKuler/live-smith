@@ -83,6 +83,7 @@ import {
   assertExactQueryParameters,
   assertJsonContentType,
   commandIdForRequest,
+  attachmentIdsForRequest,
   parseAttachmentDeleteQuery,
   parseAttachmentUploadQuery,
   parseCommandInput,
@@ -160,6 +161,7 @@ function stateCoverageRevisionForRequest(
 
 export interface ChatBridgeSendContext {
   sendId: string;
+  attachmentIds?: readonly string[];
   /** Rechecks the state revisions after request configuration is snapshotted. */
   assertStateCoverageCurrent(): void;
 }
@@ -175,6 +177,7 @@ export interface ChatBridgeSteeringReceiptLookupInput {
   sendId: string;
   steerId: string;
   prompt: string;
+  attachmentIds?: readonly string[];
 }
 
 export type ChatBridgeSteeringReceiptLookupResult =
@@ -1824,14 +1827,11 @@ export async function createChatBridge(
         attachmentSessionId = query.sessionId;
         if (
           activeCommandTerminal ||
-          activeSendsBySession.has(query.sessionId) ||
           activeAttachmentTerminals.has(query.sessionId)
         ) {
           request.resume();
           sendJson(response, {
-            error: activeSendsBySession.has(query.sessionId)
-              ? "Stop this Session's active request before changing attachments."
-              : "Another Live Smith operation is already in progress for this Session.",
+            error: "Another Live Smith operation is already in progress for this Session.",
           }, 409);
           return;
         }
@@ -1867,13 +1867,10 @@ export async function createChatBridge(
         attachmentSessionId = input.sessionId;
         if (
           activeCommandTerminal ||
-          activeSendsBySession.has(input.sessionId) ||
           activeAttachmentTerminals.has(input.sessionId)
         ) {
           sendJson(response, {
-            error: activeSendsBySession.has(input.sessionId)
-              ? "Stop this Session's active request before changing attachments."
-              : "Another Live Smith operation is already in progress for this Session.",
+            error: "Another Live Smith operation is already in progress for this Session.",
           }, 409);
           return;
         }
@@ -2238,6 +2235,7 @@ export async function createChatBridge(
         sendAdmission = { sendId, stopRequested: false };
         pendingSendAdmissions.set(sendId, sendAdmission);
         const input = parseSendInput(await readRequestBody<unknown>(request));
+        const attachmentIds = attachmentIdsForRequest(request);
         sendSessionId = input.sessionId;
         if (sendAdmission.stopRequested) {
           sendJson(response, {
@@ -2340,6 +2338,7 @@ export async function createChatBridge(
               steering,
               {
                 sendId,
+                ...(attachmentIds === undefined ? {} : { attachmentIds }),
                 assertStateCoverageCurrent: () => {
                   if (!sendStateCoverageIsCurrent(
                     input.sessionId,
@@ -2410,6 +2409,7 @@ export async function createChatBridge(
         const targetSendId = steeringSendIdForRequest(request);
         const steerId = steeringIdForRequest(request);
         const input = parseSteeringInput(await readRequestBody<unknown>(request));
+        const attachmentIds = attachmentIdsForRequest(request);
         if (closing) {
           sendJson(response, { error: "Live Smith bridge is closing." }, 503);
           return;
@@ -2423,6 +2423,7 @@ export async function createChatBridge(
               sendId: targetSendId,
               steerId,
               prompt: input.prompt,
+              ...(attachmentIds === undefined ? {} : { attachmentIds }),
             },
           );
           if (receiptOutcome === "accepted") {
@@ -2452,7 +2453,7 @@ export async function createChatBridge(
           return;
         }
         try {
-          const submission = activeSend.steering.enqueue(steerId, input.prompt);
+          const submission = activeSend.steering.enqueue(steerId, input.prompt, attachmentIds);
           if (submission.created) {
             resolveConfirmationsForSend(targetSendId, false);
           }
@@ -2469,6 +2470,7 @@ export async function createChatBridge(
                 sendId: targetSendId,
                 steerId,
                 prompt: input.prompt,
+                ...(attachmentIds === undefined ? {} : { attachmentIds }),
               },
             );
             if (receiptOutcome === "accepted") {
@@ -3237,6 +3239,7 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "load_session_model_capabilities" ||
     input.kind === "load_session_tools" ||
     input.kind === "run_plugin_tool" || input.kind === "run_audio_tool" ||
+    input.kind === "open_audio_download" ||
     input.kind === "import_midi_artifact" ||
     input.kind === "set_session_skills";
 }

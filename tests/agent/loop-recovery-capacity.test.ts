@@ -1,3 +1,4 @@
+import { modelMessageText } from "../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -203,7 +204,7 @@ test("the recovery ledger reserves durable capacity before more Live work", asyn
       askModel: async (input) => {
         modelCalls += 1;
         if (modelCalls === 2) {
-          recoveryFailure = input.messages.at(-1)?.content ?? "";
+          recoveryFailure = modelMessageText(input.messages.at(-1));
           return {
             content: "I will inspect before asking what to keep.",
             toolCalls: [{

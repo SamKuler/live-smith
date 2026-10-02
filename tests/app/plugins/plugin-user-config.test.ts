@@ -1,3 +1,4 @@
+import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
@@ -299,7 +300,7 @@ test("saved configuration reaches selected Skill instructions and a real MCP pro
               assert.ok(request.tools.some((tool) => tool.type === "function" && tool.function.name === toolName));
               return { content: "Inspecting configuration.", toolCalls: [{ id: `inspect-${requests.length}`, name: toolName, arguments: "{}" }] };
             }
-            const result = JSON.parse(request.agentMessages.at(-1)!.content!);
+            const result = JSON.parse(modelMessageText(request.agentMessages.at(-1)));
             results.push(result.structuredContent);
             return { content: "Configuration inspected.", toolCalls: [] };
           },

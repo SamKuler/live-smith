@@ -124,7 +124,7 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
     return (entries ?? []).map(({ id, label }) => [id, label]);
   }
   const currentOwner = () => { const state = deps.getState(); return JSON.stringify([state.activeSessionId, state.integrationConnections?.revision, state.plugins,
-    state.sunoAccounts?.map(({ serviceId, accountId }) => [serviceId, accountId]).sort((left, right) => left[0]!.localeCompare(right[0]!))]); };
+    (state.sunoAccounts ?? []).map(({ serviceId, accountId }) => [serviceId, accountId]).sort((left, right) => left[0]!.localeCompare(right[0]!))]); };
   const sync = () => { if (owner !== currentOwner()) { close(); drafts.clear(); owner = currentOwner(); } };
   const close = () => { const previous = active; active = undefined; previous?.dialog.remove(); if (previous?.focus instanceof HTMLElement && previous.focus.isConnected) previous.focus.focus(); };
 
@@ -238,7 +238,7 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
 
   return {
     open(tool, connectionLabel) {
-      sync(); close(); if (busy || !deps.getState().activeSessionId) return;
+      sync(); close(); if (!deps.getState().activeSessionId) return;
       const dialog = node("dialog", "audio-parameter-dialog"); const focus = document.activeElement;
       active = { dialog, owner, focus }; const opened = active;
       const heading = node("h3", "", label(tool.name)); heading.id = "audio-parameter-title"; dialog.setAttribute("aria-labelledby", heading.id);
@@ -253,7 +253,7 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
         if (!drafts.has(key)) drafts.set(key, initial(panel.schema)); const draft = drafts.get(key)!;
         const checks: (() => boolean)[] = []; const fields = render(panel.schema, draft, "Parameters", "", true, checks); fields.classList.add("audio-parameter-root"); form.append(fields);
         form.append(node("p", "field-hint", t("Running uses the current connection's allowance. Results appear in this Session's audio area or tool history.")));
-        const run = node("button", "primary", t("Run tool")); run.type = "submit"; const footer = node("footer", "audio-parameter-footer"); footer.append(run); form.append(footer);
+        const run = node("button", "primary", t("Run tool")); run.type = "submit"; run.disabled = busy; const footer = node("footer", "audio-parameter-footer"); footer.append(run); form.append(footer);
         form.addEventListener("submit", async (event) => {
           event.preventDefault(); if (busy || active !== opened || owner !== currentOwner()) return;
           const okay = checks.map((check) => check()).every(Boolean); if (!okay) { form.reportValidity(); return; }
@@ -265,7 +265,11 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
       dialog.addEventListener("cancel", (event) => { event.preventDefault(); close(); });
       document.body.append(dialog); if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", ""); dismiss.focus();
     }, close, sync,
-    setBusy(value) { busy = value; if (busy) close(); },
+    setBusy(value) {
+      busy = value;
+      const run = active?.dialog.querySelector<HTMLButtonElement>("button[type=submit]");
+      if (run) run.disabled = busy;
+    },
   };
 }
 window.LiveSmithFactories = window.LiveSmithFactories || {};

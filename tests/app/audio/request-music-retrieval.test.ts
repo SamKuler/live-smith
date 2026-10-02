@@ -1,3 +1,4 @@
+import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runAgentLoop } from "../../../src/agent/loop.js";
@@ -129,7 +130,7 @@ test("retrieval and Resume allow the model to continue with one explicitly saved
     externalTools: { names: ["resume_audio_job"], execute: tools.tools.execute },
     askModel: async ({ messages }) => {
       if (++turns === 1) return { content: null, toolCalls: [{ id: "resume", name: "resume_audio_job", arguments: JSON.stringify({ jobId: job.id }) }] };
-      const result = JSON.parse(messages.at(-1)!.content!);
+      const result = JSON.parse(modelMessageText(messages.at(-1)));
       assert.equal(result.outputs[0].id, selected.outputAssets[0]!.id);
       assert.ok(tools.assets.includes(result.outputs[0].id));
       return { content: "The selected saved audio is available for the requested Live import.", toolCalls: [] };

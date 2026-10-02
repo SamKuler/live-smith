@@ -3150,7 +3150,7 @@ test("attachment routes never expose unclassified filesystem or credential-beari
   }
 });
 
-test("attachment operations conflict only with the same Session's active mutation", async () => {
+test("attachment operations remain available in the sending Session and other Sessions", async () => {
   let releaseSend!: () => void;
   let markStarted!: () => void;
   const sendGate = new Promise<void>((resolve) => {
@@ -3200,7 +3200,7 @@ test("attachment operations conflict only with the same Session's active mutatio
         body: attachmentRequestBody(attachmentPng),
       },
     );
-    assert.equal(sameSession.status, 409);
+    assert.equal(sameSession.status, 201);
     assert.equal(otherSession.status, 201);
   } finally {
     releaseSend();

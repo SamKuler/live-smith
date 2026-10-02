@@ -333,7 +333,6 @@ export function isWireSessionEvent(value: unknown, attachmentPolicy = "current")
     (value.steeringAck !== undefined && (
       value.kind !== "user" ||
       value.name !== undefined ||
-      value.attachments !== undefined ||
       !isWireSteeringAck(value.steeringAck)
     ))
   ) return false;

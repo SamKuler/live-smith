@@ -115,6 +115,7 @@ export async function resolveConversationHistory(input: {
   currentDocumentTextCharacters: number;
   runtimeProfile: RuntimeProfile;
   signal?: AbortSignal;
+  onAttachmentIncluded?(ref: SessionAttachmentRef, documentTextCharacters: number): void;
 }): Promise<ConversationMessage[]> {
   throwIfAborted(input.signal);
   assertCurrentDocumentTextCharacters(input.currentDocumentTextCharacters);
@@ -188,9 +189,13 @@ export async function resolveConversationHistory(input: {
           remainingDocumentText -= characters;
           includedQuotaItems.push(quotaItem);
           resolved.set(occurrence, outcome.part);
+          input.onAttachmentIncluded?.(ref, characters);
         }
       } else {
-        if (outcome.type === "included") includedQuotaItems.push(quotaItem);
+        if (outcome.type === "included") {
+          includedQuotaItems.push(quotaItem);
+          input.onAttachmentIncluded?.(ref, 0);
+        }
         resolved.set(occurrence, outcome.part);
       }
     }

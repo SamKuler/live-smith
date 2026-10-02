@@ -1030,7 +1030,8 @@ download distinction in its [download FAQ](https://help.suno.com/en/articles/136
 Downloaded audio becomes a verified local Session asset, with local playback
 and a separate **Export MP3/WAV** button. Export opens the system default
 browser with a two-minute link for this file only, not the dialog's control
-credential. Keep Live Smith open until the browser finishes the download; no
+credential. Local export remains available while the Session's model request
+runs. Keep Live Smith open until the browser finishes the download; no
 Suno request or additional download allowance is needed. Repeating a saved output's download reuses that
 asset without a provider request. Importing into Live requires this local asset
 and remains a separate scoped Apply operation. When asked, a verified audio-input

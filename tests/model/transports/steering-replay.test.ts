@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runtimeProfileForSavedProfile } from "../../../src/app/model/model-request.js";
-import type { ModelConversationMessage } from "../../../src/model/contracts.js";
+import type { ModelConversationMessage, ModelInputPart } from "../../../src/model/contracts.js";
 import type { DirectApiConnection, DirectApiProfile } from "../../../src/model/profile.js";
 import type { ModelTransport, TransportRequest } from "../../../src/model/provider.js";
 import { createAnthropicMessagesTransport } from "../../../src/model/transports/anthropic-messages.js";
@@ -127,7 +127,7 @@ function responsesReplay(body: Record<string, unknown>): ReplayEntry[] {
         content: String(item.output),
       }];
     }
-    if (item.role === "user" && item.content === steeringContent) {
+    if (item.role === "user" && hasSteeringText(item.content)) {
       return [{ kind: "steering" }];
     }
     return [];
@@ -150,11 +150,16 @@ function chatReplay(body: Record<string, unknown>): ReplayEntry[] {
         content: String(message.content),
       }];
     }
-    if (message.role === "user" && message.content === steeringContent) {
+    if (message.role === "user" && hasSteeringText(message.content)) {
       return [{ kind: "steering" }];
     }
     return [];
   });
+}
+
+function hasSteeringText(content: unknown): boolean {
+  return content === steeringContent || Array.isArray(content) && content.some((part) =>
+    part && typeof part === "object" && "text" in part && part.text === steeringContent);
 }
 
 function anthropicReplay(body: Record<string, unknown>): ReplayEntry[] {
@@ -241,5 +246,78 @@ for (const testCase of cases) {
       .filter((entry) => entry.kind === "tool-result")
       .map((entry) => entry.id);
     assert.deepEqual(results, calls, "every replayed tool call must be closed");
+  });
+
+  test(`${testCase.name} maps steered media after closing every tool call`, async () => {
+    let body: Record<string, unknown> = {};
+    const transport = testCase.createTransport(async (_input, init) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return testCase.completedResponse();
+    });
+    const target = request(testCase.savedProfile);
+    target.runtimeProfile.capabilities.inputs = { image: true, pdf: true, audio: true };
+    target.runtimeProfile.inputCapabilityEvidence = { image: "supported", pdf: "supported", audio: "supported" };
+    const chat = testCase.savedProfile.connection.apiMode === "chat-completions";
+    const parts: ModelInputPart[] = [
+      { type: "text", text: steeringContent },
+      { type: "image", fileName: "reference.png", mediaType: "image/png", base64: "AA==" },
+      chat
+        ? { type: "audio", fileName: "reference.wav", mediaType: "audio/wav", base64: "AA==" }
+        : { type: "document", fileName: "score.pdf", mediaType: "application/pdf", base64: "AA==" },
+    ];
+    target.agentMessages = [...agentMessages.slice(0, -1), { role: "user", content: parts }];
+    await transport.createToolTurn(target);
+    assert.equal(testCase.replayFromBody(body).at(-1)?.kind, "steering");
+    assert.deepEqual(testCase.replayFromBody(body).map((entry) => entry.kind), [
+      "tool-call", "tool-call", "tool-result", "tool-result", "steering",
+    ]);
+    const messages = (body.input ?? body.messages) as Array<Record<string, unknown>>;
+    const lastContent = messages.at(-1)?.content as Array<Record<string, unknown>>;
+    const mapped = lastContent.filter((part) => part.type !== "tool_result");
+    const mode = testCase.savedProfile.connection.apiMode;
+    assert.deepEqual(mapped, mode === "responses" ? [
+      { type: "input_text", text: steeringContent },
+      { type: "input_image", image_url: "data:image/png;base64,AA==", detail: "auto" },
+      { type: "input_file", filename: "score.pdf", file_data: "data:application/pdf;base64,AA==" },
+    ] : mode === "chat-completions" ? [
+      { type: "text", text: steeringContent },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AA==", detail: "auto" } },
+      { type: "input_audio", input_audio: { data: "AA==", format: "wav" } },
+    ] : [
+      { type: "text", text: steeringContent },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } },
+      { type: "document", title: "score.pdf", source: { type: "base64", media_type: "application/pdf", data: "AA==" } },
+    ]);
+  });
+
+  test(`${testCase.name} includes steered media in the combined request budget`, async () => {
+    let fetchCalls = 0;
+    const transport = testCase.createTransport(async () => {
+      fetchCalls++;
+      return testCase.completedResponse();
+    });
+    const target = request(testCase.savedProfile);
+    target.runtimeProfile.capabilities.inputs.image = true;
+    const image: ModelInputPart = { type: "image", fileName: "image.png", mediaType: "image/png", base64: "AA==" };
+    target.history = [{ role: "user", content: [image, image] }];
+    target.currentUserContent.push(image);
+    target.agentMessages = [{ role: "user", content: [image, image] }];
+    await assert.rejects(transport.createToolTurn(target), /at most 4 binary attachments/);
+    assert.equal(fetchCalls, 0);
+  });
+
+  test(`${testCase.name} applies image capability checks to steering before sending`, async () => {
+    let fetchCalls = 0;
+    const transport = testCase.createTransport(async () => {
+      fetchCalls++;
+      return testCase.completedResponse();
+    });
+    const target = request(testCase.savedProfile);
+    target.runtimeProfile.capabilities.inputs.image = false;
+    target.agentMessages = [{ role: "user", content: [
+      { type: "image", fileName: "image.png", mediaType: "image/png", base64: "AA==" },
+    ] }];
+    await assert.rejects(transport.createToolTurn(target), /Image input is disabled/);
+    assert.equal(fetchCalls, 0);
   });
 }

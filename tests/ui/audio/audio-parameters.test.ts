@@ -130,8 +130,28 @@ test("owner changes discard drafts and stale forms cannot submit", () => {
     const stale = h.find<HTMLFormElement>("form"); h.state.activeSessionId = "session-two"; h.panels.sync();
     stale.dispatchEvent(new h.dom.window.Event("submit", { bubbles: true, cancelable: true })); assert.equal(h.calls.length, 0);
     h.panels.open(tool); assert.equal(h.find<HTMLInputElement>("[name='.variant.prompt']").value, "");
-    h.panels.setBusy(true); assert.equal(h.dom.window.document.querySelector("dialog"), null);
-    h.panels.open(tool); assert.equal(h.dom.window.document.querySelector("dialog"), null);
+  } finally { h.close(); }
+});
+
+test("busy audio controls keep their draft editable and gate submission until idle", () => {
+  const h = harness();
+  try {
+    const tool = toolContaining("generate_music"); h.panels.open(tool);
+    const dialog = h.find("dialog");
+    h.input(".variant.prompt", "Initial draft"); h.panels.setBusy(true);
+    assert.equal(h.find("dialog"), dialog);
+    assert.equal(h.find<HTMLButtonElement>("button[type=submit]").disabled, true);
+    assert.equal(h.find<HTMLTextAreaElement>("[name='.variant.prompt']").matches(":disabled"), false);
+    h.input(".variant.prompt", "Prepared during generation"); h.submit();
+    assert.equal(h.calls.length, 0);
+    h.panels.close(); h.panels.open(tool);
+    assert.equal(h.find<HTMLTextAreaElement>("[name='.variant.prompt']").value, "Prepared during generation");
+    assert.equal(h.find<HTMLButtonElement>("button[type=submit]").disabled, true);
+    h.submit(); assert.equal(h.calls.length, 0);
+    h.panels.setBusy(false);
+    assert.equal(h.find<HTMLButtonElement>("button[type=submit]").disabled, false);
+    h.submit();
+    assert.deepEqual(h.calls[0]!.input.arguments, { connectionId: "suno", prompt: "Prepared during generation", instrumental: false });
   } finally { h.close(); }
 });
 
@@ -294,6 +314,19 @@ test("Suno account changes close stale controls and clear drafts while same-acco
     assert.equal(h.calls.length, 0);
     h.panels.open({ ...tool, audioPanel: { ...tool.audioPanel, signature: "b".repeat(64) } });
     assert.equal(h.find<HTMLTextAreaElement>("[name='.variant.prompt']").value, "");
+  } finally { h.close(); }
+});
+
+test("hydrating an empty Suno account list retains controls with the same owner", () => {
+  const h = harness();
+  try {
+    delete (h.state as { sunoAccounts?: unknown[] }).sunoAccounts;
+    const tool = toolContaining("generate_music"); h.panels.open(tool);
+    h.input(".variant.prompt", "Prepared draft");
+    const form = h.find<HTMLFormElement>("form");
+    h.state.sunoAccounts = []; h.panels.sync();
+    assert.equal(h.find("form"), form);
+    assert.equal(h.find<HTMLTextAreaElement>("[name='.variant.prompt']").value, "Prepared draft");
   } finally { h.close(); }
 });
 

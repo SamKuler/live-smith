@@ -91,7 +91,6 @@
             form.dataset.parameterTool = panel.toolName;
             form.append(element("h4", "plugin-parameters-title", t("Parameters")));
             const fieldset = element("fieldset", "plugin-parameters-fields");
-            fieldset.disabled = disabled;
             form.append(fieldset);
             const controls = new Map();
             for (const field of panel.fields) {
@@ -197,6 +196,7 @@
             reset.addEventListener("click", () => { drafts.set(key, defaults(panel)); container.replaceWith(create(panel)); });
             const run = element("button", "primary", t("Run tool"));
             run.type = "submit";
+            run.disabled = disabled;
             actions.append(reset, run);
             fieldset.append(actions);
             form.append(element("p", "field-hint", t("Runs this tool with these values. Results are saved in this Session.")));
@@ -234,7 +234,7 @@
 
           function setBusy(value) {
             disabled = Boolean(value);
-            for (const fieldset of document.querySelectorAll(".plugin-parameters-fields")) fieldset.disabled = disabled;
+            for (const run of document.querySelectorAll('.plugin-parameters button[type="submit"]')) run.disabled = disabled;
           }
 
           return { create, setBusy };

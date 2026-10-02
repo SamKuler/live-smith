@@ -1264,13 +1264,17 @@ modified or uploaded alongside it.
 
 ### Send admission and historical context
 
-Upload, pending-quota validation, deletion, request
-preparation, event append, and existing-Session lifecycle mutations use the
-same process-wide Session mutation fence. Operations check cancellation at
-their defined boundaries; upload hashing, audio/PDF/OOXML inspection, Office
+Upload, pending-quota validation, deletion, request preparation, and user-event
+append share a short process-wide attachment fence per Session. A send holds
+the separate Session mutation fence through its agent loop; lifecycle mutations
+acquire the Session fence and then the attachment fence. Uploading a later draft
+can therefore finish during generation without changing an admitted message.
+Each Send and Steer binds an ordered snapshot of attachment IDs; selection is
+resolved against the target Session's pending files under the attachment fence.
+Operations check cancellation at their defined boundaries; upload hashing, audio/PDF/OOXML inspection, Office
 extraction, history reads, and waiting for the fence yield, recheck cancellation,
-or terminate the owned parser worker. Pending references are completely resolved before the user
-event is appended. A confirmed append consumes those exact immutable IDs even
+or terminate the owned parser worker. Pending references are completely
+resolved before the user event is appended. A confirmed append consumes those exact immutable IDs even
 if the provider later fails; unknown append outcomes remain
 `PromptPersistence=unknown` until authoritative state is refreshed. An ID can
 occur in only one user event, consumed IDs cannot be deleted, and corrupt
@@ -1608,7 +1612,9 @@ input snapshot and is not a promise of sample-accurate separation alignment.
 Authenticated local audio-result routes validate Session and asset ownership,
 serve verified bytes with byte-range support, and never redirect a WebView to a
 provider download URL. `open_audio_download` verifies one local asset and opens
-the OS default browser with a short-lived, resource-only ticket. The download
+the OS default browser with a short-lived, resource-only ticket. This reads the
+saved asset without taking the Session mutation fence, so export remains
+available during an active model request. The download
 route accepts only GET/HEAD for that asset, checks the loopback host and request
 origin, and serves an attachment disposition. Tickets expire after two minutes,
 are bounded to 20 per dialog, and are cleared on close; they cannot authenticate
@@ -2456,7 +2462,11 @@ there is no scroll-triggered history loading or continuous layout polling.
 Use as draft copies historical user text into the current Session's composer;
 it never rewrites events, reuses a Send ID, rolls back Live work, or reattaches
 consumed attachments. Replacing existing text requires confirmation, followed by
-revalidation of the Session, source, draft revision, and operation lock. The next
+revalidation of the Session, source, draft revision, and draft-edit lock.
+Generation and attachment upload leave text editing available. Draft revisions
+include file additions and removals. Failed requests are restored automatically
+only when their original composer draft was known to be empty and no later
+draft edit occurred; other failures remain available for explicit editing. The next
 Send uses ordinary admission and preserves all existing recovery history.
 Historical text that would parse as a composer command is restored with the
 existing idle `/queue` wrapper so its body remains a model request, not a local
@@ -2571,11 +2581,12 @@ drafts, and visible state for valid foreground or peer Sessions remain intact.
 
 ### In-loop steering
 
-An active send can additionally accept bounded, pure-text steering for its
-exact bridge-owned send ID. The current send owner persists each steering
+An active send can additionally accept bounded text and attachment steering for
+its exact bridge-owned send ID. The current send owner persists each steering
 message as an ordinary user event before acknowledging it or adding it to model
-context. Storage keeps a strict `(sendId, steerId, prompt SHA-256)` receipt for
-idempotency and conflict detection. The UI projection removes the storage-only
+context. Storage keeps a strict `(sendId, steerId, content SHA-256)` receipt
+covering the prompt and ordered attachment IDs for idempotency and conflict
+detection. The UI projection removes the storage-only
 hash and exposes only a bounded `(sendId, steerId)` `steeringAck` on that same
 user event. Receiving the event therefore persists the timeline item and
 reconciles the matching steer atomically, even when the later HTTP response or
@@ -2590,6 +2601,12 @@ protocol-complete local context. If OpenAI Responses is between output-limit
 continuation calls, the loop removes the entire unfinished continuation suffix,
 including opaque provider state, before adding steering. Stop remains the
 terminal cancellation path for the whole send.
+
+Steered files pass the same extraction and capability checks as initial files,
+within the active request's remaining attachment budgets. Rejected file admission
+leaves the files pending and lets the active request continue. Accepted files
+become typed user parts at the next safe boundary and remain in the durable
+user event; audio references also join the request's audio sources.
 
 A newly submitted steering message supersedes an open confirmation without
 approving it. The loop checks again before each tool, after confirmation, inside
@@ -2714,15 +2731,20 @@ rather than reordering mutations before the user authorizes them.
 
 ### Strict bridge inputs and Stop
 
-Bridge JSON inputs are strict route-specific contracts. Send accepts only
+Bridge JSON inputs are strict route-specific contracts. The optional
+`X-Live-Smith-Attachment-Ids` header selects up to four unique pending IDs for
+Send or Steer. An explicit empty list selects no files; an omitted header keeps
+legacy Send selection of all pending files and text-only Steer. Queue entries
+retain their attachment references, excluding them from the next composer draft
+until the entry is sent or restored for editing. Send accepts only
 `prompt` and `sessionId`. Steer accepts the same two fields but requires the
 exact active `X-Live-Smith-Send-Id` plus a unique
 `X-Live-Smith-Steer-Id`; its prompt is limited to 64 KiB of UTF-8, with at most
 eight unsettled and 32 total submissions per send. Same-ID retries are
-idempotent only when their prompt is identical and do not supersede a later
+idempotent only when their prompt and attachment selection are identical and do not supersede a later
 confirmation again. The durable receipt remains authoritative after the send
 leaves memory, so a terminal same-ID retry can return success only for the exact
-original send and prompt. If a storage commit and the receipt read are both
+original send, prompt, and attachment selection. If a storage commit and the receipt read are both
 uncertain, `/steer` returns a prompt-free
 `steeringOutcome: "unknown"`; the client retains the same ID. Every terminal
 send state also carries the Session events for that send, and the client

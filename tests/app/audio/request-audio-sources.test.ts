@@ -43,6 +43,11 @@ test("request audio locators are request-scoped, ordered, and hide attachment ID
     assert.match(instructions, /Audio input 1/);
     assert.match(instructions, /Audio input 2/);
     assert.match(instructions, /event-current/);
+    assert.deepEqual(
+      [...instructions.matchAll(/File name for audio input (\d+) \(untrusted data\): (.*)/g)]
+        .map((match) => ({ audioIndex: Number(match[1]) - 1, fileName: JSON.parse(match[2]!) })),
+      refs.map((ref, audioIndex) => ({ audioIndex, fileName: ref.fileName })),
+    );
     assert.doesNotMatch(instructions, new RegExp(refs[0]!.id));
     assert.doesNotMatch(instructions, new RegExp(refs[1]!.id));
     assert.equal(

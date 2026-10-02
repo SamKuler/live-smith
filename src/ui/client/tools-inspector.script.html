@@ -140,7 +140,6 @@
             if (tool.audioPanel) {
               const open = element("button", "secondary audio-open-panel", t("Open controls"));
               open.type = "button";
-              open.disabled = disabled;
               open.addEventListener("click", () => { audioParameters.open({ ...tool, name: humanizeToolName(tool.name) }, groupLabel(group)); });
               entry.append(open);
             }
@@ -231,6 +230,7 @@
         function setBusy(nextDisabled) {
           disabled = Boolean(nextDisabled);
           parameterPanels.setBusy(disabled);
+          for (const open of document.querySelectorAll(".plugin-open-app")) open.disabled = disabled;
           if (disabled) cancelLoad();
           render();
         }

@@ -1,3 +1,4 @@
+import { modelMessageText } from "../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -6,11 +7,13 @@ import {
   runAgentLoop,
   type AgentLoopModelInput,
 } from "../../src/agent/loop.js";
-import type { ModelTurn } from "../../src/model/contracts.js";
+import type { ModelConversationMessage, ModelTurn } from "../../src/model/contracts.js";
 
 test("runAgentLoop restarts an interrupted model turn with the steering message", async () => {
   const modelInputs: AgentLoopModelInput[] = [];
-  const pending = ["Keep the groove sparse and use the Lead track instead."];
+  const pending: Extract<ModelConversationMessage, { role: "user" }>[] = [{
+    role: "user", content: "Keep the groove sparse and use the Lead track instead.",
+  }];
   let resets = 0;
 
   const result = await runAgentLoop({
@@ -36,6 +39,88 @@ test("runAgentLoop restarts an interrupted model turn with the steering message"
     content: "Keep the groove sparse and use the Lead track instead.",
   }]);
   assert.equal(resets, 1);
+});
+
+test("runAgentLoop installs the complete multimodal steering message", async () => {
+  const guidance: Extract<ModelConversationMessage, { role: "user" }> = {
+    role: "user", content: [
+      { type: "text", text: "Use this reference" },
+      { type: "image", fileName: "reference.png", mediaType: "image/png", base64: "AA==" },
+    ],
+  };
+  let pending = true;
+  let resets = 0;
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    consumeSteering: async () => {
+      if (!pending) return [];
+      pending = false;
+      return [guidance];
+    },
+    askModel: async (input) => {
+      assert.deepEqual(input.messages, [guidance]);
+      return { content: "Read the reference", toolCalls: [] };
+    },
+    onSteeringApplied: () => { resets++; },
+    observe: async () => "", confirmActions: async () => true,
+    executeActions: async () => ({ results: [], mutationCount: 0 }),
+  });
+  assert.equal(result.message, "Read the reference");
+  assert.equal(resets, 1);
+});
+
+test("runAgentLoop resumes the request when interrupted steering is rejected", async () => {
+  let pending = false;
+  let calls = 0;
+  let resets = 0;
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    hasPendingSteering: () => pending,
+    consumeSteering: async () => { pending = false; return []; },
+    askModel: async (input) => {
+      assert.deepEqual(input.messages, []);
+      if (++calls === 1) {
+        pending = true;
+        throw new AgentSteeringInterruptError();
+      }
+      return { content: "Original request complete", toolCalls: [] };
+    },
+    onSteeringApplied: () => { resets++; },
+    observe: async () => "", confirmActions: async () => true,
+    executeActions: async () => ({ results: [], mutationCount: 0 }),
+  });
+  assert.equal(result.message, "Original request complete");
+  assert.equal(calls, 2);
+  assert.equal(resets, 0);
+});
+
+test("rejected steering leaves the remaining observed tool batch executable", async () => {
+  let pending = false;
+  let calls = 0;
+  const observed: string[] = [];
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    hasPendingSteering: () => pending,
+    consumeSteering: async () => { pending = false; return []; },
+    askModel: async (input) => {
+      if (++calls === 1) return { content: null, toolCalls: [
+        { id: "song", name: "inspect_song_info", arguments: "{}" },
+        { id: "set", name: "inspect_live_set", arguments: "{}" },
+      ] };
+      assert.deepEqual(input.messages.map((message) => message.role), ["assistant", "tool", "tool"]);
+      assert.deepEqual(input.messages.slice(1).map((message) => message.content), ["Song observed", "Set observed"]);
+      return { content: "Original tools complete", toolCalls: [] };
+    },
+    observe: async (request) => {
+      observed.push(request.type);
+      if (request.type === "inspect_song_info") { pending = true; return "Song observed"; }
+      return "Set observed";
+    },
+    confirmActions: async () => true,
+    executeActions: async () => ({ results: [], mutationCount: 0 }),
+  });
+  assert.equal(result.message, "Original tools complete");
+  assert.deepEqual(observed, ["inspect_song_info", "inspect_live_set"]);
 });
 
 test("runAgentLoop discards the full pending continuation suffix before steering", async () => {
@@ -70,7 +155,7 @@ test("runAgentLoop discards the full pending continuation suffix before steering
     consumeSteering: async () => {
       if (!steeringAvailable || steeringConsumed) return [];
       steeringConsumed = true;
-      return ["Stop that continuation and inspect the Drums track instead."];
+      return [{ role: "user", content: "Stop that continuation and inspect the Drums track instead." }];
     },
     hasPendingSteering: () => steeringAvailable && !steeringConsumed,
     observe: async () => "",
@@ -126,7 +211,7 @@ test("runAgentLoop discards a completed obsolete tool turn before any tool can r
     consumeSteering: async () => {
       if (!steeringAvailable || steeringConsumed) return [];
       steeringConsumed = true;
-      return ["Do not delete anything; keep the clip and inspect it instead."];
+      return [{ role: "user", content: "Do not delete anything; keep the clip and inspect it instead." }];
     },
     hasPendingSteering: () => steeringAvailable && !steeringConsumed,
     observe: async () => "",
@@ -192,7 +277,7 @@ test("runAgentLoop completes the current tool result, skips the remaining batch,
     consumeSteering: async () => {
       if (!steeringAvailable || steeringConsumed) return [];
       steeringConsumed = true;
-      return ["Inspect Lead, not Drums."];
+      return [{ role: "user", content: "Inspect Lead, not Drums." }];
     },
     hasPendingSteering: () => steeringAvailable && !steeringConsumed,
     observe: async (request) => {
@@ -211,7 +296,7 @@ test("runAgentLoop completes the current tool result, skips the remaining batch,
     ["assistant", "tool", "tool", "user"],
   );
   assert.match(
-    modelInputs[1]?.messages[2]?.content ?? "",
+    modelMessageText(modelInputs[1]?.messages[2]),
     /not executed because a newer user steering message superseded this tool batch/i,
   );
 });
@@ -244,7 +329,7 @@ test("runAgentLoop rechecks steering inside the mutation lock before applying", 
     consumeSteering: async () => {
       if (!steeringAvailable || steeringConsumed) return [];
       steeringConsumed = true;
-      return ["Leave the tempo unchanged."];
+      return [{ role: "user", content: "Leave the tempo unchanged." }];
     },
     hasPendingSteering: () => steeringAvailable && !steeringConsumed,
     observe: async () => "",

@@ -1,6 +1,5 @@
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
 import { uiMessage, type UiMessage } from "../i18n/ui-message.js";
 
 import {
@@ -46,8 +45,7 @@ import {
   supportsAudioInputDelivery,
 } from "../model/tools.js";
 import type {
-  ConversationMessage,
-  ModelInputPart,
+  ModelConversationMessage,
   ModelContextUsage,
   ModelHostedWebSearch,
   ModelReasoningStreamUpdate,
@@ -66,6 +64,7 @@ import {
   AttachmentProcessingError,
   type AttachmentQuotaItem,
 } from "../attachments/contracts.js";
+import { MAX_REQUEST_DOCUMENT_TEXT_CHARACTERS } from "../attachments/document-text.js";
 import {
   captureLiveActionPreflightObservation,
   type LiveActionPreflightObservation,
@@ -87,11 +86,13 @@ import {
   listPendingSessionAttachments,
   sessionAttachmentRefFromStored,
   type AudioSessionAttachmentRef,
+  type SessionAttachmentRef,
 } from "../storage/attachments.js";
 import {
   appendSessionEvent,
   loadSessionEvents,
   SessionSteeringReceiptConflictError,
+  sessionSteeringContentSha256,
   type SessionEvent,
   type SessionEventInput,
   type SessionSteeringReceipt,
@@ -223,12 +224,9 @@ export async function handleAgentRequest(
         sessionSkillIds: session.activeSkillIds ?? [],
         prompt,
       });
-    const currentAttachments = await listPendingSessionAttachments(
-      storageDirectory,
-      session.id,
-      consumedAttachmentIds(priorEvents),
+    const attachmentRefs = await resolvePendingAttachmentRefs(
+      storageDirectory, session.id, priorEvents, callbacks.attachmentIds,
     );
-    const attachmentRefs = currentAttachments.map(sessionAttachmentRefFromStored);
     const resolvedAttachments = await resolveCurrentAttachmentParts({
       storageDirectory: storageDirectory,
       sessionId: session.id,
@@ -237,6 +235,8 @@ export async function handleAgentRequest(
       audioProcessingOnly,
       signal: callbacks.signal,
     });
+    const attachmentQuota = attachmentRefs.map(attachmentQuotaItem);
+    let documentTextCharacters = resolvedAttachments.documentTextCharacters;
     const history = await resolveConversationHistory({
       storageDirectory: storageDirectory,
       sessionId: session.id,
@@ -246,6 +246,10 @@ export async function handleAgentRequest(
         resolvedAttachments.documentTextCharacters,
       runtimeProfile,
       signal: callbacks.signal,
+      onAttachmentIncluded: (ref, characters) => {
+        attachmentQuota.push(attachmentQuotaItem(ref));
+        documentTextCharacters += characters;
+      },
     });
     let userEvent: SessionEvent;
     try {
@@ -274,6 +278,8 @@ export async function handleAgentRequest(
     return {
       attachmentRefs,
       attachmentParts: resolvedAttachments.parts,
+      attachmentQuota,
+      documentTextCharacters,
       history,
       initialRecoveryState: activeRecoveryLedgerFromEvents(priorEvents),
       recoveryContext: recoveryContextFromEvents(priorEvents),
@@ -282,7 +288,9 @@ export async function handleAgentRequest(
       priorEventIds: priorEvents.map((event) => event.id),
     };
   };
-  const prepared = await prepareRequest();
+  const prepared = await (callbacks.withAttachmentMutation
+    ? callbacks.withAttachmentMutation(prepareRequest)
+    : prepareRequest());
   let activeHistory = prepared.history;
   let activePrompt = prompt;
   let activeAttachmentParts = prepared.attachmentParts;
@@ -290,24 +298,24 @@ export async function handleAgentRequest(
   let latestAcceptedContextUsage: ModelContextUsage | undefined;
   let latestAcceptedProjectionTokens: number | undefined;
   let pendingAcceptedProjectionTokens: number | undefined;
+  let interruptedModelTurnPendingReset = false;
+  const requestAudioAttachmentRefs = prepared.attachmentRefs.filter(
+    (ref): ref is AudioSessionAttachmentRef => ref.kind === "audio",
+  );
   const requestAudioSources = new Map(createRequestAudioSampleSources({
     context,
     storageDirectory,
     sessionId: session.id,
     requestId: prepared.userEvent.id,
-    refs: prepared.attachmentRefs.filter(
-      (ref): ref is AudioSessionAttachmentRef => ref.kind === "audio",
-    ),
+    refs: requestAudioAttachmentRefs,
     signal: callbacks.signal,
   }));
   let audioSampleSourceInstructions = requestAudioSampleSourceInstructions(requestAudioSources);
-  let requestAttachmentQuota = binaryQuotaItems(
-    prepared.history,
-    prepared.attachmentParts,
-  );
+  const requestAttachmentQuota = prepared.attachmentQuota;
+  let requestDocumentTextCharacters = prepared.documentTextCharacters;
   const audioTools = await createRequestAudioTools({
     context, storageDirectory, sessionId: session.id, requestId: prepared.userEvent.id,
-    attachmentRefs: prepared.attachmentRefs.filter((ref): ref is AudioSessionAttachmentRef => ref.kind === "audio"),
+    attachmentRefs: requestAudioAttachmentRefs,
     target: interaction.target, signal: callbacks.signal, onProgress: callbacks.onProgress,
     ...(callbacks.withGenerationAuthorization ? { withGenerationAuthorization: callbacks.withGenerationAuthorization } : {}),
     ...(callbacks.audioProcessing ? { processing: callbacks.audioProcessing } : {}),
@@ -495,7 +503,6 @@ export async function handleAgentRequest(
     }];
     activePrompt = "Continue the current request from the conversation checkpoint.";
     activeAttachmentParts = [];
-    requestAttachmentQuota = [];
     compactedAgentMessageCount = agentMessages.length;
     latestAcceptedContextUsage = undefined;
     latestAcceptedProjectionTokens = undefined;
@@ -545,52 +552,101 @@ export async function handleAgentRequest(
       ...(callbacks.steering
         ? {
           consumeSteering: async () => {
-            const entries = callbacks.steering?.takePending(1) ?? [];
-            const acceptedPrompts: string[] = [];
-            let acceptedCount = 0;
-            try {
-              for (const entry of entries) {
+            const acceptedMessages: Extract<ModelConversationMessage, { role: "user" }>[] = [];
+            for (;;) {
+              const [entry] = callbacks.steering?.takePending(1) ?? [];
+              if (!entry) break;
+              let appendStarted = false;
+              const prepareSteering = async () => {
                 if (!callbacks.steeringSendId) {
-                  throw new Error(
-                    "The active send is missing its steering correlation ID.",
+                  throw new Error("The active send is missing its steering correlation ID.");
+                }
+                const events = await loadSessionEvents(storageDirectory, session.id);
+                const refs = await resolvePendingAttachmentRefs(
+                  storageDirectory, session.id, events, entry.attachmentIds ?? [],
+                );
+                if (refs.length && !attachmentRequestQuotaIsWithinLimits([
+                  ...requestAttachmentQuota,
+                  ...refs.map(attachmentQuotaItem),
+                ])) {
+                  throw new AttachmentProcessingError(
+                    "archive_limit", "Attachments exceed the model request limit.",
                   );
                 }
-                const event = await appendSteeringUserEvent(
+                const resolved = await resolveCurrentAttachmentParts({
                   storageDirectory,
-                  session.id,
-                  callbacks.steeringSendId,
-                  entry.id,
-                  entry.prompt,
-                  appendUserEvent,
+                  sessionId: session.id,
+                  refs,
+                  runtimeProfile,
+                  audioProcessingOnly,
+                  signal: callbacks.signal,
+                });
+                if (resolved.documentTextCharacters >
+                  MAX_REQUEST_DOCUMENT_TEXT_CHARACTERS - requestDocumentTextCharacters) {
+                  throw new AttachmentProcessingError(
+                    "archive_limit", "Extracted document text exceeds the model request limit.",
+                  );
+                }
+                appendStarted = true;
+                const event = await appendSteeringUserEvent(
+                  storageDirectory, session.id, callbacks.steeringSendId,
+                  entry.id, entry.prompt, refs, appendUserEvent,
                   loadEventsForSearchReconciliation,
                 );
-                knownEventIds.add(event.id);
-                entry.accept();
-                acceptedCount += 1;
-                acceptedPrompts.push(entry.prompt);
-                await callbacks.onSessionEvent(event);
+                return { event, refs, resolved };
+              };
+              let steered: Awaited<ReturnType<typeof prepareSteering>>;
+              try {
+                steered = await (callbacks.withAttachmentMutation
+                  ? callbacks.withAttachmentMutation(prepareSteering)
+                  : prepareSteering());
+              } catch (error) {
+                const rejection = appendStarted && !(error instanceof SteeringPersistenceOutcomeUnknownError)
+                  ? new Error("The steering message could not be persisted.", { cause: error })
+                  : error instanceof Error ? error : new Error(String(error));
+                entry.reject(rejection);
+                throwIfAborted(callbacks.signal);
+                if (appendStarted) throw error;
+                continue;
               }
-              return acceptedPrompts;
-            } catch (error) {
-              const rejection = error instanceof SteeringPersistenceOutcomeUnknownError
-                ? error
-                : new Error(
-                  "The steering message could not be persisted.",
-                  { cause: error },
-                );
-              for (const entry of entries.slice(acceptedCount)) {
-                try {
-                  entry.reject(rejection);
-                } catch {
-                  // Stop may have closed and rejected the entry concurrently.
-                }
+              requestAttachmentQuota.push(...steered.refs.map(attachmentQuotaItem));
+              requestDocumentTextCharacters += steered.resolved.documentTextCharacters;
+              requestAudioAttachmentRefs.push(...steered.refs.filter(
+                (ref): ref is AudioSessionAttachmentRef => ref.kind === "audio",
+              ));
+              for (const [key, source] of createRequestAudioSampleSources({
+                context, storageDirectory, sessionId: session.id,
+                requestId: prepared.userEvent.id, refs: requestAudioAttachmentRefs,
+                signal: callbacks.signal,
+              })) {
+                if (!requestAudioSources.has(key)) requestAudioSources.set(key, source);
               }
-              throwIfAborted(callbacks.signal);
-              throw error;
+              audioSampleSourceInstructions = [
+                requestAudioSampleSourceInstructions(requestAudioSources),
+                audioAssetSampleSourceInstructions(requestAudioSources),
+              ].filter(Boolean).join("\n\n");
+              knownEventIds.add(steered.event.id);
+              entry.accept();
+              acceptedMessages.push({
+                role: "user",
+                content: steered.resolved.parts.length
+                  ? [{ type: "text", text: entry.prompt }, ...steered.resolved.parts]
+                  : entry.prompt,
+              });
+              await callbacks.onSessionEvent(steered.event);
+              break;
             }
+            if (!acceptedMessages.length && interruptedModelTurnPendingReset) {
+              await (callbacks.onModelRequestRetry
+                ? callbacks.onModelRequestRetry()
+                : callbacks.onAssistantReset?.());
+              interruptedModelTurnPendingReset = false;
+            }
+            return acceptedMessages;
           },
           hasPendingSteering: () => callbacks.steering?.hasPending() ?? false,
           onSteeringApplied: async (messageCount: number) => {
+            interruptedModelTurnPendingReset = false;
             await callbacks.onAssistantReset?.();
             await callbacks.onProgress(
               messageCount === 1
@@ -723,6 +779,7 @@ export async function handleAgentRequest(
         } catch (error) {
           throwIfAborted(callbacks.signal);
           if (modelTurn?.wasInterrupted()) {
+            interruptedModelTurnPendingReset = true;
             throw new AgentSteeringInterruptError();
           }
           throw error;
@@ -731,6 +788,7 @@ export async function handleAgentRequest(
         }
         throwIfAborted(callbacks.signal);
         if (modelTurn?.wasInterrupted()) {
+          interruptedModelTurnPendingReset = true;
           throw new AgentSteeringInterruptError();
         }
         if (!reconnected) {
@@ -975,31 +1033,8 @@ export async function handleAgentRequest(
   }
 }
 
-function binaryQuotaItems(
-  history: readonly ConversationMessage[],
-  current: readonly ModelInputPart[],
-): AttachmentQuotaItem[] {
-  const parts = [
-    ...history.flatMap((message) =>
-      message.role === "user" ? message.content : []
-    ),
-    ...current,
-  ];
-  return parts.flatMap((part): AttachmentQuotaItem[] => {
-    if (
-      part.type !== "image" &&
-      part.type !== "document" &&
-      part.type !== "audio"
-    ) return [];
-    return [{
-      kind: part.type === "image"
-        ? "image"
-        : part.type === "document"
-          ? "document"
-          : "audio",
-      byteLength: decodedBase64ByteLength(part.base64),
-    }];
-  });
+function attachmentQuotaItem(ref: SessionAttachmentRef): AttachmentQuotaItem {
+  return { kind: ref.kind, byteLength: ref.byteLength };
 }
 
 function decodedBase64ByteLength(value: string): number {
@@ -1206,6 +1241,9 @@ interface AgentRequestCallbacks {
   /** Test seam for the external service; no service config is accepted in /send. */
   audioProcessing?: Pick<AudioProcessingContext, "adapter" | "generationAdapter" | "wait">;
   signal: AbortSignal;
+  /** Undefined sends all pending files; an explicit list sends exactly those files. */
+  attachmentIds?: readonly string[];
+  withAttachmentMutation?<T>(operation: () => Promise<T>): Promise<T>;
   /** Configuration snapshot captured atomically with the selected Profile. */
   skillContextSnapshot?: ResolvedSkillContext;
   /** Global user-authored preferences captured atomically for this send. */
@@ -1244,6 +1282,26 @@ export function consumedAttachmentIds(events: readonly SessionEvent[]): string[]
   return [...new Set(events.flatMap((event) =>
     event.attachments?.map((attachment) => attachment.id) ?? []
   ))];
+}
+
+async function resolvePendingAttachmentRefs(
+  storageDirectory: string | undefined,
+  sessionId: string,
+  events: readonly SessionEvent[],
+  attachmentIds: readonly string[] | undefined,
+): Promise<SessionAttachmentRef[]> {
+  const pending = await listPendingSessionAttachments(
+    storageDirectory, sessionId, consumedAttachmentIds(events),
+  );
+  if (attachmentIds === undefined) return pending.map(sessionAttachmentRefFromStored);
+  const pendingById = new Map(pending.map((attachment) => [attachment.id, attachment]));
+  return attachmentIds.map((id) => {
+    const attachment = pendingById.get(id);
+    if (!attachment) {
+      throw new Error("A selected attachment is no longer pending in this Session.");
+    }
+    return sessionAttachmentRefFromStored(attachment);
+  });
 }
 async function appendAgentLoopTraceEvent(
   storageDirectory: string | undefined,
@@ -1311,14 +1369,18 @@ async function appendSteeringUserEvent(
   sendId: string,
   steerId: string,
   content: string,
+  attachmentRefs: SessionAttachmentRef[],
   appendEvent: typeof appendSessionEvent,
   loadEvents: typeof loadSessionEvents,
 ): Promise<SessionEvent> {
-  const steeringReceipt = steeringReceiptFor(sendId, steerId, content);
+  const steeringReceipt = steeringReceiptFor(
+    sendId, steerId, content, attachmentRefs.map((ref) => ref.id),
+  );
   const input = {
     kind: "user" as const,
     content,
     steeringReceipt,
+    ...(attachmentRefs.length ? { attachments: attachmentRefs } : {}),
   };
   let reconciledUnknownOutcome = false;
   for (;;) {
@@ -1363,11 +1425,12 @@ export function steeringReceiptFor(
   sendId: string,
   steerId: string,
   content: string,
+  attachmentIds?: readonly string[],
 ): SessionSteeringReceipt {
   return {
     sendId,
     id: steerId,
-    sha256: createHash("sha256").update(content, "utf8").digest("hex"),
+    sha256: sessionSteeringContentSha256(content, attachmentIds),
   };
 }
 

@@ -1,3 +1,4 @@
+import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -120,7 +121,7 @@ for (const profile of profiles()) {
           assert.deepEqual(input.tools, []);
           assert.match(
             input.agentMessages.at(-1)?.role === "user"
-              ? input.agentMessages.at(-1)?.content ?? ""
+              ? modelMessageText(input.agentMessages.at(-1))
               : "",
             /CONTEXT CHECKPOINT COMPACTION/,
           );

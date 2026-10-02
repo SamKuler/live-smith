@@ -308,7 +308,9 @@ function googleContents(request: TransportRequest): GoogleContent[] {
   }>();
   for (const message of request.agentMessages) {
     if (message.role === "user") {
-      appendGoogleContent(contents, "user", [{ text: message.content }]);
+      appendGoogleContent(contents, "user", typeof message.content === "string"
+        ? [{ text: message.content }]
+        : mapGoogleInputParts(request, message.content));
       continue;
     }
     if (message.role === "assistant") {

@@ -380,7 +380,9 @@ function buildAnthropicMessages(
     if (message.role === "user") {
       appendAnthropicUserContent(
         messages,
-        [{ type: "text", text: message.content }],
+        typeof message.content === "string"
+          ? [{ type: "text", text: message.content }]
+          : mapAnthropicInputParts(request, message.content),
       );
       index += 1;
       continue;

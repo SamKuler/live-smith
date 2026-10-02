@@ -241,6 +241,7 @@ import { requestModelWithReconnect } from "./model/model-reconnect.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const sessionMutationFence = new SessionMutationFence();
+const attachmentMutationFence = new SessionMutationFence();
 const sessionIntentFence = new SessionMutationFence();
 const globalSettingsMutationFence = new SessionMutationFence();
 const requestConfigurationFence = new SessionMutationFence();
@@ -310,6 +311,13 @@ export async function runAgentFlow(
   let bindInvocationSelectionToNextSession = Boolean(
     interaction.selectionContext,
   );
+  const withAttachmentMutation = <T>(
+    sessionId: string,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>,
+  ) => attachmentMutationFence.run(
+    sessionMutationFenceKey(storageDirectory, sessionId), signal, operation,
+  );
   const withSessionMutation = <T>(
     sessionId: string,
     signal: AbortSignal | undefined,
@@ -317,7 +325,7 @@ export async function runAgentFlow(
   ) => sessionMutationFence.run(
     sessionMutationFenceKey(storageDirectory, sessionId),
     signal,
-    operation,
+    () => withAttachmentMutation(sessionId, signal, operation),
   );
   const withNamedSessionMutation = <T>(
     sessionId: string,
@@ -328,7 +336,7 @@ export async function runAgentFlow(
     sessionMutationFenceKey(storageDirectory, sessionId),
     kind,
     signal,
-    operation,
+    kind === "send" ? operation : () => withAttachmentMutation(sessionId, signal, operation),
   );
   const withSessionIntent = <T>(
     sessionId: string,
@@ -2166,16 +2174,12 @@ export async function runAgentFlow(
     }
 
     if (commandInput.kind === "open_audio_download") {
-      return withNamedSessionMutation(commandInput.sessionId, "audio-export", signal, async () => {
-        await attachmentSession(commandInput.sessionId);
-        if (!bridge) throw new Error("The audio download bridge is unavailable.");
-        const target = await bridge.createAudioDownload(commandInput.sessionId, commandInput.assetId, signal);
-        await (dependencies.openAudioDownload ?? openAudioDownload)(target, signal);
-        status = m("The local audio file was sent to your default browser for export. Keep Live Smith open until it finishes.");
-        return buildStateAfterCommandMutation(undefined, {
-          heldSessionId: commandInput.sessionId, sessionMutationHeld: true,
-        });
-      });
+      await attachmentSession(commandInput.sessionId);
+      if (!bridge) throw new Error("The audio download bridge is unavailable.");
+      const target = await bridge.createAudioDownload(commandInput.sessionId, commandInput.assetId, signal);
+      await (dependencies.openAudioDownload ?? openAudioDownload)(target, signal);
+      status = m("The local audio file was sent to your default browser for export. Keep Live Smith open until it finishes.");
+      return buildStateAfterCommandMutation(undefined, { signal });
     }
 
     if (commandInput.kind === "resume_audio_job" || commandInput.kind === "download_audio_output") {
@@ -2585,7 +2589,7 @@ export async function runAgentFlow(
     input: ChatBridgeAttachmentInput,
     signal: AbortSignal,
   ) => {
-    await withSessionMutation(input.sessionId, signal, async () => {
+    await withAttachmentMutation(input.sessionId, signal, async () => {
       throwIfAborted(signal);
       await attachmentSession(input.sessionId);
       const events = await loadSessionEvents(
@@ -2642,7 +2646,7 @@ export async function runAgentFlow(
     input: ChatBridgeAttachmentDeleteInput,
     signal: AbortSignal,
   ) => {
-    await withSessionMutation(input.sessionId, signal, async () => {
+    await withAttachmentMutation(input.sessionId, signal, async () => {
       throwIfAborted(signal);
       await attachmentSession(input.sessionId);
       const events = await loadSessionEvents(
@@ -2824,6 +2828,8 @@ export async function runAgentFlow(
               customInstructionsSnapshot:
                 requestSnapshot.settings.customInstructions,
               steering,
+              ...(sendContext.attachmentIds === undefined ? {} : { attachmentIds: sendContext.attachmentIds }),
+              withAttachmentMutation: (operation) => withAttachmentMutation(session.id, signal, operation),
               steeringSendId: sendContext.sendId,
               onDelta: (delta) => stream.assistantDelta(delta),
               onReasoningUpdate: (update) => stream.reasoningUpdate(update),
@@ -2924,6 +2930,7 @@ export async function runAgentFlow(
       input.sendId,
       input.steerId,
       input.prompt,
+      input.attachmentIds,
     );
     return event.kind === "user" &&
         event.content === input.prompt &&

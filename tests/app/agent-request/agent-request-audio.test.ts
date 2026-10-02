@@ -1,3 +1,4 @@
+import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
@@ -197,7 +198,7 @@ test("a hidden audio tool call cannot read Live audio for an unsupported protoco
           };
         }
         assert.match(
-          request.agentMessages.at(-1)?.content ?? "",
+          modelMessageText(request.agentMessages.at(-1)),
           /not available for the active model Profile/i,
         );
         return { content: "Audio input is unavailable.", toolCalls: [] };
@@ -339,7 +340,7 @@ test("request audio is imported and revalidated before every Live action in the 
           };
         }
         assert.match(
-          request.agentMessages.at(-1)?.content ?? "",
+          modelMessageText(request.agentMessages.at(-1)),
           /Imported current request audio input 1.*Set tempo.*Loaded sample/s,
         );
         return { content: "The attached sample is loaded.", toolCalls: [] };

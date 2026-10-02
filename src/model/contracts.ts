@@ -112,7 +112,7 @@ export interface ModelTurn {
 }
 
 export type ModelConversationMessage =
-  | { role: "user"; content: string }
+  | { role: "user"; content: string | ModelInputPart[] }
   | {
       role: "assistant";
       content: string | null;

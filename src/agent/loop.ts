@@ -126,7 +126,7 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   initialRecoveryState?: AgentLoopInitialRecoveryState;
   signal?: AbortSignal;
   /** Returns newly persisted user guidance accepted by the active send. */
-  consumeSteering?(): Promise<readonly string[]>;
+  consumeSteering?(): Promise<readonly Extract<ModelConversationMessage, { role: "user" }>[]>;
   /** Synchronous guard used immediately before an irreversible Live boundary. */
   hasPendingSteering?(): boolean;
   /** Clears transient provider output after the new user guidance is installed. */
@@ -350,13 +350,15 @@ export async function runAgentLoop(
       options.initialRecoveryState !== undefined,
     unresolvedFailure: options.initialRecoveryState?.unresolvedFailure,
   };
-  const appendSteering = () => appendPendingSteering(
+  const appendSteering = (beforeAppend?: () => void) => appendPendingSteering(
     options,
     messages,
     () => {
-      if (pendingContinuationMessageStart === undefined) return;
-      messages.splice(pendingContinuationMessageStart);
-      pendingContinuationMessageStart = undefined;
+      if (pendingContinuationMessageStart !== undefined) {
+        messages.splice(pendingContinuationMessageStart);
+        pendingContinuationMessageStart = undefined;
+      }
+      beforeAppend?.();
     },
   );
 
@@ -392,19 +394,23 @@ export async function runAgentLoop(
     } catch (error) {
       if (!(error instanceof AgentSteeringInterruptError)) throw error;
       throwIfAborted(options.signal);
-      if (!(await appendSteering())) {
+      const hadPendingSteering = options.hasPendingSteering?.();
+      const installedSteeringCount = await appendSteering();
+      if (!installedSteeringCount && hadPendingSteering !== true) {
         throw new Error(
           "A model turn reported a steering interruption without any pending user guidance.",
           { cause: error },
         );
       }
-      planningProgressDeadline = iteration + maxIterations;
-      repeatedArgumentFailures = 0;
-      lastArgumentFailure = "";
-      consecutiveModelContinuations = 0;
-      pendingContinuationContent = "";
-      pendingContinuationReasoning = undefined;
-      pendingContinuationCitations = [];
+      if (installedSteeringCount) {
+        planningProgressDeadline = iteration + maxIterations;
+        repeatedArgumentFailures = 0;
+        lastArgumentFailure = "";
+        consecutiveModelContinuations = 0;
+        pendingContinuationContent = "";
+        pendingContinuationReasoning = undefined;
+        pendingContinuationCitations = [];
+      }
       continue;
     }
     throwIfAborted(options.signal);
@@ -649,21 +655,17 @@ export async function runAgentLoop(
     for (const [toolCallIndex, toolCall] of turn.toolCalls.entries()) {
       throwIfAborted(options.signal);
       if (options.hasPendingSteering?.()) {
-        skipRemainingToolCalls(
+        if (await appendSteering(() => skipRemainingToolCalls(
           messages,
           turn.toolCalls,
           toolCallIndex,
           "not executed because a newer user steering message superseded this tool batch",
-        );
-        if (!(await appendSteering())) {
-          throw new Error(
-            "Pending steering disappeared before it could be added to the conversation.",
-          );
+        ))) {
+          planningProgressDeadline = iteration + maxIterations;
+          repeatedArgumentFailures = 0;
+          lastArgumentFailure = "";
+          continue planningLoop;
         }
-        planningProgressDeadline = iteration + maxIterations;
-        repeatedArgumentFailures = 0;
-        lastArgumentFailure = "";
-        continue planningLoop;
       }
       await options.onProgress?.(progressLabelForToolCall(toolCall));
       await emitTraceEvent(options, {
@@ -690,21 +692,17 @@ export async function runAgentLoop(
       }
 
       if (options.hasPendingSteering?.()) {
-        skipRemainingToolCalls(
+        if (await appendSteering(() => skipRemainingToolCalls(
           messages,
           turn.toolCalls,
           toolCallIndex + 1,
           "not executed because a newer user steering message superseded this tool batch",
-        );
-        if (!(await appendSteering())) {
-          throw new Error(
-            "Pending steering disappeared before it could be added to the conversation.",
-          );
+        ))) {
+          planningProgressDeadline = iteration + maxIterations;
+          repeatedArgumentFailures = 0;
+          lastArgumentFailure = "";
+          continue planningLoop;
         }
-        planningProgressDeadline = iteration + maxIterations;
-        repeatedArgumentFailures = 0;
-        lastArgumentFailure = "";
-        continue planningLoop;
       }
 
       const newObservationProgress = result.progressKey !== undefined &&
@@ -848,18 +846,15 @@ async function appendPendingSteering(
   beforeAppend?: () => void,
 ): Promise<number> {
   const steering = await options.consumeSteering?.() ?? [];
-  for (const content of steering) {
-    if (typeof content !== "string" || !content.trim()) {
-      throw new TypeError("A steering message must contain non-empty text.");
+  for (const message of steering) {
+    if (typeof message.content === "string"
+      ? !message.content.trim()
+      : !message.content.length) {
+      throw new TypeError("A steering message must contain non-empty content.");
     }
   }
   if (steering.length) beforeAppend?.();
-  for (const content of steering) {
-    messages.push({
-      role: "user",
-      content,
-    });
-  }
+  messages.push(...steering);
   if (steering.length) {
     await options.onSteeringApplied?.(steering.length);
   }

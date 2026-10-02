@@ -129,7 +129,9 @@ export function estimateTransportContextTokens(
   for (const message of request.agentMessages) {
     tokens += 4;
     if (message.role === "user") {
-      tokens += estimateTextTokens(message.content);
+      tokens += typeof message.content === "string"
+        ? estimateTextTokens(message.content)
+        : estimateInputParts(message.content);
     } else if (message.role === "tool") {
       tokens += estimateTextTokens(message.toolCallId) +
         estimateTextTokens(message.content) +

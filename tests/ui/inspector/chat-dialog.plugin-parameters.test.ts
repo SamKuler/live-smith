@@ -110,8 +110,8 @@ test("optional omission, constraints and reset preserve form semantics", async (
     await h.settle();
     assert.deepEqual((commandCalls(h)[0]!.body as { arguments: unknown }).arguments,
       { bars: 3, division: 8, keepDrums: true });
-    await waitForCondition(() => h.document.querySelector<HTMLFieldSetElement>(".plugin-parameters-fields")?.disabled === false,
-      "Expected the command to release the parameter form.");
+    await waitForCondition(() => h.document.querySelector<HTMLButtonElement>(`${form} button[type="submit"]`)?.disabled === false,
+      "Expected the command to release parameter execution.");
     h.click(`${form} button[type="button"]`);
     assert.equal(controlFor(h, "Bars")!.value, "4");
     assert.equal(controlFor(h, "Density")!.disabled, false);
@@ -129,9 +129,12 @@ test("parameter drafts follow their Session and connection, and invalid remote p
   try {
     openPanel(h);
     h.input(field(h, "Bars"), "7");
+    const stale = h.document.querySelector<HTMLFormElement>(form)!;
     h.click('.session-entry[data-session-id="session-2"] .session-row');
     await waitForCondition(() => controlFor(h, "Bars")?.value === "4",
       "Expected the new Session to start with defaults.");
+    stale.dispatchEvent(new h.window.Event("submit", { bubbles: true, cancelable: true }));
+    assert.equal(commandCalls(h).some((call) => (call.body as { kind: string }).kind === "run_plugin_tool"), false);
     h.input(field(h, "Bars"), "6");
     const changed = cloneState(state);
     changed.integrationConnections!.revision = "2";
@@ -163,7 +166,12 @@ test("parameter execution uses the existing cancellable command lifecycle", asyn
     held = true;
     h.click(`${form} button[type="submit"]`);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(h.document.querySelector<HTMLFieldSetElement>(".plugin-parameters-fields")!.disabled, true);
+    assert.equal(h.document.querySelector<HTMLFieldSetElement>(".plugin-parameters-fields")!.disabled, false);
+    assert.equal(h.document.querySelector<HTMLButtonElement>(`${form} button[type="submit"]`)!.disabled, true);
+    h.input(field(h, "Bars"), "6");
+    h.document.querySelector<HTMLFormElement>(form)!
+      .dispatchEvent(new h.window.Event("submit", { bubbles: true, cancelable: true }));
+    assert.equal(commandCalls(h).length, 1);
     assert.equal(h.document.querySelector<HTMLButtonElement>("#sendButton")!.disabled, false);
     h.click("#sendButton");
     h.releaseHeldCommand();
@@ -171,11 +179,68 @@ test("parameter execution uses the existing cancellable command lifecycle", asyn
     await h.settle();
     assert.equal(commandCalls(h).length, 1);
     assert.ok(h.calls.some((call) => call.path === "/stop"));
-    await waitForCondition(() => h.document.querySelector<HTMLFieldSetElement>(".plugin-parameters-fields")?.disabled === false,
-      "Expected Stop to release the parameter form.");
+    await waitForCondition(() => h.document.querySelector<HTMLButtonElement>(`${form} button[type="submit"]`)?.disabled === false,
+      "Expected Stop to release parameter execution.");
     assert.equal(h.document.querySelector<HTMLFieldSetElement>(".plugin-parameters-fields")!.disabled, false);
+    assert.equal(controlFor(h, "Bars")!.value, "6");
+    assert.equal(h.document.querySelector<HTMLButtonElement>(`${form} button[type="submit"]`)!.disabled, false);
     assert.deepEqual(h.errors, []);
   } finally { if (held) h.releaseHeldCommand(); await h.settle(); h.close(); }
+});
+
+test("cached MCP parameters can be edited and reset during a model send while execution remains gated", async () => {
+  const state = panelState();
+  state.sessionToolCatalog!.groups[0]!.tools[0]!.app = {
+    resourceUri: "ui://generator/app.html", signature: "b".repeat(64), toolName: "mcp_generator_generate",
+  };
+  const h = await createDialogHarness(state);
+  let heldSend = false;
+  try {
+    h.holdNextSend(); heldSend = true;
+    h.input("#prompt", "Inspect this track"); h.click("#sendButton");
+    await h.settle();
+    openPanel(h);
+    const app = h.document.querySelector<HTMLButtonElement>(".plugin-open-app")!;
+    assert.equal(app.disabled, true);
+    app.click();
+    assert.equal(h.calls.some((call) => call.path === "/plugin-apps/open"), false);
+    assert.equal(h.document.querySelector<HTMLButtonElement>("#loadSessionToolsButton")!.disabled, true);
+    h.click("#loadSessionToolsButton");
+    h.click(".tool-parameter-fallback > summary");
+    assert.equal(controlFor(h, "Bars")!.matches(":disabled"), false);
+    h.input(field(h, "Bars"), "7");
+    h.click(`${form} [aria-label="Include Note"]`);
+    h.input(field(h, "Note"), "Draft");
+    const reset = h.document.querySelector<HTMLButtonElement>(`${form} button[type="button"]`)!;
+    assert.equal(reset.matches(":disabled"), false);
+    reset.click();
+    assert.equal(controlFor(h, "Bars")!.value, "4");
+    assert.equal(controlFor(h, "Note")!.disabled, true);
+    h.input(field(h, "Bars"), "6");
+    h.input(`${form} input[type="range"][aria-label="Density"]`, "0.7");
+    h.select(field(h, "Division"), "2");
+    h.click(field(h, "Keep drums"));
+    const run = h.document.querySelector<HTMLButtonElement>(`${form} button[type="submit"]`)!;
+    assert.equal(run.disabled, true);
+    h.document.querySelector<HTMLFormElement>(form)!
+      .dispatchEvent(new h.window.Event("submit", { bubbles: true, cancelable: true }));
+    assert.equal(commandCalls(h).length, 0);
+    assert.equal(h.calls.filter((call) => call.path === "/session-tools").length, 0);
+    h.releaseHeldSend(); heldSend = false;
+    await h.settle();
+    await waitForCondition(() => !run.disabled, "Expected MCP tool execution to resume when the send finishes.");
+    assert.equal(app.disabled, false);
+    assert.equal(controlFor(h, "Bars")!.value, "6");
+    h.click(`${form} button[type="submit"]`);
+    await h.settle();
+    assert.deepEqual(commandCalls(h).map((call) => call.body), [{
+      kind: "run_plugin_tool", sessionId: state.activeSessionId, toolName: "mcp_generator_generate",
+      signature: state.sessionToolCatalog!.groups[0]!.tools[0]!.panel!.signature,
+      arguments: { bars: 6, density: 0.7, division: 16, keepDrums: false },
+    }]);
+    assert.equal(h.calls.filter((call) => call.path === "/send").length, 1);
+    assert.deepEqual(h.errors, []);
+  } finally { if (heldSend) h.releaseHeldSend(); await h.settle(); h.close(); }
 });
 
 test("parameter labels localize while authored values and failed results remain literal", async () => {

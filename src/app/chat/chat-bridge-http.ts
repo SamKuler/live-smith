@@ -10,7 +10,7 @@ import {
   resolveEditScopes,
   type EditScope,
 } from "../../agent/edit-scopes.js";
-import { MAX_DOCUMENT_ATTACHMENT_BYTES } from "../../attachments/contracts.js";
+import { MAX_DOCUMENT_ATTACHMENT_BYTES, MAX_PENDING_ATTACHMENT_COUNT } from "../../attachments/contracts.js";
 import {
   isSafeSkillId,
   isSafeSkillReferenceId,
@@ -328,6 +328,23 @@ export function stopTargetForRequest(
   return sendId === undefined
     ? { kind: "command", id: commandId! }
     : { kind: "send", id: sendId };
+}
+
+/** Attachment selection is request metadata, like the Send/Steer correlation IDs. */
+export function attachmentIdsForRequest(request: IncomingMessage): readonly string[] | undefined {
+  const raw = singleHeaderValue(request, "x-live-smith-attachment-ids", false);
+  if (raw === undefined) return undefined;
+  try {
+    const ids: unknown = JSON.parse(raw);
+    if (!Array.isArray(ids) || ids.length > MAX_PENDING_ATTACHMENT_COUNT ||
+        new Set(ids).size !== ids.length) throw new Error("Invalid attachment IDs");
+    for (const id of ids) requireSafeStorageId(id, "Attachment ID");
+    return ids as string[];
+  } catch {
+    throw new ChatBridgeRequestValidationError(
+      "X-Live-Smith-Attachment-Ids must contain a bounded array of unique attachment IDs.",
+    );
+  }
 }
 
 export function steeringSendIdForRequest(request: IncomingMessage): string {

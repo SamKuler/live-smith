@@ -361,19 +361,42 @@ for (const change of ["session", "detached", "output", "job"] as const) {
   });
 }
 
-test("local export blocks busy sends and pending remote confirmation, suppresses duplicates, and supports Stop", async () => {
+test("local export remains available during an active send and preserves its request", async () => {
+  const state = previewState();
+  const asset = savedOutput(state);
+  state.audioJobs![0]!.outputs = [asset];
+  const h = await createDialogHarness(state);
+  try {
+    const localDownload = button(h, "[data-download-local-audio]");
+    h.holdNextSend(); h.input("#prompt", "Inspect the current track"); h.click("#sendButton"); await h.settle();
+    const sendId = h.sendIds[0];
+    assert.equal(localDownload.disabled, false);
+    assert.equal(download(h, 1).disabled, true);
+    h.holdNextCommand(); localDownload.click(); localDownload.click(); await h.settle();
+    assert.deepEqual(commandCalls(h).map((call) => call.body), [{
+      kind: "open_audio_download", sessionId: state.activeSessionId, assetId: asset.id,
+    }]);
+    assert.equal(localDownload.disabled, true);
+    h.releaseHeldCommand(); await h.settle();
+    assert.equal(localDownload.disabled, false);
+    assert.match(h.document.querySelector("#sendButton")!.textContent!, /Stop/);
+    assert.deepEqual(h.sendIds, [sendId]);
+    assert.deepEqual(h.stopIds, []);
+    assert.deepEqual(h.commandStopIds, []);
+    h.releaseHeldSend(); await h.settle();
+    assert.equal(h.document.querySelector<HTMLTextAreaElement>("#prompt")!.disabled, false);
+    assert.equal(downloadCommands(h).length, 0);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("local export blocks pending remote confirmation, suppresses duplicates, and supports Stop", async () => {
   const state = previewState();
   state.audioJobs![0]!.outputs = [savedOutput(state)];
   const h = await createDialogHarness(state);
   try {
     const localDownload = button(h, "[data-download-local-audio]");
     const exports = () => commandCalls(h).filter((call) => (call.body as { kind: string }).kind === "open_audio_download");
-    h.holdNextSend(); h.input("#prompt", "Inspect the current track"); h.click("#sendButton"); await h.settle();
-    assert.equal(localDownload.disabled, true);
-    localDownload.click();
-    localDownload.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true })); await h.settle();
-    assert.equal(exports().length, 0);
-    h.releaseHeldSend(); await h.settle();
     download(h, 1).click();
     assert.equal(localDownload.disabled, true);
     localDownload.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true })); await h.settle();

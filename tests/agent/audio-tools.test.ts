@@ -254,7 +254,7 @@ test("pending steering cannot bypass an external terminal outcome", async () => 
     hasPendingSteering: () => pending,
     consumeSteering: async () => {
       if (!pending) return [];
-      consumed = true; pending = false; return ["Put the result on track two"];
+      consumed = true; pending = false; return [{ role: "user", content: "Put the result on track two" }];
     },
     externalTools: { names: ["separate_stems"], execute: async () => {
       submissions++; pending = true; return { content: "unknown paid outcome", failed: true, stop: true };

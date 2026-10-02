@@ -1,3 +1,4 @@
+import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -132,7 +133,7 @@ test("saved Plugin MIDI imports through ordinary confirmed Live action safeguard
         }] };
       }
       if (modelTurns === 2) {
-        const listed = JSON.parse(request.agentMessages.at(-1)!.content!);
+        const listed = JSON.parse(modelMessageText(request.agentMessages.at(-1)));
         assert.equal(listed[0].artifactRef, artifact.id);
         return { content: "Importing the transcription.", toolCalls: [{
           id: "import-artifact",
@@ -149,7 +150,7 @@ test("saved Plugin MIDI imports through ordinary confirmed Live action safeguard
           }),
         }] };
       }
-      assert.match(request.agentMessages.at(-1)?.content ?? "", /Created MIDI clip.*1 notes/s);
+      assert.match(modelMessageText(request.agentMessages.at(-1)), /Created MIDI clip.*1 notes/s);
       return { content: "The transcription is in Live.", toolCalls: [] };
     },
   );

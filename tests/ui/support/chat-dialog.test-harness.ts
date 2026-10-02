@@ -663,6 +663,9 @@ async function createDialogHarness(
   const pendingAttachmentsBySession = new Map([
     [serverState.activeSessionId, cloneState(serverState).pendingAttachments],
   ]);
+  let nextAttachmentId = Math.max(serverState.pendingAttachments.length,
+    ...[...serverState.pendingAttachments, ...serverState.events.flatMap((event) => event.attachments ?? [])]
+      .map((attachment) => Number(/^attachment-(\d+)$/u.exec(attachment.id)?.[1] ?? 0))) + 1;
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error));
 
@@ -883,16 +886,23 @@ async function createDialogHarness(
     }
     if (
       event.type === "session_event" &&
-      event.sessionId === serverState.activeSessionId &&
+      typeof event.sessionId === "string" &&
       event.event &&
       typeof event.event === "object" &&
       !Array.isArray(event.event)
     ) {
       const sessionEvent = event.event as ChatDialogState["events"][number];
-      serverState.events = [
-        ...serverState.events.filter((entry) => entry.id !== sessionEvent.id),
-        sessionEvent,
-      ];
+      const consumedIds = new Set(sessionEvent.attachments?.map((attachment) => attachment.id));
+      const pending = (pendingAttachmentsBySession.get(event.sessionId) ?? [])
+        .filter((attachment) => !consumedIds.has(attachment.id));
+      pendingAttachmentsBySession.set(event.sessionId, pending);
+      if (event.sessionId === serverState.activeSessionId) {
+        serverState.pendingAttachments = pending;
+        serverState.events = [
+          ...serverState.events.filter((entry) => entry.id !== sessionEvent.id),
+          sessionEvent,
+        ];
+      }
       return;
     }
     if (
@@ -1256,7 +1266,7 @@ async function createDialogHarness(
               const kind = ATTACHMENT_FORMATS.find((format) => format.mediaType === mediaType)?.kind ?? "document";
               const fileBytes = new Uint8Array(await file.arrayBuffer());
               const commonAttachment = {
-                id: `attachment-${attachments.length + 1}`,
+                id: `attachment-${nextAttachmentId++}`,
                 fileName: nextAttachmentUnknown?.committedMetadata?.fileName ??
                   fileName,
                 byteLength: file.size,

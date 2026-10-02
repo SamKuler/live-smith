@@ -248,7 +248,7 @@ test("steering supersedes recovery resolution without recording a false Apply re
     consumeSteering: async () => {
       if (!steeringPending) return [];
       steeringPending = false;
-      return ["Keep the recovery active and reconsider it."];
+      return [{ role: "user", content: "Keep the recovery active and reconsider it." }];
     },
     executeActions: async () => {
       throw new Error("Recovery resolution must not execute Live actions.");

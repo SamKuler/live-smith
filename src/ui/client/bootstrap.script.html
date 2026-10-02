@@ -274,6 +274,7 @@
         const attachments = factories.createAttachments({
           deleteAttachment: bridgeClient.deleteAttachment,
           getState,
+          getComposerAttachments: bridgeClient.getComposerAttachments,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
           uploadAttachments: bridgeClient.uploadAttachments,
@@ -378,7 +379,7 @@
           getPendingConfirmation: bridgeClient.getPendingConfirmation,
           getPendingUserMessage: bridgeClient.getPendingUserMessage,
           editMessageDraft: bridgeClient.editMessageDraft,
-          isMessageEditLocked: bridgeClient.isOperationInProgress,
+          isMessageEditLocked: bridgeClient.isDraftEditLocked,
           hasSessionLocalWork: bridgeClient.hasSessionLocalWork,
           isCommandInProgress: bridgeClient.isCommandInProgress,
           isConfirmationLocked: bridgeClient.isConfirmationLocked,
@@ -535,7 +536,7 @@
         }
 
         function renderContextAttachments() {
-          const attachments = getState().pendingAttachments || [];
+          const attachments = bridgeClient.getComposerAttachments();
           document.getElementById("contextAttachmentEmpty").hidden = attachments.length > 0;
           document.getElementById("contextAttachmentList").replaceChildren(...attachments.map((attachment) => {
             const item = document.createElement("li");
@@ -1640,8 +1641,7 @@
           const approvalMode = document.getElementById("approvalMode");
           profileEditor.updateApprovalModePresentation();
           const prompt = document.getElementById("prompt");
-          const promptDisabled = composerBlockingCommand ||
-            attachmentInProgress || skillInProgress;
+          const promptDisabled = composerBlockingCommand || skillInProgress;
           if (prompt.disabled !== promptDisabled) prompt.disabled = promptDisabled;
           syncSessionControlsLock(sessionControlsBusy);
           syncProfileCommandAdmission(commandAdmissionBusy);
@@ -1694,7 +1694,7 @@
             saveCustomInstructionsButton.disabled !== customInstructionsSaveDisabled) {
             saveCustomInstructionsButton.disabled = customInstructionsSaveDisabled;
           }
-          attachments.setBusy(operationBusy);
+          attachments.setBusy(commandAdmissionBusy);
           skillManager.setBusy(skillsBusy);
           pluginManager.setBusy(skillsBusy);
           connectionsManager.setBusy(skillsBusy);
@@ -1750,6 +1750,7 @@
           renderSettingsForm: renderSettingsFormFromState,
           renderTimeline: sessionTimeline.renderTimeline,
           renderSendPresentation,
+          renderPendingAttachments: () => { attachments.renderPending(); renderContextAttachments(); },
           setOperationState,
           setConfirmationState: sessionTimeline.setConfirmationState,
           renderConnections: connectionsManager.render,

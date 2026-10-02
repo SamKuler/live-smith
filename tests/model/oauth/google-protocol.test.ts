@@ -644,6 +644,41 @@ test("Google Antigravity maps every advertised Live Smith binary input", async (
   ]);
 });
 
+test("Google Antigravity maps multimodal steering after tool results", async () => {
+  let capturedBody: Record<string, unknown> | undefined;
+  const protocol = createGoogleAntigravityProtocol({
+    fetchImpl: async (_input, init) => {
+      capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return streamResponse([{ response: { candidates: [{
+        content: { role: "model", parts: [{ text: "Done" }] }, finishReason: "STOP",
+      }] } }]);
+    },
+  });
+  const target = request();
+  target.runtimeProfile.capabilities.inputs = { image: true, audio: true, pdf: true };
+  target.runtimeProfile.inputCapabilityEvidence = { image: "supported", audio: "supported", pdf: "supported" };
+  target.agentMessages = [
+    { role: "assistant", content: null, toolCalls: [{ id: "inspect-call", name: "inspect", arguments: "{}" }] },
+    { role: "tool", toolCallId: "inspect-call", content: "Inspected the Set" },
+    { role: "user", content: [
+      { type: "text", text: "Use these references" },
+      { type: "image", fileName: "image.png", mediaType: "image/png", base64: "AA==" },
+      { type: "document", fileName: "score.pdf", mediaType: "application/pdf", base64: "AA==" },
+      { type: "audio", fileName: "reference.wav", mediaType: "audio/wav", base64: "AA==" },
+    ] },
+  ];
+  await protocol.createToolTurn(target, credential);
+  const contents = (capturedBody?.request as Record<string, unknown>).contents as Array<Record<string, unknown>>;
+  const parts = contents.at(-1)?.parts as Array<Record<string, unknown>>;
+  assert.ok(parts[0]?.functionResponse);
+  assert.deepEqual(parts.slice(1), [
+    { text: "Use these references" },
+    { inlineData: { mimeType: "image/png", data: "AA==" } },
+    { inlineData: { mimeType: "application/pdf", data: "AA==" } },
+    { inlineData: { mimeType: "audio/wav", data: "AA==" } },
+  ]);
+});
+
 test("Google Antigravity forwards verified tool-produced audio", async () => {
   let capturedBody: Record<string, unknown> | undefined;
   const protocol = createGoogleAntigravityProtocol({

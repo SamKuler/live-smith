@@ -2,6 +2,7 @@
       window.LiveSmithFactories.createAttachments = function createAttachments({
         deleteAttachment,
         getState,
+        getComposerAttachments,
         runCommand,
         showStatus,
         uploadAttachments,
@@ -48,9 +49,7 @@
       }
 
       function pendingAttachments() {
-        return Array.isArray(getState().pendingAttachments)
-          ? getState().pendingAttachments
-          : [];
+        return getComposerAttachments();
       }
 
       function formatBytes(byteLength) {
@@ -221,7 +220,7 @@
       function uploadPolicyReason(file, classification, checkByteLimits = true) {
         if (classification.reason) return classification.reason;
         const kind = classification.kind;
-        const pending = pendingAttachments();
+        const pending = getState().pendingAttachments || [];
         if (kind === "image" && imageInputStatus() !== "supported") return imageCapabilityReason();
         if (file.size === 0) return t("the file is empty");
         if (pending.length >= maxPendingAttachmentCount) {

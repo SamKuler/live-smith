@@ -300,7 +300,9 @@ function buildResponsesInput(
     if (message.role === "user") {
       input.push({
         role: "user",
-        content: message.content,
+        content: typeof message.content === "string"
+          ? message.content
+          : mapResponsesParts(request, message.content),
       });
       continue;
     }

@@ -40,6 +40,8 @@ Only enabled, approved MCP sources are contacted, and no tool is executed.
 The directory is a snapshot; the next request's inputs and connection settings
 can change which tools are available.
 Expand an MCP tool to edit its supported parameters and select **Run tool**.
+Cached tool parameter forms remain editable during generation; **Run tool**
+becomes available when the current operation finishes.
 Native controls use the tool's defaults, choices, and value limits. The tool
 runs directly, and its result appears in the panel and Session history without
 a model request. Use the composer's **Stop** control to cancel a running tool.
@@ -396,7 +398,8 @@ it does not change history or undo Live edits. Choose Send after editing.
 Paused failed requests also offer **Edit and resend**. Editing
 their restored draft replaces that pending request instead of sending its old
 text again. Existing drafts require confirmation before replacement; historical
-attachments are not reattached automatically.
+attachments are not reattached automatically. Text drafts remain editable during
+generation and attachment upload.
 
 **Skills** provide musical workflow guidance. Three built-ins cover section
 energy, musical variation, and instrument roles. They start disabled; **View**
@@ -451,7 +454,10 @@ removing a connection closes its active MCP clients and preserves saved Session
 artifacts.
 
 **Attachments** can be dropped anywhere in the chat surface or pasted into the
-composer. Supported categories include:
+composer, including while a response is running. **Follow-ups → Steer** submits
+the message and its files to the current task at its next safe boundary;
+**Queue** keeps them together for a new request after the current response.
+Later files stay with the next composer draft. Supported categories include:
 
 | Category | Formats and handling |
 | --- | --- |

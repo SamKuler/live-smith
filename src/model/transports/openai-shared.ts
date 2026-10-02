@@ -147,7 +147,9 @@ export function buildOpenAIChatMessages(
       namedToolResults = undefined;
       messages.push({
         role: "user",
-        content: message.content,
+        content: typeof message.content === "string"
+          ? message.content
+          : mapOpenAIChatParts(request, message.content),
       });
       index += 1;
       continue;

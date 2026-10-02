@@ -1,3 +1,4 @@
+import { modelMessageText } from "../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -155,8 +156,8 @@ test("runAgentLoop observes Live state before applying parameter actions", async
   assert.deepEqual(executedPlans, ["set_device_parameter"]);
   assert.equal(modelInputs.length, 3);
   assert.equal(modelInputs[1]?.messages[1]?.role, "tool");
-  assert.match(modelInputs[1]?.messages[1]?.content ?? "", /Env Amount/);
-  assert.match(modelInputs[2]?.messages.at(-1)?.content ?? "", /Set "Env Amount"/);
+  assert.match(modelMessageText(modelInputs[1]?.messages[1]), /Env Amount/);
+  assert.match(modelMessageText(modelInputs[2]?.messages.at(-1)), /Set "Env Amount"/);
   assert.equal(result.message, "Done.");
 });
 
@@ -1335,7 +1336,7 @@ test("preflight failures do not tell the model to split a valid plan as if its J
     executeActions: async () => mutationOutcome([]),
   });
 
-  const failure = modelInputs[1]?.messages.at(-1)?.content ?? "";
+  const failure = modelMessageText(modelInputs[1]?.messages.at(-1));
   assert.match(failure, /could not verify current Live state/i);
   assert.match(failure, /not evidence.*payload.*too large/i);
   assert.doesNotMatch(failure, /split it into smaller tool calls|valid, complete JSON/i);
@@ -1396,9 +1397,9 @@ test("runAgentLoop returns malformed tool arguments to the model instead of thro
 
   assert.equal(modelInputs.length, 3);
   assert.equal(modelInputs[1]?.messages[1]?.role, "tool");
-  assert.match(modelInputs[1]?.messages[1]?.content ?? "", /Invalid JSON arguments/);
+  assert.match(modelMessageText(modelInputs[1]?.messages[1]), /Invalid JSON arguments/);
   assert.deepEqual(executedPlans, ["create_midi_track"]);
-  assert.match(modelInputs[2]?.messages.at(-1)?.content ?? "", /Created MIDI track/);
+  assert.match(modelMessageText(modelInputs[2]?.messages.at(-1)), /Created MIDI track/);
 });
 
 test("observation failures are reported as host failures, not argument or payload errors", async () => {
@@ -1425,7 +1426,7 @@ test("observation failures are reported as host failures, not argument or payloa
     executeActions: async () => mutationOutcome([]),
   });
 
-  const failure = modelInputs[1]?.messages.at(-1)?.content ?? "";
+  const failure = modelMessageText(modelInputs[1]?.messages.at(-1));
   assert.match(failure, /observation "inspect_track" failed/i);
   assert.match(failure, /tool arguments were accepted/i);
   assert.doesNotMatch(failure, /invalid json|payload.*large|split.*smaller/i);
@@ -1486,7 +1487,7 @@ test("unknown internal tool failures do not receive JSON or payload-size advice"
     executeActions: async () => mutationOutcome([]),
   });
 
-  const failure = modelInputs[1]?.messages.at(-1)?.content ?? "";
+  const failure = modelMessageText(modelInputs[1]?.messages.at(-1));
   assert.match(failure, /failure category is unknown/i);
   assert.doesNotMatch(failure, /invalid json|payload.*large|split.*smaller/i);
 });
@@ -2488,7 +2489,7 @@ test("a partial apply failure returns to the model for inspect and repair", asyn
     "Insert only the missing Delay",
   ]);
   assert.match(
-    modelInputs[1]?.messages.at(-1)?.content ?? "",
+    modelMessageText(modelInputs[1]?.messages.at(-1)),
     /Auto Filter.*will not be retried|will not be retried.*Auto Filter/is,
   );
   assert.equal(eventKinds.filter((kind) => kind === "apply_result").length, 2);
@@ -2575,11 +2576,11 @@ test("a first-action Live rejection returns current state without inventing a ca
   assert.deepEqual(executedDevices, ["Ping Pong Delay", "Delay"]);
   assert.deepEqual(observedRequests, ["inspect_track"]);
   assert.match(
-    modelInputs[1]?.messages.at(-1)?.content ?? "",
+    modelMessageText(modelInputs[1]?.messages.at(-1)),
     /could not complete its first operation.*Current Live state after the failure:.*devices=Auto Filter/is,
   );
   assert.doesNotMatch(
-    modelInputs[1]?.messages.at(-1)?.content ?? "",
+    modelMessageText(modelInputs[1]?.messages.at(-1)),
     /treat .*device name.*as unavailable|choose .*alternative instead of retrying/i,
   );
   assert.equal(eventKinds.includes("error"), false);
@@ -2669,7 +2670,7 @@ test("an exact device insertion can be retried after inspecting repaired Live st
   assert.deepEqual(executedDevices, ["Ping Pong Delay", "Ping Pong Delay"]);
   assert.equal(confirmations, 2);
   assert.doesNotMatch(
-    modelInputs[1]?.messages.at(-1)?.content ?? "",
+    modelMessageText(modelInputs[1]?.messages.at(-1)),
     /already rejected|treat .*as unavailable/i,
   );
 });
@@ -3040,7 +3041,7 @@ test("completed actions cannot be resubmitted during partial-plan repair", async
   assert.deepEqual(executedMessages, ["Build the chain", "Add only Delay"]);
   assert.equal(confirmations, 2);
   assert.match(
-    modelInputs[2]?.messages.at(-1)?.content ?? "",
+    modelMessageText(modelInputs[2]?.messages.at(-1)),
     /repeats work already completed.*Auto Filter/is,
   );
 });
@@ -3099,7 +3100,7 @@ test("request-audio import progress does not mark an unstarted plan action compl
 
   assert.equal(executions, 2);
   assert.equal(result.message, "The tempo is now set.");
-  const recoveryMessage = modelInputs[1]?.messages.at(-1)?.content ?? "";
+  const recoveryMessage = modelMessageText(modelInputs[1]?.messages.at(-1));
   assert.match(recoveryMessage, /partially completed after 1 operation/i);
   assert.doesNotMatch(recoveryMessage, /partially completed after 1 action/i);
 });

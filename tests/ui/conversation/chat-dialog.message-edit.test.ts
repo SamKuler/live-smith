@@ -145,7 +145,7 @@ test("switching Session during replacement does not copy text into the new Sessi
   }
 });
 
-test("history edit stays locked while a send has unresolved authoritative state", async () => {
+test("history can prepare a draft while a send awaits authoritative state", async () => {
   const harness = await createDialogHarness(historyState());
   try {
     harness.failNextSend("Request outcome unavailable.", "unknown");
@@ -155,9 +155,10 @@ test("history edit stays locked while a send has unresolved authoritative state"
     await harness.settle();
     const button = harness.document.querySelector<HTMLButtonElement>(historyEdit);
     assert.ok(button);
-    assert.equal(button.disabled, true);
+    assert.equal(button.disabled, false);
     harness.click(historyEdit);
-    assert.equal(composer(harness).value, "");
+    await harness.settle();
+    assert.equal(composer(harness).value, historicalPrompt);
     assert.deepEqual(sentPrompts(harness), ["Unresolved request"]);
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -473,4 +474,24 @@ test("a failed edited literal command restores its safe composer source for furt
   } finally {
     harness.close();
   }
+});
+
+
+test("historical draft can be edited during generation without steering or stopping it", async () => {
+  const harness = await createDialogHarness(historyState());
+  try {
+    harness.holdNextSend();
+    harness.input("#prompt", "Ongoing request");
+    harness.click("#sendButton");
+    await harness.settle();
+    harness.click(historyEdit);
+    await harness.settle();
+    assert.equal(composer(harness).value, historicalPrompt);
+    harness.input("#prompt", "Next draft");
+    assert.equal(jsonCalls(harness, "/send").length, 1);
+    assert.equal(jsonCalls(harness, "/steer").length, 0);
+    assert.equal(jsonCalls(harness, "/stop").length, 0);
+    assert.equal(harness.document.querySelector("#sendButton")?.getAttribute("aria-label"), "Stop current response");
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
 });

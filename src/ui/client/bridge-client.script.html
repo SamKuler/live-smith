@@ -330,7 +330,33 @@
       function activePendingUserMessage() {
         const attempt = activeSendAttempt();
         if (!attempt || attempt.promptEventPersisted) return null;
-        return { prompt: attempt.payload.prompt };
+        return { prompt: attempt.payload.prompt, attachments: attempt.attachments };
+      }
+
+      function removeConsumedPendingAttachments(state) {
+        const consumed = new Set((state.events || []).flatMap((event) =>
+          (event.attachments || []).map((attachment) => attachment.id)));
+        state.pendingAttachments = (state.pendingAttachments || []).filter((attachment) => !consumed.has(attachment.id));
+      }
+
+      function composerAttachments() {
+        const sessionId = activeSessionId();
+        const recovery = failedSendRecoveriesBySession.get(sessionId);
+        const reserved = new Set();
+        for (const entry of queuedFollowUpsBySession.get(sessionId) || []) {
+          if (recovery?.editingInComposer && recovery.entry.queueId === entry.queueId) continue;
+          for (const attachment of entry.attachments || []) reserved.add(attachment.id);
+        }
+        const attempt = activeSendAttempt();
+        for (const attachment of attempt?.attachments || []) reserved.add(attachment.id);
+        for (const attachment of attempt?.steering?.attachments || []) reserved.add(attachment.id);
+        return (getState().pendingAttachments || []).filter((attachment) => !reserved.has(attachment.id));
+      }
+
+      function isDraftEditLocked() {
+        return closeDecisionPending || commandReconciliationBlocked ||
+          Boolean(commandInProgress && commandInProgress !== "save_global_settings") ||
+          skillOperationInProgress;
       }
 
       function clearConfirmationResolution(sessionId) {
@@ -1249,6 +1275,7 @@
             state.bridgeStateCoveredThroughRevision,
           );
         }
+        removeConsumedPendingAttachments(merged);
         merged.bridgeStateRevision = incomingCurrentRevisionOrder > 0
           ? state.bridgeStateRevision
           : current.bridgeStateRevision;
@@ -2207,7 +2234,7 @@
       }
 
       async function editMessageDraft({ sessionId, eventId, queueId }) {
-        if (activeSessionId() !== sessionId || isOperationInProgress()) return false;
+        if (activeSessionId() !== sessionId || isDraftEditLocked()) return false;
         const sourceForEdit = () => {
           if (typeof eventId === "string" && queueId === undefined) {
             const event = (getState().events || []).find(
@@ -2246,7 +2273,7 @@
         ) return false;
         if (
           activeSessionId() !== sessionId ||
-          isOperationInProgress() ||
+          isDraftEditLocked() ||
           promptControl.value !== previousDraft ||
           composerDraftRevisionsBySession.get(sessionId) !== previousRevision
         ) return false;
@@ -2262,6 +2289,7 @@
         promptControl.value = source.draft;
         recordComposerDraft(sessionId, source.draft);
         closeComposerAutocomplete();
+        requireView().renderPendingAttachments();
         requireView().renderSendPresentation();
         requireView().renderSessions();
         promptControl.focus({ preventScroll: true });
@@ -2289,8 +2317,10 @@
         if (!attempt) return;
         attempt.composerDraftRevisionAtStart =
           composerDraftRevisionsBySession.get(attempt.sessionId);
-        attempt.composerDraftValueAtStart =
-          composerDraftsBySession.get(attempt.sessionId) || "";
+        attempt.composerDraftWasEmptyAtStart =
+          activeSessionId() === attempt.sessionId &&
+          !(composerDraftsBySession.get(attempt.sessionId) || "") &&
+          composerAttachments().length === 0;
       }
 
       function activePendingConfirmation() {
@@ -2452,6 +2482,7 @@
       }
 
       function syncOperationState() {
+        requireView().renderPendingAttachments();
         const activeAttempt = activeSendAttempt();
         const modelSelectionReconciliation =
           modelSelectionRefreshesBySession.get(activeSessionId());
@@ -3770,6 +3801,7 @@
         queueId = null,
         queuedFollowUp = false,
         sessionId,
+        attachments = composerAttachments(),
       }) {
         if (sendAttemptsBySession.has(sessionId) || !prompt.trim()) return;
         const payload = { prompt, sessionId };
@@ -3797,11 +3829,8 @@
           sessionId,
           causalStateSnapshot,
           ownedSessionActivityIds: new Set([sessionId]),
-          ownedPendingAttachmentIds: new Set(
-            causalStateSnapshot.pendingAttachments.map(
-              (attachment) => attachment.id,
-            ),
-          ),
+          attachments,
+          ownedPendingAttachmentIds: new Set(attachments.map((attachment) => attachment.id)),
           ownedActiveContextSessionId: sessionId,
           modelTurnEpoch: 0,
           resolvedConfirmationGeneration: 0,
@@ -3840,6 +3869,7 @@
             headers: {
               "Content-Type": "application/json",
               "X-Live-Smith-Send-Id": attempt.id,
+              "X-Live-Smith-Attachment-Ids": JSON.stringify(attempt.attachments.map((attachment) => attachment.id)),
               "X-Live-Smith-Global-State-Covered-Through":
                 globalFullStateCoverage,
               "X-Live-Smith-Session-State-Covered-Through":
@@ -3936,7 +3966,8 @@
           return;
         }
         const entries = queuedFollowUpsBySession.get(attempt.sessionId) || [];
-        entries.push({ queueId: createCorrelationId("queue"), prompt });
+        if (!requireView().validateAttachmentsForSend()) return;
+        entries.push({ queueId: createCorrelationId("queue"), prompt, attachments: composerAttachments() });
         queuedFollowUpsBySession.set(attempt.sessionId, entries);
         if (promptControl.value === (sourceDraft ?? prompt)) {
           promptControl.value = "";
@@ -3976,6 +4007,7 @@
         void startSend({
           id: createCorrelationId("send"),
           prompt: next.prompt,
+          attachments: next.attachments,
           queueId: next.queueId,
           queuedFollowUp: true,
           sessionId,
@@ -4153,7 +4185,9 @@
         readConnections: () => connectionState.snapshot(),
         readAccounts: () => confirmedSunoAccounts,
         readControls: () => ({ resumeBusy: audioResumeBusy, settingsBusy: audioConnectionEditor.busy,
-          closePending: closeDecisionPending, operationBusy: isOperationInProgress() }),
+          closePending: closeDecisionPending, operationBusy: isOperationInProgress(),
+          localExportBusy: Boolean(commandInProgress) || commandReconciliationBlocked ||
+            attachmentOperationInProgress || skillOperationInProgress || closeDecisionPending }),
         bridgeConfig, runCommand, confirmAction, i18n: window.LiveSmithI18n,
         audioOperationLabel, audioServiceCapabilities, outputLabels: __AUDIO_OUTPUT_LABELS__,
         savedAudioConnection,
@@ -4283,6 +4317,11 @@
       function acknowledgeSteering(attempt, steering) {
         if (attempt.steering !== steering) return false;
         const isCurrent = attemptIsCurrent(attempt);
+        const consumedIds = new Set(steering.attachments.map((attachment) => attachment.id));
+        for (const id of consumedIds) attempt.ownedPendingAttachmentIds.add(id);
+        if (activeSessionId() === attempt.sessionId) {
+          getState().pendingAttachments = (getState().pendingAttachments || []).filter((attachment) => !consumedIds.has(attachment.id));
+        }
         attempt.steering = null;
         attempt.steerInProgress = false;
         if (Number.isSafeInteger(steering.supersededConfirmationGeneration)) {
@@ -4353,6 +4392,12 @@
         return true;
       }
 
+      function steeringEventMatches(event, steering) {
+        return event.kind === "user" && event.content === steering.prompt &&
+          sameJsonValue((event.attachments || []).map((attachment) => attachment.id),
+            steering.attachments.map((attachment) => attachment.id));
+      }
+
       function reconcileSteeringAck(attempt, state) {
         const steering = attempt?.steering;
         if (!steering) return true;
@@ -4370,10 +4415,7 @@
         if (matches.length > 1) return false;
         if (matches.length === 1) {
           const event = matches[0];
-          if (
-            event.kind !== "user" ||
-            event.content !== steering.prompt
-          ) return false;
+          if (!steeringEventMatches(event, steering)) return false;
           return acknowledgeSteering(attempt, steering);
         }
         attempt.steering = null;
@@ -4387,8 +4429,7 @@
           !steering ||
           event.steeringAck?.sendId !== attempt.id ||
           event.steeringAck.steerId !== steering.id ||
-          event.kind !== "user" ||
-          event.content !== steering.prompt
+          !steeringEventMatches(event, steering)
         ) return false;
         return acknowledgeSteering(attempt, steering);
       }
@@ -4397,7 +4438,7 @@
         const steering = attempt?.steering;
         return !steering ||
           event.steeringAck?.steerId !== steering.id ||
-          event.content === steering.prompt;
+          steeringEventMatches(event, steering);
       }
 
       async function steerPrompt(promptOverride, sourceDraft = promptOverride) {
@@ -4441,11 +4482,13 @@
           attempt.sessionId,
         );
         const retryingSteering = attempt.steering?.prompt === prompt;
+        if (!retryingSteering && !requireView().validateAttachmentsForSend()) return;
         const steering = {
           id: retryingSteering
             ? attempt.steering.id
             : createCorrelationId("steer"),
           prompt,
+          attachments: retryingSteering ? attempt.steering.attachments : composerAttachments(),
           draftRevision: composerDraftRevisionsBySession.get(attempt.sessionId),
           supersededConfirmationId: retryingSteering
             ? attempt.steering.supersededConfirmationId
@@ -4474,6 +4517,7 @@
             {
               "X-Live-Smith-Send-Id": attempt.id,
               "X-Live-Smith-Steer-Id": steering.id,
+              "X-Live-Smith-Attachment-Ids": JSON.stringify(steering.attachments.map((attachment) => attachment.id)),
             },
           );
           if (
@@ -4769,6 +4813,7 @@
         const entry = {
           queueId: attempt.queueId || createCorrelationId("queue"),
           prompt: attempt.payload.prompt,
+          attachments: attempt.attachments,
         };
         const restoredDraft = attempt.sourceDraft ?? entry.prompt;
         const entries = queuedFollowUpsBySession.get(attempt.sessionId) || [];
@@ -4776,7 +4821,7 @@
         queuedFollowUpsBySession.set(attempt.sessionId, entries);
         pausedFollowUpSessions.add(attempt.sessionId);
         const canRestoreToComposer =
-          attempt.composerDraftValueAtStart === "" &&
+          attempt.composerDraftWasEmptyAtStart &&
           currentComposerDraft(attempt.sessionId) === "" &&
           composerDraftRevisionsBySession.get(attempt.sessionId) ===
             attempt.composerDraftRevisionAtStart;
@@ -5054,8 +5099,16 @@
         });
       }
 
+      function isAttachmentOperationLocked() {
+        return Boolean(commandInProgress) || commandReconciliationBlocked ||
+          attachmentOperationInProgress || skillOperationInProgress || closeDecisionPending ||
+          globalStateRefresh !== null || eventStreamStateRefresh !== null ||
+          modelSelectionRefreshesBySession.has(activeSessionId()) ||
+          sessionStateRefreshesBySession.has(activeSessionId());
+      }
+
       async function runFileOperation(kind, operation) {
-        if (isOperationInProgress()) {
+        if ((kind === "attachment" ? isAttachmentOperationLocked() : isOperationInProgress())) {
           throw new Error(t("Another Live Smith operation is already in progress."));
         }
         const causalAttempt = {
@@ -5166,6 +5219,7 @@
 
       function uploadAttachments(sessionId, files, prepareFile = (file) => file) {
         return runFileOperation("attachment", async (causalAttempt) => {
+          recordComposerDraft(sessionId, currentComposerDraft(sessionId));
           const controller = new AbortController();
           const cancelConversion = () => controller.abort();
           window.addEventListener("pagehide", cancelConversion);
@@ -5294,6 +5348,7 @@
 
       function deleteAttachment(sessionId, attachmentId) {
         return runFileOperation("attachment", (causalAttempt) => {
+          recordComposerDraft(sessionId, currentComposerDraft(sessionId));
           causalAttempt.ownedPendingAttachmentIds.add(attachmentId);
           return requestAttachment(
             `/attachments/${encodeURIComponent(attachmentId)}` +
@@ -5920,6 +5975,8 @@
         state.events = existingIndex < 0
           ? [...events, event]
           : events.map((item, index) => index === existingIndex ? event : item);
+        removeConsumedPendingAttachments(state);
+        requireView().renderPendingAttachments();
         if (event.kind === "assistant" && existingIndex < 0) {
           requireView().announceAssistantMessage(event.content);
         }
@@ -7314,6 +7371,8 @@
         getWebSearchUpdates: activeWebSearchUpdates,
         getPendingConfirmation: activePendingConfirmation,
         getPendingUserMessage: activePendingUserMessage,
+        getComposerAttachments: composerAttachments,
+        isDraftEditLocked,
         hasSessionLocalWork,
         getSubscriptionSendGateMessage: subscriptionSendGateMessage,
         handleComposerInput,

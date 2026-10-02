@@ -1,3 +1,4 @@
+import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -122,6 +123,23 @@ test("context estimation does not count binary wire encoding or duplicate provid
   assert.ok(estimate < 1_000);
 });
 
+test("context estimation counts steered document text and the binary envelope", () => {
+  const request = {
+    systemInstructions: "System", history: [], currentUserContent: [], tools: [],
+    agentMessages: [],
+  };
+  const baseline = estimateTransportContextTokens(request);
+  const steered = estimateTransportContextTokens({
+    ...request,
+    agentMessages: [{ role: "user", content: [
+      { type: "text", text: "A".repeat(400) },
+      { type: "image", fileName: "image.png", mediaType: "image/png", base64: "A".repeat(1_000_000) },
+    ] }],
+  });
+  assert.ok(steered >= baseline + 100);
+  assert.ok(steered < baseline + 200);
+});
+
 test("conversation compaction uses the active provider without tools or visible deltas", async () => {
   const profile = runtimeProfile(200_000);
   let captured: Omit<ModelTurnRequestInput, "turnExecutor"> | undefined;
@@ -157,7 +175,7 @@ test("conversation compaction uses the active provider without tools or visible 
   assert.equal(captured?.onHostedWebSearch, undefined);
   assert.match(
     captured?.agentMessages.at(-1)?.role === "user"
-      ? captured.agentMessages.at(-1)?.content ?? ""
+      ? modelMessageText(captured.agentMessages.at(-1))
       : "",
     /CONTEXT CHECKPOINT COMPACTION/,
   );
@@ -176,7 +194,7 @@ test("manual compaction appends one-time preservation instructions", async () =>
     signal: new AbortController().signal,
     requestTurn: async (input) => {
       const message = input.agentMessages.at(-1);
-      finalInstruction = message?.role === "user" ? message.content : "";
+      finalInstruction = message?.role === "user" ? modelMessageText(message) : "";
       return { content: "Focused checkpoint", toolCalls: [] };
     },
   });

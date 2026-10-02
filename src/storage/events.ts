@@ -306,9 +306,11 @@ function isSessionEvent(
     (record.steeringReceipt === undefined || (
       record.kind === "user" &&
       record.name === undefined &&
-      record.attachments === undefined &&
       isSessionSteeringReceipt(record.steeringReceipt) &&
-      steeringReceiptMatchesContent(record.steeringReceipt, record.content)
+      record.steeringReceipt.sha256 === sessionSteeringContentSha256(
+        record.content,
+        (record.attachments as PersistedSessionAttachmentRef[] | undefined)?.map((attachment) => attachment.id),
+      )
     )) &&
     (record.kind === "web_search"
       ? isModelHostedWebSearch(record.webSearch) &&
@@ -518,12 +520,12 @@ function isSteeringCorrelationId(value: unknown): value is string {
     /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 }
 
-function steeringReceiptMatchesContent(
-  receipt: SessionSteeringReceipt,
+export function sessionSteeringContentSha256(
   content: string,
-): boolean {
-  return receipt.sha256 === createHash("sha256")
-    .update(content, "utf8")
+  attachmentIds?: readonly string[],
+): string {
+  return createHash("sha256")
+    .update(attachmentIds?.length ? JSON.stringify({ content, attachmentIds }) : content, "utf8")
     .digest("hex");
 }
 

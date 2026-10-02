@@ -67,6 +67,32 @@ test("reusing an id with a different prompt fails with a conflict", async () => 
   await original;
 });
 
+test("steering attachment selection is immutable and part of retry identity", async () => {
+  const channel = new SteeringChannel();
+  const ids = ["attachment-a", "attachment-b"];
+  const original = channel.enqueue("request-files", "Read these references.", ids);
+  ids[0] = "attachment-replaced";
+  const retry = channel.enqueue("request-files", "Read these references.", ["attachment-a", "attachment-b"]);
+  assert.equal(retry.created, false);
+  assert.strictEqual(retry.completion, original.completion);
+  assert.throws(() => channel.enqueue("request-files", "Read these references.", ["attachment-b", "attachment-a"]), SteeringConflictError);
+  assert.throws(() => channel.enqueue("request-files", "Read these references.", []), SteeringConflictError);
+  const entry = takeOnlyEntry(channel);
+  assert.deepEqual(entry.attachmentIds, ["attachment-a", "attachment-b"]);
+  assert.equal(Object.isFrozen(entry.attachmentIds), true);
+  entry.accept();
+  await original.completion;
+});
+
+test("omitted and empty steering attachment selections share text retry identity", async () => {
+  const channel = new SteeringChannel();
+  const original = channel.enqueue("request-text", "Inspect the Lead.");
+  const retry = channel.enqueue("request-text", "Inspect the Lead.", []);
+  assert.strictEqual(retry.completion, original.completion);
+  takeOnlyEntry(channel).accept();
+  await original.completion;
+});
+
 test("the pending limit includes entries already taken by the consumer", async () => {
   const channel = new SteeringChannel({ maxPending: 1 });
   const first = channel.submit("request-1", "Mute track one.");

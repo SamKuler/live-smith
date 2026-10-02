@@ -26,6 +26,7 @@ import {
   MAX_USER_EVENT_ATTACHMENT_BYTES,
   MAX_USER_EVENT_ATTACHMENT_COUNT,
   SessionSteeringReceiptConflictError,
+  sessionSteeringContentSha256,
   SessionEventsCorruptionError,
   type SessionSteeringReceipt,
 } from "../../src/storage/events.js";
@@ -1233,4 +1234,29 @@ test("deleteSessionEvents removes a session event log", async () => {
   await deleteSessionEvents(dir, "session-001");
 
   assert.deepEqual(await loadSessionEvents(dir, "session-001"), []);
+});
+
+
+test("multimodal steering receipts bind the exact attachment list and survive reload", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-steering-files-"));
+  try {
+    const content = "Use these references";
+    const attachments = [imageRef, documentRef];
+    const receipt = { sendId: "send-files", id: "steer-files",
+      sha256: sessionSteeringContentSha256(content, attachments.map((ref) => ref.id)) };
+    const event = await appendSessionEvent(directory, "session-files", {
+      kind: "user", content, attachments, steeringReceipt: receipt,
+    });
+    assert.deepEqual((await loadSessionEvents(directory, "session-files"))[0], event);
+    assert.equal((await appendSessionEvent(directory, "session-files", {
+      kind: "user", content, attachments, steeringReceipt: receipt,
+    })).id, event.id);
+    await assert.rejects(appendSessionEvent(directory, "session-files", {
+      kind: "user", content, attachments: [imageRef], steeringReceipt: receipt,
+    }));
+    await assert.rejects(appendSessionEvent(directory, "session-files", {
+      kind: "user", content, attachments: [...attachments].reverse(), steeringReceipt: receipt,
+    }));
+    assert.equal((await loadSessionEvents(directory, "session-files")).length, 1);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });

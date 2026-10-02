@@ -139,7 +139,7 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
   }
 
   function exportLocalAudio(output) {
-    if (pendingAudioDownload || isInteractionBlocked()) return;
+    if (pendingAudioDownload || readControls().localExportBusy) return;
     const job = audioResultJob(output);
     const asset = job?.outputs.find((entry) => entry.id === output.dataset.audioOutput && entry.sessionId === activeSessionId());
     if (!asset) return;
@@ -393,7 +393,7 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
       button.disabled = Boolean(pendingAudioDownload) || isInteractionBlocked() || !audioDownloadIdentity(button.closest("[data-remote-audio-key]"));
     });
     container.querySelectorAll("[data-download-local-audio]").forEach((button) => {
-      button.disabled = Boolean(pendingAudioDownload) || isInteractionBlocked();
+      button.disabled = Boolean(pendingAudioDownload) || readControls().localExportBusy;
     });
     container.querySelectorAll("[data-resume-audio-job]").forEach((button) => { button.disabled = readControls().resumeBusy; });
   }

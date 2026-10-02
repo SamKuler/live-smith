@@ -14,6 +14,7 @@ export interface SteeringChannelOptions {
 export interface SteeringPendingEntry {
   readonly id: string;
   readonly prompt: string;
+  readonly attachmentIds?: readonly string[];
   accept(): void;
   reject(error: Error): void;
 }
@@ -31,7 +32,7 @@ export interface SteeringModelTurn {
 
 export class SteeringConflictError extends Error {
   constructor(readonly id: string) {
-    super(`Steering submission ${JSON.stringify(id)} conflicts with an existing prompt.`);
+    super(`Steering submission ${JSON.stringify(id)} conflicts with an existing message.`);
     this.name = "SteeringConflictError";
   }
 }
@@ -72,6 +73,7 @@ export class SteeringPersistenceOutcomeUnknownError extends Error {
 interface SubmissionRecord {
   readonly id: string;
   readonly prompt: string;
+  readonly attachmentIds?: readonly string[];
   readonly promise: Promise<void>;
   readonly resolve: () => void;
   readonly reject: (error: Error) => void;
@@ -108,16 +110,19 @@ export class SteeringChannel {
     this.maxSubmissions = maxSubmissions;
   }
 
-  submit(id: string, prompt: string): Promise<void> {
-    return this.enqueue(id, prompt).completion;
+  submit(id: string, prompt: string, attachmentIds?: readonly string[]): Promise<void> {
+    return this.enqueue(id, prompt, attachmentIds).completion;
   }
 
-  enqueue(id: string, prompt: string): SteeringSubmission {
+  enqueue(id: string, prompt: string, attachmentIds?: readonly string[]): SteeringSubmission {
     if (this.closeReason) throw this.closeReason;
 
     const existing = this.submissionsById.get(id);
     if (existing) {
-      if (existing.prompt !== prompt) {
+      if (
+        existing.prompt !== prompt ||
+        !sameAttachmentIds(existing.attachmentIds ?? [], attachmentIds ?? [])
+      ) {
         throw new SteeringConflictError(id);
       }
       return Object.freeze({ created: false, completion: existing.promise });
@@ -138,6 +143,7 @@ export class SteeringChannel {
     const record: SubmissionRecord = {
       id,
       prompt,
+      ...(attachmentIds === undefined ? {} : { attachmentIds: Object.freeze([...attachmentIds]) }),
       promise,
       resolve,
       reject,
@@ -164,6 +170,7 @@ export class SteeringChannel {
       return Object.freeze({
         id: record.id,
         prompt: record.prompt,
+        ...(record.attachmentIds === undefined ? {} : { attachmentIds: record.attachmentIds }),
         accept: () => this.accept(record),
         reject: (error: Error) => this.reject(record, error),
       });
@@ -235,4 +242,8 @@ export class SteeringChannel {
     record.state = "settled";
     this.unsettled.delete(record);
   }
+}
+
+function sameAttachmentIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
 }
