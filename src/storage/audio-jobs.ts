@@ -35,6 +35,10 @@ export const audioAssetInspectionLimits = {
   maxBytes: MAX_AUDIO_ASSET_BYTES,
   maxDurationSeconds: MAX_AUDIO_ASSET_DURATION_SECONDS,
 };
+// Each job has one record and paired metadata/blob files for a source and its
+// outputs. Allow one temporary atomic-write copy per committed file.
+const MAX_AUDIO_DIRECTORY_ENTRIES =
+  MAX_AUDIO_SESSION_JOBS * (1 + (1 + MAX_AUDIO_JOB_OUTPUTS) * 2) * 2;
 const uploadStages: readonly SunoUploadReceipt["stage"][] = [
   "prepared", "creating", "created", "uploading", "uploaded", "finishing", "processing", "processed", "initializing", "complete",
 ];
@@ -534,9 +538,7 @@ export async function audioDirectoryEntries(binding: AudioDirectoryBinding): Pro
   const names: string[] = [];
   const directory = await fs.opendir(binding.directory);
   for await (const entry of directory) {
-    // Forty jobs, each with one source and at most seven outputs, plus bounded
-    // atomic-write remnants. Never allocate an unbounded directory listing.
-    if (names.length >= 1024 || !entry.isFile() || entry.isSymbolicLink()) throw new AudioStorageError();
+    if (names.length >= MAX_AUDIO_DIRECTORY_ENTRIES || !entry.isFile() || entry.isSymbolicLink()) throw new AudioStorageError();
     names.push(entry.name);
   }
   await assertAudioDirectory(binding);
