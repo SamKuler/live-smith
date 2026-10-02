@@ -1,6 +1,6 @@
 import { TextDecoder } from "node:util";
 
-import { openPluginArchive } from "../plugins/archive.js";
+import { openPluginArchive, type OpenPluginArchive } from "../plugins/archive.js";
 import type { InstalledPluginPackage } from "../storage/plugins.js";
 import {
   MAX_SKILL_DESCRIPTION_LENGTH,
@@ -17,8 +17,7 @@ export interface PluginSkillDefinition extends SkillDefinition {
 
 const forbiddenScalarPrefixes = new Set(["|", ">", "&", "*", "!", "[", "]", "{", "}", "\"", "'", "#"]);
 
-export async function pluginSkillsFromArchive(pluginId: string, bytes: Uint8Array): Promise<PluginSkillDefinition[]> {
-  const archive = await openPluginArchive(bytes);
+export function pluginSkillsFromArchive(pluginId: string, archive: OpenPluginArchive): PluginSkillDefinition[] {
   if (archive.manifest.id !== pluginId) throw new Error("Plugin Skill package identity does not match its manifest.");
   const directory = archive.manifest.components.skillsDirectory;
   if (!directory) return [];
@@ -46,8 +45,8 @@ export async function pluginSkillsFromArchive(pluginId: string, bytes: Uint8Arra
 export async function pluginSkillsFromPackages(
   packages: readonly InstalledPluginPackage[],
 ): Promise<PluginSkillDefinition[]> {
-  const definitions = (await Promise.all(packages.map((entry) =>
-    pluginSkillsFromArchive(entry.plugin.id, entry.bytes)))).flat();
+  const definitions = (await Promise.all(packages.map(async (entry) =>
+    pluginSkillsFromArchive(entry.plugin.id, await openPluginArchive(entry.bytes))))).flat();
   definitions.sort((left, right) => left.id.localeCompare(right.id));
   if (definitions.some((definition, index) => index > 0 && definitions[index - 1]!.id === definition.id)) {
     throw new Error("Enabled Plugins expose duplicate Skill identities.");

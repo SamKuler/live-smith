@@ -76,15 +76,14 @@ export async function previewPluginArchive(
 ): Promise<PluginInstallPreview> {
   const owned = Uint8Array.from(bytes);
   const archive = await openPluginArchive(owned, signal);
-  const view = await pluginView(archive, owned, archive.manifest, false, [], [], []);
+  const view = pluginView(archive, owned, archive.manifest, false, [], [], []);
   return {
     ...view,
-    sha256: createHash("sha256").update(owned).digest("hex"),
     byteLength: owned.byteLength,
   };
 }
 
-async function pluginView(
+function pluginView(
   archive: OpenPluginArchive,
   bytes: Uint8Array,
   manifest: PluginManifest,
@@ -93,8 +92,8 @@ async function pluginView(
   approvedArtifactInputServerIds: readonly string[],
   approvedArtifactOutputServerIds: readonly string[],
   storedConfig: StoredPluginConfig = emptyPluginConfig(),
-): Promise<InstalledPluginView> {
-  const skills = await pluginSkillsFromArchive(manifest.id, bytes);
+): InstalledPluginView {
+  const skills = pluginSkillsFromArchive(manifest.id, archive);
   const skillDirectory = archive.manifest.components.skillsDirectory;
   const skillCandidates = skillDirectory === undefined ? 0 : [...archive.files.keys()].filter((file) => {
     const relative = file.startsWith(`${skillDirectory}/`) ? file.slice(skillDirectory.length + 1) : "";

@@ -76,7 +76,7 @@ test("Plugin install preview binds review metadata to the exact archive", async 
   assert.equal(preview.enabled, false);
   assert.deepEqual(preview.skills, [{ id: "audio-to-midi:convert", description: "Convert audio" }]);
   assert.equal(preview.byteLength, entry.bytes.byteLength);
-  assert.match(preview.sha256, /^[a-f0-9]{64}$/u);
+  assert.equal(preview.sha256, createHash("sha256").update(entry.bytes).digest("hex"));
   assert.deepEqual(preview.mcpServers.map((server) => ({
     id: server.id,
     approved: server.approved,
