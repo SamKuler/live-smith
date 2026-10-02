@@ -547,7 +547,7 @@ test("Inspector scope navigation separates Session Skills from global management
     harness.click("#sessionInspectorScope");
     const visibleTabs = () => [...harness.document.querySelectorAll<HTMLElement>('.tab-bar [role="tab"]')]
       .filter((tab) => !tab.hidden).map((tab) => tab.id);
-    assert.deepEqual(visibleTabs(), ["contextTab", "skillsTab", "toolsTab"]);
+    assert.deepEqual(visibleTabs(), ["contextTab", "skillsTab", "toolsTab", "candidatesTab"]);
     harness.click("#skillsTab");
     assert.equal(skillsPanel.hidden, false);
     harness.click("#manageSkillsButton");

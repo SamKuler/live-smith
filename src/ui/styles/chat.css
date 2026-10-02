@@ -1814,11 +1814,11 @@ details.timeline-item > .timeline-content {
 }
 
 .tab-bar {
-  @apply flex gap-1 border-b border-b-border bg-chrome p-1;
+  @apply flex gap-1 overflow-x-auto border-b border-b-border bg-chrome p-1;
 }
 
 .tab-bar button {
-  @apply h-control-compact min-w-0 flex-1 rounded-control border border-transparent bg-transparent px-2 py-0 text-label text-quiet normal-case;
+  @apply h-control-compact min-w-0 flex-auto shrink-0 whitespace-nowrap rounded-control border border-transparent bg-transparent px-1 py-0 text-label text-quiet normal-case;
   letter-spacing: 0;
   transition: color 120ms, background-color 120ms, border-color 120ms;
 }
@@ -2001,11 +2001,25 @@ details.timeline-item > .timeline-content {
 .candidate-choice span { min-width: 0; overflow-wrap: anywhere; }
 .candidate-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 12px; }
 .candidate-card { @apply grid min-w-0 content-start gap-2 rounded-panel border border-divider bg-field p-3; }
-.candidate-card h4, .candidate-card p { @apply m-0; }
+.candidate-card h3, .candidate-card p { @apply m-0; }
 .candidate-details { @apply min-w-0 text-label; }
 .candidate-details pre { @apply max-h-40 overflow-auto whitespace-pre-wrap text-small text-muted; overflow-wrap: anywhere; }
-.candidate-midi-preview { @apply w-full border border-divider bg-field; }
-.candidate-midi-preview rect { fill: currentColor; opacity: .8; }
+.candidate-card-heading { @apply flex min-w-0 items-start justify-between gap-2; }
+.candidate-card-heading h3 { @apply min-w-0 text-label font-medium; overflow-wrap: anywhere; }
+.candidate-remove { @apply size-6 shrink-0 border-0 bg-transparent p-0 text-heading text-muted; }
+.candidate-selection-count { @apply m-0; }
+.candidate-midi-chart { @apply m-0 grid min-w-0 gap-x-2 gap-y-1; grid-template-columns: 22px minmax(0, 1fr); grid-template-rows: 140px 18px auto; }
+.candidate-midi-preview { @apply block h-full w-full rounded-control bg-canvas; grid-column: 2; grid-row: 1; }
+.candidate-midi-pitches { grid-column: 1; grid-row: 1; }
+.candidate-midi-beats { grid-column: 2; grid-row: 2; }
+.candidate-midi-pitches, .candidate-midi-beats { @apply relative text-small text-muted; font-variant-numeric: tabular-nums; }
+.candidate-midi-pitches span, .candidate-midi-beats span { @apply absolute whitespace-nowrap; }
+.candidate-midi-pitches span { right: 0; transform: translateY(-50%); }
+.candidate-midi-grid { stroke: var(--color-divider); stroke-width: 1; }
+.candidate-midi-note { fill: var(--color-text); opacity: .9; }
+.candidate-midi-unused { fill: var(--color-surface-hover); }
+.candidate-midi-scale { @apply text-small text-muted; grid-column: 1 / -1; }
+#candidatesButton { @apply whitespace-nowrap; }
 .plugin-result-load { @apply justify-self-start; }
 .plugin-result-mapping { @apply grid min-w-0 gap-3; }
 .plugin-result-mapping select { width: 100%; min-width: 0; }

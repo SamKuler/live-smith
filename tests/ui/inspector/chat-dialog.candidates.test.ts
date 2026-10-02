@@ -42,7 +42,7 @@ async function setup(defer = false, entries: SessionCandidate[] = candidates) {
     }
     return originalFetch(input, init);
   } });
-  const open = async () => { assert.deepEqual(h.errors, []); h.click("#sessionCandidates > summary"); await h.settle(); assert.deepEqual(h.errors, []); await waitForCondition(() => h.document.querySelectorAll(".candidate-choice input").length === entries.length, `Expected saved candidates: ${h.document.querySelector("#candidateComparison")?.textContent}`); };
+  const open = async () => { assert.deepEqual(h.errors, []); h.click("#candidatesButton"); await h.settle(); assert.deepEqual(h.errors, []); await waitForCondition(() => h.document.querySelectorAll(".candidate-choice input").length === entries.length, `Expected saved candidates: ${h.document.querySelector("#candidateComparison")?.textContent}`); };
   return { h, state, open, release, get playCount() { return playCount; }, get readCount() { return readCount; } };
 }
 
@@ -106,7 +106,8 @@ test("read-only comparison and compact audio playback remain available during ge
   const s = await setup(); const { h } = s; let held = false;
   try {
     await s.open(); h.click('.candidate-choice input[value="audio:audio-b"]');
-    h.holdNextSend(); held = true; h.input("#prompt", "Continue composing"); h.click("#sendButton"); await h.settle();
+    h.click("#closeCandidatesButton");
+    h.holdNextSend(); held = true; h.input("#prompt", "Continue composing"); h.click("#sendButton"); await h.settle(); h.click("#candidatesButton");
     const preferred = [...h.document.querySelectorAll<HTMLButtonElement>("#candidateComparison button")].find((button) => button.textContent === "Mark preferred")!;
     assert.equal(preferred.disabled, true);
     h.click(".candidate-card .attachment-audio-toggle"); await h.settle(); assert.equal(s.playCount, 1);
@@ -122,7 +123,7 @@ test("read-only comparison and compact audio playback remain available during ge
 test("delayed candidate read cannot populate another Session or keep its audio player", async () => {
   const s = await setup(true); const { h } = s;
   try {
-    h.click("#sessionCandidates > summary"); await waitForCondition(() => s.readCount > 0, "Expected candidate read");
+    h.click("#candidatesButton"); await waitForCondition(() => s.readCount > 0, "Expected candidate read");
     h.click('.session-entry[data-session-id="session-2"] .session-row'); await h.settle();
     s.release(); await h.settle();
     assert.equal(h.document.querySelector(".candidate-card"), null);
@@ -140,10 +141,14 @@ test("MIDI version actions retain the exact selected version for export, chat at
   const s = await setup(false, [revised, original]); const { h } = s;
   try {
     await s.open(); h.click('.candidate-choice input[value="midi:midi-v2"]');
-    assert.equal(h.document.querySelector(".candidate-card h4")!.textContent, "Piano variation · v2");
+    assert.equal(h.document.querySelector(".candidate-card h3")!.textContent, "Piano variation · v2");
     action(h, "Export MIDI"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "export_midi_artifact", sessionId: s.state.activeSessionId, artifactRef: "midi-v2" });
     action(h, "Attach to message"); await h.settle();
+    assert.equal(h.document.getElementById("inspectorPane")!.hidden, true);
+    assert.equal(h.document.activeElement?.id, "prompt");
+    h.click("#candidatesButton");
+    await waitForCondition(() => [...h.document.querySelectorAll<HTMLButtonElement>("#candidateComparison button")].some((button) => button.textContent === "Create next version" && !button.disabled), "Expected refreshed version controls");
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "attach_midi_artifact", sessionId: s.state.activeSessionId, artifactRef: "midi-v2" });
     assert.equal(jsonCalls(h, "/send").length, 0);
     action(h, "Create next version"); await h.settle();
@@ -151,6 +156,81 @@ test("MIDI version actions retain the exact selected version for export, chat at
       selection: { action: "continue", candidate: { kind: "midi", id: "midi-v2" } } });
     assert.match(h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value, /new version.*midi-v2/);
     assert.equal(jsonCalls(h, "/send").length, 0);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("changing comparisons, refreshing and preferring a candidate preserves active audio and MIDI import drafts", async () => {
+  const s = await setup(); const { h } = s;
+  try {
+    await s.open(); h.click('.candidate-choice input[value="audio:audio-b"]');
+    const audio = h.document.querySelector<HTMLAudioElement>(".candidate-card audio")!;
+    h.click(".candidate-card .attachment-audio-toggle"); await h.settle(); audio.currentTime = 12;
+    h.click('.candidate-choice input[value="midi:midi-a"]');
+    assert.equal(h.document.querySelector(".candidate-card audio"), audio, "adding a comparison must retain the playing media element");
+    assert.equal(audio.currentTime, 12);
+    h.click(".plugin-result-load"); await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected mapping");
+    h.select(".plugin-result-track", "2"); h.input(".plugin-result-beat", "9");
+    const track = h.document.querySelector<HTMLSelectElement>(".plugin-result-track")!;
+    action(h, "Mark preferred"); await h.settle();
+    await waitForCondition(() => Boolean(h.document.querySelector('[aria-pressed="true"]')), "Expected preference");
+    action(h, "Refresh candidates"); await h.settle();
+    assert.equal(h.document.querySelector(".candidate-card audio"), audio);
+    assert.equal(audio.currentTime, 12);
+    assert.equal(h.document.querySelector(".plugin-result-track"), track);
+    assert.equal(track.value, "2");
+    assert.equal(h.document.querySelector<HTMLInputElement>(".plugin-result-beat")!.value, "9");
+    h.click('.candidate-choice input[value="midi:midi-a"]');
+    assert.equal(h.document.querySelector(".candidate-card audio"), audio);
+    h.click('.candidate-choice input[value="audio:audio-b"]');
+    assert.equal(h.document.querySelector(".candidate-card audio"), null);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("MIDI comparisons use the same pitch and beat coordinates across different ranges and durations", async () => {
+  const longer: SessionCandidate = { ...candidates[0]!, ref: { kind: "midi", id: "midi-longer" }, label: "Higher and longer",
+    midi: { ...candidates[0]!.midi!, durationBeats: 16, notes: [
+      { pitch: 60, startTime: 2, duration: 1 }, { pitch: 72, startTime: 0, duration: 1 },
+    ] } };
+  const s = await setup(false, [candidates[0]!, longer]); const { h } = s;
+  try {
+    await s.open(); h.click('.candidate-choice input[value="midi:midi-a"]'); h.click('.candidate-choice input[value="midi:midi-longer"]');
+    const charts = h.document.querySelectorAll<SVGElement>('[aria-label="Saved MIDI note preview"]');
+    const a = charts[0]!.querySelector<SVGRectElement>('rect[data-pitch="60"]')!;
+    const b = charts[1]!.querySelector<SVGRectElement>('rect[data-pitch="60"]')!;
+    assert.ok(a && b, "notes must remain individually inspectable");
+    assert.equal(a.getAttribute("y"), b.getAttribute("y"), "the same pitch must align across versions");
+    assert.equal(a.getAttribute("width"), b.getAttribute("width"), "one beat has the same width across versions");
+    assert.equal(charts[0]!.querySelector('rect[data-pitch="64"]')!.getAttribute("x"), b.getAttribute("x"));
+    assert.ok(Number(charts[1]!.querySelector('rect[data-pitch="72"]')!.getAttribute("y")) < Number(b.getAttribute("y")));
+    assert.match(charts[0]!.closest("figure")!.querySelector("figcaption")!.textContent!, /60–83/, "the shared pitch range stays visible outside the scaled drawing");
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+
+test("keyboard navigation and reopening candidates refresh saved results while preserving the comparison", async () => {
+  const entries = [...candidates];
+  const s = await setup(false, entries); const { h } = s;
+  try {
+    h.click("#settingsButton"); h.click("#sessionInspectorScope"); h.click("#toolsTab");
+    h.document.getElementById("toolsTab")!.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await waitForCondition(() => h.document.querySelectorAll(".candidate-choice input").length === 2, "Expected keyboard-opened candidates");
+    assert.equal(h.document.activeElement?.id, "candidatesTab");
+    assert.equal(h.document.getElementById("candidatesPanel")!.hidden, false);
+    h.click('.candidate-choice input[value="audio:audio-b"]');
+    const audio = h.document.querySelector<HTMLAudioElement>(".candidate-card audio")!; audio.currentTime = 8;
+    h.click("#closeCandidatesButton");
+    assert.equal(h.document.getElementById("inspectorPane")!.hidden, true);
+    assert.equal(h.document.activeElement?.id, "prompt");
+    assert.equal(h.document.querySelector(".chat-pane")!.hasAttribute("inert"), false);
+    entries.push({ ...candidates[0]!, ref: { kind: "midi", id: "midi-new" } });
+    h.click("#candidatesButton");
+    await waitForCondition(() => h.document.querySelectorAll(".candidate-choice input").length === 3, "Expected newly saved candidate on reopen");
+    assert.equal(h.document.querySelector(".candidate-card audio"), audio); assert.equal(audio.currentTime, 8);
+    h.click('.candidate-remove'); assert.equal(h.document.querySelector(".candidate-card audio"), null);
+    assert.equal(h.document.querySelector<HTMLInputElement>('.candidate-choice input[value="audio:audio-b"]')!.checked, false);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });

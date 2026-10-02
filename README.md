@@ -61,11 +61,14 @@ and leaves the Set's tempo and meter unchanged. Import follows the Session's
 Edit Scope and approval mode, without requiring a model request. An interrupted
 import preserves recovery information and must be inspected before retrying.
 
-**Compare saved candidates** collects this Session's downloaded audio and saved
+**Session → Candidates** (also available from the composer's **Candidates** button) collects this Session's downloaded audio and saved
 MIDI results. Choose up to four candidates to compare audio playback, MIDI note
 previews, source parts and recorded generation parameters. Mark a preferred
 candidate explicitly; that selection survives reopening the Session. A missing
-historical tool call leaves its parameters unavailable.
+historical tool call leaves its parameters unavailable. MIDI previews share the
+same pitch and beat scales across selected versions. Changing the comparison or
+refreshing it preserves audio position and MIDI import drafts. **Back to chat**
+pauses candidate audio and returns to the composer.
 
 **Continue in chat** (or **Create next version** for MIDI) selects a source for the next chat request and adds a draft
 to the composer. Add the desired changes and send it through the usual model and

@@ -69,10 +69,6 @@
             </section>
           </details>
           <div id="status" class="status" role="status" aria-live="polite" aria-atomic="true"></div>
-          <details id="sessionCandidates" class="session-results">
-            <summary data-i18n="Compare saved candidates">Compare saved candidates</summary>
-            <section id="candidateComparison" aria-label="Candidate comparison" data-i18n-aria-label="Candidate comparison"></section>
-          </details>
           <div class="composer">
             <div id="pendingAttachments" class="pending-attachments" role="list" aria-label="Pending file attachments" aria-busy="false" hidden data-i18n-aria-label="Pending file attachments"></div>
             <div id="composerAutocomplete" class="composer-autocomplete floating-surface" role="listbox" aria-label="Composer suggestions" hidden data-i18n-aria-label="Composer suggestions"></div>
@@ -93,6 +89,7 @@
                   </div>
                 </div>
                 <button id="creativeBriefButton" class="creative-brief-button composer-control" type="button" aria-label="Creative brief" aria-controls="creativeBriefSection" data-i18n-aria-label="Creative brief" data-i18n="Brief">Brief</button>
+                <button id="candidatesButton" class="composer-control" type="button" aria-controls="candidatesPanel" aria-label="Compare saved candidates" title="Compare saved candidates" onclick="LiveSmithUI.openInspector('candidates')" data-i18n-aria-label="Compare saved candidates" data-i18n-title="Compare saved candidates" data-i18n="Candidates">Candidates</button>
                 <label class="approval-mode-label" title="Manual requests approval for every Apply request." data-i18n-title="Manual requests approval for every Apply request.">
                   <span class="approval-mode-copy visually-hidden" data-i18n="Apply">Apply</span>
                   <select id="approvalMode" name="approvalMode" class="approval-mode-select composer-select composer-control" aria-label="Apply approval mode" onchange="LiveSmithUI.saveApprovalMode()" data-i18n-aria-label="Apply approval mode">
@@ -152,6 +149,7 @@
             <button id="contextTab" type="button" role="tab" aria-selected="false" aria-controls="contextPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('context')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Context">Context</button>
             <button id="skillsTab" type="button" role="tab" aria-selected="false" aria-controls="skillsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('skills')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Skills">Skills</button>
             <button id="toolsTab" type="button" role="tab" aria-selected="false" aria-controls="toolsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('tools')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Tools">Tools</button>
+            <button id="candidatesTab" type="button" role="tab" aria-selected="false" aria-controls="candidatesPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('candidates')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Candidates">Candidates</button>
             <button id="agentTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="agentPanel" tabindex="0" onclick="LiveSmithUI.openInspector('agent')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="Agent">Agent</button>
             <button id="extensionsTab" type="button" role="tab" aria-selected="false" aria-controls="extensionsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('extensions')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="Extensions">Extensions</button>
             <button id="appTab" type="button" role="tab" aria-selected="false" aria-controls="appPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('app')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="App">App</button>
@@ -781,6 +779,14 @@
                 <code id="skillViewerId" class="skill-viewer-id" translate="no"></code>
                 <p id="skillViewerDescription" class="skill-viewer-description"></p>
                 <div id="skillViewerBody" class="skill-viewer-body"></div>
+              </section>
+            </div>
+          </div>
+          <div id="candidatesPanel" class="tab-panel" role="tabpanel" aria-labelledby="candidatesTab" tabindex="0" hidden>
+            <div class="settings">
+              <section id="sessionCandidates" class="settings-scope" aria-labelledby="candidateHeading">
+                <div class="inspector-scope-header"><h2 id="candidateHeading" data-i18n="Candidates">Candidates</h2><button id="closeCandidatesButton" type="button" class="secondary inspector-heading-action" onclick="LiveSmithUI.returnToChat()" data-i18n="Back to chat">Back to chat</button></div>
+                <section id="candidateComparison" aria-label="Candidate comparison" data-i18n-aria-label="Candidate comparison"></section>
               </section>
             </div>
           </div>

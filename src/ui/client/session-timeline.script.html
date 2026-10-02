@@ -17,6 +17,7 @@
         resolveConfirm,
         runCommand,
         showStatus,
+        onInspectorTabChange = () => {},
       }) {
       const t = (message, params) => window.LiveSmithI18n.t(message, params);
       const { message } = window.LiveSmithI18n;
@@ -30,7 +31,7 @@
         month: "short",
       });
       const inspectorGroups = {
-        session: ["context", "skills", "tools"],
+        session: ["context", "skills", "tools", "candidates"],
         settings: ["agent", "extensions", "app"],
       };
       const inspectorTabs = Object.values(inspectorGroups).flat();
@@ -209,6 +210,7 @@
           tabButton.tabIndex = active ? 0 : -1;
           panel.hidden = !active;
         }
+        onInspectorTabChange(selected);
       }
 
       function switchInspectorGroup(group) {

@@ -317,6 +317,7 @@
             try { await pluginApps.close(); }
             catch { bridgeClient.showStatus(i18n.message("MCP App could not be closed."), true); return; }
             if (getState().activeSessionId !== sessionId) return;
+            setInspectorOpen(false);
             const prompt = document.getElementById("prompt");
             prompt.value = [prompt.value.trimEnd(), text].filter(Boolean).join("\n\n");
             prompt.dispatchEvent(new Event("input", { bubbles: true }));
@@ -338,7 +339,13 @@
           },
         });
         const candidateComparison = factories.createCandidateComparison({
-          transfer: (kind, input) => bridgeClient.runCommand(kind, input, { cancellable: true }),
+          transfer: async (kind, input) => {
+            const completed = await bridgeClient.runCommand(kind, input, { cancellable: true });
+            if (completed && kind === "attach_midi_artifact" && getState().activeSessionId === input.sessionId) {
+              setInspectorOpen(false); document.getElementById("prompt").focus();
+            }
+            return completed;
+          },
           getState, read: bridgeClient.readSessionCandidates,
           select: async (input) => {
             let known = false;
@@ -421,6 +428,7 @@
           resolveConfirm: bridgeClient.resolveConfirm,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
+          onInspectorTabChange: (tab) => candidateComparison.setVisible(tab === "candidates"),
         });
 
         const toolsInspector = factories.createToolsInspector({
@@ -973,6 +981,7 @@
           const inspector = document.getElementById("inspectorPane");
           const focusWasInside = !open && inspector.contains(document.activeElement);
           inspector.hidden = !open;
+          candidateComparison.setVisible(open && !document.getElementById("candidatesPanel").hidden);
           const settingsButton = document.getElementById("settingsButton");
           settingsButton.setAttribute("aria-expanded", String(open));
           settingsButton.setAttribute(
@@ -1037,6 +1046,11 @@
             : names[(index + (event.key === "ArrowRight" ? 1 : -1) + names.length) % names.length];
           openExtensionCategory(category);
           document.getElementById(`${category}ExtensionTab`).focus();
+        }
+
+        function returnToChat() {
+          setInspectorOpen(false);
+          document.getElementById("prompt").focus();
         }
 
         function toggleInspector() {
@@ -1884,6 +1898,7 @@
           setDefaultModel: profileEditor.setDefaultModel,
           startOAuthLogin: profileEditor.startOAuthLogin,
           toggleInspector,
+          returnToChat,
           toggleSessionsPane,
           toggleApiKeyVisibility: profileEditor.toggleApiKeyVisibility,
           updateManualModelActions: profileEditor.updateManualModelActions,
