@@ -108,10 +108,15 @@ function createCandidateComparisonView(deps: Dependencies) {
         const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
         svg.setAttribute("viewBox", "0 0 640 128"); svg.setAttribute("role", "img");
         svg.setAttribute("aria-label", t("Saved MIDI note preview")); svg.classList.add("candidate-midi-preview");
+        const lowestPitch = Math.min(...midi.notes.map((note) => note.pitch)) - 2;
+        const pitchRange = Math.max(12, Math.max(...midi.notes.map((note) => note.pitch)) - lowestPitch + 2);
         for (const note of midi.notes) {
           const rect = document.createElementNS(svg.namespaceURI, "rect");
-          rect.setAttribute("x", String(note.startTime / midi.durationBeats * 640)); rect.setAttribute("y", String(127 - note.pitch));
-          rect.setAttribute("width", String(Math.max(1, note.duration / midi.durationBeats * 640))); rect.setAttribute("height", "2"); svg.append(rect);
+          rect.setAttribute("x", String(note.startTime / midi.durationBeats * 640));
+          rect.setAttribute("y", String((pitchRange - (note.pitch - lowestPitch) - 1) / pitchRange * 128));
+          rect.setAttribute("width", String(Math.max(1, note.duration / midi.durationBeats * 640)));
+          rect.setAttribute("height", String(128 / pitchRange * 0.8));
+          svg.append(rect);
         }
         card.append(svg);
         if (midi.omittedNoteCount) card.append(element("p", "field-hint", t("{count} notes omitted from this preview.", { count: String(midi.omittedNoteCount) })));

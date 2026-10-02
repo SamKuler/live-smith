@@ -1994,7 +1994,9 @@ details.timeline-item > .timeline-content {
 .candidate-controls { @apply m-0 grid min-w-0 gap-3 border-0 p-0; }
 .candidate-page-controls, .candidate-actions { @apply flex flex-wrap gap-2; }
 .candidate-choices { @apply grid gap-1; }
-.candidate-choice { @apply flex items-center gap-2 text-label; }
+.candidate-choice { @apply flex min-w-0 items-center gap-2 text-label; }
+.candidate-choice input[type="checkbox"] { @apply m-0 size-[14px] shrink-0 p-0; accent-color: var(--color-accent); }
+.candidate-choice span { min-width: 0; overflow-wrap: anywhere; }
 .candidate-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 12px; }
 .candidate-card { @apply grid min-w-0 content-start gap-2 rounded-panel border border-divider bg-field p-3; }
 .candidate-card h4, .candidate-card p { @apply m-0; }
@@ -2958,6 +2960,23 @@ label {
 
 .custom-instructions-actions {
   @apply mt-2 flex justify-end;
+}
+
+.creative-brief-button {
+  flex-shrink: 0;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.creative-brief-button:is([data-state="draft"], [data-state="suggestion"])::after {
+  content: "";
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .creative-brief-settings textarea {

@@ -72,7 +72,10 @@ export function createCreativeBriefEditor(deps: Dependencies) {
     set(element("creativeBriefProposalText"), "textContent", proposal?.creativeBrief || t("Empty brief"));
     set(useProposal, "disabled", pendingSessionId !== undefined || dirty || !proposal);
     const button = element<HTMLButtonElement>("creativeBriefButton");
-    set(button, "textContent", proposal ? t("Brief suggestion") : dirty ? t("Brief · draft") : saved ? t("Brief · saved") : t("Brief"));
+    set(button, "textContent", t("Brief"));
+    set(button, "title", proposal ? t("Brief suggestion") : dirty ? t("Brief · draft") : saved ? t("Brief · saved") : t("Creative brief"));
+    const buttonState = proposal ? "suggestion" : dirty ? "draft" : saved ? "saved" : "empty";
+    if (button.dataset.state !== buttonState) button.dataset.state = buttonState;
     if (button.getAttribute("aria-label") !== t("Creative brief")) button.setAttribute("aria-label", t("Creative brief"));
   }
 

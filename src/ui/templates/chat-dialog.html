@@ -82,7 +82,6 @@
             <textarea id="prompt" name="prompt" rows="1" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="composerAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Describe your idea…" data-i18n-placeholder="Describe your idea…" data-i18n-aria-label="Message Live Smith"></textarea>
             <div class="composer-toolbar">
               <div class="composer-live-controls">
-                <button id="creativeBriefButton" class="composer-select composer-control" type="button" aria-label="Creative brief" aria-controls="creativeBriefSection" data-i18n-aria-label="Creative brief" data-i18n="Brief">Brief</button>
                 <div id="attachmentMenuShell" class="attachment-menu-shell">
                   <button id="attachmentMenuButton" class="attachment-menu-button composer-icon-control" type="button" aria-label="Add attachment" aria-controls="attachmentMenu" aria-describedby="attachmentCapabilityHint" aria-expanded="false" data-i18n-aria-label="Add attachment">+</button>
                   <div id="attachmentMenu" class="attachment-menu floating-surface" aria-label="Attachment options" hidden data-i18n-aria-label="Attachment options">
@@ -93,6 +92,7 @@
                     <span id="attachmentCapabilityHint" class="attachment-capability-hint" role="status" aria-live="polite" hidden></span>
                   </div>
                 </div>
+                <button id="creativeBriefButton" class="creative-brief-button composer-control" type="button" aria-label="Creative brief" aria-controls="creativeBriefSection" data-i18n-aria-label="Creative brief" data-i18n="Brief">Brief</button>
                 <label class="approval-mode-label" title="Manual requests approval for every Apply request." data-i18n-title="Manual requests approval for every Apply request.">
                   <span class="approval-mode-copy visually-hidden" data-i18n="Apply">Apply</span>
                   <select id="approvalMode" name="approvalMode" class="approval-mode-select composer-select composer-control" aria-label="Apply approval mode" onchange="LiveSmithUI.saveApprovalMode()" data-i18n-aria-label="Apply approval mode">
