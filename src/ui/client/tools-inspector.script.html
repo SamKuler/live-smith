@@ -61,12 +61,19 @@
           return row;
         }
 
+        function connectionStatus(connection, state) {
+          if (!connection.enabled) return t("Disabled");
+          if (!connection.oauth) return t("Enabled");
+          const status = state.mcpOAuthStates?.find((entry) => entry.connectionId === connection.id)?.status;
+          return t(status === "signed-in" ? "Signed in" : status === "signing-in" ? "Signing in…" : status === "unavailable" ? "Not available" : "Sign-in required");
+        }
+
         function renderSources(state) {
           const rows = [sourceRow("Live Smith", t("Live observation and editing"), t("Built-in"))];
           const connections = state.integrationConnections?.connections || [];
           for (const connection of connections) {
             if (connection.mcp) {
-              rows.push(sourceRow(connection.name, t("Standalone MCP"), connection.enabled ? t("Enabled") : t("Disabled")));
+              rows.push(sourceRow(connection.name, t("Standalone MCP"), connectionStatus(connection, state)));
               continue;
             }
             const descriptor = descriptors[connection.pluginId];
@@ -85,7 +92,7 @@
               for (const connection of bound) {
                 const current = connection.configuration.pluginDigest === plugin.sha256;
                 children.append(sourceRow(connection.name, t("MCP connection"), !current ? t("Package changed")
-                  : connection.enabled ? t("Enabled") : t("Disabled")));
+                  : connectionStatus(connection, state)));
               }
               if (server.credentialFields.some((field) => field.required) && !bound.some((connection) =>
                 connection.enabled && connection.configuration.pluginDigest === plugin.sha256)) {
@@ -172,6 +179,7 @@
             approval_required: t("Approval required"),
             artifact_permission_required: t("Some tools require artifact access."),
             connection_failed: t("The MCP server could not be reached."),
+            authorization_required: t("This MCP connection requires sign-in. Open its connection settings to sign in."),
             invalid_tool: t("Some tool definitions could not be loaded."),
           }[issue.code];
         }

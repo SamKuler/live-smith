@@ -66,7 +66,7 @@ export async function readBoundedJsonResponse(
   }
 }
 
-async function readBoundedText(
+export async function readBoundedText(
   body: ReadableStream<Uint8Array>,
   maximumBytes: number,
   signal: AbortSignal | undefined,

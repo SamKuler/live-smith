@@ -77,6 +77,7 @@ export interface SessionToolCatalog {
 }
 
 export interface ChatDialogState {
+  mcpOAuthStates?: import("../plugins/mcp/oauth-contract.js").McpOAuthState[];
   contextSummary: string;
   liveContext: ChatLiveContext;
   sessionContinueTarget: {
@@ -163,6 +164,7 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
   return {
     ...state,
     ...(settings ? { settings } : {}),
+    ...(state.mcpOAuthStates ? { mcpOAuthStates: state.mcpOAuthStates.map(({ connectionId, status, generation }) => ({ connectionId, status, generation })) } : {}),
     ...(Array.isArray(state.plugins) ? { plugins: state.plugins.map((plugin) => ({
       id: plugin.id,
       sha256: plugin.sha256,
@@ -267,6 +269,10 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
           pluginId: connection.pluginId,
           configuration: { ...connection.configuration },
         }),
+        ...(connection.oauth === undefined ? {} : { oauth: {
+          ...(connection.oauth.clientId === undefined ? {} : { clientId: connection.oauth.clientId }),
+          ...(connection.oauth.callbackPort === undefined ? {} : { callbackPort: connection.oauth.callbackPort }),
+        } }),
         configuredSecrets: [...connection.configuredSecrets],
       })),
     } }),

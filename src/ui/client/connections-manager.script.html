@@ -7,6 +7,7 @@
         const builtInDescriptors = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
         let busy = false;
         let saving = false;
+        let pendingAccountCommand = null;
         let draft = null;
         let renderedKey = null;
         const connections = () => getState().integrationConnections?.connections || [];
@@ -51,6 +52,7 @@
             id: next.saved?.id || (window.crypto?.randomUUID?.() || `mcp-${Date.now()}-${Math.random().toString(16).slice(2)}`),
             name: next.saved?.name || "", enabled: next.saved?.enabled ?? true,
             expectedRevision: revision(), secrets: Object.create(null), feedback: null,
+            oauth: next.saved?.oauth ? { ...next.saved.oauth } : undefined,
             ...next,
           };
           reportStatus("");
@@ -137,7 +139,7 @@
 
         function isDirty(current) {
           const saved = current.saved;
-          if (!saved || current.name !== saved.name || current.enabled !== saved.enabled) return true;
+          if (!saved || current.name !== saved.name || current.enabled !== saved.enabled || JSON.stringify(current.oauth) !== JSON.stringify(saved.oauth)) return true;
           if (current.kind === "standalone") {
             return !savedTargetMatches(current) || current.artifactInputApproved !== saved.artifactInputApproved ||
               current.artifactOutputApproved !== saved.artifactOutputApproved ||
@@ -154,6 +156,8 @@
           const dirty = isDirty(draft);
           const unavailable = draft.kind === "plugin" && !draftPluginServer(draft).server;
           const targetMissing = draft.kind === "standalone" && !(draft.mcp.type === "stdio" ? draft.mcp.command : draft.mcp.url).trim();
+          const signIn = form.querySelector(".mcp-oauth-sign-in");
+          if (signIn) signIn.disabled = busy || saving || dirty || !currentOAuthReady(draft);
           form.querySelector(".editor-discard").disabled = busy || saving || !dirty;
           form.querySelector(".editor-save").disabled = busy || saving || unavailable || !dirty || !draft.name.trim() || targetMissing;
         }
@@ -256,6 +260,7 @@
           transport.addEventListener("change", () => {
             current.mcp = transport.value === "stdio" ? { type: "stdio", command: "", args: [] } : { type: "streamable-http", url: "" };
             current.secretRows = [];
+            if (current.mcp.type === "stdio") delete current.oauth;
             current.artifactInputApproved = current.artifactOutputApproved = false;
             render(true);
           });
@@ -318,6 +323,71 @@
           }
         }
 
+        function currentOAuthReady(current) {
+          return Boolean(current.saved?.oauth && current.saved.enabled &&
+            (current.kind === "standalone" || draftPluginServer(current).plugin?.enabled && draftPluginServer(current).server?.approved));
+        }
+
+        function authState(connectionId) {
+          return (getState().mcpOAuthStates || []).find((entry) => entry.connectionId === connectionId)?.status || "signed-out";
+        }
+
+        function authLabel(status) {
+          return t(status === "signed-in" ? "Signed in" : status === "signing-in" ? "Signing in…"
+            : status === "unavailable" ? "Not available" : "Sign-in required");
+        }
+
+        async function accountCommand(kind) {
+          const current = draft;
+          if (!current?.saved?.oauth || busy || saving || kind === "start_mcp_oauth" && (isDirty(current) || !currentOAuthReady(current))) return;
+          saving = true;
+          pendingAccountCommand = { kind, connectionId: current.id };
+          render(true);
+          try {
+            await runCommand(kind, { connectionId: current.id }, { cancellable: kind === "start_mcp_oauth", statusPresenter: reportStatus });
+          } finally { saving = false; pendingAccountCommand = null; render(true); }
+        }
+
+        function renderOAuthFields(form) {
+          const current = draft;
+          const label = document.createElement("label");
+          label.textContent = t("Authentication");
+          const choice = document.createElement("select");
+          choice.name = "mcpAuthentication";
+          choice.append(new Option(t("Manual headers / no authentication"), "manual"), new Option(t("OAuth · browser sign-in"), "oauth"));
+          choice.value = current.oauth ? "oauth" : "manual";
+          choice.addEventListener("change", () => {
+            if (choice.value === "oauth") current.oauth = {}; else delete current.oauth;
+            render(true);
+          });
+          label.append(choice);
+          form.append(label);
+          if (!current.oauth) return;
+          hint(form, "OAuth cannot be combined with a manual Authorization header. Other headers remain scoped to this MCP resource.");
+          textField(form, "Registered public client ID (optional)", "mcpOAuthClientId", current.oauth.clientId || "", (value) => {
+            if (value) current.oauth.clientId = value; else delete current.oauth.clientId;
+          }, { maxLength: 2048 });
+          textField(form, "Registered callback port (optional)", "mcpOAuthCallbackPort", String(current.oauth.callbackPort || ""), (value) => {
+            if (value) current.oauth.callbackPort = Number(value); else delete current.oauth.callbackPort;
+          }, { type: "number", maxLength: 5 });
+          hint(form, "Leave both fields blank for automatic client registration. A registered public client needs a fixed port and redirect URI http://127.0.0.1:PORT/mcp/oauth/callback.");
+          const panel = document.createElement("section");
+          panel.className = "connection-auth-panel";
+          const status = document.createElement("p");
+          status.className = "mcp-oauth-state";
+          status.setAttribute("role", "status");
+          status.textContent = pendingAccountCommand?.connectionId === current.id
+            ? t(pendingAccountCommand.kind === "start_mcp_oauth" ? "Signing in…" : "Signing out of MCP…")
+            : current.saved?.oauth ? authLabel(authState(current.id)) : t("Save this connection before signing in.");
+          panel.append(status);
+          const signIn = button("Sign in", "secondary mcp-oauth-sign-in", () => accountCommand("start_mcp_oauth"));
+          signIn.disabled = !currentOAuthReady(current) || isDirty(current);
+          const signOut = button(authState(current.id) === "signing-in" ? "Cancel sign-in" : "Sign out", "secondary mcp-oauth-sign-out", () => accountCommand("logout_mcp_oauth"));
+          signOut.disabled = !current.saved?.oauth;
+          panel.append(signIn, signOut);
+          form.append(panel);
+        }
+
         function renderEditor() {
           const container = document.getElementById("mcpConnectionEditor");
           container.replaceChildren();
@@ -338,6 +408,7 @@
           nameInput.disabled = unavailable;
           if (current.kind === "standalone") renderStandaloneFields(form);
           else if (server) renderPluginFields(form, plugin, server);
+          if (current.kind === "standalone" ? current.mcp.type === "streamable-http" : server?.type === "streamable-http") renderOAuthFields(form);
           if (!unavailable) switchField(form, "Enable this connection", "connectionEnabled", current.enabled, (value) => { current.enabled = value; });
           const feedback = document.createElement("p");
           feedback.className = "plugin-connection-feedback";
@@ -465,6 +536,14 @@
             reportStatus(error instanceof TypeError ? t("Enter a valid server URL.") : error.message, true);
             return;
           }
+          if (current.oauth) {
+            if (current.oauth.clientId && !current.oauth.callbackPort || current.oauth.callbackPort !== undefined &&
+              (!Number.isInteger(current.oauth.callbackPort) || current.oauth.callbackPort < 1024 || current.oauth.callbackPort > 65535)) {
+              reportStatus(t("A registered public client needs a callback port from 1024 to 65535."), true);
+              return;
+            }
+            connection.oauth = { ...current.oauth };
+          }
           if (revision() !== current.expectedRevision) {
             reportStatus(t("Connections changed. Close and reopen this editor before saving."), true);
             return;
@@ -513,7 +592,8 @@
             return { id: connection.id, name: connection.name, kind: "mcp", connection, plugin, server,
               source: connection.mcp ? t("Standalone MCP") + " · " + t(connection.mcp.type === "stdio" ? "Local process" : "Streamable HTTP")
                 : `${connection.pluginId} · ${connection.configuration.serverId}`,
-              label: t(needsSetup ? "Needs setup" : !connection.enabled ? "Disabled" : blocked ? "Not available" : "Enabled"),
+              label: connection.oauth && connection.enabled && !needsSetup && !blocked ? authLabel(authState(connection.id))
+                : t(needsSetup ? "Needs setup" : !connection.enabled ? "Disabled" : blocked ? "Not available" : "Enabled"),
               status: needsSetup || blocked ? "needs-attention" : connection.enabled ? "ready" : "disabled",
             };
           })];
@@ -587,7 +667,7 @@
             };
           }
           const rows = connectionRows();
-          const key = JSON.stringify([window.LiveSmithI18n.locale, getState().integrationConnections, plugins(), rows, draft?.id, busy, saving]);
+          const key = JSON.stringify([window.LiveSmithI18n.locale, getState().integrationConnections, getState().mcpOAuthStates, plugins(), rows, draft?.id, busy, saving]);
           if (!force && renderedKey === key) return;
           renderedKey = key;
           document.getElementById("connectionsManager").setAttribute("aria-busy", String(busy || saving));

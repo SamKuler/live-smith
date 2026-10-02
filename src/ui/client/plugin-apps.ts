@@ -17,7 +17,7 @@ import "./candidates.js";
 
 interface PluginAppsDependencies {
   resultActions?: PluginResultActions;
-  getState(): { activeSessionId?: string; plugins?: unknown[]; integrationConnections?: { revision: string } };
+  getState(): { activeSessionId?: string; plugins?: unknown[]; integrationConnections?: { revision: string }; mcpOAuthStates?: unknown[] };
   createAppId(): string;
   openApp(input: { id: string; sessionId: string; toolName: string; signature: string }, signal: AbortSignal): Promise<{
     id: string; toolName: string; resourceUri: string; html: string; sandboxUrl: string; csp?: McpUiResourceCsp;
@@ -83,7 +83,7 @@ function createPluginApps(deps: PluginAppsDependencies): PluginApps {
   const t = (source: string): string => window.LiveSmithI18n?.t(source) ?? source;
   const owner = (): string => {
     const state = deps.getState();
-    return JSON.stringify([state.activeSessionId, state.plugins, state.integrationConnections?.revision]);
+    return JSON.stringify([state.activeSessionId, state.plugins, state.integrationConnections?.revision, state.mcpOAuthStates ?? []]);
   };
   const isCurrent = (app: OpenApp): boolean => active === app && !app.closed && owner() === app.owner;
 

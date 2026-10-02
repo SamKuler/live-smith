@@ -110,3 +110,21 @@ test("MCP arguments preserve native script templates while env and headers bind 
     "${HOME}:fallback:${HOME}");
   assert.throws(() => expandPluginMcpTemplate("${MISSING}", paths, "credentials"), /not configured/);
 });
+
+
+test("Plugin parameters remain editable with invalid MCP metadata or a missing required routing value", async (t) => {
+  for (const validMcp of [false, true]) {
+    const directory = await fs.mkdtemp("/private/tmp/live-smith-config-repair-");
+    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    const plugin = await installPlugin(directory, zipSync({
+      "plugin.json": strToU8(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "config-repair",
+        extensions: { [PLUGIN_CONFIG_NAMESPACE]: { userConfig: { tenant: { type: "string", title: "Workspace", description: "Workspace", required: true } } } } })),
+      "mcp.json": strToU8(validMcp ? JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+        mcpServers: { remote: { type: "streamable-http", url: "https://mcp.example.test", headers: { "X-Tenant": "${user_config.tenant}" } } } }) : "invalid json"),
+    }));
+    await withStorageTransaction(directory, (transaction) => savePluginConfigInTransaction(transaction, directory, {
+      pluginId: plugin.id, sha256: plugin.sha256, revision: "0", values: { tenant: "workspace" }, secretUpdates: {},
+    }));
+    assert.equal((await readPluginConfig(directory, plugin.id)).values.tenant, "workspace");
+  }
+});

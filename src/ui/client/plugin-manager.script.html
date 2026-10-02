@@ -173,7 +173,7 @@
         const connections = getState().integrationConnections?.connections || [];
         const serverConnections = connections.filter((connection) =>
           connection.pluginId === plugin.id && connection.configuration?.serverId === server.id);
-        if (server.credentialFields.length) {
+        if (server.credentialFields.length || server.type === "streamable-http") {
           const add = makeButton(t("Add connection"), "secondary plugin-add-connection", () =>
             openConnections(plugin.id, server.id, true));
           add.dataset.pluginId = plugin.id;
@@ -197,7 +197,7 @@
         } else if (!server.credentialFields.length) {
           const noSetup = document.createElement("span");
           noSetup.className = "plugin-connection-unbound";
-          noSetup.textContent = t("No connection setup needed");
+          noSetup.textContent = t(server.type === "streamable-http" ? "Anonymous access until a named connection is configured." : "No connection setup needed");
           group.append(noSetup);
         }
         return group;

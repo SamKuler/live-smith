@@ -48,6 +48,9 @@ import {
 } from "./persistence.js";
 import { decodeAgentSettings } from "./settings-migrations.js";
 import { prepareOAuthCredentialStoreInTransaction } from "./oauth-credentials.js";
+import { deleteMcpOAuthCredentialsInTransaction } from "./mcp-oauth.js";
+import { hasAuthorizationHeader } from "../plugins/mcp/oauth-contract.js";
+import { mcpOAuthConnectionIdentity } from "../plugins/integration-connections.js";
 import { SunoSessions } from "./suno-sessions.js";
 
 export type { AgentSettings, SavedProfile } from "../model/profile.js";
@@ -394,6 +397,9 @@ export async function saveGlobalSettings(
           const server = pluginMcpConfigFromArchive(archive)?.servers.find((entry) =>
             entry.id === connection.configuration.serverId);
           if (!server) throw new ProfileValidationError("integrationConnections", "The selected MCP server is unavailable.");
+          if (connection.oauth && (server.type !== "streamable-http" || hasAuthorizationHeader(server.headers))) {
+            throw new ProfileValidationError("integrationConnections", "MCP OAuth requires a remote server without a declared Authorization header.");
+          }
           const fields = mcpCredentialFields(server);
           if (Object.keys(connection.secrets).some((name) => !fields.some((field) => field.name === name)) ||
               connection.enabled && fields.some((field) => field.required &&
@@ -412,6 +418,8 @@ export async function saveGlobalSettings(
           previous && isPluginIntegrationConnection(previous) && builtInAudioPluginById(previous.pluginId) ||
           next && isPluginIntegrationConnection(next) && builtInAudioPluginById(next.pluginId)),
       });
+      const clearedMcp = !isDeepStrictEqual(mcpOAuthConnectionIdentity(previous), mcpOAuthConnectionIdentity(next))
+        ? await deleteMcpOAuthCredentialsInTransaction(transaction, storageDirectory, { connectionId }) : false;
       const sunoPluginId = builtInAudioPluginId("suno");
       const clearedSession = previous?.pluginId === sunoPluginId && next?.pluginId !== sunoPluginId
         ? await new SunoSessions(storageDirectory).clear(previous.id, transaction) : false;
@@ -420,6 +428,8 @@ export async function saveGlobalSettings(
       } catch (error) {
         // The credential may already be gone even when the settings rename failed.
         // Preserve the compound command's partial outcome for authoritative readback.
+        if (clearedMcp) throw new StorageCommitOutcomeUnknownError(
+          new Error("MCP sign-in was cleared before connection settings could be confirmed."));
         if (clearedSession) throw new StorageCommitOutcomeUnknownError(
           new Error("Suno Cookie was removed before Integration Connection settings could be saved."));
         throw error;

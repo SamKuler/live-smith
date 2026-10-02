@@ -29,6 +29,7 @@ export function sessionToolCatalogOwner(state: ChatDialogState): string {
     state.integrationConnections?.revision ?? "0",
     state.plugins,
     state.sunoAccounts ?? [],
+    state.mcpOAuthStates ?? [],
     (state.audioJobs ?? []).map(({ id, status, outputs }) => [id, status, outputs.map(({ id: assetId }) => assetId)]),
     state.events.at(-1)?.id,
   ]);

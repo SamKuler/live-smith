@@ -263,6 +263,8 @@ export type ChatBridgeCommandInput =
   | { kind: "load_session_tools"; sessionId: string }
   | { kind: "run_audio_tool"; sessionId: string; toolName: string; signature: string; arguments: Record<string, unknown> }
   | { kind: "run_plugin_tool"; sessionId: string; toolName: string; signature: string; arguments: Record<string, unknown> }
+  | { kind: "start_mcp_oauth"; connectionId: string }
+  | { kind: "logout_mcp_oauth"; connectionId: string }
   | { kind: "new_session" }
   | { kind: "compact_session"; sessionId: string; instructions?: string }
   | { kind: "select_session"; sessionId: string }
@@ -1221,6 +1223,12 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   if (kind === "delete_profile" || kind === "activate_profile") {
     assertOnlyInputKeys(input, ["kind", "profileId"], `${kind} command`);
     return { kind, profileId: inputString(input, "profileId") };
+  }
+  if (kind === "start_mcp_oauth" || kind === "logout_mcp_oauth") {
+    assertOnlyInputKeys(input, ["kind", "connectionId"], `${kind} command`);
+    const connectionId = inputString(input, "connectionId");
+    if (!isProfileId(connectionId)) throw new ChatBridgeRequestValidationError("MCP connection ID is invalid.");
+    return { kind, connectionId };
   }
   if (kind === "set_session_approval_mode") {
     assertOnlyInputKeys(

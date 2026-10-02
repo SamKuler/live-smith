@@ -43,6 +43,7 @@ export function createStateValidators({ isWireIntegrationConnections, isWireSuno
       !hasOnlyWireKeys<NonNullable<ChatBridgeState>>(value, [
         "contextSummary",
         "integrationConnections",
+        "mcpOAuthStates",
         "sunoAccounts",
         "sunoModelCatalog",
         "sessionToolCatalog",
@@ -81,6 +82,12 @@ export function createStateValidators({ isWireIntegrationConnections, isWireSuno
       ]) ||
       typeof value.contextSummary !== "string" ||
       (value.integrationConnections !== undefined && !isWireIntegrationConnections(value.integrationConnections)) ||
+      (value.mcpOAuthStates !== undefined && (!isWireArray(value.mcpOAuthStates) || value.mcpOAuthStates.length > 20 ||
+        !value.mcpOAuthStates.every((entry) => isWireRecord(entry) &&
+          hasOnlyWireKeys(entry, ["connectionId", "status", "generation"]) && isWireStorageId(entry.connectionId) &&
+          includes(["signed-out", "signing-in", "signed-in", "unavailable"], entry.status) &&
+          typeof entry.generation === "string" && /^(?:none|[a-f0-9-]{36})$/u.test(entry.generation)) ||
+        new Set(value.mcpOAuthStates.map((entry) => wireField(entry, "connectionId"))).size !== value.mcpOAuthStates.length)) ||
       (value.sunoAccounts !== undefined && !isWireSunoAccounts(value.sunoAccounts, value.integrationConnections)) ||
       !isWireSunoModelCatalog(value.sunoModelCatalog, value.integrationConnections, value.sunoAccounts) ||
       (value.sessionToolCatalog !== undefined &&

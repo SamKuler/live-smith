@@ -1,11 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomBytes } from "node:crypto";
-import { createServer, type Server } from "node:http";
-import {
-  clearTimeout as cancelTimeout,
-  setTimeout as scheduleTimeout,
-} from "node:timers";
-import { URL, URLSearchParams } from "node:url";
+import { URLSearchParams } from "node:url";
+import { startOAuthLoopbackCallback } from "../../runtime/oauth-loopback.js";
 
 import { readBoundedJsonResponse } from "../transports/response-body.js";
 import { cancelStreamBestEffort } from "../transports/stream-cancel.js";
@@ -37,99 +33,9 @@ export function generatePkce(): {
   };
 }
 
-export async function startLoopbackAuthorization(options: {
-  port: number;
-  path: string;
-  expectedState: string;
-  signal: AbortSignal;
-  successMessage: string;
-  listenHost?: "127.0.0.1";
-  redirectHost?: "localhost" | "127.0.0.1";
-  timeoutMs?: number;
-}): Promise<LoopbackAuthorization> {
-  let settle!: (value: string) => void;
-  let reject!: (error: unknown) => void;
-  let settled = false;
-  const completion = new Promise<string>((resolve, rejectPromise) => {
-    settle = resolve;
-    reject = rejectPromise;
-  });
-  let server!: Server;
-  let timeout: ReturnType<typeof scheduleTimeout> | undefined;
-  let boundPort = options.port;
-  const listenHost = options.listenHost ?? "127.0.0.1";
-  const redirectHost = options.redirectHost ?? "localhost";
-  const finish = (operation: () => void): void => {
-    if (settled) return;
-    settled = true;
-    options.signal.removeEventListener("abort", onAbort);
-    if (timeout !== undefined) cancelTimeout(timeout);
-    server.close(operation);
-  };
-  const onAbort = (): void => finish(() => {
-    try {
-      throwIfAborted(options.signal);
-    } catch (error) {
-      reject(error);
-    }
-  });
-  server = createServer((request, response) => {
-    try {
-      const url = new URL(request.url ?? "", `http://${redirectHost}:${boundPort}`);
-      if (url.pathname !== options.path) {
-        sendHtml(response, 404, "OAuth callback route not found.");
-        return;
-      }
-      if (url.searchParams.get("state") !== options.expectedState) {
-        sendHtml(response, 400, "OAuth state did not match.");
-        return;
-      }
-      if (url.searchParams.has("error")) {
-        sendHtml(response, 400, "OAuth authorization did not complete.");
-        finish(() => reject(new Error("OAuth authorization did not complete.")));
-        return;
-      }
-      const code = url.searchParams.get("code");
-      if (!code) {
-        sendHtml(response, 400, "OAuth callback did not contain a code.");
-        return;
-      }
-      sendHtml(response, 200, options.successMessage);
-      finish(() => settle(code));
-    } catch {
-      sendHtml(response, 500, "OAuth callback could not be processed.");
-    }
-  });
-  await new Promise<void>((resolve, rejectListen) => {
-    server.once("error", rejectListen);
-    server.listen(options.port, listenHost, () => {
-      server.removeListener("error", rejectListen);
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close();
-        rejectListen(new Error("OAuth callback server did not expose a TCP port."));
-        return;
-      }
-      boundPort = address.port;
-      resolve();
-    });
-  });
-  options.signal.addEventListener("abort", onAbort, { once: true });
-  if (options.signal.aborted) onAbort();
-  if (!settled) {
-    timeout = scheduleTimeout(
-      () => finish(() => reject(new Error("OAuth authorization timed out."))),
-      options.timeoutMs ?? 5 * 60 * 1_000,
-    );
-    timeout.unref();
-  }
-  return {
-    redirectUri: `http://${redirectHost}:${boundPort}${options.path}`,
-    completion,
-    cancel(reason = new Error("OAuth sign-in was canceled.")) {
-      finish(() => reject(reason));
-    },
-  };
+export async function startLoopbackAuthorization(options: Parameters<typeof startOAuthLoopbackCallback>[0]): Promise<LoopbackAuthorization> {
+  const callback = await startOAuthLoopbackCallback(options);
+  return { ...callback, completion: callback.completion.then(({ code }) => code) };
 }
 
 export async function requireOAuthJson(
@@ -181,25 +87,4 @@ export function decodeJwtPayload(token: string): Record<string, unknown> | undef
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function sendHtml(
-  response: import("node:http").ServerResponse,
-  status: number,
-  message: string,
-): void {
-  response.statusCode = status;
-  response.setHeader("content-type", "text/html; charset=utf-8");
-  response.setHeader("connection", "close");
-  response.end(`<!doctype html><meta charset="utf-8"><title>Live Smith</title><p>${escapeHtml(message)}</p>`);
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/gu, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#39;",
-  })[character]!);
 }

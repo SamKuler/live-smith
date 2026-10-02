@@ -1,9 +1,10 @@
-import { Blob, Buffer } from "node:buffer";
+import { Blob, Buffer, btoa } from "node:buffer";
 import { webcrypto } from "node:crypto";
 import process from "node:process";
 import { TransformStream } from "node:stream/web";
 import { clearImmediate, setImmediate } from "node:timers";
-import { URL } from "node:url";
+import { URL, URLSearchParams } from "node:url";
+import { TextEncoder } from "node:util";
 
 // Bundled network libraries expect these Node globals, but Ableton's
 // extension VM intentionally exposes only a small runtime surface.
@@ -15,7 +16,7 @@ if (globalThis.crypto === undefined) {
   });
 }
 
-export { Blob, Buffer, clearImmediate, global, process, setImmediate, TransformStream, URL };
+export { Blob, Buffer, btoa, TextEncoder, URLSearchParams, clearImmediate, global, process, setImmediate, TransformStream, URL };
 
 export function queueMicrotask(callback: () => void): void {
   void Promise.resolve().then(() => {

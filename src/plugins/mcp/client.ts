@@ -1,5 +1,6 @@
 import {
   Client,
+  UnauthorizedError, InsufficientScopeError, SdkHttpError,
   specTypeSchemas,
   StreamableHTTPClientTransport,
   type CallToolResult,
@@ -15,9 +16,12 @@ import { URL } from "node:url";
 import { TextDecoder } from "node:util";
 import { Buffer } from "node:buffer";
 
+import { McpAuthorizationRequiredError, McpOAuthError, hasAuthorizationHeader, type McpAuthProvider } from "./oauth-contract.js";
 import { resolveFetchImplementation, throwIfAborted } from "../../runtime/host.js";
 import { validateRemoteUrl, type PluginMcpServer, type PluginMcpStdioServer } from "./config.js";
-import { emptyPluginConfig, resolvePluginConfigReference, type PluginConfigField, type StoredPluginConfig } from "../user-config.js";
+import type { PluginConfigField, StoredPluginConfig } from "../user-config.js";
+import { expandPluginMcpTemplate } from "./templates.js";
+export { expandPluginMcpTemplate } from "./templates.js";
 import { MAX_PLUGIN_MCP_MESSAGE_BYTES } from "../contracts.js";
 
 const CONNECT_TIMEOUT_MS = 30_000;
@@ -42,6 +46,7 @@ export interface ConnectedPluginMcpServer {
 
 export interface ConnectPluginMcpServerOptions {
   fetchImpl?: typeof fetch;
+  authProvider?: McpAuthProvider;
 }
 
 export class PluginMcpConnectionError extends Error {
@@ -81,9 +86,16 @@ export async function connectPluginMcpServer(
     const headers = Object.fromEntries(Object.entries(server.headers).map(([name, value]) =>
       [name, expandPluginMcpTemplate(value, paths, "credentials")]));
     if (Object.values(headers).some((value) => /[\u0000\r\n]/u.test(value))) throw new PluginMcpConnectionError("connect", server.id);
-    const fetchImpl = redirectRejectingFetch(resolveFetchImplementation(options.fetchImpl));
+    if (options.authProvider && hasAuthorizationHeader(headers)) throw new McpOAuthError("MCP OAuth cannot be combined with a manual Authorization header.");
+    const boundedFetch = redirectRejectingFetch(resolveFetchImplementation(options.fetchImpl));
+    const fetchImpl: FetchLike = async (input, init) => {
+      const response = await boundedFetch(input, init);
+      options.authProvider?.recordResponse?.(response, init?.headers);
+      return response;
+    };
     remoteTransport = new StreamableHTTPClientTransport(new URL(url), {
       fetch: fetchImpl,
+      ...(options.authProvider ? { authProvider: options.authProvider } : {}),
       requestInit: { headers, redirect: "manual" },
       onInsufficientScope: "throw",
       maxStepUpRetries: 0,
@@ -100,12 +112,12 @@ export async function connectPluginMcpServer(
   try {
     await client.connect(transport, { signal, timeout: CONNECT_TIMEOUT_MS, maxTotalTimeout: CONNECT_TIMEOUT_MS });
     throwIfAborted(signal);
-  } catch {
+  } catch (error) {
     await abortCleanup;
     await client.close().catch(() => undefined);
     await transport.close().catch(() => undefined);
     throwIfAborted(signal);
-    throw new PluginMcpConnectionError("connect", server.id);
+    throw connectionError(error, "connect", server.id);
   } finally {
     signal.removeEventListener("abort", abortConnect);
   }
@@ -120,14 +132,14 @@ export async function connectPluginMcpServer(
           : await client.request({ method: "resources/list", params }, specTypeSchemas.ListResourcesResult, options);
         if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_PLUGIN_MCP_MESSAGE_BYTES) throw new Error("Oversized resources.");
         return result;
-      } catch { throwIfAborted(requestSignal); throw new PluginMcpConnectionError("list", server.id); }
+      } catch (error) { throwIfAborted(requestSignal); throw connectionError(error, "list", server.id); }
     },
     async readResource(uri, requestSignal) {
       try {
         const result = await client.readResource({ uri }, { signal: requestSignal, timeout: LIST_TIMEOUT_MS });
         if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_PLUGIN_MCP_MESSAGE_BYTES) throw new Error("Oversized resource.");
         return result;
-      } catch { throwIfAborted(requestSignal); throw new PluginMcpConnectionError("call", server.id); }
+      } catch (error) { throwIfAborted(requestSignal); throw connectionError(error, "call", server.id); }
     },
     async listTools(requestSignal) {
       try {
@@ -138,8 +150,8 @@ export async function connectPluginMcpServer(
           cacheMode: "refresh",
         });
         return result.tools;
-      } catch {
-        throw new PluginMcpConnectionError("list", server.id);
+      } catch (error) {
+        throw connectionError(error, "list", server.id);
       }
     },
     async callTool(name, argumentsValue, requestSignal) {
@@ -150,8 +162,8 @@ export async function connectPluginMcpServer(
           maxTotalTimeout: CALL_TIMEOUT_MS,
           resetTimeoutOnProgress: true,
         });
-      } catch {
-        throw new PluginMcpConnectionError("call", server.id);
+      } catch (error) {
+        throw connectionError(error, "call", server.id);
       }
     },
     async close() {
@@ -203,27 +215,6 @@ function resolveStdioServer(
   return { command, args: server.args.map(expand), env, cwd };
 }
 
-/** Resolves original placeholders once; configured strings are never templates. */
-export function expandPluginMcpTemplate(
-  value: string, paths: PluginMcpRuntimePaths | undefined, mode: "literal" | "credentials" = "literal",
-): string {
-  if (!paths) return value;
-  const variables = new Map([
-    ["PLUGIN_ROOT", paths.pluginRoot], ["PLUGIN_DATA", paths.pluginData],
-    ["CLAUDE_PLUGIN_ROOT", paths.pluginRoot], ["CLAUDE_PLUGIN_DATA", paths.pluginData],
-  ]);
-  return value.replace(/\$\{(?:user_config\.([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?)\}/gu,
-    (whole, configName: string | undefined, name: string | undefined, fallback: string | undefined) => {
-      if (configName) return resolvePluginConfigReference(configName, paths.userConfig?.fields ?? [],
-        paths.userConfig?.stored ?? emptyPluginConfig(), "mcp");
-      if (variables.has(name!)) return variables.get(name!)!;
-      if (mode === "literal") return whole;
-      const secret = paths.secrets && Object.hasOwn(paths.secrets, name!) ? paths.secrets[name!] : undefined;
-      if (secret) return secret;
-      if (fallback !== undefined) return fallback;
-      throw new Error(`MCP credential ${name} is not configured.`);
-    });
-}
 
 function containedPath(root: string, target: string): string {
   const relative = path.relative(root, target);
@@ -329,4 +320,11 @@ function toolArguments(value: unknown): Record<string, unknown> {
     throw new TypeError("Plugin tool arguments must be a JSON object.");
   }
   return value as Record<string, unknown>;
+}
+
+function connectionError(error: unknown, operation: "connect" | "list" | "call", serverId: string): Error {
+  if (error instanceof McpOAuthError || error instanceof McpAuthorizationRequiredError) return error;
+  if (error instanceof UnauthorizedError || error instanceof InsufficientScopeError ||
+      error instanceof SdkHttpError && error.status === 401) return new McpAuthorizationRequiredError();
+  return new PluginMcpConnectionError(operation, serverId);
 }

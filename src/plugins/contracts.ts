@@ -56,7 +56,7 @@ export interface PluginToolIssue {
   connectionId?: string;
   serverId?: string;
   code: "invalid_configuration" | "unsupported_transport" | "approval_required" |
-    "artifact_permission_required" | "connection_failed" | "invalid_tool";
+    "artifact_permission_required" | "authorization_required" | "connection_failed" | "invalid_tool";
   message: string;
 }
 

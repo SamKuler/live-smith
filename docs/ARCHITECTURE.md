@@ -808,7 +808,7 @@ tool list.
 `plugins/parameter-panel.ts` derives native parameter controls from a supported
 MCP tool input schema. It owns the scalar field contract, argument validation,
 and the signature binding the schema to the package digest and Connection
-configuration revision. Catalog projections contain bounded form fields and
+configuration revision and admitted OAuth generation when present. Catalog projections contain bounded form fields and
 opaque signatures; they contain no credentials or executable UI content.
 Unsupported schemas remain available through the normal model tool path.
 
@@ -1012,6 +1012,52 @@ The model receives only its opaque artifact reference. A later
 `create_midi_clip_from_artifact` action still passes the ordinary schema, Edit
 Scope, Approval, preflight, cancellation, mutation queue, and drift checks.
 
+### Remote MCP OAuth
+
+`app/plugins/mcp-oauth.ts` adapts the MCP SDK's OAuth implementation to explicit
+Connection commands and the host network boundary. `start_mcp_oauth` and
+`logout_mcp_oauth` accept only an exact saved Connection ID. The first owns the
+system-browser interaction; runtime discovery and tool calls may only read and
+refresh an existing account. Missing authorization becomes a per-Connection
+`authorization_required` issue without disrupting healthy sources. `/state`
+projects local account status and generation without network access.
+
+`app/plugins/mcp-oauth-owner.ts` is the canonical owner resolver for interactive
+login, silent token use, and status. The private fingerprint binds the Connection,
+its enabled state and authentication configuration, exact package digest/server,
+and expanded resource URL and headers. User configuration changes revoke only
+accounts whose expanded MCP routing changes; unrelated Skill or style parameters
+preserve them. Disabling, replacing, removing, or retargeting an owner clears its
+credentials. Local writes use the storage transaction and generation CAS, so an
+old callback or refresh cannot revive credentials after revocation. Follow-on
+metadata write failures after credential revocation report an unknown commit
+outcome for state reconciliation.
+
+`storage/mcp-oauth.ts` persists issuer-stamped registration and tokens in a
+private bounded store, separate from model Profile OAuth. The browser receives
+only public client configuration, status, and an opaque generation. Refreshes
+serialize per Connection. The transport associates each response with the bearer
+actually sent, allowing a late rejection of an older token to reuse an already
+refreshed token. Explicit sign-in creates a new generation; tool-panel and App
+ownership includes it. Sign out clears credentials and closes active clients.
+
+The SDK owns discovery, PKCE, resource and issuer validation, registration, and
+refresh. Registration uses a public client with either dynamic registration or
+an explicit registered client ID and fixed callback port. A dynamic registration
+keeps its chosen loopback redirect URI for subsequent sign-ins; failure to bind
+that port leaves the prior record unchanged. `runtime/oauth-loopback.ts` owns
+the bounded callback listener and state check, including the authorization
+response issuer passed to the SDK. The model OAuth wrapper preserves its existing
+code-only callback contract. No client-ID metadata URL is fabricated.
+
+OAuth Fetch uses the configured proxy and host cancellation APIs, rejects
+redirects, accepts HTTPS or loopback HTTP, and limits each response to 512 KiB
+and 30 seconds. The initial resource challenge cancels its body after reading
+headers. Resource-specific headers are included only on that resource request,
+never on discovered authorization-server endpoints. A manual Authorization
+header conflicts explicitly with OAuth. UI errors use bounded local messages
+without credential-bearing remote responses or causes.
+
 ### Built-in Plugins and Integration Connections
 
 Built-in provider integrations are immutable Plugin definitions and do not
@@ -1028,7 +1074,10 @@ a Plugin ID and its configuration; standalone MCP records hold their transport
 configuration directly. Built-in Connection descriptors belong to the provider
 definitions. Installed MCP
 servers can bind multiple named Connections to exact package digests and server
-IDs. Declared stdio environment and remote header placeholders resolve from
+IDs, including remote servers without credential placeholders. Such servers use
+anonymous discovery only while no named Connection targets the current package
+digest and server; a disabled named Connection does not fall back to anonymous
+access for that owner. Declared stdio environment and remote header placeholders resolve from
 private Connection secrets at transport admission; the browser receives only
 credential field names and configured flags, and the model receives no secret
 fields or arguments. An omitted credential may inherit only from the same

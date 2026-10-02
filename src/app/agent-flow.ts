@@ -238,6 +238,8 @@ import {
   handleAgentRequest,
   steeringReceiptFor,
 } from "./agent-request.js";
+import { ChatBridgeRequestValidationError } from "./chat/chat-bridge-http.js";
+import { signInMcpOAuth, signOutMcpOAuth, mcpOAuthStates } from "./plugins/mcp-oauth.js";
 import { closeActiveMcpConnection } from "./plugins/request-plugin-tools.js";
 import { loadSessionToolCatalog, sessionToolCatalogOwner } from "./session/session-tool-catalog.js";
 import { runPluginParameterTool } from "./plugins/plugin-parameter-tool.js";
@@ -282,6 +284,7 @@ export interface AgentFlowDependencies extends DialogModelStateDependencies {
   skillBodyReadOptions?: RawSkillBodyReadOptions;
   /** Test-only Plugin body-reader instrumentation. */
   pluginBodyReadOptions?: RawPluginBodyReadOptions;
+  openMcpOAuthBrowser?: (url: string, signal?: AbortSignal) => Promise<void>;
   /** Test-only synchronization point for a concurrent Profile save. */
   beforeSessionModelSelectionCommit?(): Promise<void> | void;
   /** Test-only synchronization point for a concurrent Session approval write. */
@@ -745,6 +748,7 @@ export async function runAgentFlow(
         events,
         pendingAttachments,
         ...(settings.integrationConnections ? { integrationConnections: integrationConnectionsView(settings.integrationConnections) } : {}),
+        mcpOAuthStates: await mcpOAuthStates(storageDirectory),
         audioJobs,
         sunoAccounts,
         ...(catalog === undefined ? {} : { sunoModelCatalog: catalog }),
@@ -938,6 +942,22 @@ export async function runAgentFlow(
         });
       },
     );
+    if (commandInput.kind === "start_mcp_oauth" || commandInput.kind === "logout_mcp_oauth") {
+      if (!storageDirectory) throw new ChatBridgeRequestValidationError("MCP sign-in requires private local storage.");
+      try {
+        if (commandInput.kind === "start_mcp_oauth") {
+          await closeActiveMcpConnection(storageDirectory, commandInput.connectionId);
+          await signInMcpOAuth({ storageDirectory, connectionId: commandInput.connectionId, signal,
+            ...(dependencies.openMcpOAuthBrowser ? { openBrowser: dependencies.openMcpOAuthBrowser } : {}),
+            onProgress: commandContext.progress });
+        } else await signOutMcpOAuth(storageDirectory, commandInput.connectionId);
+      } finally {
+        await closeActiveMcpConnection(storageDirectory, commandInput.connectionId);
+        notifyGlobalStateChanged();
+      }
+      status = undefined;
+      return buildStateAfterCommandMutation();
+    }
     if (commandInput.kind === "discard_profile_oauth") {
       const profileId = commandInput.profileId;
       const profileFence = modelAuthSendFenceFor(profileId);

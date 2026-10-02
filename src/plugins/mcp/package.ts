@@ -1,3 +1,4 @@
+import { McpAuthorizationRequiredError } from "./oauth-contract.js";
 import type { Tool } from "@modelcontextprotocol/client";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
@@ -98,7 +99,8 @@ class McpToolRuntime implements McpToolSource {
   ) {
     this.connector = options.connector ?? connectPluginMcpServer;
     this.serverIds = options.serverIds === undefined ? undefined : new Set(options.serverIds);
-    this.connectionOptions = options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl };
+    this.connectionOptions = { ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+      ...(options.authProvider === undefined ? {} : { authProvider: options.authProvider }) };
     if ("mcp" in source) {
       this.boundConnection = { id: source.id, name: source.name, serverId: "server", secrets: {} };
       this.config = { issues: [], servers: [source.mcp.type === "stdio"
@@ -132,9 +134,10 @@ class McpToolRuntime implements McpToolSource {
       let tools: readonly Tool[];
       try {
         tools = await this.serverTools(server, context.signal);
-      } catch {
+      } catch (error) {
         throwIfAborted(context.signal);
-        issues.push(this.issue(server.id, "connection_failed", "MCP server could not be reached."));
+        issues.push(this.issue(server.id, error instanceof McpAuthorizationRequiredError ? "authorization_required" : "connection_failed",
+          error instanceof McpAuthorizationRequiredError ? error.message : "MCP server could not be reached."));
         continue;
       }
       if (tools.length > MAX_TOOLS_PER_SERVER) {
@@ -177,8 +180,9 @@ class McpToolRuntime implements McpToolSource {
     try {
       connection = await this.connection(server, context.signal);
       tools = await this.serverTools(server, context.signal);
-    } catch {
+    } catch (error) {
       throwIfAborted(context.signal);
+      if (error instanceof McpAuthorizationRequiredError) throw error;
       throw new PluginToolRuntimeError("Plugin MCP server could not be reached.");
     }
     if (!tools.some((tool) => tool.name === name)) throw new PluginToolRuntimeError("Plugin MCP tool is unavailable.");

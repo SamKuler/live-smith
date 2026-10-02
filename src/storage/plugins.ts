@@ -6,15 +6,19 @@ import * as path from "node:path";
 import { getuid, platform } from "node:process";
 import { TextDecoder } from "node:util";
 
+import { deleteMcpOAuthCredentialsInTransaction } from "./mcp-oauth.js";
+import { expandPluginMcpTemplate } from "../plugins/mcp/templates.js";
 import { openPluginArchive, type OpenPluginArchive } from "../plugins/archive.js";
 import { isSafePluginId, type PluginComponents, type PluginSourceFormat } from "../plugins/contracts.js";
-import { pluginMcpConfigFromArchive } from "../plugins/mcp/config.js";
+import { pluginMcpConfigFromArchive, PluginMcpConfigError } from "../plugins/mcp/config.js";
 import {
   decodeStoredPluginConfig, emptyPluginConfig, invalidPluginConfigFields, updatePluginConfig,
   PluginConfigError, PluginConfigConflictError, MAX_PLUGIN_CONFIG_BYTES, type StoredPluginConfig,
 } from "../plugins/user-config.js";
 import { isMissingFileError } from "./errors.js";
+import { canonicalStorageDirectory } from "./scope.js";
 import {
+  StorageCommitOutcomeUnknownError,
   removeDirectoryDurably,
   removeFileDurably,
   requireActiveStorageTransaction,
@@ -101,7 +105,7 @@ export async function installPlugin(
   const owned = new Uint8Array(bytes);
   const opened = await openPluginArchive(owned);
   const digest = createHash("sha256").update(owned).digest("hex");
-  return withStorageTransaction(storageDirectory, async () => {
+  return withStorageTransaction(storageDirectory, async (transaction) => {
     const directory = requireStorageDirectory(storageDirectory);
     const state = await loadCatalog(directory);
     if (state.pendingCleanup.some((entry) => entry.kind === "delete" && entry.pluginId === opened.manifest.id)) {
@@ -147,7 +151,8 @@ export async function installPlugin(
     }
     if (pendingCleanup.length > maximumPendingCleanup) throw new Error("Plugin cleanup must finish before another replacement.");
     const committed = { ...state, revision: incrementRevision(state.revision), plugins, pendingCleanup };
-    await saveCatalog(directory, committed);
+    const revoked = previous ? await deleteMcpOAuthCredentialsInTransaction(transaction, directory, { pluginId: next.id }) : false;
+    await writeAfterMcpRevocation(revoked, () => saveCatalog(directory, committed));
     await resumePendingCleanup(directory, committed);
     return clonePlugin(next);
   });
@@ -279,7 +284,8 @@ export function setPluginEnabledInTransaction(
     const next = { ...state.plugins[index]!, components: { ...state.plugins[index]!.components }, enabled,
       updatedAt: new Date().toISOString() };
     const plugins = state.plugins.map((entry, entryIndex) => entryIndex === index ? next : entry);
-    await saveCatalog(directory, { ...state, revision: incrementRevision(state.revision), plugins });
+    const revoked = !enabled && await deleteMcpOAuthCredentialsInTransaction(transaction, directory, { pluginId });
+    await writeAfterMcpRevocation(revoked, () => saveCatalog(directory, { ...state, revision: incrementRevision(state.revision), plugins }));
     return clonePlugin(next);
   })();
   return trackStorageTransactionOperation(transaction, storageDirectory, operation);
@@ -336,7 +342,8 @@ export function setPluginMcpServerApprovedInTransaction(
       updatedAt: new Date().toISOString(),
     };
     const plugins = state.plugins.map((entry, entryIndex) => entryIndex === index ? next : entry);
-    await saveCatalog(directory, { ...state, revision: incrementRevision(state.revision), plugins });
+    const revoked = !approved && await deleteMcpOAuthCredentialsInTransaction(transaction, directory, { pluginId, serverId });
+    await writeAfterMcpRevocation(revoked, () => saveCatalog(directory, { ...state, revision: incrementRevision(state.revision), plugins }));
     return clonePlugin(next);
   })();
   return trackStorageTransactionOperation(transaction, storageDirectory, operation);
@@ -409,6 +416,14 @@ export function setPluginArtifactPermissionApprovedInTransaction(
   return trackStorageTransactionOperation(transaction, storageDirectory, operation);
 }
 
+/** Owned paths without materializing files or starting a Plugin runtime. */
+export async function pluginRuntimePaths(
+  storageDirectory: string, plugin: Pick<InstalledPlugin, "id" | "sha256">,
+): Promise<{ pluginRoot: string; pluginData: string }> {
+  const directory = await canonicalStorageDirectory(storageDirectory);
+  return { pluginRoot: materializedTarget(directory, plugin.id, plugin.sha256), pluginData: pluginDataDirectory(directory, plugin.id) };
+}
+
 export async function preparePluginRuntime(
   storageDirectory: string | undefined,
   pluginId: string,
@@ -420,9 +435,8 @@ export async function preparePluginRuntime(
     if (!plugin.enabled) throw new Error("This Plugin is disabled.");
     const archive = await openPluginArchive(await readVerifiedArchive(directory, plugin));
     await ensureRuntimeDirectories(directory, plugin.id);
-    const pluginRoot = materializedTarget(directory, plugin.id, plugin.sha256);
+    const { pluginRoot, pluginData } = await pluginRuntimePaths(directory, plugin);
     await ensureMaterializedPackage(pluginRoot, archive.files);
-    const pluginData = pluginDataDirectory(directory, plugin.id);
     return {
       plugin: clonePlugin(plugin),
       archive,
@@ -454,7 +468,27 @@ export function savePluginConfigInTransaction(
     if (current.revision !== input.revision) throw new PluginConfigConflictError("Plugin parameters changed in another window. Reload before saving.");
     const archive = await openPluginArchive(await readVerifiedArchive(directory, plugin));
     const next = updatePluginConfig(archive.manifest.userConfig ?? [], current, input.values, input.secretUpdates);
-    await writeJsonAtomically(path.join(pluginDirectory(directory, plugin.id), "user-config.json"), next);
+    let revoked = false;
+    let mcp;
+    try { mcp = pluginMcpConfigFromArchive(archive); }
+    catch (error) { if (!(error instanceof PluginMcpConfigError)) throw error; }
+    for (const server of mcp?.servers ?? []) {
+      if (server.type !== "streamable-http") continue;
+      const routing = (stored: StoredPluginConfig) => {
+        const paths = { pluginRoot: "", pluginData: "", userConfig: { fields: archive.manifest.userConfig ?? [], stored } };
+        try {
+          return JSON.stringify([expandPluginMcpTemplate(server.url, paths),
+            Object.entries(server.headers).map(([name, value]) => [name, expandPluginMcpTemplate(value, paths)])]);
+        } catch (error) {
+          if (!(error instanceof PluginConfigError)) throw error;
+          return undefined;
+        }
+      };
+      if (routing(current) !== routing(next)) {
+        revoked = await deleteMcpOAuthCredentialsInTransaction(transaction, directory, { pluginId: plugin.id, serverId: server.id }) || revoked;
+      }
+    }
+    await writeAfterMcpRevocation(revoked, () => writeJsonAtomically(path.join(pluginDirectory(directory, plugin.id), "user-config.json"), next));
   })();
   return trackStorageTransactionOperation(transaction, storageDirectory, operation);
 }
@@ -747,6 +781,15 @@ async function collectMaterializedFiles(
     if (!stat.isFile() || stat.nlink !== 1) throw new PluginStorageCorruptionError();
     if (supportsPosixPermissions) await fs.chmod(target, 0o500);
     output.set(childRelative, new Uint8Array(await fs.readFile(target)));
+  }
+}
+
+async function writeAfterMcpRevocation(revoked: boolean, write: () => Promise<void>): Promise<void> {
+  try { await write(); }
+  catch (error) {
+    if (revoked) throw new StorageCommitOutcomeUnknownError(
+      new Error("MCP sign-in was cleared before Plugin metadata could be confirmed."));
+    throw error;
   }
 }
 

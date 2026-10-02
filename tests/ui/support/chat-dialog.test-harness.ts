@@ -1541,6 +1541,7 @@ async function createDialogHarness(
                 kind?: string;
                 creativeBrief?: string;
                 expectedCreativeBrief?: string;
+                connectionId?: string;
                 approvalMode?: "manual" | "low-risk" | "everything";
                 editScopes?: EditScope[];
                 defaultFollowUpBehavior?: "queue" | "steer";
@@ -1739,6 +1740,12 @@ async function createDialogHarness(
                 typeof command.sessionId === "string" && typeof command.creativeBrief === "string") {
                 const session = serverState.sessions.find((entry) => entry.id === command.sessionId);
                 if (session) session.creativeBrief = command.creativeBrief;
+              } else if ((command.kind === "start_mcp_oauth" || command.kind === "logout_mcp_oauth") && command.connectionId) {
+                serverState.mcpOAuthStates = [
+                  ...(serverState.mcpOAuthStates || []).filter((entry) => entry.connectionId !== command.connectionId),
+                  { connectionId: command.connectionId, status: command.kind === "start_mcp_oauth" ? "signed-in" : "signed-out",
+                    generation: command.kind === "start_mcp_oauth" ? "11111111-1111-1111-1111-111111111111" : "none" },
+                ];
               } else if (command.kind === "start_oauth_login") {
                 if (!command.profileId || !command.provider) {
                   throw new Error("OAuth commands require a Profile and provider.");

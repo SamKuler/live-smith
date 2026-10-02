@@ -466,7 +466,8 @@ formats, scope, and a runnable offline example.
 services** manages audio accounts; **MCP** manages directly configured servers and
 servers provided by Plugins, including their permissions. One source can have multiple named
 connections; a Skill-only Plugin needs none. Package MCP servers without
-credential fields run under their server approval and need no account record.
+credential fields can run anonymously under their server approval. Adding a named
+Connection for that package version and server selects its account configuration.
 Select **Edit** to configure a connection. Its bottom action bar places **Remove**
 on the left and **Discard** / **Save** on the right. Removal requires confirmation;
 unchanged saved connections disable Discard and Save, and new connections have no
@@ -476,7 +477,27 @@ In **Extensions → MCP**, **Add connection** opens the direct server configurat
 For a Plugin server, use **Add connection** beside that server. Direct connections
 support Streamable HTTP with a URL, or a local process with a command and
 individual arguments. Local commands run without a shell. Only HTTPS and
-loopback HTTP endpoints are supported; legacy SSE and MCP OAuth sign-in are not.
+loopback HTTP endpoints are supported; legacy SSE is not supported.
+
+Remote MCP connections offer **Manual headers** or **OAuth** authentication.
+Save an OAuth connection, then select **Sign in** to authorize it in the system
+browser. Live Smith uses browser PKCE and the server's discovery metadata. Servers
+with dynamic client registration choose a local callback port automatically;
+a later sign-in reuses that registration and port. If a server requires an
+existing public client, enter its client ID and registered callback port. Its
+redirect URI must be `http://127.0.0.1:PORT/mcp/oauth/callback`. Confidential
+clients and hosted client-ID metadata registration are not configured here.
+An occupied callback port reports an error; close its other listener or sign out
+to discard a dynamic registration before trying again.
+
+Saved OAuth accounts can refresh during MCP use; ordinary discovery never opens
+a browser. **Sign out** cancels pending sign-in, removes local credentials, and
+closes active clients. A manual Authorization header cannot be combined with
+OAuth. Other configured resource headers remain available for workspace routing.
+Changing the server, package, routing parameters, authentication configuration,
+or enabled state requires a new sign-in. Unrelated creative Plugin parameters
+preserve the account. OAuth tokens and registration secrets stay in private local
+storage, scoped to the exact Connection, and never enter model or dialog state.
 
 Credentials remain write-only environment variables or HTTP headers, never model
 tool arguments. Plugin connections bind to the exact installed package and

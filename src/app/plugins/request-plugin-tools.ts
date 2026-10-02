@@ -1,3 +1,5 @@
+import type { McpAuthProvider } from "../../plugins/mcp/oauth-contract.js";
+import { createMcpOAuthAuthProvider } from "./mcp-oauth.js";
 import { ToolRegistry, type Toolset } from "../../plugins/registry.js";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentExternalToolResult } from "../../agent/loop.js";
@@ -66,6 +68,7 @@ export type PluginExecutionAuthorization = <T>(
 
 interface ManagedMcpSource {
   source: McpToolSource;
+  authProvider?: McpAuthProvider;
   pluginId?: string;
   connectionId?: string;
   close(): Promise<void>;
@@ -117,6 +120,7 @@ function manageMcpSource(
   source: McpToolSource,
   pluginId?: string,
   connectionId?: string,
+  authProvider?: McpAuthProvider,
 ): ManagedMcpSource {
   const key = storageScopeKey(storageDirectory);
   let entries = activeSources.get(key);
@@ -127,6 +131,7 @@ function manageMcpSource(
   let closing: Promise<void> | undefined;
   const managed: ManagedMcpSource = {
     source,
+    ...(authProvider ? { authProvider } : {}),
     ...(pluginId === undefined ? {} : { pluginId }),
     ...(connectionId === undefined ? {} : { connectionId }),
     close() {
@@ -192,6 +197,8 @@ export async function createRequestPluginTools(input: {
               .filter((connection) => connection.enabled && connection.pluginId === metadata.id &&
                 connection.configuration.pluginDigest === runtime.plugin.sha256) ?? [];
             const unboundIds = config?.servers.filter((server) =>
+              !(server.type === "streamable-http" && settings.integrationConnections?.connections.some((connection) => connection.pluginId === metadata.id &&
+                connection.configuration?.serverId === server.id && connection.configuration.pluginDigest === runtime.plugin.sha256)) &&
               !mcpCredentialFields(server).some((field) => field.required)).map((server) => server.id) ?? [];
             const selections: Array<{
               serverIds: string[];
@@ -200,7 +207,7 @@ export async function createRequestPluginTools(input: {
             for (const connection of connections) {
               const serverId = connection.configuration.serverId;
               const server = config?.servers.find((entry) => entry.id === serverId);
-              if (!server || mcpCredentialFields(server).length === 0) continue;
+              if (!server || server.type === "stdio" && mcpCredentialFields(server).length === 0) continue;
               selections.push({ serverIds: [server.id], connection });
             }
             const selectedIds = new Set(selections.flatMap((selection) => selection.serverIds));
@@ -211,9 +218,12 @@ export async function createRequestPluginTools(input: {
               }
             }
             return { runtime, configurationRevision: settings.integrationConnections?.revision ?? "0", selections: selections.map((selection) => {
+              const authProvider = selection.connection?.oauth
+                ? createMcpOAuthAuthProvider(input.storageDirectory!, selection.connection.id, input.signal, input.fetchImpl) : undefined;
               const plugin = (input.createPackage ?? createMcpPluginPackage)(runtime, {
                 ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
                 serverIds: selection.serverIds,
+                ...(authProvider ? { authProvider } : {}),
                 ...(selection.connection ? { connection: {
                   id: selection.connection.id,
                   name: selection.connection.name,
@@ -221,7 +231,7 @@ export async function createRequestPluginTools(input: {
                   secrets: selection.connection.secrets,
                 } } : {}),
               });
-              const managed = manageMcpSource(registryDirectory, plugin, runtime.plugin.id, selection.connection?.id);
+              const managed = manageMcpSource(registryDirectory, plugin, runtime.plugin.id, selection.connection?.id, authProvider);
               packages.push(managed);
               opened.push(managed);
               return { managed, connection: selection.connection };
@@ -296,10 +306,13 @@ export async function createRequestPluginTools(input: {
         try {
           const admit = async () => {
             await assertStandaloneAdmission(input.storageDirectory, connection);
+            const authProvider = connection.oauth
+              ? createMcpOAuthAuthProvider(input.storageDirectory!, connection.id, input.signal, input.fetchImpl) : undefined;
             const source = (input.createStandaloneConnection ?? createStandaloneMcpConnection)(connection, {
+              ...(authProvider ? { authProvider } : {}),
               ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
             });
-            const opened = manageMcpSource(registryDirectory, source, undefined, connection.id);
+            const opened = manageMcpSource(registryDirectory, source, undefined, connection.id, authProvider);
             packages.push(opened);
             return opened;
           };
@@ -369,12 +382,13 @@ export async function createRequestPluginTools(input: {
       id: "live-smith.mcp",
       toolsets,
       catalogTools: () => catalogRoutes.flatMap((routes) => [...routes.values()].filter(({ definition }) =>
-        appVisibility(definition.app, "model") || definition.app?.resourceUri).map(({ definition, connection, runtime, configurationRevision }) => {
+        appVisibility(definition.app, "model") || definition.app?.resourceUri).map(({ definition, connection, runtime, configurationRevision, managed }) => {
         const identity = {
           packageDigest: runtime?.plugin.sha256,
           connectionId: connection?.id,
           configuration: connection?.configuration ?? connection?.mcp,
           configurationRevision,
+          ...(connection?.oauth ? { oauthGeneration: managed.authProvider?.generation } : {}),
           pluginConfigRevision: runtime?.userConfig?.revision ?? "0",
           description: definition.description,
           artifactContract: definition.artifactContract,

@@ -1,3 +1,4 @@
+import { isMcpOAuthConfiguration, hasAuthorizationHeader, type McpOAuthConfiguration } from "./mcp/oauth-contract.js";
 import { isAudioServiceCallbackUrl, ProfileValidationError } from "../model/profile.js";
 import { isAudioServiceModelId } from "../audio-services/model-id.js";
 import type {
@@ -28,6 +29,7 @@ export interface PluginIntegrationConnection {
   name: string;
   pluginId: string;
   enabled: boolean;
+  oauth?: McpOAuthConfiguration;
   configuration: Record<string, string>;
   secrets: Record<string, string>;
   mcp?: never;
@@ -39,6 +41,7 @@ export interface StandaloneMcpConnection {
   id: string;
   name: string;
   enabled: boolean;
+  oauth?: McpOAuthConfiguration;
   mcp: StandaloneMcpConfig;
   secrets: Record<string, string>;
   artifactInputApproved: boolean;
@@ -96,10 +99,11 @@ const connectionKeys = new Set([
   "enabled",
   "configuration",
   "secrets",
+  "oauth",
 ]);
 
 const standaloneConnectionKeys = new Set([
-  "id", "name", "enabled", "mcp", "secrets", "artifactInputApproved", "artifactOutputApproved",
+  "id", "name", "enabled", "mcp", "secrets", "artifactInputApproved", "artifactOutputApproved", "oauth",
 ]);
 
 export function normalizeIntegrationConnection(value: unknown): IntegrationConnection {
@@ -126,6 +130,9 @@ export function normalizeStandaloneMcpConnection(value: unknown): StandaloneMcpC
   } catch (error) {
     throw invalid(error instanceof Error ? error.message : "Standalone MCP configuration is invalid.");
   }
+  if (record.oauth !== undefined && (!isMcpOAuthConfiguration(record.oauth) || mcp.type !== "streamable-http" || hasAuthorizationHeader(Object.fromEntries(Object.entries(secrets).filter(([, value]) => value !== ""))))) {
+    throw invalid("MCP OAuth requires Streamable HTTP without a manual Authorization header. A public client ID requires its registered callback port.");
+  }
   if (mcp.type !== "stdio" && (record.artifactInputApproved || record.artifactOutputApproved)) {
     throw invalid("MCP audio input and MIDI output permissions require a local stdio server.");
   }
@@ -135,6 +142,7 @@ export function normalizeStandaloneMcpConnection(value: unknown): StandaloneMcpC
     enabled: record.enabled,
     mcp,
     secrets,
+    ...(record.oauth === undefined ? {} : { oauth: { ...(record.oauth as McpOAuthConfiguration) } }),
     artifactInputApproved: record.artifactInputApproved,
     artifactOutputApproved: record.artifactOutputApproved,
   };
@@ -151,6 +159,9 @@ export function normalizePluginIntegrationConnection(value: unknown): PluginInte
   const plugin = builtInAudioPluginById(record.pluginId);
   const configuration = stringMap(record.configuration, 16, 2_048, "configuration");
   const secrets = stringMap(record.secrets, MAX_MCP_CREDENTIAL_FIELDS, 4_096, "secrets", true);
+  if (record.oauth !== undefined && (plugin || !isMcpOAuthConfiguration(record.oauth))) {
+    throw invalid("OAuth is available only for remote MCP connections. A public client ID requires its registered callback port.");
+  }
   if (!plugin) {
     if (Object.keys(configuration).some((key) => !["serverId", "pluginDigest"].includes(key)) ||
         !/^[A-Za-z0-9_-]{1,64}$/u.test(configuration.serverId ?? "") ||
@@ -164,6 +175,7 @@ export function normalizePluginIntegrationConnection(value: unknown): PluginInte
       enabled: record.enabled,
       configuration,
       secrets,
+      ...(record.oauth === undefined ? {} : { oauth: { ...(record.oauth as McpOAuthConfiguration) } }),
     };
   }
   const allowedConfiguration = new Set<string>([
@@ -331,6 +343,7 @@ export function integrationConnectionsView(
         pluginId: connection.pluginId,
         configuration: { ...connection.configuration },
       }),
+      ...(connection.oauth === undefined ? {} : { oauth: { ...connection.oauth } }),
       configuredSecrets: Object.entries(connection.secrets)
         .filter(([, secret]) => Boolean(secret))
         .map(([name]) => name)
@@ -394,4 +407,13 @@ function invalid(message: string): ProfileValidationError {
 
 function legacyInvalid(message: string): ProfileValidationError {
   return new ProfileValidationError("audioServices", message);
+}
+
+/** Authentication ownership excludes the editable display name and unrelated account instances. */
+export function mcpOAuthConnectionIdentity(connection: IntegrationConnection | undefined): unknown {
+  if (!connection?.oauth) return undefined;
+  return { enabled: connection.enabled, oauth: connection.oauth,
+    secrets: Object.entries(connection.secrets).sort(([a], [b]) => a.localeCompare(b)),
+    ...(isStandaloneMcpConnection(connection) ? { mcp: connection.mcp }
+      : { pluginId: connection.pluginId, configuration: connection.configuration }) };
 }

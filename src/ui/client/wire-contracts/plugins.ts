@@ -1,3 +1,4 @@
+import { isMcpOAuthConfiguration } from "../../../plugins/mcp/oauth-contract.js";
 import type { AudioAsset, AudioJobView } from "../../../audio-services/contracts.js";
 import type { SunoAccountView } from "../../../audio-services/suno/suno-session-contracts.js";
 import type { AudioParameterPanel, AudioParameterSuggestions } from "../../../plugins/builtins/parameter-panel.js";
@@ -79,12 +80,14 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
           connection.name !== connection.name.trim() || connection.name.length === 0 ||
           connection.name.length > 120 || /[\x00-\x1f\x7f]/.test(connection.name) ||
           typeof connection.enabled !== "boolean" ||
+          (connection.oauth !== undefined && !isMcpOAuthConfiguration(connection.oauth)) ||
           !isWireArray(connection.configuredSecrets) ||
           new Set(connection.configuredSecrets).size !== connection.configuredSecrets.length) return false;
         if (connection.mcp !== undefined) {
           return hasOnlyWireKeys(connection, ["id", "name", "enabled", "mcp", "configuredSecrets",
-            "artifactInputApproved", "artifactOutputApproved"]) &&
+            "artifactInputApproved", "artifactOutputApproved", "oauth"]) &&
             isWireStandaloneMcpConfig(connection.mcp) &&
+            (connection.oauth === undefined || connection.mcp.type === "streamable-http") &&
             typeof connection.artifactInputApproved === "boolean" &&
             typeof connection.artifactOutputApproved === "boolean" &&
             (connection.mcp.type === "stdio" || !connection.artifactInputApproved && !connection.artifactOutputApproved) &&
@@ -92,7 +95,7 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
               typeof name === "string" && name.length > 0 && name.length <= 256 &&
               (isWireStandaloneMcpConfig(connection.mcp) && connection.mcp.type === "stdio" ? /^[A-Za-z_][A-Za-z0-9_]*$/ : /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/).test(name));
         }
-        if (!hasOnlyWireKeys(connection, ["id", "name", "pluginId", "enabled", "configuration", "configuredSecrets"]) ||
+        if (!hasOnlyWireKeys(connection, ["id", "name", "pluginId", "enabled", "configuration", "configuredSecrets", "oauth"]) ||
             typeof connection.pluginId !== "string" ||
             !/^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(connection.pluginId) ||
             !isWireRecord(connection.configuration)) return false;
@@ -104,7 +107,7 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
             connection.configuredSecrets.every((name) => typeof name === "string" &&
               /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(name));
         }
-        if (!hasOnlyWireKeys(connection.configuration, ["modelId", "callbackUrl"]) ||
+        if (connection.oauth !== undefined || !hasOnlyWireKeys(connection.configuration, ["modelId", "callbackUrl"]) ||
             connection.configuredSecrets.length > 1 ||
             !connection.configuredSecrets.every((name) => name === "apiKey")) return false;
         const descriptor = audioConnectionDescriptorsByPluginId[connection.pluginId]!;
@@ -407,7 +410,7 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
       (issue.serverId === undefined || typeof issue.serverId === "string" &&
         /^[A-Za-z0-9_-]{1,64}$/.test(issue.serverId)) &&
       includes(["invalid_configuration", "unsupported_transport", "approval_required",
-        "artifact_permission_required", "connection_failed", "invalid_tool"], issue.code) &&
+        "artifact_permission_required", "authorization_required", "connection_failed", "invalid_tool"], issue.code) &&
       typeof issue.message === "string" && issue.message.length <= WIRE_MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH &&
       !issue.message.includes("\0"));
   }
