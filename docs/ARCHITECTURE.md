@@ -247,8 +247,10 @@ src/
 
   runtime/
     system-browser.ts
-      Opens a caller-validated HTTPS destination using the fixed macOS or
-      Windows default-browser handler, without owning a browser process.
+      Validates browser destinations and delegates to the system handler.
+    system-open.ts
+      Dispatches caller-admitted URLs or local file copies to the fixed macOS
+      or Windows default-application handler, without a shell.
     oauth-browser.ts
       Opens one allowlisted pending OAuth HTTPS URL through fixed macOS or
       Windows default-browser commands after provider login acquisition succeeds.
@@ -381,8 +383,8 @@ host-returned byte arrays may have a different intrinsic prototype in the
 isolated VM. Genuine byte views retain the same size, format, ownership and
 integrity checks; other views and prototype/tag lookalikes are not accepted.
 Production child processes are limited
-to the fixed macOS and Windows default-browser commands in
-`runtime/system-browser.ts` and the fixed read-only macOS/Windows system-proxy
+to the fixed macOS and Windows default-application commands in
+`runtime/system-open.ts` and the fixed read-only macOS/Windows system-proxy
 queries in `runtime/system-proxy.ts`, plus the owned, bundled macOS Suno
 verification capsule in `runtime/suno-human-verification.ts`; the build rejects
 `node:child_process` everywhere else. The verification capsule's private input,
@@ -1261,6 +1263,24 @@ mono with an explicit notice. Both conversion paths have a 30-second deadline,
 observe cancellation, and release object URLs, canvas buffers, and audio
 contexts. Stored conversion output is authoritative; source files are not
 modified or uploaded alongside it.
+
+### Attachment viewing
+
+Attachment viewing reads one exact Session-owned reference and verifies its
+stored bytes before returning them or opening a local copy. Authenticated
+attachment GET/HEAD routes are independent of model-send admission. Image bytes
+serve previews; audio supports byte-range requests for the inline player.
+Read cancellation follows the dialog and HTTP connection lifecycle.
+
+The shared browser attachment viewer owns inline image/audio elements, compact
+play/pause and seek controls, and the image dialog. Session changes, removed
+elements and dialog close release media resources; ordinary streaming updates
+preserve mounted playback controls.
+Default-application opening is an explicit command using Session and attachment
+IDs. The host writes a private temporary copy with a MIME-derived extension and
+launches the OS handler without a shell. Text/code uses `.txt`. Copies handed
+to external applications remain after the dialog closes so lazy reads and
+external edits can finish; their temporary directory is left to OS/user cleanup.
 
 ### Send admission and historical context
 

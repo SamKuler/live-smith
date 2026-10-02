@@ -1,5 +1,6 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createAttachments = function createAttachments({
+        attachmentViewer,
         deleteAttachment,
         getState,
         getComposerAttachments,
@@ -91,11 +92,13 @@
       }
 
       function renderPending() {
+        attachmentViewer.sync();
         syncAttachAvailability();
         const strip = document.getElementById("pendingAttachments");
         if (!strip) return;
         const attachments = pendingAttachments();
-        const renderKey = JSON.stringify([window.LiveSmithI18n.locale, attachments]);
+        const sessionId = getState().activeSessionId;
+        const renderKey = JSON.stringify([window.LiveSmithI18n.locale, sessionId, attachments]);
         if (renderKey === renderedAttachmentsKey) {
           syncPendingBusyState();
           return;
@@ -108,8 +111,15 @@
           chip.className = "attachment-chip";
           chip.dataset.attachmentId = attachment.id;
           chip.setAttribute("role", "listitem");
+          const reference = { id: attachment.id, kind: attachment.kind, fileName: attachment.fileName, durationSeconds: attachment.durationSeconds };
+          const preview = attachmentViewer.createPreview(sessionId, reference);
+          if (preview) {
+            chip.dataset.mediaKind = attachment.kind;
+            chip.append(preview);
+          }
 
-          const label = document.createElement("span");
+          const label = document.createElement("button");
+          label.type = "button";
           label.className = "attachment-chip-label";
           const details = [
             attachment.fileName,
@@ -119,8 +129,10 @@
               : "",
             formatBytes(attachment.byteLength),
           ].filter(Boolean);
-          label.textContent = details.join(" · ");
-          label.title = attachment.fileName;
+          label.textContent = attachment.kind === "audio" ? attachment.fileName : details.join(" · ");
+          label.title = attachment.kind === "audio" ? details.join(" · ") : attachment.fileName;
+          label.setAttribute("aria-label", t(attachment.kind === "image" ? "Preview attached image {fileName}" : "Open attached file {fileName}", { fileName: attachment.fileName }));
+          label.addEventListener("click", () => { void attachmentViewer.open(sessionId, reference); });
 
           const remove = document.createElement("button");
           remove.className = "attachment-remove";
@@ -132,9 +144,11 @@
             void removePending(attachment.id);
           });
           chip.append(label, remove);
+          if (attachment.kind === "audio" && preview) chip.append(preview);
           strip.append(chip);
         }
         renderedAttachmentsKey = renderKey;
+        attachmentViewer.sync();
       }
 
       function syncPendingBusyState() {

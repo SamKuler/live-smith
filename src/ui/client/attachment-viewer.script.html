@@ -1,0 +1,343 @@
+      window.LiveSmithFactories = window.LiveSmithFactories || {};
+      window.LiveSmithFactories.createAttachmentViewer = function createAttachmentViewer({
+        getState,
+        getAttachmentUrl,
+        loadAttachment,
+        openAttachment,
+        showStatus,
+      }) {
+      const t = (message, params) => window.LiveSmithI18n.t(message, params);
+      let active = null;
+      const inlineMedia = new Set();
+
+      function disposeInlineMedia(preview) {
+        preview.media.onload = null;
+        preview.media.onerror = null;
+        if (preview.kind === "audio") preview.media.pause();
+        preview.media.removeAttribute("src");
+        if (preview.kind === "audio") preview.media.load();
+        inlineMedia.delete(preview);
+      }
+
+      function audioTime(seconds) {
+        const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+        return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+      }
+
+      function createAudioControls(preview, initialDuration) {
+        const { media, unavailable, fileName } = preview;
+        const player = document.createElement("div");
+        player.className = "attachment-audio-player";
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "attachment-audio-toggle";
+        toggle.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path class="audio-play-icon" d="M6 3.8a.7.7 0 0 1 1.05-.6l9 5.6a1.4 1.4 0 0 1 0 2.4l-9 5.6a.7.7 0 0 1-1.05-.6z"/><path class="audio-pause-icon" d="M5 4h3.5v12H5zM11.5 4H15v12h-3.5z"/></svg>';
+        const seek = document.createElement("input");
+        seek.type = "range";
+        seek.className = "attachment-audio-seek";
+        seek.min = "0";
+        seek.step = "0.1";
+        const time = document.createElement("span");
+        time.className = "attachment-audio-time";
+        time.setAttribute("aria-hidden", "true");
+        const render = () => {
+          const duration = Number.isFinite(media.duration) && media.duration > 0
+            ? media.duration : initialDuration;
+          const current = media.currentTime || 0;
+          const playing = !media.paused && !media.ended;
+          const action = t(playing ? "Pause attached audio {fileName}" : "Play attached audio {fileName}", { fileName });
+          toggle.setAttribute("aria-label", action);
+          toggle.title = action;
+          toggle.dataset.playing = String(playing);
+          toggle.setAttribute("aria-busy", String(playing && media.readyState < 3));
+          seek.disabled = !Number.isFinite(media.duration) || media.duration <= 0;
+          seek.max = String(duration || 1);
+          seek.value = String(Math.min(current, duration || 0));
+          seek.setAttribute("aria-label", t("Audio position for {fileName}", { fileName }));
+          seek.setAttribute("aria-valuetext", `${audioTime(current)} / ${audioTime(duration)}`);
+          seek.style.setProperty("--audio-progress", `${duration > 0 ? Math.min(100, current / duration * 100) : 0}%`);
+          time.textContent = `${audioTime(current)} / ${audioTime(duration)}`;
+        };
+        toggle.addEventListener("click", async () => {
+          if (!media.paused) { media.pause(); render(); return; }
+          unavailable.hidden = true;
+          try {
+            for (const other of inlineMedia) {
+              if (other !== preview && other.kind === "audio" && !other.media.paused) other.media.pause();
+            }
+            const playing = media.play();
+            render();
+            await playing;
+            if (!inlineMedia.has(preview)) media.pause();
+          } catch (error) {
+            if (inlineMedia.has(preview) && error?.name !== "AbortError") unavailable.hidden = false;
+          }
+          render();
+        });
+        seek.addEventListener("input", () => {
+          if (seek.disabled) return;
+          media.currentTime = Math.max(0, Math.min(media.duration, Number(seek.value)));
+          render();
+        });
+        for (const event of ["loadedmetadata", "durationchange", "timeupdate", "play", "pause", "playing", "waiting", "ended", "error", "emptied"]) {
+          media.addEventListener(event, render);
+        }
+        player.append(toggle, seek, time);
+        preview.renderAudio = render;
+        render();
+        return player;
+      }
+
+      function createPreview(sessionId, attachment) {
+        if (attachment.kind !== "image" && attachment.kind !== "audio") return null;
+        const reference = { id: attachment.id, kind: attachment.kind, fileName: attachment.fileName };
+        const container = document.createElement("div");
+        container.className = "attachment-media-preview";
+        const unavailable = document.createElement("span");
+        unavailable.className = "attachment-media-unavailable";
+        unavailable.setAttribute("role", "status");
+        unavailable.hidden = true;
+        const media = document.createElement(attachment.kind === "image" ? "img" : "audio");
+        const preview = { container, media, unavailable, sessionId, kind: attachment.kind, fileName: attachment.fileName };
+        if (attachment.kind === "image") {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "attachment-image-preview";
+          button.setAttribute("aria-label", t("Preview attached image {fileName}", { fileName: reference.fileName }));
+          button.addEventListener("click", () => { void open(sessionId, reference); });
+          media.className = "attachment-preview-image";
+          media.alt = reference.fileName;
+          media.loading = "lazy";
+          media.decoding = "async";
+          button.append(media, unavailable);
+          container.append(button);
+          media.onload = () => {
+            media.hidden = false;
+            unavailable.hidden = true;
+          };
+        } else {
+          media.className = "attachment-inline-audio";
+          media.preload = "none";
+          media.hidden = true;
+          container.append(media, createAudioControls(preview, attachment.durationSeconds), unavailable);
+        }
+        media.onerror = () => {
+          if (attachment.kind === "image") media.hidden = true;
+          unavailable.hidden = false;
+        };
+        media.src = getAttachmentUrl(sessionId, reference.id);
+        inlineMedia.add(preview);
+        return container;
+      }
+
+      function isCurrent(view) {
+        return active === view && getState().activeSessionId === view.sessionId;
+      }
+
+      function clearImage(view) {
+        view.image.onload = null;
+        view.image.onerror = null;
+        view.image.removeAttribute("src");
+        view.image.hidden = true;
+        if (view.objectUrl) {
+          window.URL.revokeObjectURL(view.objectUrl);
+          view.objectUrl = null;
+        }
+      }
+
+      function close({ restoreFocus = true } = {}) {
+        const view = active;
+        if (!view) return;
+        active = null;
+        view.controller?.abort();
+        clearImage(view);
+        view.dialog.remove();
+        if (restoreFocus && view.previousFocus?.isConnected &&
+            !view.previousFocus.closest("[hidden], [inert]")) {
+          view.previousFocus.focus({ preventScroll: true });
+        }
+      }
+
+      function render(view) {
+        view.dialog.setAttribute("aria-label", t("Image preview: {fileName}", { fileName: view.fileName }));
+        view.dialog.setAttribute("aria-busy", String(view.phase === "loading"));
+        view.closeButton.setAttribute("aria-label", t("Close preview"));
+        view.openButton.textContent = t("Open in default app");
+        view.retry.textContent = t("Retry");
+        view.retry.hidden = view.phase !== "failed";
+        view.status.hidden = view.phase === "ready";
+        view.status.textContent = view.phase === "failed"
+          ? t("The image could not be loaded. Retry or open it in the default app.")
+          : view.phase === "loading" ? t("Loading image…") : "";
+        view.openStatus.textContent = view.openFailed
+          ? t("The file could not be opened. Try again.") : "";
+        view.openStatus.hidden = !view.openFailed;
+      }
+
+      function sync() {
+        for (const preview of inlineMedia) {
+          if (!preview.container.isConnected || preview.sessionId !== getState().activeSessionId) {
+            disposeInlineMedia(preview);
+            continue;
+          }
+          preview.unavailable.textContent = preview.kind === "image"
+            ? t("Image unavailable. Click to open the preview.")
+            : t("Audio playback unavailable. Open the file in the default app.");
+          if (preview.kind === "image") {
+            preview.container.querySelector("button").setAttribute("aria-label", t("Preview attached image {fileName}", { fileName: preview.fileName }));
+          } else preview.renderAudio();
+        }
+        if (active) {
+          if (!isCurrent(active)) close({ restoreFocus: false });
+          else render(active);
+        }
+      }
+
+      function failImage(view) {
+        clearImage(view);
+        view.phase = "failed";
+        render(view);
+      }
+
+      async function loadImage(view) {
+        view.controller?.abort();
+        const controller = new window.AbortController();
+        view.controller = controller;
+        clearImage(view);
+        view.phase = "loading";
+        render(view);
+        try {
+          const blob = await loadAttachment(view.sessionId, view.attachmentId, controller.signal);
+          if (!isCurrent(view) || view.controller !== controller) {
+            sync();
+            return;
+          }
+          const objectUrl = window.URL.createObjectURL(blob);
+          view.objectUrl = objectUrl;
+          view.image.onload = () => {
+            if (!isCurrent(view) || view.objectUrl !== objectUrl) return;
+            view.phase = "ready";
+            view.image.hidden = false;
+            render(view);
+          };
+          view.image.onerror = () => {
+            if (isCurrent(view) && view.objectUrl === objectUrl) failImage(view);
+          };
+          view.image.src = objectUrl;
+        } catch {
+          if (isCurrent(view) && view.controller === controller && !controller.signal.aborted) {
+            failImage(view);
+          } else sync();
+        }
+      }
+
+      async function openInDefaultApp(view) {
+        if (!isCurrent(view) || view.openButton.disabled) return;
+        view.openButton.disabled = true;
+        view.openFailed = false;
+        render(view);
+        try {
+          const opened = await openAttachment(view.sessionId, view.attachmentId);
+          if (isCurrent(view)) view.openFailed = opened === false;
+        } catch {
+          if (isCurrent(view)) view.openFailed = true;
+        } finally {
+          if (isCurrent(view)) {
+            view.openButton.disabled = false;
+            render(view);
+          }
+        }
+      }
+
+      async function open(sessionId, attachment) {
+        if (getState().activeSessionId !== sessionId) return;
+        const attachmentId = attachment.id;
+        if (attachment.kind !== "image") {
+          try { await openAttachment(sessionId, attachmentId); }
+          catch { showStatus(t("The file could not be opened. Try again."), true); }
+          return;
+        }
+        close({ restoreFocus: false });
+        const dialog = document.createElement("dialog");
+        dialog.className = "attachment-viewer";
+        const header = document.createElement("div");
+        header.className = "attachment-viewer-header";
+        const heading = document.createElement("h2");
+        heading.textContent = attachment.fileName;
+        heading.setAttribute("translate", "no");
+        const closeButton = document.createElement("button");
+        closeButton.type = "button";
+        closeButton.className = "icon-button attachment-viewer-close";
+        closeButton.textContent = "×";
+        const content = document.createElement("div");
+        content.className = "attachment-viewer-content";
+        const status = document.createElement("p");
+        status.className = "attachment-viewer-status";
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        const image = document.createElement("img");
+        image.className = "attachment-viewer-image";
+        image.alt = attachment.fileName;
+        image.hidden = true;
+        const actions = document.createElement("div");
+        actions.className = "attachment-viewer-actions";
+        const openStatus = document.createElement("p");
+        openStatus.className = "attachment-viewer-open-status";
+        openStatus.setAttribute("role", "status");
+        openStatus.hidden = true;
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "secondary";
+        const openButton = document.createElement("button");
+        openButton.type = "button";
+        openButton.className = "secondary";
+        const view = {
+          sessionId, attachmentId, fileName: attachment.fileName, dialog,
+          closeButton, openButton, retry, status, openStatus, image,
+          previousFocus: document.activeElement, controller: null,
+          objectUrl: null, phase: "loading", openFailed: false,
+        };
+        active = view;
+        closeButton.addEventListener("click", () => close());
+        retry.addEventListener("click", () => { void loadImage(view); });
+        openButton.addEventListener("click", () => { void openInDefaultApp(view); });
+        dialog.addEventListener("cancel", (event) => {
+          event.preventDefault();
+          close();
+        });
+        dialog.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            close();
+            return;
+          }
+          if (event.key !== "Tab") return;
+          const controls = [closeButton, retry, openButton].filter((button) => !button.hidden && !button.disabled);
+          const first = controls[0];
+          const last = controls[controls.length - 1];
+          if (!controls.includes(document.activeElement) || !event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          } else if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          }
+        });
+        header.append(heading, closeButton);
+        content.append(status, image);
+        actions.append(openStatus, retry, openButton);
+        dialog.append(header, content, actions);
+        document.body.append(dialog);
+        render(view);
+        if (typeof dialog.showModal === "function") dialog.showModal();
+        else dialog.setAttribute("open", "");
+        closeButton.focus({ preventScroll: true });
+        await loadImage(view);
+      }
+
+      window.addEventListener("pagehide", () => {
+        close({ restoreFocus: false });
+        for (const preview of inlineMedia) disposeInlineMedia(preview);
+      });
+      return { open, createPreview, sync, close };
+      };

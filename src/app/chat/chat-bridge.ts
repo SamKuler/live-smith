@@ -14,6 +14,7 @@ import { URL } from "node:url";
 import { resolveEditScopes, type EditScope } from "../../agent/edit-scopes.js";
 import type { AgentActionPreview } from "../../agent/action-preview.js";
 import type { SessionEvent } from "../../storage/events.js";
+import type { SessionAttachmentRef } from "../../storage/attachments.js";
 import type { SessionModelSelection } from "../../storage/sessions.js";
 import { isSafeStorageId } from "../../storage/id.js";
 import { isStorageCommitOutcomeUnknownError } from "../../storage/persistence.js";
@@ -84,7 +85,7 @@ import {
   assertJsonContentType,
   commandIdForRequest,
   attachmentIdsForRequest,
-  parseAttachmentDeleteQuery,
+  parseAttachmentReferenceQuery,
   parseAttachmentUploadQuery,
   parseCommandInput,
   parseConfirmationInput,
@@ -365,6 +366,9 @@ export interface ChatBridge {
 }
 
 interface ChatBridgeOptions {
+  readAttachment?(sessionId: string, attachmentId: string, signal: AbortSignal): Promise<{
+    attachment: SessionAttachmentRef; bytes: Uint8Array;
+  }>;
   handlePluginAppRequest?(input: PluginAppRequest, signal: AbortSignal): Promise<unknown>;
   closePluginApps?(): Promise<void>;
   readAudioAsset?(sessionId: string, assetId: string, signal: AbortSignal): Promise<{
@@ -1631,6 +1635,28 @@ export async function createChatBridge(
         return;
       }
 
+      if ((request.method === "GET" || request.method === "HEAD") && url.pathname.startsWith("/attachments/")) {
+        if (!options.readAttachment) { response.writeHead(404).end("Not found"); return; }
+        const input = parseAttachmentReferenceQuery(request, url);
+        const signal = beginReadOnlyBuild(response, handlerTerminal);
+        const file = await options.readAttachment(input.sessionId, input.attachmentId, signal);
+        if (closing || response.destroyed) return;
+        if (file.attachment.kind === "audio") {
+          sendAudioAssetResponse(response, { bytes: file.bytes, mediaType: file.attachment.mediaType },
+            request.headers.range, request.method === "HEAD");
+          return;
+        }
+        response.writeHead(200, {
+          "Content-Type": file.attachment.mediaType,
+          "Content-Length": file.bytes.byteLength,
+          "Content-Disposition": file.attachment.kind === "image" ? "inline" : "attachment",
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff",
+        });
+        response.end(request.method === "HEAD" ? undefined : Buffer.from(file.bytes));
+        return;
+      }
+
       if ((request.method === "GET" || request.method === "HEAD") && url.pathname.startsWith("/audio-assets/")) {
         assertExactQueryParameters(url, ["token", "sessionId"], "Audio asset request");
         if (!options.readAudioAsset) { response.writeHead(404).end("Not found"); return; }
@@ -1863,7 +1889,7 @@ export async function createChatBridge(
           response.writeHead(404).end("Not found");
           return;
         }
-        const input = parseAttachmentDeleteQuery(request, url);
+        const input = parseAttachmentReferenceQuery(request, url);
         attachmentSessionId = input.sessionId;
         if (
           activeCommandTerminal ||
@@ -2630,8 +2656,9 @@ export async function createChatBridge(
       const reportedError = error instanceof ChatBridgeSendFailureError
         ? error.originalError
         : error;
-      const attachmentMutation = requestPath === "/attachments" ||
+      const attachmentRequest = requestPath === "/attachments" ||
         requestPath.startsWith("/attachments/");
+      const attachmentMutation = attachmentRequest && (request.method === "POST" || request.method === "DELETE");
       const skillMutation = requestPath === "/skills" ||
         requestPath.startsWith("/skills/");
       const pluginRequest = requestPath === "/plugins" ||
@@ -2648,7 +2675,7 @@ export async function createChatBridge(
               reportedError instanceof ChatBridgeCommandStoppedError
             ? "stopped"
             : undefined;
-      const message = attachmentMutation
+      const message = attachmentRequest
         ? safeAttachmentErrorMessage(reportedError, commandOutcome)
         : skillMutation
           ? safeSkillErrorMessage(reportedError, commandOutcome)
@@ -3240,6 +3267,7 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "load_session_tools" ||
     input.kind === "run_plugin_tool" || input.kind === "run_audio_tool" ||
     input.kind === "open_audio_download" ||
+    input.kind === "open_attachment" ||
     input.kind === "import_midi_artifact" ||
     input.kind === "set_session_skills";
 }

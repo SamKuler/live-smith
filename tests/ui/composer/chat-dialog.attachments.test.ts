@@ -57,7 +57,7 @@ test("the attachment menu explains the supported drop and paste path without ima
   }
 });
 
-test("WAV and MP3 upload without image capability and show authoritative duration", async () => {
+test("WAV and MP3 upload without image capability and expose authoritative file metadata", async () => {
   const state = stateFixture();
   state.runtimeProfile!.inputCapabilityEvidence.image = "unsupported";
   const harness = await createDialogHarness(state);
@@ -76,10 +76,10 @@ test("WAV and MP3 upload without image capability and show authoritative duratio
     );
     const chips = [...harness.document.querySelectorAll(
       "#pendingAttachments [data-attachment-id]",
-    )].map((chip) => chip.textContent);
+    )].map((chip) => chip.querySelector(".attachment-chip-label")?.getAttribute("title"));
     assert.deepEqual(chips, [
-      "source.wav · WAV · 1:23.3 · 24 B×",
-      "reference.mp3 · MP3 · 1:23.3 · 24 B×",
+      "source.wav · WAV · 1:23.3 · 24 B",
+      "reference.mp3 · MP3 · 1:23.3 · 24 B",
     ]);
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -593,7 +593,7 @@ test("a pasted image uploads once and renders a removable attachment chip", asyn
     assert.match(chip?.textContent ?? "", /reference\.png/);
     assert.match(chip?.textContent ?? "", /24 B/);
 
-    chip?.querySelector<HTMLButtonElement>("button")?.click();
+    chip?.querySelector<HTMLButtonElement>(".attachment-remove")?.click();
     await harness.settleAttachmentOperation();
     assert.equal(
       harness.calls.some((call) => call.path === "/attachments/attachment-1"),
@@ -1150,7 +1150,7 @@ test("Session switching renders only the active Session attachment chips", async
   }
 });
 
-test("a wire-projected timeline attachment chip renders inert filename metadata", async () => {
+test("a wire-projected image reference treats filename markup as text and uses its attachment identity for preview", async () => {
   const state = stateFixture();
   state.events = [{
     id: "event-image",
@@ -1170,10 +1170,15 @@ test("a wire-projected timeline attachment chip renders inert filename metadata"
       ".timeline-attachment-chip",
     );
     assert.equal(
-      chip?.textContent,
+      chip?.querySelector(".timeline-attachment-open")?.textContent,
       '<img src=x onerror="alert(1)">.png · PNG · 1.5 KiB',
     );
-    assert.equal(chip?.querySelector("img"), null);
+    const image = chip?.querySelector<HTMLImageElement>("img");
+    assert.ok(image);
+    assert.equal(image.alt, '<img src=x onerror="alert(1)">.png');
+    assert.equal(image.getAttribute("onerror"), null);
+    assert.equal(new URL(image.src).pathname, "/attachments/attachment-event");
+    assert.doesNotMatch(image.src, /private|alert|C:/i);
     assert.doesNotMatch(chip?.innerHTML ?? "", /base64|data:image/i);
     assert.doesNotMatch(chip?.textContent ?? "", /C:|private/);
     assert.deepEqual(harness.errors, []);
@@ -1215,7 +1220,7 @@ test("timeline labels native PDFs and extracted Office documents without claimin
   try {
     const labels = [...harness.document.querySelectorAll(
       ".timeline-attachment-chip",
-    )].map((chip) => chip.textContent);
+    )].map((chip) => chip.querySelector(".timeline-attachment-open")?.textContent);
     assert.deepEqual(labels, [
       "score.pdf · PDF · Native PDF · 1 KiB",
       "notes.docx · DOCX · Extracted document · 2 KiB",
@@ -1234,7 +1239,7 @@ test("timeline labels native PDFs and extracted Office documents without claimin
   }
 });
 
-test("timeline labels consumed audio with authoritative duration and no source-path metadata", async () => {
+test("timeline exposes consumed audio metadata without source paths", async () => {
   const state = stateFixture();
   state.events = [{
     id: "event-audio",
@@ -1250,7 +1255,7 @@ test("timeline labels consumed audio with authoritative duration and no source-p
   try {
     const labels = [...harness.document.querySelectorAll(
       ".timeline-attachment-chip",
-    )].map((chip) => chip.textContent);
+    )].map((chip) => chip.querySelector(".timeline-attachment-open")?.getAttribute("title"));
     assert.deepEqual(labels, [
       "take.wav · WAV · 1:23.3 · 1 KiB",
       "reference.mp3 · MP3 · 1.5 s · 2 KiB",
@@ -1327,7 +1332,7 @@ test("the compact attachment menu stays available while image capability gates o
     assert.equal(unverifiedHarness.dispatchDrop([unverifiedImage]), true);
     await unverifiedHarness.settleAttachmentOperation();
     const remove = unverifiedHarness.document.querySelector<HTMLButtonElement>(
-      '[data-attachment-id="attachment-unverified"] button',
+      '[data-attachment-id="attachment-unverified"] .attachment-remove',
     );
     assert.equal(remove?.disabled, false);
     remove?.click();

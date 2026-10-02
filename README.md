@@ -457,7 +457,12 @@ artifacts.
 composer, including while a response is running. **Follow-ups → Steer** submits
 the message and its files to the current task at its next safe boundary;
 **Queue** keeps them together for a new request after the current response.
-Later files stay with the next composer draft. Supported categories include:
+Later files stay with the next composer draft. Images appear as thumbnails that
+open a larger preview when clicked; audio includes playback and seek controls.
+Select another file's name to open it with the system's default application.
+External applications receive a temporary copy, so their edits do not replace
+the saved chat attachment. Text and code copies open as `.txt` files.
+Supported categories include:
 
 | Category | Formats and handling |
 | --- | --- |

@@ -604,16 +604,137 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
 }
 
 .timeline-attachments {
-  @apply mt-2 flex flex-wrap;
-  gap: 5px;
+  @apply mt-3 grid min-w-0 justify-items-start gap-3;
+  width: 360px;
+  max-width: 100%;
 }
 
 .timeline-attachment-chip {
-  @apply inline-flex max-w-full rounded-control px-[6px] py-[3px] text-small;
+  @apply inline-flex max-w-full rounded-control border-0 bg-field text-small text-muted;
   overflow-wrap: anywhere;
-  color: var(--color-accent-ink);
-  background: rgba(255, 255, 255, 0.28);
-  border: 1px solid rgba(33, 21, 3, 0.24);
+}
+
+.timeline-attachment-open {
+  @apply min-w-0 bg-transparent px-[6px] py-[3px] text-left;
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+
+.timeline-attachment-open:hover,
+.timeline-attachment-open:focus-visible {
+  background: var(--color-surface-hover);
+  outline: 0;
+  text-decoration: underline;
+}
+
+.timeline-attachment-chip[data-media-kind] {
+  @apply grid min-w-0 border-0 bg-transparent text-text;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.timeline-attachment-chip[data-media-kind="image"] {
+  width: min(280px, 100%);
+}
+
+.attachment-media-preview {
+  @apply min-w-0;
+  grid-column: 1 / -1;
+}
+
+.attachment-image-preview {
+  @apply relative grid w-full place-items-center overflow-hidden bg-[#1d1d1d] p-0 text-muted;
+  aspect-ratio: 16 / 9;
+  border-radius: 5px;
+}
+
+.attachment-image-preview:focus-visible {
+  outline: 0;
+  box-shadow: inset 0 0 0 2px var(--color-border-hover);
+}
+
+.attachment-preview-image {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.attachment-audio-player {
+  @apply grid min-w-0 items-center;
+  grid-template-columns: 28px minmax(48px, 1fr) auto;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.attachment-audio-toggle {
+  @apply grid size-control-compact place-items-center border-0 bg-transparent p-0 text-text;
+}
+
+.attachment-audio-toggle svg { width: 18px; height: 18px; fill: currentColor; }
+.attachment-audio-toggle .audio-pause-icon { display: none; }
+.attachment-audio-toggle[data-playing="true"] .audio-play-icon { display: none; }
+.attachment-audio-toggle[data-playing="true"] .audio-pause-icon { display: block; }
+.attachment-audio-toggle:hover { color: var(--color-accent); }
+.attachment-audio-toggle:focus-visible { outline: 0; background: var(--color-surface-hover); }
+.attachment-audio-toggle[aria-busy="true"] { color: var(--color-muted); }
+
+input.attachment-audio-seek {
+  --audio-progress: 0%;
+  appearance: none;
+  -webkit-appearance: none;
+  @apply m-0 h-control-compact min-w-0 cursor-pointer border-0 bg-transparent p-0;
+  outline: 0;
+  border-radius: 0;
+}
+
+.attachment-audio-seek::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--color-accent) var(--audio-progress), var(--color-border-hover) var(--audio-progress));
+}
+.attachment-audio-seek::-moz-range-track { height: 3px; border-radius: 2px; background: var(--color-border-hover); }
+.attachment-audio-seek::-moz-range-progress { height: 3px; border-radius: 2px; background: var(--color-accent); }
+.attachment-audio-seek::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 9px;
+  height: 9px;
+  margin-top: -3px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-text);
+  opacity: 0;
+}
+.attachment-audio-seek::-moz-range-thumb { width: 9px; height: 9px; border: 0; border-radius: 50%; background: var(--color-text); opacity: 0; }
+.attachment-audio-seek:not(:disabled):hover::-webkit-slider-thumb,
+.attachment-audio-seek:focus-visible::-webkit-slider-thumb { opacity: 1; }
+.attachment-audio-seek:not(:disabled):hover::-moz-range-thumb,
+.attachment-audio-seek:focus-visible::-moz-range-thumb { opacity: 1; }
+.attachment-audio-seek:disabled { cursor: default; }
+
+.attachment-audio-time {
+  @apply whitespace-nowrap text-small text-muted;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-attachment-chip[data-media-kind] .timeline-attachment-open {
+  @apply overflow-hidden px-0 py-1 text-small text-muted text-ellipsis whitespace-nowrap;
+}
+.timeline-attachment-chip[data-media-kind="audio"] .timeline-attachment-open {
+  @apply py-0 text-label text-text;
+}
+.timeline-attachment-chip[data-media-kind] .timeline-attachment-open:hover,
+.timeline-attachment-chip[data-media-kind] .timeline-attachment-open:focus-visible { background: transparent; color: var(--color-text); }
+
+.attachment-media-unavailable {
+  @apply block px-2 py-3 text-small;
+}
+
+.attachment-media-preview [hidden] {
+  display: none;
 }
 
 .markdown-body {
@@ -1297,7 +1418,10 @@ details.timeline-item > .timeline-content {
 }
 
 .pending-attachments {
-  @apply flex min-w-0 flex-wrap gap-[6px] mb-[7px];
+  @apply grid min-w-0 items-start justify-items-start gap-2 mb-[7px] overflow-y-auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(360px, 100%);
+  max-height: min(180px, 25vh);
 }
 
 .pending-attachments[hidden] {
@@ -1308,11 +1432,101 @@ details.timeline-item > .timeline-content {
   @apply inline-grid items-center rounded-control border border-border bg-pane-raised text-text;
   grid-template-columns: minmax(0, auto) auto;
   max-width: min(100%, 360px);
+  grid-column: 1 / -1;
+}
+
+.attachment-chip[data-media-kind] {
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.attachment-chip[data-media-kind="audio"] {
+  @apply border-0 bg-transparent;
+}
+.attachment-chip[data-media-kind="audio"] .attachment-remove { border: 0; }
+.attachment-chip[data-media-kind="audio"] .attachment-chip-label { @apply p-0 text-label; }
+
+.attachment-chip[data-media-kind="image"] {
+  width: min(160px, 100%);
+  grid-column: auto;
 }
 
 .attachment-chip-label {
-  @apply min-w-0 overflow-hidden text-ellipsis whitespace-nowrap;
+  @apply min-w-0 overflow-hidden bg-transparent text-left text-text text-ellipsis whitespace-nowrap;
   padding: 5px 7px;
+}
+
+.attachment-chip-label:hover,
+.attachment-chip-label:focus-visible {
+  @apply bg-surface-hover;
+  outline: 0;
+  text-decoration: underline;
+}
+
+.attachment-viewer {
+  @apply fixed overflow-hidden rounded-[8px] border border-border-strong bg-pane-raised p-0 text-text;
+  width: min(960px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42);
+}
+
+.attachment-viewer[open] {
+  @apply grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.attachment-viewer::backdrop {
+  background: rgba(15, 15, 15, 0.78);
+}
+
+.attachment-viewer-header {
+  @apply flex min-w-0 items-center justify-between gap-3 border-b border-border px-3 py-2;
+}
+
+.attachment-viewer-header h2 {
+  @apply m-0 min-w-0 overflow-hidden text-label font-medium text-ellipsis whitespace-nowrap;
+}
+
+.attachment-viewer-close {
+  @apply size-control shrink-0 p-0 text-[20px];
+}
+
+.attachment-viewer-content {
+  @apply grid min-h-[160px] min-w-0 place-items-center overflow-auto p-3;
+  background: #1d1d1d;
+}
+
+.attachment-viewer-image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 170px);
+  object-fit: contain;
+}
+
+.attachment-viewer-status {
+  @apply m-0 text-center text-muted;
+}
+
+.attachment-viewer-actions {
+  @apply flex min-w-0 flex-wrap items-center justify-end gap-2 border-t border-border px-3 py-2;
+}
+
+.attachment-viewer-actions button {
+  @apply h-control px-3;
+}
+
+.attachment-viewer button:hover:not(:disabled),
+.attachment-viewer button:focus-visible {
+  @apply border-border-hover bg-surface-hover;
+  outline: 0;
+}
+
+.attachment-viewer-open-status {
+  @apply m-0 mr-auto text-small text-danger;
+}
+
+.attachment-viewer [hidden] {
+  display: none;
 }
 
 .attachment-remove {

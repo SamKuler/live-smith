@@ -271,7 +271,15 @@
           return;
         }
 
+        const attachmentViewer = factories.createAttachmentViewer({
+          getState,
+          loadAttachment: bridgeClient.loadAttachment,
+          getAttachmentUrl: bridgeClient.getAttachmentUrl,
+          openAttachment: bridgeClient.openAttachment,
+          showStatus: bridgeClient.showStatus,
+        });
         const attachments = factories.createAttachments({
+          attachmentViewer,
           deleteAttachment: bridgeClient.deleteAttachment,
           getState,
           getComposerAttachments: bridgeClient.getComposerAttachments,
@@ -370,6 +378,7 @@
 
         const actionPreview = factories.createActionPreview();
         const sessionTimeline = factories.createSessionTimeline({
+          attachmentViewer,
           renderActionPreview: actionPreview.render,
           getState,
           getAssistantDraft: bridgeClient.getAssistantDraft,
@@ -537,11 +546,17 @@
 
         function renderContextAttachments() {
           const attachments = bridgeClient.getComposerAttachments();
+          const sessionId = getState().activeSessionId;
           document.getElementById("contextAttachmentEmpty").hidden = attachments.length > 0;
           document.getElementById("contextAttachmentList").replaceChildren(...attachments.map((attachment) => {
             const item = document.createElement("li");
-            item.textContent = attachment.fileName;
-            item.setAttribute("translate", "no");
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "attachment-chip-label";
+            button.textContent = attachment.fileName;
+            button.setAttribute("translate", "no");
+            button.addEventListener("click", () => attachmentViewer.open(sessionId, attachment));
+            item.append(button);
             return item;
           }));
         }

@@ -1,5 +1,6 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createSessionTimeline = function createSessionTimeline({
+        attachmentViewer,
         getState,
         getAssistantDraft,
         getReasoningDraft,
@@ -289,6 +290,7 @@
 
       function appendTimelineAttachments(content, attachments) {
         if (!Array.isArray(attachments) || !attachments.length) return;
+        const sessionId = getState().activeSessionId;
         const list = document.createElement("div");
         list.className = "timeline-attachments";
         list.setAttribute("role", "list");
@@ -297,9 +299,25 @@
           const chip = document.createElement("span");
           chip.className = "timeline-attachment-chip";
           chip.setAttribute("role", "listitem");
-          chip.textContent = `${attachment.fileName} · ${
+          chip.dataset.attachmentId = attachment.id;
+          const reference = { id: attachment.id, kind: attachment.kind, fileName: attachment.fileName, durationSeconds: attachment.durationSeconds };
+          const preview = attachmentViewer.createPreview(sessionId, reference);
+          if (preview) {
+            chip.dataset.mediaKind = attachment.kind;
+            chip.append(preview);
+          }
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "timeline-attachment-open";
+          const details = `${attachment.fileName} · ${
             attachmentTypeLabel(attachment)
           } · ${formatAttachmentBytes(attachment.byteLength)}`;
+          button.textContent = attachment.kind === "audio" ? attachment.fileName : details;
+          button.title = details;
+          button.setAttribute("aria-label", t(attachment.kind === "image" ? "Preview attached image {fileName}" : "Open attached file {fileName}", { fileName: attachment.fileName }));
+          button.addEventListener("click", () => { void attachmentViewer.open(sessionId, reference); });
+          if (attachment.kind === "audio") chip.prepend(button);
+          else chip.append(button);
           list.append(chip);
         }
         content.append(list);
@@ -1689,6 +1707,7 @@
         renderedAssistantDraft = assistantDraft;
         renderedReasoningDraft = reasoningDraft;
         renderedAssistantDraftLocale = window.LiveSmithI18n.locale;
+        attachmentViewer.sync();
       }
 
       function rememberReasoningSummaryFocus(reasoningItem, timeline) {
@@ -1878,6 +1897,7 @@
       }
 
       function renderTimeline() {
+        attachmentViewer.sync();
         const state = getState();
         syncMessageActions();
         const assistantDraft = getAssistantDraft();
@@ -2215,6 +2235,7 @@
         renderedAssistantDraft = assistantDraft;
         renderedReasoningDraft = reasoningDraft;
         renderedAssistantDraftLocale = window.LiveSmithI18n.locale;
+        attachmentViewer.sync();
       }
 
       function restoreTimelineItemDetails(

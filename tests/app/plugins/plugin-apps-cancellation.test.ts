@@ -19,7 +19,7 @@ import { SessionMutationFence, sessionMutationFenceKey } from "../../../src/app/
 
 const resourceUri = "ui://cancel-fixture/app";
 const serverSource = String.raw`
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 const uri = "ui://cancel-fixture/app";
@@ -27,7 +27,10 @@ const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infini
 const send = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
 lines.on("line", (line) => {
   const request = JSON.parse(line);
-  if (existsSync(process.env.GATE_PATH) && readFileSync(process.env.GATE_PATH, "utf8") === request.method) {
+  let gatedMethod;
+  try { gatedMethod = readFileSync(process.env.GATE_PATH, "utf8"); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (gatedMethod === request.method) {
     writeFileSync(path.join(process.env.PENDING_DIRECTORY, String(process.pid)), request.method);
     return;
   }

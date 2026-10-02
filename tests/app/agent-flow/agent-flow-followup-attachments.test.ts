@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import { URL } from "node:url";
 
-import { runAgentFlow } from "../../../src/app/agent-flow.js";
+import { runAgentFlow, type AgentFlowDependencies } from "../../../src/app/agent-flow.js";
 import { buildModelRequest } from "../../../src/app/model/model-request.js";
 import type { LiveInteractionContext } from "../../../src/live/context.js";
 import type { ModelInputPart, ModelTurn } from "../../../src/model/contracts.js";
@@ -29,6 +29,7 @@ async function withFlow(
   t: TestContext,
   dialog: (flow: Flow) => Promise<void>,
   model: (request: TransportRequest, turn: number) => ModelTurn | Promise<ModelTurn> = () => ({ content: "Ready.", toolCalls: [] }),
+  openAttachment?: AgentFlowDependencies["openAttachment"],
 ) {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-followup-attachments-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -54,6 +55,7 @@ async function withFlow(
     } },
   } as never, interaction, {
     renderHtml: () => "<html></html>",
+    ...(openAttachment === undefined ? {} : { openAttachment }),
     modelBackendManager: {
       async forProfile() {
         return { kind: "direct-api" as const, async listModels() { return []; },
@@ -296,5 +298,56 @@ test("Send and Steer reject malformed, duplicate, unsafe and oversized attachmen
     assert.equal(flow.requests.length, 0);
     assert.equal((await loadSessionEvents(flow.directory, flow.sessionId)).filter((event) => event.kind === "user").length, 0);
     assert.deepEqual((await pending(flow)).map((entry) => entry.id), [draft.id]);
+  });
+});
+
+
+test("stored attachment preview and native open remain available during generation without changing messages", async (t) => {
+  const entered = Promise.withResolvers<void>();
+  const finished = Promise.withResolvers<void>();
+  const opened: string[] = [];
+  await withFlow(t, async (flow) => {
+    const image = await upload(flow, "reference.png");
+    const running = send(flow, "Inspect the image", [image.id], "preview-send");
+    try {
+      await entered.promise;
+      const before = await loadSessionEvents(flow.directory, flow.sessionId);
+      const previewUrl = endpoint(flow.url, `/attachments/${image.id}`);
+      previewUrl.searchParams.set("sessionId", flow.sessionId);
+      const preview = await fetch(previewUrl, { signal: AbortSignal.timeout(2_000) });
+      assert.equal(preview.status, 200, await preview.clone().text());
+      assert.equal(preview.headers.get("content-type"), "image/png");
+      assert.deepEqual(Buffer.from(await preview.arrayBuffer()), png);
+      const open = await fetch(endpoint(flow.url, "/command"), {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Live-Smith-Command-Id": "open-image" },
+        body: JSON.stringify({ kind: "open_attachment", sessionId: flow.sessionId, attachmentId: image.id }),
+        signal: AbortSignal.timeout(2_000),
+      });
+      assert.equal(open.status, 200, await open.text());
+      assert.deepEqual(opened, [image.id]);
+      assert.deepEqual(await loadSessionEvents(flow.directory, flow.sessionId), before);
+      const foreign = new URL(previewUrl);
+      foreign.searchParams.set("sessionId", "foreign-session");
+      const denied = await fetch(foreign);
+      assert.equal(denied.status, 404); await denied.text();
+      const invalid = await fetch(endpoint(flow.url, "/command"), {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Live-Smith-Command-Id": "open-forged" },
+        body: JSON.stringify({ kind: "open_attachment", sessionId: flow.sessionId, attachmentId: image.id, path: "/tmp/other" }),
+      });
+      assert.equal(invalid.status, 400); await invalid.text();
+      assert.deepEqual(opened, [image.id]);
+    } finally {
+      finished.resolve();
+      const response = await running;
+      assert.equal(response.status, 200, await response.text());
+    }
+  }, async () => {
+    entered.resolve();
+    await finished.promise;
+    return { content: "Ready.", toolCalls: [] };
+  }, async (file) => {
+    opened.push(file.attachment.id);
+    assert.equal(file.attachment.fileName, "reference.png");
+    assert.deepEqual(Buffer.from(file.bytes), png);
   });
 });

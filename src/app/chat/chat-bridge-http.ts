@@ -212,6 +212,7 @@ export type ChatBridgeCommandInput =
   | { kind: "resume_audio_job"; sessionId: string; jobId: string }
   | { kind: "download_audio_output"; sessionId: string; jobId: string; outputKey: string }
   | { kind: "open_audio_download"; sessionId: string; assetId: string }
+  | { kind: "open_attachment"; sessionId: string; attachmentId: string }
   | { kind: "open_suno_website" }
   | { kind: "open_suno_platform" }
   | { kind: "import_suno_session"; serviceId: string; sessionValue: string }
@@ -772,7 +773,7 @@ function isSingleMimeType(value: string): boolean {
   return mimeTypePattern.test(value);
 }
 
-export function parseAttachmentDeleteQuery(
+export function parseAttachmentReferenceQuery(
   request: IncomingMessage,
   url: URL,
 ): ChatBridgeAttachmentDeleteInput {
@@ -1112,6 +1113,13 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       throw new ChatBridgeRequestValidationError("Choose a saved audio file in this Session.");
     }
     return { kind, sessionId: input.sessionId, assetId: input.assetId };
+  }
+  if (kind === "open_attachment") {
+    assertOnlyInputKeys(input, ["kind", "sessionId", "attachmentId"], "open_attachment command");
+    if (!isSafeStorageId(input.sessionId) || !isSafeStorageId(input.attachmentId)) {
+      throw new ChatBridgeRequestValidationError("Choose an attached file in this Session.");
+    }
+    return { kind, sessionId: input.sessionId, attachmentId: input.attachmentId };
   }
   if (kind === "resume_audio_job") {
     assertOnlyInputKeys(input, ["kind", "sessionId", "jobId"], "resume_audio_job command");

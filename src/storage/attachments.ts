@@ -132,6 +132,11 @@ interface AttachmentReadOptions {
   readFile?: (handle: fs.FileHandle) => Promise<Uint8Array>;
 }
 
+export interface ReadSessionAttachmentResult {
+  attachment: SessionAttachmentRef;
+  bytes: Uint8Array;
+}
+
 const attachmentsDirectoryName = "live-smith-attachments";
 const memoryAttachments = new Map<string, Map<string, MemoryAttachment>>();
 
@@ -370,6 +375,20 @@ export async function readSessionAttachmentBytes(
   attachmentId: string,
   options: AttachmentReadOptions = {},
 ): Promise<Uint8Array> {
+  return (await readSessionAttachment(
+    storageDirectory,
+    sessionId,
+    attachmentId,
+    options,
+  )).bytes;
+}
+
+export async function readSessionAttachment(
+  storageDirectory: string | undefined,
+  sessionId: string,
+  attachmentId: string,
+  options: AttachmentReadOptions = {},
+): Promise<ReadSessionAttachmentResult> {
   requireSafeStorageId(sessionId, "Session ID");
   requireSafeStorageId(attachmentId, "Attachment ID");
   if (!storageDirectory) {
@@ -377,7 +396,10 @@ export async function readSessionAttachmentBytes(
     if (!item) throw new AttachmentNotFoundError();
     assertExpectedAttachmentRef(item.metadata, options.expectedRef);
     await verifyBytes(item.metadata, item.bytes, options.signal);
-    return new Uint8Array(item.bytes);
+    return {
+      attachment: sessionAttachmentRefFromStored(item.metadata),
+      bytes: new Uint8Array(item.bytes),
+    };
   }
 
   return withAttachmentStorageBoundary(async () => {
@@ -394,7 +416,10 @@ export async function readSessionAttachmentBytes(
       attachmentId,
     );
     assertExpectedAttachmentRef(metadata, options.expectedRef);
-    return readAndVerifyBlobBound(binding, metadata, options);
+    return {
+      attachment: sessionAttachmentRefFromStored(metadata),
+      bytes: await readAndVerifyBlobBound(binding, metadata, options),
+    };
   }, options.signal);
 }
 

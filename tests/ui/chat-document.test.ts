@@ -20,6 +20,7 @@ const scripts: ChatClientScripts = {
   actionPreview: "",
   i18n: "",
   attachments: "",
+  attachmentViewer: "",
   bootstrap: "",
   bridgeClient: "",
   bridgeContracts: "",

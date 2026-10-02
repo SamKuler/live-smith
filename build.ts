@@ -159,7 +159,7 @@ function verifyNetworkRuntimeBundleInputs(metafile: esbuild.Metafile): void {
 function verifySourceRuntimeBoundaries(sourceDirectory: string): void {
   const violations: string[] = [];
   const childProcessBoundaries = new Set([
-    "src/runtime/system-browser.ts",
+    "src/runtime/system-open.ts",
     "src/runtime/system-proxy.ts",
     "src/runtime/suno-human-verification.ts",
   ].map(path.normalize));

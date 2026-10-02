@@ -1,37 +1,19 @@
-import { execFile } from "node:child_process";
-import { win32 as windowsPath } from "node:path";
-import process from "node:process";
-import { promisify } from "node:util";
 import { URL } from "node:url";
 
 import { throwIfAborted } from "./host.js";
+import { createSystemOpener, type SystemOpenerOptions } from "./system-open.js";
 
-const execFileAsync = promisify(execFile);
-export interface SystemBrowserOpenerOptions {
+export interface SystemBrowserOpenerOptions extends SystemOpenerOptions {
   /** Resource-specific callers must still validate the exact local route. */
   allowLoopbackHttp?: boolean;
-  platform?: NodeJS.Platform;
-  windowsSystemRoot?: string;
-  runOpenCommand?: (
-    executable: string,
-    args: readonly string[],
-    signal?: AbortSignal,
-  ) => Promise<void>;
 }
 
 /** Callers own destination allowlists; this module owns only the OS handler. */
 export function createSystemBrowserOpener(
   options: SystemBrowserOpenerOptions = {},
 ): (target: string, signal?: AbortSignal) => Promise<void> {
-  const platform = options.platform ?? process.platform;
   const allowLoopbackHttp = options.allowLoopbackHttp === true;
-  const windowsSystemRoot = normalizeWindowsSystemRoot(
-    options.windowsSystemRoot ?? process.env.SystemRoot,
-  );
-  const runOpenCommand = options.runOpenCommand ??
-    (async (executable, args, signal) => {
-      await execFileAsync(executable, [...args], { signal, timeout: 10_000 });
-    });
+  const open = createSystemOpener("system browser", options);
 
   return async (target, signal) => {
     throwIfAborted(signal);
@@ -48,52 +30,6 @@ export function createSystemBrowserOpener(
     ) {
       throw new Error("The system browser requires a valid HTTPS URL.");
     }
-    let executable: string;
-    let args: string[];
-    if (platform === "darwin") {
-      executable = "/usr/bin/open";
-      args = [url.toString()];
-    } else if (platform === "win32") {
-      if (!windowsSystemRoot) {
-        throw new Error("The Windows system browser command is unavailable.");
-      }
-      executable = windowsPath.join(
-        windowsSystemRoot,
-        "System32",
-        "rundll32.exe",
-      );
-      args = ["url.dll,FileProtocolHandler", url.toString()];
-    } else {
-      throw new Error(
-        "Opening the system browser is available only on macOS and Windows.",
-      );
-    }
-    try {
-      await runOpenCommand(executable, args, signal);
-    } catch {
-      throwIfAborted(signal);
-      throw new Error("The system browser could not be opened.");
-    }
-    throwIfAborted(signal);
+    await open(url.toString(), signal);
   };
-}
-
-function normalizeWindowsSystemRoot(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const candidate = value.replaceAll("/", "\\").replace(/\\+$/u, "");
-  if (!/^[A-Za-z]:\\[^\\]+(?:\\[^\\]+)*$/u.test(candidate)) {
-    return undefined;
-  }
-  const segments = candidate.slice(3).split("\\");
-  if (segments.some((segment) =>
-    segment === "." ||
-    segment === ".." ||
-    segment.includes(":") ||
-    /[\u0000-\u001f]/u.test(segment) ||
-    /[. ]$/u.test(segment)
-  )) {
-    return undefined;
-  }
-  const normalized = windowsPath.normalize(candidate);
-  return normalized === candidate ? normalized : undefined;
 }

@@ -7,6 +7,7 @@ const clientFragments = [
   "i18n",
   "profile-editor",
   "attachment-media",
+  "attachment-viewer",
   "attachments",
   "composer-input",
   "skill-manager",

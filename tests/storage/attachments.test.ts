@@ -22,6 +22,7 @@ import {
 import { createHostAbortController } from "../../src/runtime/host.js";
 import {
   AttachmentPendingQuotaError,
+  AttachmentNotFoundError,
   AttachmentStorageAccessError,
   AttachmentStorageCorruptionError,
   AttachmentTooLargeError,
@@ -29,8 +30,10 @@ import {
   deleteSessionAttachments,
   listSessionAttachments,
   listPendingSessionAttachments,
+  readSessionAttachment,
   readSessionAttachmentBytes,
   saveSessionAttachment,
+  sessionAttachmentRefFromStored,
   UnsupportedAttachmentError,
 } from "../../src/storage/attachments.js";
 import { withStorageTransaction } from "../../src/storage/persistence.js";
@@ -875,6 +878,88 @@ test("exact attachment reads reject Session refs that do not match stored metada
       expectedRef: { ...stored, fileName: "forged.png" },
     }),
     (error: unknown) => error instanceof AttachmentStorageCorruptionError,
+  );
+});
+
+test("verified attachment reads return owned bytes and a public immutable reference", async () => {
+  const sessionId = `memory-read-reference-${Date.now()}`;
+  const stored = await saveSessionAttachment(undefined, sessionId, {
+    fileName: "verified.png",
+    bytes: pngBytes,
+  }, noPendingAttachmentRefs);
+  try {
+    const first = await readSessionAttachment(undefined, sessionId, stored.id);
+    assert.deepEqual(first, {
+      attachment: sessionAttachmentRefFromStored(stored),
+      bytes: pngBytes,
+    });
+    first.attachment.fileName = "changed.png";
+    first.bytes[0] = 0;
+    assert.deepEqual(await readSessionAttachment(undefined, sessionId, stored.id), {
+      attachment: sessionAttachmentRefFromStored(stored),
+      bytes: pngBytes,
+    });
+  } finally {
+    await deleteSessionAttachments(undefined, sessionId);
+  }
+});
+
+test("one verified attachment read ignores unrelated damaged files and reads its blob once", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-read-attachment-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const sessionId = "session-read-attachment";
+  const stored = await saveSessionAttachment(directory, sessionId, {
+    fileName: "read.png",
+    bytes: pngBytes,
+  }, noPendingAttachmentRefs);
+  const sibling = await saveSessionAttachment(directory, sessionId, {
+    fileName: "sibling.png",
+    bytes: jpegBytes,
+  }, noPendingAttachmentRefs);
+  await fs.writeFile(
+    path.join(directory, "live-smith-attachments", sessionId, `${sibling.id}.json`),
+    "{broken metadata",
+  );
+  let reads = 0;
+  const result = await readSessionAttachment(directory, sessionId, stored.id, {
+    expectedRef: sessionAttachmentRefFromStored(stored),
+    readFile: async (handle) => {
+      reads += 1;
+      return handle.readFile();
+    },
+  });
+  assert.deepEqual(result, {
+    attachment: sessionAttachmentRefFromStored(stored),
+    bytes: pngBytes,
+  });
+  assert.equal(reads, 1);
+  await assert.rejects(
+    readSessionAttachment(directory, "other-session", stored.id),
+    AttachmentNotFoundError,
+  );
+  await assert.rejects(
+    readSessionAttachment(directory, sessionId, stored.id, {
+      expectedRef: { ...stored, sha256: "f".repeat(64) },
+    }),
+    AttachmentStorageCorruptionError,
+  );
+});
+
+test("verified attachment metadata remains bound to its exact Session", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-read-binding-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const sessionId = "session-read-binding";
+  const stored = await saveSessionAttachment(directory, sessionId, {
+    fileName: "bound.png",
+    bytes: pngBytes,
+  }, noPendingAttachmentRefs);
+  await fs.writeFile(
+    path.join(directory, "live-smith-attachments", sessionId, `${stored.id}.json`),
+    JSON.stringify({ ...stored, sessionId: "other-session" }),
+  );
+  await assert.rejects(
+    readSessionAttachment(directory, sessionId, stored.id),
+    AttachmentStorageCorruptionError,
   );
 });
 

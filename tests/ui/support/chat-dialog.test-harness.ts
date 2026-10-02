@@ -167,6 +167,7 @@ const clientScripts = {
   i18n: readClientScript("i18n"),
   attachments: readClientScript("attachments"),
   attachmentMedia: readClientScript("attachment-media"),
+  attachmentViewer: readClientScript("attachment-viewer"),
   bootstrap: readClientScript("bootstrap"),
   bridgeClient: readClientScript("bridge-client"),
   audioResults: readClientScript("audio-results"),
@@ -1114,6 +1115,8 @@ async function createDialogHarness(
       pretendToBeVisual: true,
       virtualConsole,
       beforeParse(window) {
+        Object.defineProperty(window.HTMLMediaElement.prototype, "pause", { configurable: true, value() {} });
+        Object.defineProperty(window.HTMLMediaElement.prototype, "load", { configurable: true, value() {} });
         options.beforeParse?.(window);
         if (options.navigatorLanguages) {
           Object.defineProperty(window.navigator, "languages", { configurable: true, value: options.navigatorLanguages });

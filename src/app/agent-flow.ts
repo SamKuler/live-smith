@@ -27,6 +27,7 @@ import { createSunoSessionVerifier } from "../audio-services/suno/suno-session.j
 import type { SunoSessionVerifier } from "../audio-services/suno/suno-session-contracts.js";
 import { openSunoPlatform, openSunoWebsite } from "../runtime/suno-website.js";
 import { openAudioDownload } from "../runtime/audio-download-browser.js";
+import { createAttachmentOpener } from "./attachments/attachment-opener.js";
 import { integrationConnectionsView } from "../storage/settings.js";
 import { readAudioAsset } from "../storage/audio-assets.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
@@ -81,6 +82,7 @@ import {
   AttachmentTooLargeError,
   deleteSessionAttachment,
   listPendingSessionAttachments,
+  readSessionAttachment,
   saveSessionAttachment,
   sessionAttachmentRefFromStored,
   UnsupportedAttachmentError,
@@ -250,6 +252,7 @@ export interface AgentFlowDependencies extends DialogModelStateDependencies {
   openSunoWebsite?: typeof openSunoWebsite;
   openSunoPlatform?: typeof openSunoPlatform;
   openAudioDownload?: typeof openAudioDownload;
+  openAttachment?: (file: Awaited<ReturnType<typeof readSessionAttachment>>, signal: AbortSignal) => Promise<void>;
   verifySunoSession?: SunoSessionVerifier;
   readSunoMusicService?: typeof readSunoMusicService;
   downloadAudioOutput?: typeof downloadAudioOutput;
@@ -302,6 +305,9 @@ export async function runAgentFlow(
     dependencies.verifySunoSession ?? createSunoSessionVerifier(providerFetch));
   const sunoModelCatalog = new SunoModelCatalog(storageDirectory, providerFetch, dependencies.readSunoMusicService);
   let bridge: Awaited<ReturnType<typeof createChatBridge>> | undefined;
+  const attachmentOpener = createAttachmentOpener({
+    ...(context.environment?.tempDirectory === undefined ? {} : { temporaryDirectory: context.environment.tempDirectory }),
+  });
   const projectKey = projectKeyForContext(context);
   const liveMutationQueue = dependencies.liveMutationQueue ?? new LiveMutationQueue();
   const selectionInteractionsBySessionId = new Map<
@@ -2173,6 +2179,13 @@ export async function runAgentFlow(
       return buildStateAfterCommandMutation();
     }
 
+    if (commandInput.kind === "open_attachment") {
+      const file = await readAttachment(commandInput.sessionId, commandInput.attachmentId, signal);
+      await (dependencies.openAttachment ?? attachmentOpener.open)(file, signal);
+      status = uiMessage("The attachment was opened in its default application.");
+      return buildStateAfterCommandMutation(undefined, { signal });
+    }
+
     if (commandInput.kind === "open_audio_download") {
       await attachmentSession(commandInput.sessionId);
       if (!bridge) throw new Error("The audio download bridge is unavailable.");
@@ -2550,6 +2563,21 @@ export async function runAgentFlow(
       }
     }
     return undefined;
+  };
+
+  const readAttachment = async (sessionId: string, attachmentId: string, signal: AbortSignal) => {
+    throwIfAborted(signal);
+    const session = (await listSessions(storageDirectory, projectKey)).find((entry) => entry.id === sessionId);
+    if (!session) throw new ChatBridgeResourceNotFoundError("Attachment Session is unavailable in this Live Set.");
+    try {
+      return await readSessionAttachment(storageDirectory, sessionId, attachmentId, { signal });
+    } catch (error) {
+      throwIfAborted(signal);
+      if (error instanceof AttachmentNotFoundError) {
+        throw new ChatBridgeResourceNotFoundError("This attachment is no longer available.");
+      }
+      throw new ChatBridgeAttachmentValidationError("This attachment could not be read or verified.");
+    }
   };
 
   const attachmentSession = async (sessionId: string) => {
@@ -3024,6 +3052,7 @@ export async function runAgentFlow(
       },
     });
     bridge = await createChatBridge({
+      readAttachment,
       handlePluginAppRequest: (input, signal) => pluginApps.request(input, signal),
       closePluginApps: () => pluginApps.close(),
       readAudioAsset: async (sessionId, assetId, signal) => {
@@ -3097,6 +3126,7 @@ export async function runAgentFlow(
     );
     await context.ui.showModalDialog(bridge.url, 1040, 720);
   } finally {
+    attachmentOpener.close();
     unsubscribeApprovalModes?.();
     unsubscribeEditScopes?.();
     unsubscribeModelSelections?.();
