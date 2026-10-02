@@ -32,6 +32,7 @@ export async function* parseServerSentEventData(
   const decoder = new TextDecoder();
   let buffer = "";
   let pendingBytes = 0;
+  let discardLeadingLf = false;
   let reachedEnd = false;
   let cancellationStarted = false;
   const cancel = (reason?: unknown): void => {
@@ -61,13 +62,24 @@ export async function* parseServerSentEventData(
           break;
         }
         pendingBytes += result.value.byteLength;
-        buffer += decoder.decode(result.value, { stream: true });
+        let text = decoder.decode(result.value, { stream: true });
+        if (discardLeadingLf && text) {
+          if (text.startsWith("\n")) {
+            text = text.slice(1);
+            pendingBytes -= 1;
+          }
+          discardLeadingLf = false;
+        }
+        buffer += text;
         let consumedBoundary = false;
         while (true) {
           const boundary = nextEventBoundary(buffer);
           if (!boundary) break;
           const block = buffer.slice(0, boundary.index);
-          buffer = buffer.slice(boundary.index + boundary.length);
+          const end = boundary.index + boundary.length;
+          // CR terminates a line immediately; its optional LF may arrive later.
+          discardLeadingLf = end === buffer.length && buffer[end - 1] === "\r";
+          buffer = buffer.slice(end);
           assertEventWithinLimit(block);
           const data = eventData(block);
           if (data !== undefined) yield data;
@@ -109,7 +121,8 @@ function oversizedEvent(): Error {
 function nextEventBoundary(
   value: string,
 ): { index: number; length: number } | undefined {
-  const match = /(?:\r\n|\r|\n)(?:\r\n|\r|\n)/.exec(value);
+  // Each token is one logical line ending; a CRLF cannot backtrack into two.
+  const match = /(?:\r\n|\r(?!\n)|(?<!\r)\n){2}/.exec(value);
   return match?.index === undefined
     ? undefined
     : { index: match.index, length: match[0].length };
