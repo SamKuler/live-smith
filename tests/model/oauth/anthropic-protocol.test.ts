@@ -78,6 +78,63 @@ test("Anthropic subscription protocol uses OAuth bearer identity, not x-api-key"
   assert.equal(turn.content, "Ready");
 });
 
+test("Anthropic OAuth requests visible thinking when enabled and preserves signed replay", async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const protocol = createAnthropicOAuthProtocol({
+    fetchImpl: async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const events = [
+        { type: "message_start", message: { type: "message", role: "assistant", content: [] } },
+        { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Checking the clip." } },
+        { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "private-signature" } },
+        { type: "content_block_stop", index: 0 },
+        { type: "content_block_start", index: 1, content_block: { type: "text", text: "Ready" } },
+        { type: "content_block_stop", index: 1 },
+        { type: "message_delta", delta: { stop_reason: "end_turn" } },
+        { type: "message_stop" },
+      ];
+      return new Response(events.map((event) =>
+        `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+      ).join(""), { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  const credential = {
+    provider: "anthropic" as const,
+    accessToken: "sk-ant-oat-access",
+    refreshToken: "anthropic-refresh",
+    expiresAt: Date.now() + 3_600_000,
+  };
+  const target = request("anthropic");
+  target.runtimeProfile.capabilities.streaming = true;
+  target.runtimeProfile.capabilities.reasoning.strategy = "adaptive-thinking";
+  target.runtimeProfile.model.parameters.reasoning = { mode: "enabled", effort: "high" };
+  target.onDelta = () => {};
+  const updates: unknown[] = [];
+  target.onReasoning = (update) => { updates.push(update); };
+  const turn = await protocol.createToolTurn(target, credential);
+  assert.deepEqual(bodies[0]?.thinking, { type: "adaptive", display: "summarized" });
+  assert.deepEqual(bodies[0]?.output_config, { effort: "high" });
+  assert.deepEqual(updates, [{ type: "start" }, { type: "delta", delta: "Checking the clip." }]);
+  assert.deepEqual(turn.reasoning, { content: "Checking the clip." });
+  assert.equal(turn.content, "Ready");
+  target.agentMessages = [{
+    role: "assistant",
+    content: turn.content,
+    toolCalls: turn.toolCalls,
+    providerState: turn.providerState,
+  }];
+  await protocol.createToolTurn(target, credential);
+  assert.ok(JSON.stringify(bodies[1]?.messages).includes("private-signature"));
+
+  target.runtimeProfile.model.parameters.reasoning = { mode: "disabled" };
+  await protocol.createToolTurn(target, credential);
+  assert.deepEqual(bodies[2]?.thinking, { type: "disabled" });
+  target.runtimeProfile.model.parameters.reasoning = { mode: "default" };
+  await protocol.createToolTurn(target, credential);
+  assert.equal(bodies[3]?.thinking, undefined);
+});
+
 test("Anthropic OAuth model discovery also uses bearer identity", async () => {
   let headers: Headers | undefined;
   const protocol = createAnthropicOAuthProtocol({

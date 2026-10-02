@@ -1980,7 +1980,9 @@
           focusedActivityStep?.dataset.activityStepId || null;
         const nearBottom =
           timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 48;
-        const events = state.events || [];
+        const events = (state.events || []).filter((event) =>
+          event.kind !== "reasoning" || event.content.trim().length > 0
+        );
 
         if (
           !events.length &&

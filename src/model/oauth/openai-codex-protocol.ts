@@ -112,6 +112,15 @@ export function createOpenAICodexProtocol(
         async () => {
           const body = buildOpenAIResponsesBody(directRequest);
           delete body.max_output_tokens;
+          if (
+            request.runtimeProfile.capabilities.reasoning.supported &&
+            request.runtimeProfile.model.parameters.reasoning.mode !== "disabled"
+          ) {
+            body.reasoning = {
+              ...(body.reasoning as Record<string, unknown> | undefined),
+              summary: "auto",
+            };
+          }
           const response = await fetchCodex(
             fetchImpl,
             `${codexBaseUrl}/responses`,

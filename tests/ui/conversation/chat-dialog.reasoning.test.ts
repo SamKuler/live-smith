@@ -129,7 +129,7 @@ test("reasoning stream shows a stage, visible text, reconnect state, and rejects
   }
 });
 
-test("accepted reasoning is collapsed while a stage-only event remains a plain label", async () => {
+test("accepted reasoning is expandable while empty reasoning is omitted from history", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
   state.events = [{
@@ -142,6 +142,11 @@ test("accepted reasoning is collapsed while a stage-only event remains a plain l
     createdAt: "2026-09-12T00:00:01.000Z",
     kind: "reasoning",
     content: "",
+  }, {
+    id: "reasoning-whitespace-only",
+    createdAt: "2026-09-12T00:00:01.500Z",
+    kind: "reasoning",
+    content: " \n\t ",
   }, {
     id: "assistant-after-reasoning",
     createdAt: "2026-09-12T00:00:02.000Z",
@@ -167,10 +172,80 @@ test("accepted reasoning is collapsed while a stage-only event remains a plain l
     const stageOnly = harness.document.querySelector(
       '[data-event-id="reasoning-stage-only"]',
     );
-    assert.equal(stageOnly?.tagName, "ARTICLE");
-    assert.equal(stageOnly?.textContent, "Thinking");
+    assert.equal(stageOnly, null);
+    assert.equal(harness.document.querySelector('[data-event-id="reasoning-whitespace-only"]'), null);
+    assert.equal(
+      harness.document.querySelector('[data-event-id="assistant-after-reasoning"] .timeline-content')?.textContent,
+      "The routing is valid.",
+    );
     assert.deepEqual(harness.errors, []);
   } finally {
+    harness.close();
+  }
+});
+
+test("a live thinking indicator disappears when the accepted reasoning has no text", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  state.settings.uiLanguage = "zh-CN";
+  const harness = await createDialogHarness(state);
+  harness.holdNextSend();
+  try {
+    harness.input("#prompt", "Inspect the current clip");
+    harness.click("#sendButton");
+    await waitForCondition(() => Boolean(harness.sendIds[0]), "Expected a held send to start.");
+    const sendId = harness.sendIds[0]!;
+    harness.emitServerEvent({
+      type: "reasoning_update",
+      sendId,
+      sessionId: "session-1",
+      modelTurnEpoch: 0,
+      update: { type: "start" },
+    });
+    harness.flushAnimationFrames();
+    assert.equal(harness.document.querySelector(".reasoning.streaming")?.textContent, "正在思考…");
+
+    harness.emitServerEvent({
+      type: "context_usage_update",
+      sendId,
+      sessionId: "session-1",
+      modelTurnEpoch: 1,
+      usage: null,
+    });
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      modelTurnEpoch: 1,
+      event: {
+        id: "accepted-empty-reasoning",
+        createdAt: "2026-09-12T00:00:00.000Z",
+        kind: "reasoning",
+        content: "",
+      },
+    });
+    harness.emitServerEvent({
+      type: "session_event",
+      sendId,
+      sessionId: "session-1",
+      modelTurnEpoch: 1,
+      event: {
+        id: "assistant-after-empty-reasoning",
+        createdAt: "2026-09-12T00:00:01.000Z",
+        kind: "assistant",
+        content: "The clip is ready.",
+      },
+    });
+    harness.flushAnimationFrames();
+    assert.equal(harness.document.querySelector(".timeline-item.reasoning"), null);
+    assert.equal(
+      harness.document.querySelector('[data-event-id="assistant-after-empty-reasoning"] .timeline-content')?.textContent,
+      "The clip is ready.",
+    );
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.releaseHeldSend();
+    await harness.settle();
     harness.close();
   }
 });
@@ -247,6 +322,12 @@ test("a full timeline reconciliation preserves a collapsed live reasoning item a
 test("accepted reasoning hands summary focus from its transient item to its durable event", async () => {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
+  state.events = [{
+    id: "earlier-empty-reasoning",
+    createdAt: "2026-09-11T00:00:00.000Z",
+    kind: "reasoning",
+    content: "",
+  }];
   const harness = await createDialogHarness(state);
   harness.holdNextSend();
   try {
@@ -302,6 +383,9 @@ test("accepted reasoning hands summary focus from its transient item to its dura
     );
     assert.ok(durableSummary);
     assert.equal(harness.document.activeElement, durableSummary);
+    durableSummary.click();
+    assert.equal((durableSummary.parentElement as HTMLDetailsElement).open, true);
+    assert.equal(durableSummary.nextElementSibling?.textContent, content);
 
     const laterContent = "Checking a later routing change.";
     harness.emitServerEvent({

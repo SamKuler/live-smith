@@ -1509,14 +1509,16 @@ function anthropicThinking(
   if (reasoning.mode === "default") return undefined;
   if (reasoning.mode === "disabled") return { type: "disabled" };
   const strategy = request.runtimeProfile.capabilities.reasoning.strategy;
-  if (strategy === "adaptive-thinking") return { type: "adaptive" };
+  if (strategy === "adaptive-thinking") {
+    return { type: "adaptive", display: "summarized" };
+  }
   if (strategy === "budget-thinking") {
     const max = runtime.model.parameters.maxOutputTokens;
     const budget = reasoning.budgetTokens ?? Math.floor(max / 2);
     if (budget < 1024 || budget >= max) {
       throw new Error("Thinking budget must be at least 1024 and below max output tokens.");
     }
-    return { type: "enabled", budget_tokens: budget };
+    return { type: "enabled", budget_tokens: budget, display: "summarized" };
   }
   return undefined;
 }

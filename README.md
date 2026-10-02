@@ -100,9 +100,10 @@ names, and raw provider/SDK output stay in their original language.
   already in progress, or stop it. Long runs of tool and Apply activity collapse
   into one expandable timeline item so the conversation stays readable. When a
   provider returns a visible reasoning stage or summary, Live Smith shows it in
-  a separate Thinking item; visible content is expandable, while a stage with
-  no text stays a plain label. Models that return no visible reasoning leave no
-  invented explanation behind.
+  a separate Thinking item. Visible content is expandable; a stage with no text
+  shows Thinking while in progress and disappears when complete. See
+  [visible reasoning output](docs/MODEL_PROVIDERS.md#visible-reasoning-output)
+  for connection-specific summary behavior.
 - **Search when needed.** Compatible Direct API connections can enable hosted
   Web Search, with search activity and citations visible in the conversation.
 - **Generate music and sound effects.** Add an ElevenLabs connection under

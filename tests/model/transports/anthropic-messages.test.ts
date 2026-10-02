@@ -96,7 +96,7 @@ test("Anthropic Messages maps adaptive thinking and preserves content blocks", a
   assert.equal(headers.get("x-api-key"), "secret");
   assert.equal(headers.get("anthropic-version"), "2023-06-01");
   assert.equal(headers.get("content-type"), "application/json");
-  assert.deepEqual(body.thinking, { type: "adaptive" });
+  assert.deepEqual(body.thinking, { type: "adaptive", display: "summarized" });
   assert.equal(body.system, "Test system instructions");
   assert.deepEqual(
     (body.messages as Array<{ content?: unknown }>)[0]?.content,
@@ -1322,7 +1322,7 @@ test("Claude Opus 4.5 sends budget thinking together with effort", async () => {
   });
 
   await transport.createToolTurn(request(p));
-  assert.deepEqual(body.thinking, { type: "enabled", budget_tokens: 2048 });
+  assert.deepEqual(body.thinking, { type: "enabled", budget_tokens: 2048, display: "summarized" });
   assert.deepEqual(body.output_config, { effort: "medium" });
 });
 
@@ -1349,7 +1349,7 @@ test("Claude Haiku 4.5 sends budget thinking without effort or temperature", asy
   });
 
   await transport.createToolTurn(request(p));
-  assert.deepEqual(body.thinking, { type: "enabled", budget_tokens: 2048 });
+  assert.deepEqual(body.thinking, { type: "enabled", budget_tokens: 2048, display: "summarized" });
   assert.equal("output_config" in body, false);
   assert.equal("temperature" in body, false);
 });

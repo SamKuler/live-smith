@@ -418,17 +418,27 @@ model request.
 ### Visible reasoning output
 
 Reasoning visibility is an output-protocol fact, not a model-name inference and
-not a guarantee implied by the configured reasoning effort. Live Smith does not
-enable a summary or change thinking display settings for the sake of the UI. It
-normalizes only reasoning stages and text already returned by the selected
+not a guarantee implied by the configured reasoning effort. ChatGPT subscription
+requests ask for `reasoning.summary: "auto"` when the resolved model supports
+reasoning and reasoning is not disabled. Anthropic Messages requests use
+`display: "summarized"` with explicitly enabled adaptive or budget thinking;
+Provider default and disabled thinking keep their configured behavior. This
+mapping is shared by Anthropic Direct API and subscription connections.
+OpenAI-compatible Direct API requests retain their configured summary policy
+through Extra Body. Google Antigravity retains backend-default thinking;
+`includeThoughts` is not enabled by this adapter because its support in the
+subscription product protocol is unverified. Live Smith normalizes reasoning
+stages and visible text returned by the selected
 backend: OpenAI Responses reasoning summary or reasoning-text events and items,
 OpenAI-compatible Chat Completions plaintext or structured reasoning fields,
 Anthropic thinking blocks and deltas, and Google parts explicitly marked
 `thought: true`.
 
-An explicit stage with no visible text appears as a stage-only Thinking item.
+An explicit stage with no visible text shows Thinking while in progress.
 Visible text streams into that item and the accepted result is stored as a
-separate collapsed Session event before the assistant answer. A backend that
+separate collapsed Session event before the assistant answer. Completed
+reasoning events with empty or whitespace-only content are omitted from the
+timeline, including saved history. A backend that
 returns neither a stage nor visible text produces no Thinking item. Anthropic
 signatures and redacted payloads, OpenAI encrypted reasoning, Google thought
 signatures, and unknown provider fields remain opaque replay state and are

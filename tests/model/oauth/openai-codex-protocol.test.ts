@@ -1151,7 +1151,7 @@ test("ChatGPT OAuth preserves top-level and nested unterminated error envelopes"
   }
 });
 
-test("ChatGPT OAuth surfaces reasoning summary events and keeps encrypted state private", async () => {
+test("ChatGPT OAuth requests reasoning summaries and keeps encrypted state private", async () => {
   const reasoning = {
     id: "reasoning-codex",
     type: "reasoning",
@@ -1165,15 +1165,19 @@ test("ChatGPT OAuth surfaces reasoning summary events and keeps encrypted state 
     status: "completed",
     content: [{ type: "output_text", text: "Done", annotations: [] }],
   };
+  const bodies: Array<Record<string, unknown>> = [];
   const protocol = createOpenAICodexProtocol({
-    fetchImpl: async () => streamResponse([
-      { type: "response.output_item.added", output_index: 0, item: { ...reasoning, summary: [] } },
-      { type: "response.reasoning_summary_text.delta", output_index: 0, summary_index: 0, delta: "Reading " },
-      { type: "response.reasoning_summary_text.delta", output_index: 0, summary_index: 0, delta: "the Live context." },
-      { type: "response.output_item.done", output_index: 0, item: reasoning },
-      { type: "response.output_item.done", output_index: 1, item: message },
-      { type: "response.completed", response: { status: "completed", output: [] } },
-    ]),
+    fetchImpl: async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return streamResponse([
+        { type: "response.output_item.added", output_index: 0, item: { ...reasoning, summary: [] } },
+        { type: "response.reasoning_summary_text.delta", output_index: 0, summary_index: 0, delta: "Reading " },
+        { type: "response.reasoning_summary_text.delta", output_index: 0, summary_index: 0, delta: "the Live context." },
+        { type: "response.output_item.done", output_index: 0, item: reasoning },
+        { type: "response.output_item.done", output_index: 1, item: message },
+        { type: "response.completed", response: { status: "completed", output: [] } },
+      ]);
+    },
   });
   const updates: unknown[] = [];
   const req = request();
@@ -1181,6 +1185,7 @@ test("ChatGPT OAuth surfaces reasoning summary events and keeps encrypted state 
 
   const turn = await protocol.createToolTurn(req, credential);
 
+  assert.deepEqual(bodies[0]?.reasoning, { summary: "auto" });
   assert.deepEqual(updates, [
     { type: "start" },
     { type: "delta", delta: "Reading " },
@@ -1188,4 +1193,24 @@ test("ChatGPT OAuth surfaces reasoning summary events and keeps encrypted state 
   ]);
   assert.deepEqual(turn.reasoning, { content: "Reading the Live context." });
   assert.equal(JSON.stringify(turn.reasoning).includes("private-codex-state"), false);
+
+  req.runtimeProfile.model.parameters.reasoning = { mode: "enabled", effort: "high" };
+  req.agentMessages = [{
+    role: "assistant",
+    content: turn.content,
+    toolCalls: turn.toolCalls,
+    providerState: turn.providerState,
+  }];
+  await protocol.createToolTurn(req, credential);
+  assert.deepEqual(bodies[1]?.reasoning, { effort: "high", summary: "auto" });
+  assert.ok(JSON.stringify(bodies[1]?.input).includes("private-codex-state"));
+
+  req.runtimeProfile.model.parameters.reasoning = { mode: "disabled" };
+  await protocol.createToolTurn(req, credential);
+  assert.deepEqual(bodies[2]?.reasoning, { effort: "none" });
+
+  req.runtimeProfile.model.parameters.reasoning = { mode: "default" };
+  req.runtimeProfile.capabilities.reasoning.supported = false;
+  await protocol.createToolTurn(req, credential);
+  assert.equal(bodies[3]?.reasoning, undefined);
 });
