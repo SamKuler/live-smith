@@ -1,3 +1,5 @@
+import { saveMidiArtifact, parseMidiArtifact } from "../../../src/storage/midi-artifacts.js";
+import { midiBytes, noteTrack } from "../../attachments/support/midi-test-helpers.js";
 import { consumedAttachmentIds } from "../../../src/app/agent-request.js";
 import { ModelInputTooLargeError } from "../../../src/model/connection-error.js";
 import { readSessionAttachmentBytes } from "../../../src/storage/attachments.js";
@@ -35,6 +37,7 @@ async function withFlow(
   model: (request: TransportRequest, turn: number) => ModelTurn | Promise<ModelTurn> = () => ({ content: "Ready.", toolCalls: [] }),
   openAttachment?: AgentFlowDependencies["openAttachment"],
   audioInput = false,
+  exportOptions: Pick<AgentFlowDependencies, "openMidiDownload"> = {},
 ) {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-followup-attachments-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -60,6 +63,7 @@ async function withFlow(
     } },
   } as never, interaction, {
     renderHtml: () => "<html></html>",
+    ...exportOptions,
     ...(openAttachment === undefined ? {} : { openAttachment }),
     modelBackendManager: {
       async forProfile() {
@@ -395,4 +399,64 @@ test("oversized audio recovery stages and sends an excerpt, then reuses the orig
     if (turn === 1) throw new ModelInputTooLargeError("The provider rejected this audio size.");
     return { content: "The short excerpt is available.", toolCalls: [] };
   }, undefined, true);
+});
+
+
+test("saved MIDI versions export portable bytes and attach to the next message during an active send", async (t) => {
+  let enter!: () => void; const entered = new Promise<void>((resolve) => { enter = resolve; });
+  let release!: () => void; const pending = new Promise<void>((resolve) => { release = resolve; });
+  let expectedBytes: Uint8Array; let exported = false;
+  const midiDocuments = (request: TransportRequest) => request.currentUserContent.flatMap((part) => {
+    if (part.type !== "text") return [];
+    return part.text.split("\n").flatMap((line) => {
+      try {
+        const document = JSON.parse(line);
+        return document?.mediaType === "audio/midi" && typeof document.content === "string"
+          ? [document.content.trim().split("\n").map((entry: string) => JSON.parse(entry))] : [];
+      } catch { return []; }
+    });
+  });
+  await withFlow(t, async (flow) => {
+    const bytes = midiBytes({ tracks: [noteTrack({ pitch: 60 }), noteTrack({ pitch: 48, channel: 2 })] });
+    const original = await saveMidiArtifact(flow.directory, flow.sessionId, { connectionId: "midi-generator", serverId: "local",
+      toolName: "compose", label: "主歌/钢琴", bytes, signal: new AbortController().signal });
+    expectedBytes = midiBytes({ tracks: [noteTrack({ pitch: 64 }), noteTrack({ pitch: 48, channel: 2 })] });
+    const version = await saveMidiArtifact(flow.directory, flow.sessionId, { connectionId: "midi-generator", serverId: "local",
+      toolName: "compose", label: "主歌/钢琴", bytes: expectedBytes, revisionOf: original.id, signal: new AbortController().signal });
+    const running = send(flow, "Keep this request open.", [], "midi-export-open-send");
+    try {
+      await entered;
+      const command = async (kind: string, commandId: string) => {
+        const response = await fetch(endpoint(flow.url, "/command"), { method: "POST", headers: {
+          "Content-Type": "application/json", "X-Live-Smith-Command-Id": commandId,
+        }, body: JSON.stringify({ kind, sessionId: flow.sessionId, artifactRef: version.id }), signal: AbortSignal.timeout(5000) });
+        const text = await response.text(); assert.equal(response.status, 200, text); return JSON.parse(text) as ChatDialogState;
+      };
+      const attached = await command("attach_midi_artifact", "attach-midi-version");
+      const attachment = attached.pendingAttachments.find((item) => item.mediaType === "audio/midi")!;
+      assert.ok(attachment); assert.match(attachment.fileName, /-v2-.*\.mid$/u); assert.doesNotMatch(attachment.fileName, /[\/]/u);
+      assert.deepEqual(await readSessionAttachmentBytes(flow.directory, flow.sessionId, attachment.id), expectedBytes);
+      await command("export_midi_artifact", "export-midi-version"); assert.equal(exported, true);
+      assert.equal(flow.requests.length, 1);
+      assert.deepEqual(midiDocuments(flow.requests[0]!), []);
+      release(); const result = await running; assert.equal(result.status, 200, await result.text());
+      const next = await send(flow, "Read both MIDI parts.", [attachment.id], "send-midi-version");
+      assert.equal(next.status, 200, await next.text());
+      const documents = midiDocuments(flow.requests[1]!);
+      assert.equal(documents.length, 1);
+      assert.equal(documents[0]![0].trackCount, 2);
+      assert.deepEqual(documents[0]!.filter((entry: { type: string }) => entry.type === "note")
+        .map((entry: { pitch: number }) => entry.pitch), [64, 48]);
+    } finally { release(); const response = await running; if (!response.bodyUsed) await response.text(); }
+  }, async (_request, turn) => {
+    if (turn === 1) { enter(); await pending; }
+    return { content: "Done.", toolCalls: [] };
+  }, undefined, false, { openMidiDownload: async (target) => {
+    assert.equal(new URL(target).pathname, "/midi-download");
+    const response = await fetch(target); assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "audio/midi");
+    assert.match(response.headers.get("content-disposition")!, /filename\*=UTF-8''.*-v2-.*\.mid/u);
+    const bytes = new Uint8Array(await response.arrayBuffer()); assert.deepEqual(bytes, expectedBytes!);
+    assert.equal(parseMidiArtifact(bytes).parts.length, 2); exported = true;
+  } });
 });

@@ -1,4 +1,9 @@
 export const templateMessages: Record<string, string> = {
+  "Create next version": "生成新版本",
+  "Attach to message": "附加到消息",
+  "Export MIDI": "导出 MIDI",
+  "Create a new version of saved MIDI artifact {reference}. Describe the changes:": "基于已保存 MIDI {reference} 生成新版本，请描述修改要求：",
+  "The MIDI file was sent to your default browser for export. Keep Live Smith open until it finishes.": "MIDI 文件已交给默认浏览器导出。请在下载完成前保持 Live Smith 打开。",
   "Leave empty to write lyrics from scratch.": "留空以从头创作歌词。",
   "Exact ID from Inspect lyric models. Leave empty to use the account's default lyric model.": "填写“查看歌词模型”返回的准确 ID，留空时使用账户默认歌词模型。",
   "Only available when the selected lyric model supports thinking.": "仅在所选歌词模型支持推理时可用。",

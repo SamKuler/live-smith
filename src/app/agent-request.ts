@@ -343,6 +343,7 @@ export async function handleAgentRequest(
     },
   });
   const pluginTools = await createRequestPluginTools({
+    ...(prepared.userEvent.parentCandidate?.kind === "midi" ? { midiRevisionOf: prepared.userEvent.parentCandidate.id } : {}),
     storageDirectory,
     pluginConfigSnapshots: prepared.skillContext.pluginConfigSnapshots ?? {},
     ...(context.environment?.tempDirectory === undefined

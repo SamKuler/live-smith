@@ -122,6 +122,7 @@ export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
   toolName: string;
   signal: AbortSignal;
   forbiddenPaths?: readonly string[];
+  revisionOf?: string;
   call(argumentsValue: Record<string, unknown>): Promise<PluginToolResult>;
 }): Promise<{ result: PluginToolResult; artifacts: MidiArtifact[] }> {
   if (!plainRecord(input.argumentsValue)) throw new Error("Plugin tool arguments must be an object.");
@@ -175,6 +176,7 @@ export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
       serverId: input.serverId,
       toolName: input.toolName,
       label: output.label,
+      ...(input.revisionOf ? { revisionOf: input.revisionOf } : {}),
       bytes,
       signal: input.signal,
     });

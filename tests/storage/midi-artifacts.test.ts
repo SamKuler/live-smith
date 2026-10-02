@@ -236,6 +236,7 @@ test("incomplete MIDI writes do not poison a Session or hide committed artifacts
   await fs.writeFile(path.join(root, `${incompleteId}.midi.json`), JSON.stringify({
     ...committed,
     id: incompleteId,
+    version: { groupId: incompleteId, number: 1 },
     label: "Interrupted metadata-first save",
   }), { mode: 0o600 });
   await fs.writeFile(path.join(root, "midi_orphan.mid"), bytes, { mode: 0o600 });
@@ -267,7 +268,7 @@ test("fresh incomplete MIDI files remain untouched while another process may be 
   });
   const root = path.join(h.directory, "live-smith-midi", h.session.id);
   const incomplete = "midi_incomplete";
-  await fs.writeFile(path.join(root, `${incomplete}.midi.json`), JSON.stringify({ ...committed, id: incomplete }),
+  await fs.writeFile(path.join(root, `${incomplete}.midi.json`), JSON.stringify({ ...committed, id: incomplete, version: { groupId: incomplete, number: 1 } }),
     { mode: 0o600 });
   await fs.writeFile(path.join(root, "midi_orphan.mid"), bytes, { mode: 0o600 });
   await fs.writeFile(path.join(root, ".midi_orphan.mid.tmp_writing"), bytes, { mode: 0o600 });

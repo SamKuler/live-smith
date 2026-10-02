@@ -1,3 +1,4 @@
+import { readMidiArtifactFile } from "./midi/artifact-file.js";
 import { attachmentQuotaIsWithinLimits } from "../attachments/contracts.js";
 import { selectSavedAttachment } from "./attachments/attachment-selection.js";
 import { ModelInputTooLargeError } from "../model/connection-error.js";
@@ -31,7 +32,7 @@ import type { readSunoMusicService } from "../audio-services/suno/suno-catalog.j
 import { createSunoSessionVerifier } from "../audio-services/suno/suno-session.js";
 import type { SunoSessionVerifier } from "../audio-services/suno/suno-session-contracts.js";
 import { openSunoPlatform, openSunoWebsite } from "../runtime/suno-website.js";
-import { openAudioDownload } from "../runtime/audio-download-browser.js";
+import { openMediaDownload as openAudioDownload } from "../runtime/media-download-browser.js";
 import { createAttachmentOpener } from "./attachments/attachment-opener.js";
 import { integrationConnectionsView } from "../storage/settings.js";
 import { readAudioAsset } from "../storage/audio-assets.js";
@@ -260,6 +261,7 @@ export interface AgentFlowDependencies extends DialogModelStateDependencies {
   openSunoWebsite?: typeof openSunoWebsite;
   openSunoPlatform?: typeof openSunoPlatform;
   openAudioDownload?: typeof openAudioDownload;
+  openMidiDownload?: typeof openAudioDownload;
   openAttachment?: (file: Awaited<ReturnType<typeof readSessionAttachment>>, signal: AbortSignal) => Promise<void>;
   verifySunoSession?: SunoSessionVerifier;
   readSunoMusicService?: typeof readSunoMusicService;
@@ -2255,6 +2257,19 @@ export async function runAgentFlow(
       return buildStateAfterCommandMutation(undefined, { signal });
     }
 
+    if (commandInput.kind === "export_midi_artifact" || commandInput.kind === "attach_midi_artifact") {
+      await attachmentSession(commandInput.sessionId);
+      if (commandInput.kind === "attach_midi_artifact") {
+        const file = await readMidiArtifactFile(storageDirectory, commandInput.sessionId, commandInput.artifactRef, signal);
+        return handleAttachmentUpload({ sessionId: commandInput.sessionId, ...file }, signal);
+      }
+      if (!bridge) throw new Error("The MIDI export bridge is unavailable.");
+      const target = await bridge.createMidiDownload(commandInput.sessionId, commandInput.artifactRef, signal);
+      await (dependencies.openMidiDownload ?? openAudioDownload)(target, signal);
+      status = uiMessage("The MIDI file was sent to your default browser for export. Keep Live Smith open until it finishes.");
+      return buildStateAfterCommandMutation(undefined, { signal });
+    }
+
     if (commandInput.kind === "open_audio_download") {
       await attachmentSession(commandInput.sessionId);
       if (!bridge) throw new Error("The audio download bridge is unavailable.");
@@ -3156,6 +3171,10 @@ export async function runAgentFlow(
         return result;
       },
       closePluginApps: () => pluginApps.close(),
+      readMidiArtifact: async (sessionId, artifactRef, signal) => {
+        await attachmentSession(sessionId);
+        return readMidiArtifactFile(storageDirectory, sessionId, artifactRef, signal);
+      },
       readAudioAsset: async (sessionId, assetId, signal) => {
         const session = (await listSessions(storageDirectory, projectKey)).find((entry) => entry.id === sessionId);
         if (!session) throw new ChatBridgeResourceNotFoundError("Audio Session is unavailable in this Live Set.");

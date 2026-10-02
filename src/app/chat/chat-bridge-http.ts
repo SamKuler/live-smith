@@ -225,6 +225,8 @@ export type ChatBridgeCommandInput =
   | { kind: "resume_audio_job"; sessionId: string; jobId: string }
   | { kind: "download_audio_output"; sessionId: string; jobId: string; outputKey: string }
   | { kind: "open_audio_download"; sessionId: string; assetId: string }
+  | { kind: "export_midi_artifact"; sessionId: string; artifactRef: string }
+  | { kind: "attach_midi_artifact"; sessionId: string; artifactRef: string }
   | { kind: "open_attachment"; sessionId: string; attachmentId: string }
   | { kind: "open_suno_website" }
   | { kind: "open_suno_platform" }
@@ -1155,6 +1157,13 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       throw new ChatBridgeRequestValidationError("Choose one generated Suno output from this Session.");
     }
     return { kind, sessionId: input.sessionId, jobId: input.jobId, outputKey: input.outputKey };
+  }
+  if (kind === "export_midi_artifact" || kind === "attach_midi_artifact") {
+    assertOnlyInputKeys(input, ["kind", "sessionId", "artifactRef"], `${kind} command`);
+    if (!isSafeStorageId(input.sessionId) || !isSafeStorageId(input.artifactRef)) {
+      throw new ChatBridgeRequestValidationError("Choose a saved MIDI version in this Session.");
+    }
+    return { kind, sessionId: input.sessionId, artifactRef: input.artifactRef };
   }
   if (kind === "open_audio_download") {
     assertOnlyInputKeys(input, ["kind", "sessionId", "assetId"], "open_audio_download command");

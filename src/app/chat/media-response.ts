@@ -1,10 +1,10 @@
 import type { ServerResponse } from "node:http";
 import { Buffer } from "node:buffer";
 
-/** Serve verified, owned audio bytes; no provider URL or filesystem path reaches the WebView. */
-export function sendAudioAssetResponse(
+/** Serve verified, owned media bytes; no provider URL or filesystem path reaches the WebView. */
+export function sendMediaAssetResponse(
   response: ServerResponse,
-  audio: { bytes: Uint8Array; mediaType: "audio/wav" | "audio/mpeg" },
+  audio: { bytes: Uint8Array; mediaType: "audio/wav" | "audio/mpeg" | "audio/midi"; fileName?: string },
   rangeHeader: string | undefined,
   head = false,
   download = false,
@@ -14,8 +14,10 @@ export function sendAudioAssetResponse(
   response.setHeader("Cache-Control", "no-store");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Accept-Ranges", "bytes");
+  const fallbackName = audio.mediaType === "audio/midi" ? "midi-result.mid" : `audio-result.${audio.mediaType === "audio/wav" ? "wav" : "mp3"}`;
+  const encodedName = audio.fileName && encodeURIComponent(audio.fileName).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
   response.setHeader("Content-Disposition", download
-    ? `attachment; filename="audio-result.${audio.mediaType === "audio/wav" ? "wav" : "mp3"}"`
+    ? `attachment; filename="${fallbackName}"${encodedName ? `; filename*=UTF-8''${encodedName}` : ""}`
     : "inline");
   let start = 0;
   let end = size - 1;

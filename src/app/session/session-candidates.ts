@@ -2,7 +2,7 @@ import { candidateKey, pendingCandidateParentFromEvents, preferredCandidateFromE
 import { MAX_MIDI_PREVIEW_NOTES, type MidiPreviewNote } from "../../agent/action-preview.js";
 import { readAudioSessionState, readAudioAsset } from "../../storage/audio-assets.js";
 import { appendSessionEvent, loadSessionEvents, type SessionEvent } from "../../storage/events.js";
-import { inspectMidiArtifacts, readMidiArtifact, midiArtifactPartSummaries, type MidiArtifactPartSummary } from "../../storage/midi-artifacts.js";
+import { inspectMidiArtifacts, readMidiArtifact, midiArtifactPartSummaries, midiArtifactVersion, type MidiArtifactVersion, type MidiArtifactPartSummary } from "../../storage/midi-artifacts.js";
 import { listSessions } from "../../storage/sessions.js";
 import { throwIfAborted } from "../../runtime/host.js";
 
@@ -23,6 +23,7 @@ export interface SessionCandidate {
   generation?: CandidateGeneration;
   parent?: CandidateRef;
   preferred: boolean;
+  version?: MidiArtifactVersion & { groupLabel: string };
   audio?: { durationSeconds: number; mediaType: "audio/wav" | "audio/mpeg"; jobId: string };
   midi?: { durationBeats: number; noteCount: number; parts: MidiArtifactPartSummary[];
     notes: MidiPreviewNote[]; omittedNoteCount: number };
@@ -120,7 +121,8 @@ export async function listSessionCandidates(input: SessionInput & { offset?: num
   const summaries: SessionCandidate[] = [
     ...listing.artifacts.map((artifact): SessionCandidate => ({ ref: { kind: "midi", id: artifact.id }, label: artifact.label,
       createdAt: artifact.createdAt, sourceLabel: artifact.toolName, preferred: preferred?.kind === "midi" && preferred.id === artifact.id,
-      ...generationAt(`midi:${artifact.id}`, artifact.createdAt) })),
+      ...generationAt(`midi:${artifact.id}`, artifact.createdAt),
+      version: { ...midiArtifactVersion(artifact), groupLabel: listing.artifacts.find((entry) => entry.id === midiArtifactVersion(artifact).groupId)?.label ?? artifact.label } })),
     ...assets.filter((asset) => asset.role !== "source").map((asset): SessionCandidate => {
       const job = jobMap.get(asset.jobId)!;
       return { ref: { kind: "audio", id: asset.id }, label: `${job.title || asset.label} · ${asset.role}`, createdAt: job.createdAt,

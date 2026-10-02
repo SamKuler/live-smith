@@ -7,6 +7,7 @@ interface Dependencies {
   getState(): { activeSessionId?: string; events?: CandidateHistoryEvent[] };
   read(input: { sessionId: string; offset: number }): Promise<unknown>;
   select(input: { sessionId: string; selection: CandidateSelection }): Promise<boolean>;
+  transfer(kind: "export_midi_artifact" | "attach_midi_artifact", input: { sessionId: string; artifactRef: string }): Promise<boolean>;
   useInChat(text: string): Promise<void>;
   resultActions: PluginResultActions;
   audioUrl(sessionId: string, id: string): string;
@@ -40,11 +41,13 @@ function createCandidateComparisonView(deps: Dependencies) {
   const next = element("button", "secondary", t("Next page")); next.type = "button";
   pages.append(load, previous, next);
   controls.append(pages, context, clear, choices, comparison); content.append(controls, status);
+  const candidateLabel = (candidate: SessionCandidate) => candidate.version ? `${candidate.label} · v${candidate.version.number}` : candidate.label;
   const current = (id = sessionId) => Boolean(id) && id === deps.getState().activeSessionId;
   function syncBusy() {
     load.disabled = pending; previous.disabled = pending || !snapshot?.offset;
     next.disabled = pending || !snapshot || snapshot.offset + 24 >= snapshot.total;
     clear.disabled = pending || busy;
+    for (const button of comparison.querySelectorAll<HTMLButtonElement>("[data-candidate-transfer]")) button.disabled = pending;
     for (const button of comparison.querySelectorAll<HTMLButtonElement>("[data-candidate-write]")) button.disabled = pending || busy;
   }
   async function read(offset = 0) {
@@ -70,9 +73,15 @@ function createCandidateComparisonView(deps: Dependencies) {
       if (!saved || !current(id)) return;
       if (selection.action === "continue" && candidate) await deps.useInChat(
         candidate.ref.kind === "midi"
-          ? t("Continue from saved MIDI artifact {reference}. Describe the next variation or edit:", { reference: candidate.ref.id })
+          ? t("Create a new version of saved MIDI artifact {reference}. Describe the changes:", { reference: candidate.ref.id })
           : t("Continue from saved audio asset {reference}. Describe the next variation or edit:", { reference: candidate.ref.id }));
     } finally { if (attempt === serial) { pending = false; syncBusy(); if (current(id)) void read(snapshot?.offset ?? 0); } }
+  }
+  async function transfer(kind: "export_midi_artifact" | "attach_midi_artifact", candidate: SessionCandidate) {
+    if (!current() || pending) return;
+    const id = sessionId!; const attempt = ++serial; pending = true; syncBusy();
+    try { await deps.transfer(kind, { sessionId: id, artifactRef: candidate.ref.id }); }
+    finally { if (attempt === serial) { pending = false; syncBusy(); } }
   }
   const button = (label: string, action: () => void) => {
     const node = element("button", "secondary", t(label)); node.type = "button"; node.addEventListener("click", action); return node;
@@ -82,13 +91,13 @@ function createCandidateComparisonView(deps: Dependencies) {
     comparison.replaceChildren();
     for (const candidate of selected.values()) {
       const card = element("article", "candidate-card");
-      card.append(element("h4", "", candidate.label), element("p", "field-hint", candidate.sourceLabel));
+      card.append(element("h4", "", candidateLabel(candidate)), element("p", "field-hint", candidate.sourceLabel));
       const preferred = snapshot?.preferred && candidateKey(snapshot.preferred) === candidateKey(candidate.ref);
       const actions = element("div", "candidate-actions");
       const prefer = button(preferred ? "Clear preferred" : "Mark preferred", () => { void select({ action: "prefer", candidate: preferred ? null : candidate.ref }); });
       prefer.setAttribute("aria-pressed", String(Boolean(preferred)));
       prefer.dataset.candidateWrite = "";
-      const continueButton = button("Continue in chat", () => { void select({ action: "continue", candidate: candidate.ref }, candidate); });
+      const continueButton = button(candidate.ref.kind === "midi" ? "Create next version" : "Continue in chat", () => { void select({ action: "continue", candidate: candidate.ref }, candidate); });
       continueButton.dataset.candidateWrite = "";
       actions.append(prefer, continueButton);
       card.append(actions);
@@ -102,6 +111,11 @@ function createCandidateComparisonView(deps: Dependencies) {
         }));
       }
       if (candidate.midi) {
+        const transfers = element("div", "candidate-actions");
+        transfers.append(button("Attach to message", () => { void transfer("attach_midi_artifact", candidate); }),
+          button("Export MIDI", () => { void transfer("export_midi_artifact", candidate); }));
+        for (const button of transfers.querySelectorAll("button")) button.dataset.candidateTransfer = "";
+        card.append(transfers);
         const midi = candidate.midi;
         card.append(element("p", "field-hint", t("{notes} notes · {parts} parts · {beats} beats", {
           notes: String(midi.noteCount), parts: String(midi.parts.length), beats: String(midi.durationBeats) })));
@@ -140,16 +154,27 @@ function createCandidateComparisonView(deps: Dependencies) {
     choices.replaceChildren();
     previous.disabled = !snapshot?.offset; next.disabled = !snapshot || snapshot.offset + 24 >= snapshot.total;
     renderContext();
+    const groups = new Map<string, SessionCandidate[]>();
     for (const candidate of snapshot?.candidates ?? []) {
-      const label = element("label", "candidate-choice"); const checkbox = element("input", ""); checkbox.type = "checkbox";
-      const key = candidateKey(candidate.ref); checkbox.checked = selected.has(key);
-      label.append(checkbox, element("span", "", candidate.label + (candidate.preferred ? " · " + t("Preferred") : "")));
-      checkbox.addEventListener("change", () => {
-        if (checkbox.checked && selected.size >= 4) { checkbox.checked = false; return; }
-        if (checkbox.checked) selected.set(key, candidate); else selected.delete(key);
-        renderCards();
-      });
-      choices.append(label);
+      const key = candidate.version?.groupId ?? candidateKey(candidate.ref);
+      const group = groups.get(key) ?? [];
+      group.push(candidate); groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      const container = element("div", "candidate-version-group");
+      if (group[0]?.version) container.append(element("strong", "", group[0].version.groupLabel));
+      for (const candidate of group.sort((a, b) => (a.version?.number ?? 0) - (b.version?.number ?? 0))) {
+        const label = element("label", "candidate-choice"); const checkbox = element("input", ""); checkbox.type = "checkbox";
+        const key = candidateKey(candidate.ref); checkbox.value = key; checkbox.checked = selected.has(key);
+        label.append(checkbox, element("span", "", candidateLabel(candidate) + (candidate.preferred ? " · " + t("Preferred") : "")));
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked && selected.size >= 4) { checkbox.checked = false; return; }
+          if (checkbox.checked) selected.set(key, candidate); else selected.delete(key);
+          renderCards();
+        });
+        container.append(label);
+      }
+      choices.append(container);
     }
     renderCards();
   }

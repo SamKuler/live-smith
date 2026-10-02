@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import type { UiMessage } from "../../i18n/ui-message.js";
-import { sendAudioAssetResponse } from "../audio/audio-asset-response.js";
+import { sendMediaAssetResponse } from "./media-response.js";
 import type { IntegrationConnectionsView } from "../../plugins/integration-connections.js";
 import {
   createServer,
@@ -365,10 +365,12 @@ export interface ChatBridge {
   publishGlobalSettings(change: GlobalSettingsChange): void;
   publishProfileSettingsChange(change: ProfileSettingsChange): void;
   createAudioDownload(sessionId: string, assetId: string, signal: AbortSignal): Promise<string>;
+  createMidiDownload(sessionId: string, artifactRef: string, signal: AbortSignal): Promise<string>;
   close(): Promise<void>;
 }
 
 interface ChatBridgeOptions {
+  readMidiArtifact?(sessionId: string, artifactRef: string, signal: AbortSignal): Promise<{ bytes: Uint8Array; fileName: string }>;
   readSessionCandidates?(input: { sessionId: string; offset: number }, signal: AbortSignal): Promise<unknown>;
   prepareMidiImport?(input: { sessionId: string; artifactRef: string }, signal: AbortSignal): Promise<unknown>;
   readAttachment?(sessionId: string, attachmentId: string, signal: AbortSignal): Promise<{
@@ -702,7 +704,7 @@ export async function createChatBridge(
   const token = randomUUID();
   let appSandbox: Promise<PluginAppSandbox> | undefined;
   const appSandboxRegistrations = new Map<string, { dispose(): void }>();
-  const audioDownloads = new Map<string, { sessionId: string; assetId: string; expiresAt: number }>();
+  const mediaDownloads = new Map<string, { kind: "audio" | "midi"; sessionId: string; assetId: string; expiresAt: number }>();
   const clients = new Set<ServerResponse>();
   const backpressuredClients = new Set<ServerResponse>();
   const pendingConfirmations = new Map<string, PendingConfirmation>();
@@ -1611,21 +1613,23 @@ export async function createChatBridge(
         return;
       }
 
-      if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/audio-download") {
-        assertExactQueryParameters(url, ["token"], "Audio download request");
+      if ((request.method === "GET" || request.method === "HEAD") && ["/audio-download", "/midi-download"].includes(url.pathname)) {
+        const kind = url.pathname === "/midi-download" ? "midi" : "audio";
+        assertExactQueryParameters(url, ["token"], "Media download request");
         const key = tokenForRequest(url) ?? "";
-        const ticket = audioDownloads.get(key);
+        const ticket = mediaDownloads.get(key);
         const origin = bridgeBaseUrl(server);
-        if (!ticket || ticket.expiresAt <= Date.now() || request.headers.host !== new URL(origin).host ||
+        if (!ticket || ticket.kind !== kind || ticket.expiresAt <= Date.now() || request.headers.host !== new URL(origin).host ||
           request.headers.origin !== undefined && request.headers.origin !== origin) {
-          if (ticket?.expiresAt && ticket.expiresAt <= Date.now()) audioDownloads.delete(key);
+          if (ticket?.expiresAt && ticket.expiresAt <= Date.now()) mediaDownloads.delete(key);
           response.writeHead(403).end("Forbidden"); return;
         }
-        if (!options.readAudioAsset) { response.writeHead(404).end("Not found"); return; }
+        if (kind === "audio" ? !options.readAudioAsset : !options.readMidiArtifact) { response.writeHead(404).end("Not found"); return; }
         const signal = beginReadOnlyBuild(response, handlerTerminal);
-        const audio = await options.readAudioAsset(ticket.sessionId, ticket.assetId, signal);
+        const audio = kind === "audio" ? await options.readAudioAsset!(ticket.sessionId, ticket.assetId, signal)
+          : { ...await options.readMidiArtifact!(ticket.sessionId, ticket.assetId, signal), mediaType: "audio/midi" as const };
         if (closing || response.destroyed) return;
-        sendAudioAssetResponse(response, audio, request.headers.range, request.method === "HEAD", true);
+        sendMediaAssetResponse(response, audio, request.headers.range, request.method === "HEAD", true);
         return;
       }
 
@@ -1652,7 +1656,7 @@ export async function createChatBridge(
         const file = await options.readAttachment(input.sessionId, input.attachmentId, signal);
         if (closing || response.destroyed) return;
         if (file.attachment.kind === "audio") {
-          sendAudioAssetResponse(response, { bytes: file.bytes, mediaType: file.attachment.mediaType },
+          sendMediaAssetResponse(response, { bytes: file.bytes, mediaType: file.attachment.mediaType },
             request.headers.range, request.method === "HEAD");
           return;
         }
@@ -1678,7 +1682,7 @@ export async function createChatBridge(
         const signal = beginReadOnlyBuild(response, handlerTerminal);
         const audio = await options.readAudioAsset(sessionIds[0], assetId, signal);
         if (closing || response.destroyed) return;
-        sendAudioAssetResponse(response, audio, request.headers.range, request.method === "HEAD");
+        sendMediaAssetResponse(response, audio, request.headers.range, request.method === "HEAD");
         return;
       }
 
@@ -2910,22 +2914,26 @@ export async function createChatBridge(
     });
   });
 
+  const createMediaDownload = async (kind: "audio" | "midi", sessionId: string, assetId: string, signal: AbortSignal): Promise<string> => {
+    throwIfAborted(signal);
+    const read = kind === "audio" ? options.readAudioAsset : options.readMidiArtifact;
+    if (closing || !read || !isSafeStorageId(sessionId) || !isSafeStorageId(assetId)) {
+      throw new ChatBridgeResourceNotFoundError("Saved media is unavailable.");
+    }
+    await read(sessionId, assetId, signal);
+    throwIfAborted(signal);
+    if (closing) throw new ChatBridgeResourceNotFoundError("Live Smith closed before opening the download.");
+    for (const [key, ticket] of mediaDownloads) if (ticket.expiresAt <= Date.now()) mediaDownloads.delete(key);
+    if (mediaDownloads.size >= 20) throw new ChatBridgeConflictError("Too many pending media downloads. Wait two minutes before opening another.");
+    const key = randomUUID();
+    mediaDownloads.set(key, { kind, sessionId, assetId, expiresAt: Date.now() + 120_000 });
+    return `${bridgeBaseUrl(server)}/${kind}-download?token=${key}`;
+  };
+
   return {
     url: `${bridgeBaseUrl(server)}/chat?token=${token}`,
-    createAudioDownload: async (sessionId, assetId, signal) => {
-      throwIfAborted(signal);
-      if (closing || !options.readAudioAsset || !isSafeStorageId(sessionId) || !isSafeStorageId(assetId)) {
-        throw new ChatBridgeResourceNotFoundError("Saved audio is unavailable.");
-      }
-      await options.readAudioAsset(sessionId, assetId, signal);
-      throwIfAborted(signal);
-      if (closing) throw new ChatBridgeResourceNotFoundError("Live Smith closed before opening the download.");
-      for (const [key, ticket] of audioDownloads) if (ticket.expiresAt <= Date.now()) audioDownloads.delete(key);
-      if (audioDownloads.size >= 20) throw new ChatBridgeConflictError("Too many pending audio downloads. Wait two minutes before opening another.");
-      const key = randomUUID();
-      audioDownloads.set(key, { sessionId, assetId, expiresAt: Date.now() + 120_000 });
-      return `${bridgeBaseUrl(server)}/audio-download?token=${key}`;
-    },
+    createAudioDownload: (sessionId, assetId, signal) => createMediaDownload("audio", sessionId, assetId, signal),
+    createMidiDownload: (sessionId, assetId, signal) => createMediaDownload("midi", sessionId, assetId, signal),
     publishSessionApprovalMode: (sessionId, approvalMode, updatedAt) => {
       const published = broadcastStateChange({
         type: "approval_mode_changed",
@@ -3135,7 +3143,7 @@ export async function createChatBridge(
       closing = true;
       for (const registration of appSandboxRegistrations.values()) registration.dispose();
       appSandboxRegistrations.clear();
-      audioDownloads.clear();
+      mediaDownloads.clear();
       const mutationTerminals = [...inFlightMutationHandlers];
       const pendingReads = [...readOnlyBuilds.entries()];
       const connectedClients = new Set([
@@ -3333,7 +3341,7 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "load_session_model_capabilities" ||
     input.kind === "load_session_tools" ||
     input.kind === "run_plugin_tool" || input.kind === "run_audio_tool" ||
-    input.kind === "open_audio_download" ||
+    input.kind === "open_audio_download" || input.kind === "export_midi_artifact" || input.kind === "attach_midi_artifact" ||
     input.kind === "open_attachment" ||
     input.kind === "import_midi_artifact" ||
     input.kind === "select_candidate" ||

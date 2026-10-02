@@ -42,7 +42,7 @@ src/
       audio-generation.ts, audio-processing.ts, audio-polling.ts, audio-job-runtime.ts
         Coordinate remote tasks, durable audio jobs, recovery, bounded polling
         and prepared output retrieval.
-      audio-asset-sources.ts, audio-asset-response.ts, request-audio-sources.ts
+      audio-asset-sources.ts, request-audio-sources.ts
         Bind admitted audio, stage Session outputs and mediate Live Project import.
       request-audio-tools.ts, audio-parameter-tool.ts
         Assemble request-bound tools and explicit parameter-panel execution.
@@ -844,6 +844,19 @@ retries. All positions are quarter-note beats; tempo, meter and controller event
 are retained only in the source artifact and never materialize Set mutations.
 
 ### Saved candidate comparison and lineage
+
+MIDI metadata stores a version group, monotonic number and optional parent ID.
+Version allocation runs in the existing storage transaction; metadata with an
+unavailable blob still reserves its number. Legacy records project as independent
+v1 groups. Revisions never overwrite source bytes. The admitted chat request fixes
+the parent version for all its MIDI-producing tool calls.
+
+Export and attachment commands resolve a Session-owned artifact and verify its
+original bytes. `app/midi/artifact-file.ts` supplies a portable `.mid` filename;
+`app/chat/media-response.ts` shares binary range and download responses with audio.
+Resource-only tickets bind the media kind and expire independently of the bridge
+control token. Attaching uses the existing upload admission and pending-attachment
+flow, including during an active model request.
 
 `app/session/session-candidates.ts` projects Session-owned MIDI artifacts and
 local audio result assets into paginated comparison views. It creates no media

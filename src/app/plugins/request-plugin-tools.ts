@@ -18,7 +18,7 @@ import {
 import { loadAgentSettings } from "../../storage/settings.js";
 import { callPluginToolWithArtifacts, LIVE_SMITH_ARTIFACT_META_KEY } from "../../plugins/artifacts.js";
 import { throwIfAborted } from "../../runtime/host.js";
-import { inspectMidiArtifacts, readMidiArtifact, midiArtifactPartSummaries, type MidiArtifact } from "../../storage/midi-artifacts.js";
+import { inspectMidiArtifacts, readMidiArtifact, midiArtifactPartSummaries, midiArtifactVersion, type MidiArtifact } from "../../storage/midi-artifacts.js";
 import { isSafeStorageId } from "../../storage/id.js";
 import { canonicalStorageDirectory, storageScopeKey, type StorageScopeKey } from "../../storage/scope.js";
 import { pluginParameterPanel, type PluginParameterPanel } from "../../plugins/parameter-panel.js";
@@ -158,6 +158,7 @@ export async function createRequestPluginTools(input: {
   createPackage?: typeof createMcpPluginPackage;
   createStandaloneConnection?: typeof createStandaloneMcpConnection;
   pluginConfigSnapshots?: Readonly<Record<string, { sha256: string; revision: string }>>;
+  midiRevisionOf?: string;
 }): Promise<RequestPluginTools> {
   const packages: ManagedMcpSource[] = [];
   const toolsets: Toolset[] = [];
@@ -451,6 +452,7 @@ async function callMcpTool(
     sessionId: string;
     signal: AbortSignal;
     withAuthorization?: PluginExecutionAuthorization;
+    midiRevisionOf?: string;
   },
   midiArtifacts: Map<string, MidiArtifact>,
   onAppResult?: (result: PluginToolResult) => void,
@@ -489,6 +491,7 @@ async function callMcpTool(
       }
       return callPluginToolWithArtifacts({
         contract: definition.artifactContract,
+        ...(input.midiRevisionOf ? { revisionOf: input.midiRevisionOf } : {}),
         argumentsValue,
         storageDirectory: input.storageDirectory,
         temporaryDirectory: input.temporaryDirectory,
@@ -663,6 +666,7 @@ export function appToolResultWithArtifacts(result: PluginToolResult, artifacts: 
 function midiArtifactView(artifact: MidiArtifact) {
   return {
     kind: "midi" as const,
+    version: midiArtifactVersion(artifact),
     artifactRef: artifact.id,
     label: artifact.label,
     format: artifact.format,

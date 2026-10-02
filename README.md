@@ -67,7 +67,7 @@ previews, source parts and recorded generation parameters. Mark a preferred
 candidate explicitly; that selection survives reopening the Session. A missing
 historical tool call leaves its parameters unavailable.
 
-**Continue in chat** selects a source for the next chat request and adds a draft
+**Continue in chat** (or **Create next version** for MIDI) selects a source for the next chat request and adds a draft
 to the composer. Add the desired changes and send it through the usual model and
 tool permissions. The source is consumed when that initial user message is saved;
 Steer and manual tool calls do not consume it. The resulting tool calls retain
@@ -76,6 +76,14 @@ next-request source leaves the original files intact. MIDI candidates use the
 same mapped import preview; audio import is prepared in chat and uses the existing
 scoped audio action and approval preview. Candidate comparison does not audition
 Live instruments or roll back applied changes.
+
+MIDI revisions are grouped as **v1, v2, …**. Creating a revision preserves every
+previous file, including when starting from an older version. **Attach to message**
+adds the selected version to the next message as a MIDI attachment. **Export MIDI**
+downloads that exact version as a standard `.mid` file with its original tracks,
+channels and events. Import the file into Live, Cubase or another compatible DAW,
+or drag it from the file manager. Direct file dragging out of the extension panel
+is not supported. Export does not include instruments, effects or rendered audio.
 
 Choose **Settings → App → Interface language** to use **English**, **简体中文**, or follow the
 system language. The preference is shared across Live Smith windows. Switching

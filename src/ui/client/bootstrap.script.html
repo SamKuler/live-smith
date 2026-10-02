@@ -338,6 +338,7 @@
           },
         });
         const candidateComparison = factories.createCandidateComparison({
+          transfer: (kind, input) => bridgeClient.runCommand(kind, input, { cancellable: true }),
           getState, read: bridgeClient.readSessionCandidates,
           select: async (input) => {
             let known = false;

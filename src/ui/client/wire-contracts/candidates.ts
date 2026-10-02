@@ -9,6 +9,9 @@ export function isSessionCandidates(value: unknown): value is SessionCandidates 
       value.preferred !== undefined && !isCandidateRef(value.preferred) || value.continuation !== undefined && !isCandidateRef(value.continuation)) return false;
   return value.candidates.every((candidate) => record(candidate) && isCandidateRef(candidate.ref) && text(candidate.label, 512) &&
     text(candidate.createdAt, 64) && text(candidate.sourceLabel, 512) && typeof candidate.preferred === "boolean" &&
+    (candidate.version === undefined || record(candidate.version) && text(candidate.version.groupId, 128) &&
+      Number.isSafeInteger(candidate.version.number) && Number(candidate.version.number) > 0 && text(candidate.version.groupLabel, 120) &&
+      (candidate.version.derivedFromId === undefined || text(candidate.version.derivedFromId, 128))) &&
     (candidate.parent === undefined || isCandidateRef(candidate.parent)) &&
     (candidate.generation === undefined || record(candidate.generation) && text(candidate.generation.toolName, 256) &&
       text(candidate.generation.callEventId, 128) && text(candidate.generation.resultEventId, 128) &&

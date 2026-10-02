@@ -14,7 +14,7 @@ const candidates: SessionCandidate[] = [
     parent: { kind: "midi", id: "midi-a" }, audio: { durationSeconds: 32, mediaType: "audio/wav", jobId: "job-b" } },
 ];
 
-async function setup(defer = false) {
+async function setup(defer = false, entries: SessionCandidate[] = candidates) {
   const state = stateFixture(); state.openSettingsOnLoad = false;
   let playCount = 0; let readCount = 0; let preferred: CandidateSelection["candidate"] = null; let continuation: CandidateSelection["candidate"] = null;
   let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -27,7 +27,7 @@ async function setup(defer = false) {
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     if (path === "/session-candidates") {
       readCount++; if (defer) await gate;
-      return { ok: true, json: async () => ({ sessionId: body.sessionId, candidates, total: 2, offset: 0, unavailableCount: 0,
+      return { ok: true, json: async () => ({ sessionId: body.sessionId, candidates: entries, total: entries.length, offset: 0, unavailableCount: 0,
         ...(preferred ? { preferred } : {}), ...(continuation ? { continuation } : {}) }) };
     }
     if (path === "/midi-import-preview") return { ok: true, json: async () => ({ sessionId: body.sessionId, artifactRef: body.artifactRef,
@@ -42,7 +42,7 @@ async function setup(defer = false) {
     }
     return originalFetch(input, init);
   } });
-  const open = async () => { assert.deepEqual(h.errors, []); h.click("#sessionCandidates > summary"); await h.settle(); assert.deepEqual(h.errors, []); await waitForCondition(() => h.document.querySelectorAll(".candidate-choice input").length === 2, `Expected saved candidates: ${h.document.querySelector("#candidateComparison")?.textContent}`); };
+  const open = async () => { assert.deepEqual(h.errors, []); h.click("#sessionCandidates > summary"); await h.settle(); assert.deepEqual(h.errors, []); await waitForCondition(() => h.document.querySelectorAll(".candidate-choice input").length === entries.length, `Expected saved candidates: ${h.document.querySelector("#candidateComparison")?.textContent}`); };
   return { h, state, open, release, get playCount() { return playCount; }, get readCount() { return readCount; } };
 }
 
@@ -54,7 +54,7 @@ function action(h: Awaited<ReturnType<typeof setup>>["h"], text: string) {
 test("candidate comparison uses saved playback, persistent preferred selection and draft-only continuation", async () => {
   const s = await setup(); const { h } = s;
   try {
-    await s.open(); h.click(".candidate-choice:nth-child(1) input"); h.click(".candidate-choice:nth-child(2) input");
+    await s.open(); h.click('.candidate-choice input[value="midi:midi-a"]'); h.click('.candidate-choice input[value="audio:audio-b"]');
     assert.equal(h.document.querySelector('[aria-label="Saved MIDI note preview"]')!.getAttribute("role"), "img");
     assert.match(h.document.querySelector(".candidate-cards")!.textContent!, /Parent candidate: Piano variation/);
     assert.match(h.document.querySelector(".candidate-cards")!.textContent!, /"seed":12/);
@@ -65,8 +65,8 @@ test("candidate comparison uses saved playback, persistent preferred selection a
     assert.deepEqual(commandCalls(h)[0]!.body, { kind: "select_candidate", sessionId: s.state.activeSessionId,
       selection: { action: "prefer", candidate: { kind: "midi", id: "midi-a" } } });
     await h.settle();
-    await waitForCondition(() => [...h.document.querySelectorAll<HTMLButtonElement>("#candidateComparison button")].some((button) => button.textContent === "Continue in chat" && !button.disabled), "Expected settled candidate command");
-    h.input("#prompt", "Keep the dynamics."); action(h, "Continue in chat");
+    await waitForCondition(() => [...h.document.querySelectorAll<HTMLButtonElement>("#candidateComparison button")].some((button) => button.textContent === "Create next version" && !button.disabled), "Expected settled candidate command");
+    h.input("#prompt", "Keep the dynamics."); action(h, "Create next version");
     await waitForCondition(() => h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value.includes("midi-a"), "Expected candidate draft");
     assert.match(h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value, /^Keep the dynamics\./);
     assert.equal(jsonCalls(h, "/send").length, 0);
@@ -88,14 +88,14 @@ test("candidate comparison uses saved playback, persistent preferred selection a
 test("candidate MIDI import reuses observed mapping preview and audio import only prepares a draft", async () => {
   const s = await setup(); const { h } = s;
   try {
-    await s.open(); h.click(".candidate-choice:nth-child(1) input");
+    await s.open(); h.click('.candidate-choice input[value="midi:midi-a"]');
     h.click(".plugin-result-load"); await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected M2 mapping");
     h.select(".plugin-result-track", "2"); h.input(".plugin-result-beat", "9");
     assert.match(h.document.querySelector('[aria-label="Clip preview"]')!.textContent!, /Piano.*Beats 9–17/);
     h.click(".plugin-result-apply"); await h.settle();
     assert.deepEqual(commandCalls(h)[0]!.body, { kind: "import_midi_artifact", sessionId: s.state.activeSessionId,
       artifactRef: "midi-a", startBeat: 8, mappings: [{ partId: "track-0-channel-1", trackId: "2", trackName: "Piano" }] });
-    h.click(".candidate-choice:nth-child(2) input"); action(h, "Prepare audio import in chat"); await h.settle();
+    h.click('.candidate-choice input[value="audio:audio-b"]'); action(h, "Prepare audio import in chat"); await h.settle();
     assert.match(h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value, /audio-b/);
     assert.equal(jsonCalls(h, "/send").length, 0); assert.equal(commandCalls(h).length, 1);
     assert.deepEqual(h.errors, []);
@@ -105,12 +105,12 @@ test("candidate MIDI import reuses observed mapping preview and audio import onl
 test("read-only comparison and compact audio playback remain available during generation", async () => {
   const s = await setup(); const { h } = s; let held = false;
   try {
-    await s.open(); h.click(".candidate-choice:nth-child(2) input");
+    await s.open(); h.click('.candidate-choice input[value="audio:audio-b"]');
     h.holdNextSend(); held = true; h.input("#prompt", "Continue composing"); h.click("#sendButton"); await h.settle();
     const preferred = [...h.document.querySelectorAll<HTMLButtonElement>("#candidateComparison button")].find((button) => button.textContent === "Mark preferred")!;
     assert.equal(preferred.disabled, true);
     h.click(".candidate-card .attachment-audio-toggle"); await h.settle(); assert.equal(s.playCount, 1);
-    h.click(".candidate-choice:nth-child(1) input");
+    h.click('.candidate-choice input[value="midi:midi-a"]');
     assert.ok(h.document.querySelector('[aria-label="Saved MIDI note preview"]'));
     const reads = s.readCount; action(h, "Refresh candidates");
     await waitForCondition(() => s.readCount > reads, "Expected read-only refresh while generating");
@@ -130,4 +130,27 @@ test("delayed candidate read cannot populate another Session or keep its audio p
     assert.equal(commandCalls(h).filter((call) => (call.body as { kind: string }).kind === "select_candidate").length, 0);
     assert.deepEqual(h.errors, []);
   } finally { s.release(); h.close(); }
+});
+
+
+test("MIDI version actions retain the exact selected version for export, chat attachments and revision drafts", async () => {
+  const original: SessionCandidate = { ...candidates[0]!, version: { groupId: "midi-a", number: 1, groupLabel: "Verse piano" } };
+  const revised: SessionCandidate = { ...original, ref: { kind: "midi", id: "midi-v2" },
+    version: { groupId: "midi-a", number: 2, derivedFromId: "midi-a", groupLabel: "Verse piano" } };
+  const s = await setup(false, [revised, original]); const { h } = s;
+  try {
+    await s.open(); h.click('.candidate-choice input[value="midi:midi-v2"]');
+    assert.equal(h.document.querySelector(".candidate-card h4")!.textContent, "Piano variation · v2");
+    action(h, "Export MIDI"); await h.settle();
+    assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "export_midi_artifact", sessionId: s.state.activeSessionId, artifactRef: "midi-v2" });
+    action(h, "Attach to message"); await h.settle();
+    assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "attach_midi_artifact", sessionId: s.state.activeSessionId, artifactRef: "midi-v2" });
+    assert.equal(jsonCalls(h, "/send").length, 0);
+    action(h, "Create next version"); await h.settle();
+    assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "select_candidate", sessionId: s.state.activeSessionId,
+      selection: { action: "continue", candidate: { kind: "midi", id: "midi-v2" } } });
+    assert.match(h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value, /new version.*midi-v2/);
+    assert.equal(jsonCalls(h, "/send").length, 0);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
 });
