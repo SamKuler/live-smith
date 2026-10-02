@@ -8,7 +8,7 @@ also read [AGENTS.md](../AGENTS.md), the [architecture](ARCHITECTURE.md), and th
 ## Prerequisites
 
 - Node.js 24.16.0 or newer.
-- An Ableton Live build with Extensions support.
+- Ableton Live 12 Suite Beta 12.4.15b5 or a later build with Extensions support.
 - Authorized access to the Ableton Extensions SDK `1.0.0-beta.1`.
 
 The SDK is not distributed with this repository. Obtain it through Ableton's
@@ -89,8 +89,7 @@ Provider application suites use directories such as `tests/app/audio/suno/`;
 their protocol suites remain under `tests/audio-services/suno/`.
 TypeScript checking includes production source and the complete test tree.
 `test:core` runs the core module suites and `test:ui` runs the real-dialog DOM
-and UI module suites. The structure check enforces test placement and module
-size limits.
+and UI module suites.
 
 To add an interface language, register its canonical locale ID, native name, and
 system-language aliases in `src/i18n/languages.ts`, then add its message catalog to

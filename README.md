@@ -61,8 +61,8 @@ languages keeps drafts and ongoing work; user messages, model replies, object
 names, and raw provider/SDK output stay in their original language.
 
 > [!NOTE]
-> Live Smith is beta software and requires an Ableton Live build with Extensions
-> support. See the [development guide](docs/DEVELOPMENT.md) for installation from source.
+> Live Smith is beta software. See the [development guide](docs/DEVELOPMENT.md#prerequisites)
+> for supported Live versions and installation from source.
 
 ## What it does
 
