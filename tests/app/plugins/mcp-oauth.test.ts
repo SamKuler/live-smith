@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
+import fs from "node:fs/promises";
 import { createServer } from "node:http";
+import { syncBuiltinESMExports } from "node:module";
 import { URL } from "node:url";
 import test, { type TestContext } from "node:test";
 import { createMcpOAuthAuthProvider, signInMcpOAuth, signOutMcpOAuth, mcpOAuthStates } from "../../../src/app/plugins/mcp-oauth.js";
@@ -209,4 +210,101 @@ test("OAuth body limits are total even for SSE, while the initial challenge body
     fetchImpl, openBrowser: async () => { throw new Error("Oversized metadata must not open a browser"); } }), /byte limit/u);
   assert.equal(challengeCanceled, true);
   assert.equal(server.tokenCalls, 0);
+});
+
+test("transient refresh failures retain the account for a later request", async (t) => {
+  const path = await directory(t);
+  const server = await oauthServer(t);
+  await save(path, server.origin);
+  await login(path, server);
+  const before = await credential(path);
+  let failure: "server" | "network" | undefined = "server";
+  const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(input) === `${server.origin}/token` && failure) {
+      if (failure === "network") throw new TypeError("private network failure");
+      return new Response(JSON.stringify({ error: "server_error", error_description: "private response" }), {
+        status: 503, headers: { "content-type": "application/json" },
+      });
+    }
+    return fetch(input, init);
+  }) as typeof fetch;
+  const provider = createMcpOAuthAuthProvider(path, "account", new AbortController().signal, fetchImpl);
+  const rejected = new Response(null, { status: 401 });
+  provider.recordResponse!(rejected, { Authorization: `Bearer ${await provider.token()}` });
+  const refresh = () => provider.onUnauthorized!({ response: rejected, serverUrl: new URL(`${server.origin}/mcp`), fetchFn: fetch });
+  await assert.rejects(refresh(), /MCP sign-in failed/u);
+  assert.deepEqual(await credential(path), before);
+  failure = "network";
+  await assert.rejects(refresh(), /MCP sign-in failed/u);
+  assert.deepEqual(await credential(path), before);
+  assert.equal((await mcpOAuthStates(path))[0]?.status, "signed-in");
+  failure = undefined;
+  await refresh();
+  assert.notEqual(await provider.token(), before?.tokens?.access_token);
+  assert.equal(server.refreshCalls, 1);
+});
+
+test("a rejected refresh grant clears the account without starting interactive authorization", async (t) => {
+  const path = await directory(t);
+  const server = await oauthServer(t);
+  await save(path, server.origin);
+  await login(path, server);
+  const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => String(input) === `${server.origin}/token`
+    ? new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400, headers: { "content-type": "application/json" } })
+    : fetch(input, init)) as typeof fetch;
+  const provider = createMcpOAuthAuthProvider(path, "account", new AbortController().signal, fetchImpl);
+  const rejected = new Response(null, { status: 401 });
+  provider.recordResponse!(rejected, { Authorization: `Bearer ${await provider.token()}` });
+  await assert.rejects(provider.onUnauthorized!({ response: rejected, serverUrl: new URL(`${server.origin}/mcp`), fetchFn: fetch }), McpAuthorizationRequiredError);
+  assert.equal((await credential(path))?.tokens, undefined);
+  assert.equal((await mcpOAuthStates(path))[0]?.status, "signed-out");
+  assert.equal(server.redirects.length, 1);
+});
+
+test("logout supersedes an admitted first sign-in before it creates a credential record", async (t) => {
+  const path = await directory(t);
+  const server = await oauthServer(t);
+  await save(path, server.origin);
+  const realpath = fs.realpath;
+  const canonicalize = t.mock.method(fs, "realpath", (target: Parameters<typeof realpath>[0], ...args: unknown[]) =>
+    target === path ? Promise.resolve(path) : Reflect.apply(realpath, fs, [target, ...args]));
+  syncBuiltinESMExports();
+  t.after(() => { canonicalize.mock.restore(); syncBuiltinESMExports(); });
+  const [signIn, signOut] = await Promise.allSettled([login(path, server), signOutMcpOAuth(path, "account")]);
+  assert.equal(signOut.status, "fulfilled");
+  assert.equal(signIn.status, "rejected");
+  assert.equal(await credential(path), undefined);
+  assert.equal((await mcpOAuthStates(path))[0]?.status, "signed-out");
+  await login(path, server);
+  assert.equal((await mcpOAuthStates(path))[0]?.status, "signed-in");
+});
+
+test("refresh responses without token rotation retain the previous refresh token", async (t) => {
+  const path = await directory(t);
+  const server = await oauthServer(t);
+  await save(path, server.origin);
+  await login(path, server);
+  const before = await credential(path);
+  let omitRefreshToken = true;
+  const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(input) === `${server.origin}/token` && omitRefreshToken) {
+      omitRefreshToken = false;
+      return new Response(JSON.stringify({ access_token: "renewed-access", token_type: "Bearer", expires_in: 3600 }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return fetch(input, init);
+  }) as typeof fetch;
+  const provider = createMcpOAuthAuthProvider(path, "account", new AbortController().signal, fetchImpl);
+  const refresh = async () => {
+    const rejected = new Response(null, { status: 401 });
+    provider.recordResponse!(rejected, { Authorization: `Bearer ${await provider.token()}` });
+    await provider.onUnauthorized!({ response: rejected, serverUrl: new URL(`${server.origin}/mcp`), fetchFn: fetch });
+  };
+  await refresh();
+  assert.equal(await provider.token(), "renewed-access");
+  assert.equal((await credential(path))?.tokens?.refresh_token, before?.tokens?.refresh_token);
+  await refresh();
+  assert.equal(server.refreshCalls, 1);
+  assert.notEqual((await credential(path))?.tokens?.refresh_token, before?.tokens?.refresh_token);
 });

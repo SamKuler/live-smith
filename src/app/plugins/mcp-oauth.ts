@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { URL } from "node:url";
+import { URL, URLSearchParams } from "node:url";
 import { clearTimeout, setTimeout } from "node:timers";
 import {
   auth, extractWWWAuthenticateParams, RegistrationRejectedError,
@@ -93,7 +93,9 @@ function sdkProvider(input: {
     await saveMcpOAuthCredentialInTransaction(transaction, input.directory, record, input.generation);
   });
   return {
-    redirectUrl: input.redirectUri,
+    // Silent refresh uses the SDK's token-request path; interactive fallback would
+    // otherwise turn transient refresh failures into a new authorization flow.
+    redirectUrl: input.interactive ? input.redirectUri : undefined,
     clientMetadata: { client_name: "Live Smith", redirect_uris: [input.redirectUri],
       token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] },
     state: () => input.interactive?.state ?? "",
@@ -110,7 +112,16 @@ function sdkProvider(input: {
     },
     tokens: async () => (await read()).tokens,
     saveTokens: async (tokens) => {
-      await update((record) => { record.tokens = tokens; });
+      await update((record) => {
+        record.tokens = { ...(!input.interactive && record.tokens?.refresh_token
+          ? { refresh_token: record.tokens.refresh_token } : {}), ...tokens };
+      });
+    },
+    prepareTokenRequest: async () => {
+      if (input.interactive) return undefined;
+      const refreshToken = (await read()).tokens?.refresh_token;
+      if (!refreshToken) throw new McpAuthorizationRequiredError();
+      return new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken });
     },
     saveCodeVerifier: (value) => {
       if (!input.interactive) throw new McpAuthorizationRequiredError();
@@ -243,16 +254,16 @@ export async function signInMcpOAuth(input: {
     const snapshot = await withStorageTransaction(directory, async (transaction) => {
       const owner = await resolveMcpOAuthOwnerInTransaction(transaction, directory, input.connectionId);
       const prior = await readMcpOAuthCredentialInTransaction(transaction, directory, input.connectionId);
+      const previous = pendingLogins.get(key);
+      if (previous && !previous.controller.signal.aborted && previous.owner === owner.fingerprint) {
+        throw new McpOAuthError("Sign-in is already pending for this MCP connection.");
+      }
+      previous?.controller.abort(new McpOAuthError("The MCP connection changed during sign-in."));
+      pending = { controller, owner: owner.fingerprint };
+      pendingLogins.set(key, pending);
       return { owner, prior: prior?.owner === owner.fingerprint ? prior : undefined, expectedGeneration: prior?.generation ?? null };
     });
     const { owner, prior } = snapshot;
-    const previous = pendingLogins.get(key);
-    if (previous && !previous.controller.signal.aborted && previous.owner === owner.fingerprint) {
-      throw new McpOAuthError("Sign-in is already pending for this MCP connection.");
-    }
-    previous?.controller.abort(new McpOAuthError("The MCP connection changed during sign-in."));
-    pending = { controller, owner: owner.fingerprint };
-    pendingLogins.set(key, pending);
     const state = randomBytes(32).toString("base64url");
     const port = owner.oauth.callbackPort ?? (prior ? Number(new URL(prior.redirectUri).port) : 0);
     try {
@@ -301,8 +312,10 @@ export async function signInMcpOAuth(input: {
 
 export async function signOutMcpOAuth(storageDirectory: string, connectionId: string): Promise<void> {
   const directory = await canonicalStorageDirectory(storageDirectory);
-  pendingLogins.get(keyFor(directory, connectionId))?.controller.abort(new McpOAuthError("MCP sign-in was canceled."));
-  await withStorageTransaction(directory, (transaction) => deleteMcpOAuthCredentialsInTransaction(transaction, directory, { connectionId }));
+  await withStorageTransaction(directory, async (transaction) => {
+    pendingLogins.get(keyFor(directory, connectionId))?.controller.abort(new McpOAuthError("MCP sign-in was canceled."));
+    await deleteMcpOAuthCredentialsInTransaction(transaction, directory, { connectionId });
+  });
   notify(directory);
 }
 
