@@ -171,7 +171,7 @@ src/
       Bounded stdio and Streamable HTTP MCP configuration, lifecycle, tool
       discovery, invocation, cancellation, and result validation.
     artifacts.ts
-      Read-only audio staging and declared MIDI output validation; never grants a
+      Read-only MIDI/audio staging and declared MIDI/WAV/MP3 output validation; never grants a
       Plugin direct Live mutation authority.
 
   skills/
@@ -191,6 +191,8 @@ src/
       Converts Live objects and selections into model-readable context.
     observer.ts
       Reads allowed Live state for model tools.
+    object-id.ts
+      Shared browser and host validation for serialized SDK object identities.
     preflight.ts
       Fingerprints action-specific Live identities and overwrite-sensitive state
       for revalidation immediately before execution.
@@ -316,8 +318,10 @@ src/
       Private immutable Plugin archives, approvals, materialized runtime trees,
       separate mutable data directories, and recoverable catalog mutations.
     midi-artifacts.ts
-      Immutable Session-owned Standard MIDI artifacts produced through the
-      Plugin artifact bridge.
+      Immutable Session-owned Standard MIDI files and their version metadata.
+    audio-artifacts.ts, audio-storage-budget.ts
+      Immutable Plugin audio, shared exact audio reads and the aggregate budget
+      across Plugin files and provider-job assets.
 
   ui/
     chat-state.ts
@@ -494,16 +498,34 @@ by the same preflight guard as target/state revalidation. MIDI and parameter
 observations supply both the opaque fingerprint and the preview; the UI never
 parses fingerprints or makes an independent read for an older-value display.
 MIDI preview and execution share the deterministic transformation and segment
-replacement functions. Unsupported observations and multi-action plans omit the
+replacement functions. Creation previews pair validated action notes with the
+same observed destination used by the guard: an empty destination or an exact
+reusable MIDI Clip. Ambiguous overlap effects and non-reusable Session replacements
+omit previews. Unsupported observations and multi-action plans omit the
 preview and retain the complete existing action summaries.
 
 The `confirm_request` projection carries bounded proposed facts under its
 existing send, Session, model-turn epoch, confirmation ID and generation. Replays
 must preserve both the action summaries and preview data. The client validates
 the optional union before admitting a confirmation, and the dedicated
-`action-preview` client fragment renders it without SDK objects, guessed units,
-or playback controls. A preview is not evidence of a completed mutation, an
-authorization source, or a substitute for the state-drift guard.
+typed `action-preview` component renders it through the shared read-only piano
+roll, without SDK objects, guessed units, or playback controls. A preview is not
+evidence of a completed mutation, an authorization source, or a substitute for
+the state-drift guard.
+
+An operation ID correlates each persisted proposal, automatic approval, result,
+and transient confirmation. The proposal event owns its bounded preflight facts;
+result events record explicit applied, cancelled, partial, or failed status.
+The chat reuses one card throughout this lifecycle. Missing results remain
+unconfirmed, and proposed-after notes never become post-write observations.
+Historical events without structured operation data keep their text presentation.
+
+Tool results can carry canonical saved artifact references from host-managed
+storage. The chat reads the exact Session artifact through the existing detail
+endpoint and delegates import/export to the existing workflows. Raw tool prose
+cannot create a preview or authorize a file operation. Retained card DOM preserves
+part choices and piano viewports across event and locale updates; viewport entry
+loads saved file details on demand.
 
 An approval decision is an authorization boundary, not a promise of one Live Undo
 entry. The 1.0.0 beta SDK does not allow awaiting inside a transaction, so an
@@ -770,8 +792,16 @@ the next mutation; older builds do not read schema-2 catalogs.
 
 ### MCP tools and authority
 
-The Inspector separates Session Context, Skills, and Tools from global Agent,
-Extensions, and App settings. Session Skill selection has no installation or
+The Inspector separates Session Context, Artifacts, Skills and Tools from
+global Agent, Extensions and App settings. `model/session-tabs.ts` owns the stable
+Session panel IDs and chat shortcut IDs. The Brief shortcut targets the creative
+brief section inside Context. The composer places configured
+shortcuts beside its Context summary; `bootstrap` owns their visibility and
+`session-timeline` owns the complete Inspector navigation. Shortcuts open existing
+panels or sections and preserve their drafts and scroll positions. Inspector navigation,
+Session content, Skill activation and tool authorization remain available when a
+shortcut is hidden.
+Session Skill selection has no installation or
 deletion controls; standalone Skill management and Plugin/Connection management
 belong to Extensions. Global Custom Instructions belong to Agent settings.
 Extensions separates Audio services, MCP, Skills, and Plugins. Audio services
@@ -830,7 +860,13 @@ The authenticated read-only `/midi-import-preview` endpoint returns part summari
 and currently observed, uniquely named MIDI destinations without note arrays or
 filesystem paths. The browser maps selected parts to distinct destination handle
 IDs and names and previews each Clip at the common start beat with its source
-track duration. Duplicate destination names require renaming in Live.
+track duration. Explicit new destinations become `create_midi_track` actions
+followed by Clip actions targeting their declared references. Existing
+destinations also use preflight-bound references so a new same-name track cannot
+redirect later writes. The shared action limit counts both tracks and Clips.
+SDK handle IDs travel as exact decimal strings without numeric
+coercion or a fixed digit limit; import and continuation boundaries share this
+contract. Live object IDs are separate from local storage IDs. Duplicate destination names require renaming in Live.
 
 `create_midi_clip_from_artifact` materializes one exact `partId` into an ordinary
 validated `create_midi_clip` action. A multitrack source requires `partId` or
@@ -875,9 +911,10 @@ A tool declares one `kind: midi` input, one MIDI output and
 have a numeric schema. Native parameter controls hide the host-owned input and
 length fields. Later calls stage the original and preceding section as independent
 tracks in one conditioning file, retaining their names/channels and avoiding
-inferred voice identities. Output length, the combined 32-track/4096-note budget,
-current tool authorization and source fingerprint are checked before publishing
-the next slot. Remote MCP endpoints cannot use this local file contract.
+inferred voice identities. Output admission runs this same 960-PPQ conditioning
+encoder before publishing a section, enforcing its track/note budgets and timing
+representability. Output length, current tool authorization and source fingerprint
+are also checked before publishing the next slot. Remote MCP endpoints cannot use this local file contract.
 
 Fill records explicit tool-call/result events, never synthetic chat user events.
 Per-section calls bind `parentCandidate` to the actual preceding artifact and
@@ -889,29 +926,34 @@ revalidate again and reject stale context without deleting saved material.
 
 The head uses the existing MIDI mapping preview and import workflow. A source
 revalidation callback runs after approval in the mutation queue and before each
-action. Successful execution consumes that exact head inside the import recovery
+action. The guard checks the materialized plan's actual destinations and Clip
+durations against the protected source ranges. Successful execution consumes that exact head inside the import recovery
 boundary; cancellation does not consume it. Explicit placement updates the anchor
 for subsequent suggested positions. There is no playback clock, launch scheduler
 or automatic replenishment; Fill/Refill and Use next are user actions.
 
-### Saved artifact comparison and lineage
+### Saved artifacts, versions and lineage
 
-Ordinary chat registers `app/midi/midi-artifact-tools.ts` alongside the existing
-artifact list/inspect tools whenever private storage is available. Plugin discovery
+Ordinary chat registers MIDI authoring from `app/midi/midi-artifact-tools.ts`
+and shared list/inspection tools from `app/session/session-artifact-tools.ts`
+whenever private storage is available. Plugin discovery
 contains only Plugin tools; the chat and continuation registries compose the host
 MIDI toolsets explicitly. Structured
 tracks use the same authoring parser and SMF writer as continuation generation.
 Saving needs no Live write scope; import retains its separate approval boundary.
 The selected request parent fixes the revision source for model and Plugin saves.
 Host-owned source/conditioning snapshots remain readable by artifact tools but
-are excluded from artifact comparison. Each future section is an independent
+are excluded from the artifact library. Each future section is an independent
 version group, while explicit revisions of a section preserve its existing group.
 
-MIDI metadata stores a version group, monotonic number and optional parent ID.
-Version allocation runs in the existing storage transaction; metadata with an
-unavailable blob still reserves its number. Legacy records project as independent
-v1 groups. Revisions never overwrite source bytes. The admitted chat request fixes
-the parent version for all its MIDI-producing tool calls.
+`agent/artifact-contracts.ts` owns the media-neutral version, source and primary
+selection contracts. Version metadata remains on each immutable media record.
+The shared allocator runs inside its owning store transaction; unavailable bytes
+do not release a reserved version number. Legacy records project as independent
+v1 groups. Explicit revisions record their actual parent; independent generation
+alternatives may share a work without a fabricated parent chain. Cross-media
+source provenance does not combine MIDI and audio into one version group. Revisions never overwrite source bytes. The admitted chat request fixes
+the source version for its MIDI- and audio-producing tool calls.
 
 Export and attachment commands resolve a Session-owned artifact and verify its
 original bytes. `app/midi/artifact-file.ts` supplies a portable `.mid` filename;
@@ -921,18 +963,63 @@ control token. Attaching uses the existing upload admission and pending-attachme
 flow, including during an active model request.
 
 `app/session/session-artifacts.ts` projects Session-owned MIDI artifacts and
-local audio result assets into paginated comparison views. It creates no media
+committed provider audio results and standalone Plugin audio into the paginated
+artifact library. Version groups are assembled before pagination. Each work
+selects its saved primary when available, otherwise the latest available version;
+explicit references still resolve exactly. Audio catalog/detail reads use metadata
+and blob presence; consumption validates complete bytes. MIDI previews validate
+the selected small SMF. `/session-artifact` reads one exact version
+with the same ownership and projection contract. It creates no media
 copies or artifact database. Audio bytes stay behind the existing authenticated
-asset route; MIDI previews contain at most 256 notes and bounded source-part
-summaries. `inspect_midi_artifact` in the host artifact toolset reads one exact
+asset route; MIDI overviews contain at most 256 notes with source-part identity
+and bounded part summaries. The read-only `/midi-artifact-preview` route reads a
+selected part in full. Exact artifact details also return complete notes; both
+retain the saved-file limit of 4096 notes, while the paginated catalog keeps its
+256-note overview. The browser loads exact details when opening a truncated entry. It reads only saved media and never observes or mutates Live.
+
+`export_artifact` and `attach_artifact` share a typed artifact reference and
+read original bytes from the existing MIDI/audio stores. Provider audio results
+require committed output ownership. Attachment uses the canonical Session attachment
+admission, quotas and normalized-filename/content deduplication; export uses
+resource-only download tickets.
+
+`ui/client/artifacts.ts` owns expanded work entries and their selected versions.
+Version reads are cancelled when an entry closes or the Session changes; stale
+responses cannot replace a newer selection. `app/midi/midi-artifact-diff.ts`
+reads the immutable selected file and an explicit same-work comparison version
+through the existing MIDI store. Omitting the baseline uses `derivedFromId`;
+reverse and sibling comparisons do not change saved lineage. `/midi-artifact-diff` is a cancellable read with Session admission and
+no Live or model access. Complete-file counts and changes share the existing
+4096-note input bounds, producing at most 8192 additions/removals across both files. Parts first match by unique name/channel, then unmatched parts may use a
+channel unique in both complete files; file track indexes are not cross-version
+identities. Whole-part uniform transposition matches pitch-sorted notes with
+identical timing, length and velocity before multiset and mutual unique
+single-property matching. The dedicated difference view selects one part and
+uses `ui/client/midi-piano-roll.ts` for before/after overlays; it retains the
+canonical source relationship separately from the comparison baseline. The same
+read-only piano-roll component renders ordinary previews, owns beat zoom and
+horizontal navigation, and clips drawing to its visible beat interval. It accepts
+notes and presentation labels without storage, Session or Live dependencies.
+Metadata and locale refreshes preserve the viewport; selecting another part resets
+the view to its first notes.
+`midi-import-dialog.ts` owns transient import fields, automatic observation,
+cancellation and stale-response rejection. The bound artifact is fixed when
+opened from the library; multi-result tool cards may offer a file choice. The
+dialog closes before invoking the shared command/confirmation flow. Plugin
+results and buffered continuation use this same importer. `inspect_midi_artifact` in the host artifact toolset reads one exact
 source part with a 256-note page and `nextOffset`, allowing subsequent chat turns
 to inspect the saved material without first importing it into Live.
 
 The persisted `candidate`, `candidateSelection`, and `parentCandidate` names
 remain compatible with existing Session histories. The `candidate` event records
-an explicit `prefer` or `continue` selection using a typed `{ kind, id }` reference. A null reference clears that selection.
-Preferences and pending continuation survive compaction and reload because they
-are reconstructed from durable events. Only a successfully persisted initial
+a `continue` selection using a typed `{ kind, id }` reference, or a `primary`
+selection containing a typed work reference and an optional exact version.
+A null candidate clears the corresponding source or work primary. Primary writes
+validate Session ownership and group membership. Model artifact listings expose
+`primary` and `defaultForWork` without rewriting explicit references. Historical `prefer` events remain readable but are
+not projected into the library or accepted as new selection commands. Selection
+events are not chat messages and are omitted from the visible timeline. Pending
+continuation survives compaction and reload through these durable events. Only a successfully persisted initial
 chat `user` event consumes pending continuation and stores its `parentCandidate`.
 The admitted request carries that fixed reference and its user event ID to every
 subsequent model `tool_call` as `parentCandidate` and `requestEventId`. Steered
@@ -944,9 +1031,9 @@ their public arguments. Owned artifact or audio-job IDs correlate the result;
 overlapping same-name calls keep their provenance unknown. Artifact views never
 read current Connection credentials or pretend missing historical arguments are
 known. Shortened parameter previews retain the original event reference. A
-preferred artifact does not authorize generation or mutation: Continue prepares
+source selection does not authorize generation or mutation: Continue prepares
 a composer draft, MIDI import uses the ordinary mapped import path, and audio
-import uses the existing chat action/preflight path. Read-only comparison and
+import uses the existing chat action/preflight path. Read-only browsing, differences and
 playback remain available during generation; selection commands share the Session
 mutation fence and validate ownership again before writing their event.
 
@@ -1309,6 +1396,9 @@ correlation and authoritative-state reconciliation. `/send` stays exactly
 browser import formats. Storage, event validation, and composed WebView scripts
 consume that same format contract. The supported categories and concrete
 formats are listed in [Sessions, Skills, and attachments](../README.md#sessions-skills-and-attachments).
+Attachment admission reuses an identical pending file by name, byte length and
+content hash inside the Session attachment mutation fence. Consumed attachments
+do not participate in this deduplication.
 Pending Session state allows 4 attachments and 256 MiB of raw bytes. Audio is
 limited to 2 files, 128 MiB and 15 minutes each. Each image is limited to 5 MiB,
 with a 16 MiB subtotal; documents retain their 20 MiB per-file and subtotal limits.
@@ -1827,7 +1917,26 @@ snapshot; there is no persistent asset cache. Per-file and per-Session limits ar
 independent of chat attachment limits. Remote readiness does not imply local
 completion; local completion requires the required outputs to be stored, while
 individual saved results remain usable.
-The job record is authoritative for the UI; conversational tool results describe
+`audio-services/audio-output.ts` maps neutral output roles to musical descriptors.
+Provider adapters translate their protocol roles at their boundary. Historical
+provider-prefixed role keys are handled by `audio-output-compatibility.ts` and keep
+their original asset IDs and recovery manifests. No role normalization renames
+already stored files. Job `artifactSource` is fixed at creation, so resumed or
+later-downloaded outputs retain their admitted source. Version grouping considers
+compatible complete-output categories across the work; stems and source snapshots
+retain component provenance independently.
+
+`storage/audio-artifacts.ts` stores standalone Plugin WAV/MP3 outputs with Plugin
+ownership and provenance. `readSessionAudioArtifact` resolves either a Plugin
+record or a committed provider-job output; playback, export, attachment, Plugin
+inputs and managed SampleSources share that admission boundary. Both stores
+consume one Session audio byte budget under the storage transaction. Session
+deletion and orphan cleanup include both stores. Newly produced Plugin audio is
+registered before the tool returns, making it available to the admitted audio
+input and SampleSource capabilities in the same request. Audio tools are admitted
+when services, saved results or approved audio-producing Plugin tools exist.
+
+The job record is authoritative for provider task UI; conversational tool results describe
 the state observed at that turn and are not rewritten on later recovery.
 
 `audio-asset-sources.ts` populates the send-scoped managed SampleSource registry
@@ -1841,7 +1950,8 @@ input snapshot and is not a promise of sample-accurate separation alignment.
 
 Authenticated local audio-result routes validate Session and asset ownership,
 serve verified bytes with byte-range support, and never redirect a WebView to a
-provider download URL. `open_audio_download` verifies one local asset and opens
+provider download URL. `export_artifact` accepts an exact MIDI/audio reference,
+verifies the owned local file, and opens
 the OS default browser with a short-lived, resource-only ticket. This reads the
 saved asset without taking the Session mutation fence, so export remains
 available during an active model request. The download
@@ -1868,7 +1978,8 @@ User settings, limits, and provider-specific behavior are documented under
 
 Only profile CRUD/activation and the dedicated global-settings command write the
 settings file. The global command owns the default Queue/Steer follow-up
-behavior, context-usage visibility, interface language, and network proxy selection. It applies exactly one setting per
+behavior, context-usage visibility, chat shortcut visibility, interface language,
+and network proxy selection. It applies exactly one setting per
 transaction, advances only that setting's revision, and is allowed while sends
 are active. It broadcasts the complete committed global settings to every open
 dialog for the same storage directory. Sending,
@@ -1883,6 +1994,11 @@ recomputes it from the current same-ID record before replacement. The dialog
 state projects only the active Profile's revision, so unrelated Profile saves do
 not conflict. A mismatch is recoverable, and one window cannot silently erase
 models or parameters saved by another.
+
+The `sessionTabs` chat shortcut preference has its own decimal revision. Settings without
+these fields use Context, Brief and Artifacts at revision `0`; an empty list hides
+the shortcut row. Storage normalizes the selected IDs to the canonical navigation
+order. Newer preference events take precedence over delayed snapshots.
 
 ### Interface language
 
@@ -2648,6 +2764,8 @@ each modal bridge stamps every full `ChatBridgeState` exactly once with its own
 monotonic decimal publication revision; the matching HTTP and SSE payload share
 that identity. A full state also carries the publication revision captured
 before its asynchronous request work as `bridgeStateCoveredThroughRevision`.
+Read-only `/state` captures its cut after waiting for pending mutation handlers
+and before building the snapshot; mutation responses retain their request cut.
 That cut, not the later publication identity, says which projection patches the
 snapshot is guaranteed to include. Incremental SSE patches that change the
 client-held projection carry revisions from the same local sequence, including

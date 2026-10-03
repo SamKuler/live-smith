@@ -11,7 +11,6 @@ declare const __MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS__: number;
 declare const __MAX_SESSION_TITLE_CODE_POINTS__: number;
 declare const __MAX_RECOVERY_ACTION_DIGESTS__: number;
 declare const __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__: typeof BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS;
-declare const __SUNO_STEM_ROLES__: readonly string[];
 declare const __MAX_MIDI_PREVIEW_NOTES__: number;
 declare const __MAX_PARAMETER_PREVIEW_VALUE_ITEMS__: number;
 declare const __MAX_IMAGE_ATTACHMENT_BYTES__: number;
@@ -61,7 +60,6 @@ export const maximumRecoveryActionDigests = __MAX_RECOVERY_ACTION_DIGESTS__;
 export const audioConnectionDescriptorsByPluginId = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
 export const isBuiltInAudioPluginId = (pluginId: string) =>
   Object.hasOwn(audioConnectionDescriptorsByPluginId, pluginId);
-export const sunoStemRoles = __SUNO_STEM_ROLES__;
 export const singleOutputAudioOperations = new Set<unknown>(["get_whole_song", "finish_music_replacement", "upload_music"]);
 export const audioServiceCapabilities = Object.fromEntries(
   Object.values(audioConnectionDescriptorsByPluginId)

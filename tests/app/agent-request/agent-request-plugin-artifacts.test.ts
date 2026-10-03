@@ -38,8 +38,9 @@ test("candidate parent binds to durable initial user across failed admission, St
   const save = (label: string) => saveMidiArtifact(directory, session.id, { connectionId: "generator", serverId: "midi", toolName: "make", label, bytes: midiFile(), signal });
   const a = { kind: "midi" as const, id: (await save("A")).id };
   const b = { kind: "midi" as const, id: (await save("B")).id };
-  const select = (action: "prefer" | "continue", candidate: typeof a) => selectSessionArtifact({ storageDirectory: directory, sessionId: session.id, projectKey: "project", signal, selection: { action, candidate } });
-  await select("continue", a); await select("prefer", b);
+  const select = (action: "continue", candidate: typeof a) => selectSessionArtifact({ storageDirectory: directory, sessionId: session.id, projectKey: "project", signal, selection: { action, candidate } });
+  await select("continue", a);
+  await appendSessionEvent(directory, session.id, { kind: "candidate", content: "Preferred artifact selected.", candidateSelection: { action: "prefer", candidate: b } });
   const context = { application: { song: { handle: { id: 1n }, tempo: 120, tracks: [], returnTracks: [], scenes: [], cuePoints: [] } },
     environment: { storageDirectory: directory, tempDirectory: directory } } as never;
   const interaction = { presentation: liveContextPresentationFixture("Set"), summary: "Set", target: {}, scope: session.scope };

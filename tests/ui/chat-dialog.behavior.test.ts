@@ -94,7 +94,7 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
       "Close Inspector",
     );
     assert.equal(
-      harness.document.querySelector("#agentTab")?.getAttribute("aria-selected"),
+      harness.document.querySelector("#contextTab")?.getAttribute("aria-selected"),
       "true",
     );
     profileControl?.click();
@@ -116,10 +116,10 @@ test("a valid Profile starts in chat-first mode and exposes an accessible Inspec
       new harness.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
     );
     assert.equal(
-      harness.document.querySelector("#skillsTab")?.getAttribute("aria-selected"),
+      harness.document.querySelector("#artifactsTab")?.getAttribute("aria-selected"),
       "true",
     );
-    harness.document.querySelector("#skillsTab")?.dispatchEvent(
+    harness.document.querySelector("#artifactsTab")?.dispatchEvent(
       new harness.window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
     );
     assert.equal(
@@ -145,7 +145,7 @@ test("the Inspector drawer isolates covered chat and restores focus on close", a
 
     settings?.click();
     assert.equal(chat?.hasAttribute("inert"), true);
-    assert.equal(harness.document.activeElement?.id, "agentTab");
+    assert.equal(harness.document.activeElement?.id, "contextTab");
 
     settings?.click();
     assert.equal(chat?.hasAttribute("inert"), false);
@@ -526,7 +526,8 @@ test("Apply approval mode follows the selected Session", async () => {
 });
 
 test("Inspector scope navigation separates Session Skills from global management", async () => {
-  const harness = await createDialogHarness();
+  const state = stateFixture();
+  const harness = await createDialogHarness(state);
   try {
     const agentPanel = harness.document.querySelector<HTMLElement>("#agentPanel");
     const skillsPanel = harness.document.querySelector<HTMLElement>("#skillsPanel");
@@ -547,7 +548,7 @@ test("Inspector scope navigation separates Session Skills from global management
     harness.click("#sessionInspectorScope");
     const visibleTabs = () => [...harness.document.querySelectorAll<HTMLElement>('.tab-bar [role="tab"]')]
       .filter((tab) => !tab.hidden).map((tab) => tab.id);
-    assert.deepEqual(visibleTabs(), ["contextTab", "skillsTab", "toolsTab", "artifactsTab"]);
+    assert.deepEqual(visibleTabs(), ["contextTab", "artifactsTab", "skillsTab", "toolsTab"]);
     harness.click("#skillsTab");
     assert.equal(skillsPanel.hidden, false);
     harness.click("#manageSkillsButton");
@@ -1896,7 +1897,7 @@ test("Live Set confirmations announce their action count, focus Cancel, and supp
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
     const priorSummary = harness.document.querySelector<HTMLElement>(
-      ".timeline-activity-group > summary",
+      ".timeline-activity-step > summary",
     );
     priorSummary?.focus();
     assert.equal(harness.document.activeElement, priorSummary);
@@ -1984,7 +1985,7 @@ test("Live Set confirmations announce their action count, focus Cancel, and supp
     assert.equal(harness.document.querySelector("header")?.hasAttribute("inert"), false);
     assert.equal(
       harness.document.activeElement,
-      harness.document.querySelector("#sendButton"),
+      priorSummary,
     );
     assert.deepEqual(commandCalls(harness), []);
     assert.deepEqual(
@@ -2483,19 +2484,20 @@ test("a full timeline render preserves expanded details and summary focus", asyn
   const harness = await createDialogHarness(state);
   try {
     const details = harness.document.querySelector<HTMLDetailsElement>(
-      ".timeline-activity-group",
+      ".timeline-activity-step",
     );
     const summary = details?.querySelector<HTMLElement>("summary");
     assert.ok(details);
     assert.ok(summary);
-    details.open = true;
+    summary.click();
+    assert.equal(details.open, true);
     summary.focus();
 
     harness.click("#newSessionButton");
     await harness.settle();
 
     const renderedDetails = harness.document.querySelector<HTMLDetailsElement>(
-      ".timeline-activity-group",
+      ".timeline-activity-step",
     );
     const renderedSummary = renderedDetails?.querySelector("summary");
     assert.equal(renderedDetails?.open, true);

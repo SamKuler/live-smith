@@ -52,6 +52,7 @@ export async function runPluginParameterTool(input: {
     try {
       await appendSessionEvent(input.storageDirectory, input.sessionId, {
         kind: "tool_result", name: input.toolName, content: result.content,
+              ...(result.artifacts ? { artifacts: result.artifacts } : {}),
       });
     } catch (cause) {
       throw new ChatBridgeCommandOutcomeUnknownError(

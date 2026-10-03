@@ -4,11 +4,12 @@ import { setTimeout, clearTimeout } from "node:timers";
 import { isDeepStrictEqual } from "node:util";
 import { parseRetrievalClipIds } from "../../agent/music-tools.js";
 import {
-  AUDIO_OUTPUT_LABELS, audioJobRemoteSettled, SUNO_STEM_ROLES,
+  AUDIO_OUTPUT_LABELS, audioJobRemoteSettled,
   AudioSubmissionNotStartedError,
   type AudioGenerationAdapter, type AudioGenerationRequest, type AudioJob,
   type GeneratedAudioOutput, type RemoteAudioStatus,
 } from "../../audio-services/contracts.js";
+import { isGeneratedAudioOutputRole } from "../../audio-services/audio-output.js";
 import { exceedsAudioPromptLimit } from "../../audio-services/prompt.js";
 import { AttachmentProcessingError } from "../../attachments/contracts.js";
 import { createHostAbortController, throwIfAborted, waitForPromiseWithSignal } from "../../runtime/host.js";
@@ -76,6 +77,7 @@ export async function generateAudio(
     ...(musicOptions?.title?.trim()
       ? { title: musicOptions.title } : {}),
     connectionFingerprint: integrationConnectionFingerprint(settings), stems: [],
+    ...(context.artifactSource ? { artifactSource: context.artifactSource } : {}),
   });
   const release = acquireAudioJob(context.storageDirectory, job.id);
   try { return await runGeneration(context, job, settings, adapter, request); }
@@ -197,7 +199,7 @@ function confirmedGenerationOutputs(
   job: AudioJob, remote: Extract<RemoteAudioStatus, { status: "completed" }>,
 ): NonNullable<AudioJob["expectedOutputs"]> {
   const roles = (job.expectedOutputs ?? remote.outputs).map((output) => output.role);
-  if (roles.some((role) => !["music", "music_alternative", "sound_effect", "sound_effect_alternative", "uploaded_audio", ...SUNO_STEM_ROLES].includes(role))) throw new Error("Unexpected generated audio role.");
+  if (roles.some((role) => !isGeneratedAudioOutputRole(role))) throw new Error("Unexpected generated audio role.");
   if (!job.expectedOutputs && job.outputAssets.length) {
     throw new Error("This historical partial result has no saved remote output identities. Existing audio is retained, but missing files cannot be safely matched.");
   }

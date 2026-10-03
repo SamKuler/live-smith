@@ -1,3 +1,4 @@
+import { isSessionTabs } from "../../../model/session-tabs.js";
 import { isUiLanguage } from "../../../i18n/languages.js";
 import type {
   AgentSettings,
@@ -440,6 +441,8 @@ export function isWireAgentSettings(value: unknown): value is AgentSettings {
       "networkProxyRevision",
       "uiLanguage",
       "uiLanguageRevision",
+      "sessionTabs",
+      "sessionTabsRevision",
       "customInstructions",
       "customInstructionsRevision",
     ]) ||
@@ -456,6 +459,8 @@ export function isWireAgentSettings(value: unknown): value is AgentSettings {
     !isNetworkProxySettings(value.networkProxy) ||
     !isUiLanguage(value.uiLanguage) ||
     !isDecimalRevision(value.uiLanguageRevision) ||
+    !isSessionTabs(value.sessionTabs) ||
+    !isDecimalRevision(value.sessionTabsRevision) ||
     typeof value.customInstructions !== "string" ||
     value.customInstructions.includes("\0") ||
     Array.from(value.customInstructions).length > 8000 ||

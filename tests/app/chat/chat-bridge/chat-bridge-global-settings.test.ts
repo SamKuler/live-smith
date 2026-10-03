@@ -32,6 +32,8 @@ function globalSettingsState(
       networkProxyRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
     },
   } as unknown as ChatDialogState;
 }
@@ -271,6 +273,8 @@ test("global settings reconcile the network proxy by its own revision", async ()
     networkProxyRevision: "0",
     uiLanguage: "system",
     uiLanguageRevision: "0",
+    sessionTabs: ["context", "brief", "artifacts"],
+    sessionTabsRevision: "0",
   });
   const bridge = await createChatBridge({
     buildState: async () => sourceState,
@@ -296,6 +300,8 @@ test("global settings reconcile the network proxy by its own revision", async ()
       networkProxyRevision: "1",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       commandId: "proxy-1",
     });
 
@@ -317,6 +323,8 @@ test("global settings reconcile the network proxy by its own revision", async ()
       networkProxyRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       commandId: "behavior-1-stale-proxy",
     });
     const independentlyMerged = await (
@@ -373,6 +381,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       networkProxyRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       commandId: "save-steer-2",
     });
 
@@ -395,6 +405,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
         networkProxyRevision: "0",
         uiLanguage: "system",
         uiLanguageRevision: "0",
+        sessionTabs: ["context", "brief", "artifacts"],
+        sessionTabsRevision: "0",
         commandId: "save-steer-2",
     });
 
@@ -409,6 +421,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       networkProxyRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       commandId: "hide-context-8",
     });
     const overlaid = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
@@ -447,6 +461,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       networkProxyRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       commandId: "stale-save",
     });
     mergedEvents = await fetch(endpoint("/events"));
@@ -468,6 +484,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
         networkProxyRevision: "0",
         uiLanguage: "system",
         uiLanguageRevision: "0",
+        sessionTabs: ["context", "brief", "artifacts"],
+        sessionTabsRevision: "0",
         commandId: "bridge-state-snapshot",
     });
     await mergedEvents.body?.cancel();
@@ -484,6 +502,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       networkProxyRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       commandId: "save-queue-3",
     });
     correlatedEvents = await fetch(endpoint("/events"));
@@ -505,6 +525,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       networkProxyRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       commandId: "save-queue-3",
     });
     await correlatedEvents.body?.cancel();
@@ -521,6 +543,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       networkProxyRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       commandId: "show-context-9",
     });
     reconnectedEvents = await fetch(endpoint("/events"));
@@ -542,6 +566,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
         networkProxyRevision: "0",
         uiLanguage: "system",
         uiLanguageRevision: "0",
+        sessionTabs: ["context", "brief", "artifacts"],
+        sessionTabsRevision: "0",
         commandId: "show-context-9",
     });
   } finally {
@@ -579,6 +605,8 @@ test("global follow-up reconciliation compares canonical revisions by decimal or
       networkProxyRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       commandId: "larger-revision",
     });
 
@@ -600,6 +628,8 @@ test("global follow-up reconciliation compares canonical revisions by decimal or
       networkProxyRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       commandId: "lexically-larger-but-stale",
     });
     const replay = await fetch(endpoint("/events"));
@@ -622,6 +652,8 @@ test("global follow-up reconciliation compares canonical revisions by decimal or
           networkProxyRevision: "0",
           uiLanguage: "system",
           uiLanguageRevision: "0",
+          sessionTabs: ["context", "brief", "artifacts"],
+          sessionTabsRevision: "0",
           commandId: "larger-revision",
       });
     } finally {
@@ -684,5 +716,70 @@ test("language revisions merge independently across stale publications and state
     }
   } finally {
     await bridge.close();
+  }
+});
+
+
+test("Session tab visibility merges and replays independently of stale settings snapshots", async (t) => {
+  let source = globalSettingsState("queue", "0");
+  const bridge = await createChatBridge({
+    buildState: async () => source,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => source,
+    handleSend: async () => {},
+  });
+  t.after(() => bridge.close());
+  const url = new URL(bridge.url);
+  const endpoint = (route: string) => `${url.origin}${route}?token=${url.searchParams.get("token")}`;
+  const state = async () => (await (await fetch(endpoint("/state"))).json()) as ChatDialogState;
+  await state();
+  bridge.publishGlobalSettings({
+    ...source.settings,
+    integrationConnections: integrationConnectionsView(source.settings.integrationConnections),
+    sessionTabs: [],
+    sessionTabsRevision: "9007199254740992",
+    commandId: "hide-session-tabs",
+  });
+  bridge.publishGlobalSettings({
+    ...source.settings,
+    integrationConnections: integrationConnectionsView(source.settings.integrationConnections),
+    showContextUsage: false,
+    contextUsageVisibilityRevision: "1",
+    commandId: "context-with-stale-tabs",
+  });
+  let merged = await state();
+  assert.deepEqual(merged.settings.sessionTabs, []);
+  assert.equal(merged.settings.sessionTabsRevision, "9007199254740992");
+  assert.equal(merged.settings.showContextUsage, false);
+  source = globalSettingsState("queue", "0");
+  source.settings.sessionTabs = ["skills", "tools"];
+  source.settings.sessionTabsRevision = "9007199254740993";
+  merged = await state();
+  assert.deepEqual(merged.settings.sessionTabs, ["skills", "tools"]);
+  assert.equal(merged.settings.contextUsageVisibilityRevision, "1");
+  source = globalSettingsState("queue", "0");
+  assert.deepEqual((await state()).settings.sessionTabs, ["skills", "tools"]);
+  bridge.publishGlobalSettings({
+    ...merged.settings,
+    integrationConnections: integrationConnectionsView(merged.settings.integrationConnections),
+    sessionTabs: ["context"],
+    commandId: "same-revision-conflicting-tabs",
+  });
+  assert.deepEqual((await state()).settings.sessionTabs, ["skills", "tools"]);
+  bridge.publishGlobalSettings({
+    ...merged.settings,
+    integrationConnections: integrationConnectionsView(merged.settings.integrationConnections),
+    commandId: "correlated-tabs-publication",
+  });
+  const abort = new AbortController();
+  const stream = await fetch(endpoint("/events"), { signal: abort.signal });
+  try {
+    const replay = await readSsePayload(stream, "global_settings_changed");
+    assert.deepEqual(replay.sessionTabs, ["skills", "tools"]);
+    assert.equal(replay.sessionTabsRevision, "9007199254740993");
+    assert.equal(replay.commandId, "correlated-tabs-publication");
+    assert.equal(replay.showContextUsage, false);
+  } finally {
+    abort.abort();
   }
 });

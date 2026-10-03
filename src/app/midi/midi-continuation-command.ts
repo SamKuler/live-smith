@@ -1,19 +1,22 @@
-import { createSessionMidiArtifactToolset } from "./midi-artifact-tools.js";
+import { type UiMessage } from "../../i18n/ui-message.js";
+import { createSessionArtifactToolset } from "../session/session-artifact-tools.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import type { MidiContinuationCommand, MidiContinuationView, MidiContinuationGenerator } from "../../agent/midi-continuation-contracts.js";
+import type { AgentPlan } from "../../agent/actions.js";
+import { boundTrackForAction, type AgentPlanBindings } from "../../live/action-bindings.js";
 import type { RuntimeProfile } from "../../model/provider.js";
 import { validatePluginParameters } from "../../plugins/parameter-panel.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { loadAgentSettings, type AgentSettings } from "../../storage/settings.js";
 import { listSessions, type AgentSession } from "../../storage/sessions.js";
-import { MAX_MIDI_ARTIFACT_NOTES, MAX_MIDI_ARTIFACT_TRACKS, parseMidiArtifact, readMidiArtifact, readMidiContinuation } from "../../storage/midi-artifacts.js";
+import { parseMidiArtifact, readMidiArtifact, readMidiContinuation } from "../../storage/midi-artifacts.js";
 import { createRequestPluginTools, type PluginExecutionAuthorization, type RequestPluginTools } from "../plugins/request-plugin-tools.js";
 import type { AgentModelTurnRequester } from "../agent-request.js";
 import type { MidiArtifactImportCommand } from "../midi-artifact-import.js";
 import { assertMidiContinuationOutput, assertMidiContinuationSource, configureMidiContinuation, consumeMidiContinuation, fillMidiContinuation } from "./midi-continuation.js";
 import { observeMidiContinuationClips } from "./midi-continuation-context.js";
 import { generateMidiContinuationWithModel } from "./midi-continuation-model.js";
-import { generateMidiContinuationWithPlugin, midiContinuationGenerators, midiModelGenerator } from "./midi-continuation-generators.js";
+import { encodeMidiContinuationConditioning, generateMidiContinuationWithPlugin, midiContinuationGenerators, midiModelGenerator } from "./midi-continuation-generators.js";
 
 interface Runtime {
   context: ExtensionContext<"1.0.0">;
@@ -26,7 +29,7 @@ interface Dependencies extends Runtime {
   fetchImpl?: typeof fetch;
   withPluginAuthorization: PluginExecutionAuthorization;
   acquireModel(session: AgentSession, settings: AgentSettings): Promise<{ runtimeProfile: RuntimeProfile; requestTurn: AgentModelTurnRequester; release(): void }>;
-  onProgress(message: string): Promise<void>;
+  onProgress(message: UiMessage): Promise<void>;
 }
 
 async function activeSession(input: Runtime): Promise<AgentSession> {
@@ -95,12 +98,7 @@ export async function runMidiContinuationCommand(command: Exclude<MidiContinuati
         if (buffer.generator.kind === "plugin") {
           const source = await readMidiArtifact(input.storageDirectory, input.sessionId, buffer.sourceArtifactRef, input.signal);
           const next = parseMidiArtifact(bytes, input.signal);
-          if (next.parts.length + source.parsed.parts.length > MAX_MIDI_ARTIFACT_TRACKS) {
-            throw new Error("The original context and next section must fit the MIDI conditioning file's 32-track budget.");
-          }
-          if (next.notes.length + source.parsed.notes.length > MAX_MIDI_ARTIFACT_NOTES) {
-            throw new Error("The original context and next section must fit the MIDI conditioning file's 4096-note budget.");
-          }
+          encodeMidiContinuationConditioning(source.parsed, next, input.signal);
         }
       };
       if (buffer.generator.kind === "model") { model = await input.acquireModel(session, settings); releaseModel = model.release; }
@@ -118,7 +116,7 @@ export async function runMidiContinuationCommand(command: Exclude<MidiContinuati
       await fillMidiContinuation({ ...input, bufferId: buffer.id, validateGenerator, onProgress: input.onProgress,
         generate: (current, onEvent) => model ? generateMidiContinuationWithModel({
           storageDirectory: input.storageDirectory, buffer: current, runtimeProfile: model.runtimeProfile, requestTurn: model.requestTurn,
-          readTools: createSessionMidiArtifactToolset({ storageDirectory: input.storageDirectory, sessionId: input.sessionId, signal: input.signal }),
+          readTools: createSessionArtifactToolset({ storageDirectory: input.storageDirectory, sessionId: input.sessionId, signal: input.signal }),
           signal: input.signal, ...(session.creativeBrief ? { creativeBrief: session.creativeBrief } : {}),
           beforeSave, beforeCommit, onEvent, onProgress: input.onProgress,
         }) : generateMidiContinuationWithPlugin({ storageDirectory: input.storageDirectory, buffer: current, tools: tools!, signal: input.signal, beforeCommit, onEvent }),
@@ -132,21 +130,25 @@ export async function runMidiContinuationCommand(command: Exclude<MidiContinuati
 }
 
 export async function midiContinuationImportHooks(command: Omit<MidiArtifactImportCommand, "kind"> & { bufferId: string }, input: Runtime): Promise<{
-  validateSource(): void; onApplied(): Promise<void>;
+  validateSource(plan: AgentPlan, bindings: AgentPlanBindings): void; onApplied(): Promise<void>;
 }> {
   await activeSession(input);
   const buffer = await readMidiContinuation(input.storageDirectory, input.sessionId, input.signal);
   if (!buffer || buffer.id !== command.bufferId || buffer.queue[0]?.artifactRef !== command.artifactRef) throw new Error("Choose the current MIDI buffer's first section for import.");
-  const validateSource = () => {
+  assertMidiContinuationSource(input.context, buffer, input.signal);
+  const validateSource = (plan: AgentPlan, bindings: AgentPlanBindings) => {
     const snapshot = assertMidiContinuationSource(input.context, buffer, input.signal);
-    const destinations = new Set(command.mappings?.map((mapping) => mapping.trackId) ?? (command.trackId ? [command.trackId]
-      : input.context.application.song.tracks.filter((track) => track.name.trim().toLowerCase() === command.trackName?.trim().toLowerCase()).map((track) => String(track.handle.id))));
-    for (const source of snapshot.ranges) {
-      if (source.location === "arrangement" && destinations.has(source.trackId) && command.startBeat < source.startBeat + source.durationBeats && command.startBeat + buffer.segmentBeats > source.startBeat) {
-        throw new Error("Place the continuation outside its source clips so their musical context stays unchanged.");
+    for (const [index, action] of plan.actions.entries()) {
+      if (action.type !== "create_midi_clip") continue;
+      const track = boundTrackForAction(action, index, bindings);
+      if (!track) continue;
+      for (const source of snapshot.ranges) {
+        if (source.location === "arrangement" && source.trackId === String(track.handle.id) &&
+            action.startBeat < source.startBeat + source.durationBeats && action.startBeat + action.durationBeats > source.startBeat) {
+          throw new Error("Place the continuation outside its source clips so their musical context stays unchanged.");
+        }
       }
     }
   };
-  validateSource();
   return { validateSource, onApplied: () => consumeMidiContinuation({ ...input, ...command }) };
 }

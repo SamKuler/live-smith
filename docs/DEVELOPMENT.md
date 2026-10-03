@@ -199,11 +199,15 @@ Connection ID. Secrets stay in private settings and never enter tool schemas or
 arguments. Replacing a package requires an explicit credential rebind.
 
 An MCP tool can opt into the artifact bridge with
-`_meta["io.github.samkuler/live-smith-artifacts"]` version 1. Audio inputs are
-opaque Session references in the model schema and read-only temporary files at
-call time. The one declared MIDI output is written to a host-created temporary
-path, parsed and bounded before immutable Session storage, and never imported
-into Live automatically. Artifact input and output permissions are approved
+`_meta["io.github.samkuler/live-smith-artifacts"]` version 1. MIDI and audio inputs
+are opaque Session references in the model schema and read-only temporary files
+at call time. Exactly one declared output is written to a host-created temporary
+path and validated before immutable Session storage. Its descriptor is
+`{ "argument": "destination", "kind": "midi", "label": "Variation" }` or
+`{ "argument": "destination", "kind": "audio", "format": "wav", "label": "Processed take" }`.
+Audio accepts `wav` (the default) or `mp3`; detected bytes must match the declaration.
+Outputs are not automatically imported into Live. MIDI conditioning requires one
+MIDI input and one MIDI output. Artifact input and output permissions are approved
 independently after the MCP server itself.
 
 The committed fixtures under `test-fixtures/plugins/` exercise portable, Codex,
@@ -343,7 +347,7 @@ instance ID and JSON envelope. Cursors are not interpreted as URLs or paths.
 
 The host reserves `_meta["io.github.samkuler/live-smith-artifacts"]` in App
 results for `{ "version": 1, "artifacts": [...] }`. Its entries contain validated
-Session MIDI references and summaries. Server-supplied values at this key are
+Session MIDI/audio references and summaries. Server-supplied values at this key are
 replaced. Reopening rebuilds these references from saved history and the current
 Session artifact store. The host result controls display the entry tool's result;
 background App helper calls do not replace it. Other UI-only metadata is not

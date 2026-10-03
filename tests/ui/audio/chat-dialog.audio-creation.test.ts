@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SUNO_STEM_ROLES, type AudioJobView } from "../../../src/audio-services/contracts.js";
+import type { AudioJobView } from "../../../src/audio-services/contracts.js";
+import { AUDIO_STEM_ROLES } from "../../../src/audio-services/audio-output.js";
 import { audioState, job } from "../support/chat-dialog.audio-test-helpers.js";
 import { createDialogHarness } from "../support/chat-dialog.test-harness.js";
 
@@ -71,14 +72,14 @@ test("wire admission rejects wrong output roles and extra single-operation outpu
 });
 
 test("Suno stem jobs display all named outputs and preserve their download targets", async () => {
-  const remotes = SUNO_STEM_ROLES.map((role, index) => ({ key: `11111111-1111-4111-8111-${String(index + 1).padStart(12, "0")}`, role }));
+  const remotes = AUDIO_STEM_ROLES.map((role, index) => ({ key: `11111111-1111-4111-8111-${String(index + 1).padStart(12, "0")}`, role }));
   const state = stateFor("extract_music_stems", remotes);
   const h = await createDialogHarness(state);
   try {
-    assert.deepEqual(h.errors, []); assert.equal(h.document.querySelectorAll("[data-audio-result]").length, SUNO_STEM_ROLES.length);
+    assert.deepEqual(h.errors, []); assert.equal(h.document.querySelectorAll("[data-audio-result]").length, AUDIO_STEM_ROLES.length);
     assert.match(h.document.querySelector("#audioJobs")!.textContent!, /提取歌曲分轨/);
-    assert.match(h.document.querySelector('[data-audio-role="suno_stem_backing_vocals"]')!.textContent!, /和声/);
-    assert.match(h.document.querySelector('[data-audio-role="suno_stem_woodwinds"]')!.textContent!, /木管/);
+    assert.match(h.document.querySelector('[data-audio-role="stem_backing_vocals"]')!.textContent!, /和声/);
+    assert.match(h.document.querySelector('[data-audio-role="stem_woodwinds"]')!.textContent!, /木管/);
     for (const output of remotes) assert.equal(h.document.querySelector(`[data-audio-role="${output.role}"] [data-download-audio-output]`)!.getAttribute("data-download-audio-output"), output.key);
     h.setServerState({ ...state, audioJobs: [{ ...state.audioJobs![0]!, status: "partial", remoteOutputs: remotes.slice(0, 2) }] });
     h.emitServerEvent({ type: "session_state_invalidated", sessionId: state.activeSessionId }); await h.settle();

@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { readMidiArtifactFile } from "./midi/artifact-file.js";
 
 import type { MidiContinuationView } from "../agent/midi-continuation-contracts.js";
@@ -22,7 +23,8 @@ import { createUserSkillLifecycle } from "./plugins/user-skill-lifecycle.js";
 import { createSessionLifecycle } from "./session/session-lifecycle.js";
 import { importMidiArtifact } from "./midi-artifact-import.js";
 import { prepareMidiArtifactImport } from "./midi-artifact-preview.js";
-import { listSessionArtifacts, selectSessionArtifact } from "./session/session-artifacts.js";
+import { readMidiArtifactDiff } from "./midi/midi-artifact-diff.js";
+import { listSessionArtifacts, readSessionArtifact, readSessionMidiPartPreview, selectSessionArtifact } from "./session/session-artifacts.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 
 import { audioJobViews, resumeAudioJob } from "./audio/audio-processing.js";
@@ -38,7 +40,7 @@ import { openSunoPlatform, openSunoWebsite } from "../runtime/suno-website.js";
 import { openMediaDownload as openAudioDownload } from "../runtime/media-download-browser.js";
 import { createAttachmentOpener } from "./attachments/attachment-opener.js";
 import { integrationConnectionsView } from "../storage/settings.js";
-import { readAudioAsset } from "../storage/audio-assets.js";
+import { AudioArtifactNotFoundError, readSessionAudioArtifact } from "../storage/audio-artifacts.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
 import {
   type AgentConfirmationDecision,
@@ -91,8 +93,10 @@ import {
   AttachmentPendingQuotaError,
   AttachmentTooLargeError,
   deleteSessionAttachment,
+  hashAttachmentBytes,
   listPendingSessionAttachments,
   readSessionAttachment,
+  sanitizedAttachmentFileName,
   saveSessionAttachment,
   sessionAttachmentRefFromStored,
   UnsupportedAttachmentError,
@@ -1429,6 +1433,8 @@ export async function runAgentFlow(
                   }
                 : "showContextUsage" in commandInput
                 ? { showContextUsage: commandInput.showContextUsage }
+                : "sessionTabs" in commandInput
+                ? { sessionTabs: commandInput.sessionTabs }
                 : "uiLanguage" in commandInput
                 ? { uiLanguage: commandInput.uiLanguage }
                 : "integrationConnections" in commandInput
@@ -1463,6 +1469,8 @@ export async function runAgentFlow(
               networkProxyRevision: settings.networkProxyRevision,
               uiLanguage: settings.uiLanguage,
               uiLanguageRevision: settings.uiLanguageRevision,
+              sessionTabs: settings.sessionTabs,
+              sessionTabsRevision: settings.sessionTabsRevision,
               commandId: commandContext.commandId,
             });
             status = "Global settings saved.";
@@ -1490,6 +1498,8 @@ export async function runAgentFlow(
                 networkProxyRevision: settings.networkProxyRevision,
                 uiLanguage: settings.uiLanguage,
                 uiLanguageRevision: settings.uiLanguageRevision,
+                sessionTabs: settings.sessionTabs,
+                sessionTabsRevision: settings.sessionTabsRevision,
                 commandId: commandContext.commandId,
               });
             } catch {
@@ -1617,9 +1627,9 @@ export async function runAgentFlow(
     if (commandInput.kind === "select_artifact") {
       if (commandInput.sessionId !== activeSessionId || sessionMutationFence.hasQueuedOrActive(
         sessionMutationFenceKey(storageDirectory, commandInput.sessionId), "send",
-      )) throw new ChatBridgeConflictError("Choose an idle active Session before selecting a candidate.");
+      )) throw new ChatBridgeConflictError("Choose an idle active Session before selecting an artifact.");
       return withNamedSessionMutation(commandInput.sessionId, "send", signal, async () => {
-        if (commandInput.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed before candidate selection.");
+        if (commandInput.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed before artifact selection.");
         await selectSessionArtifact({ ...commandInput, storageDirectory, projectKey, signal });
         notifySessionStateChanged(commandInput.sessionId);
         return buildStateAfterCommandMutation(undefined, { heldSessionId: commandInput.sessionId, sessionMutationHeld: true });
@@ -1639,7 +1649,7 @@ export async function runAgentFlow(
             fetchImpl: providerFetch,
             withPluginAuthorization: (authorizationSignal, operation) => requestConfigurationFence.run(requestConfigurationFenceKey, authorizationSignal, operation),
             acquireModel: (session, settings) => acquireSessionModelRequester(session, settings, signal, "sending"),
-            onProgress: (message) => commandContext.progress(uiMessage(message)),
+            onProgress: (message) => commandContext.progress(typeof message === "string" ? uiMessage(message) : message),
           });
           const state = await buildStateAfterCommandMutation(undefined, { heldSessionId: commandInput.sessionId, sessionMutationHeld: true });
           const owner = midiContinuationOwner(state);
@@ -1669,9 +1679,9 @@ export async function runAgentFlow(
           const applied = await importMidiArtifact({
             ...commandInput, kind: "import_midi_artifact", ...continuation, context, storageDirectory, projectKey, interaction: sessionInteraction,
             signal, mutationQueue: liveMutationQueue,
-            confirm: (plan, guard) => decidePlanApproval(storageDirectory, session.id, plan, async () => {
+            confirm: (plan, guard, operationId) => decidePlanApproval(storageDirectory, session.id, plan, async () => {
               if (!commandContext.requestConfirmation) throw new Error("MIDI import confirmation is unavailable.");
-              return commandContext.requestConfirmation({ kind: "apply", message: plan.message,
+              return commandContext.requestConfirmation({ kind: "apply", operationId, message: plan.message,
                 groups: actionDiffGroups(plan.actions, plan.targets),
                 ...(guard.previews === undefined ? {} : { previews: guard.previews }),
               });
@@ -2297,25 +2307,24 @@ export async function runAgentFlow(
       return buildStateAfterCommandMutation(undefined, { signal });
     }
 
-    if (commandInput.kind === "export_midi_artifact" || commandInput.kind === "attach_midi_artifact") {
-      await attachmentSession(commandInput.sessionId);
-      if (commandInput.kind === "attach_midi_artifact") {
-        const file = await readMidiArtifactFile(storageDirectory, commandInput.sessionId, commandInput.artifactRef, signal);
-        return handleAttachmentUpload({ sessionId: commandInput.sessionId, ...file }, signal);
+    if (commandInput.kind === "export_artifact" || commandInput.kind === "attach_artifact") {
+      const { sessionId, artifact } = commandInput;
+      await attachmentSession(sessionId);
+      if (commandInput.kind === "attach_artifact") {
+        const file = artifact.kind === "midi"
+          ? await readMidiArtifactFile(storageDirectory, sessionId, artifact.id, signal)
+          : await readAudioArtifactFile(sessionId, artifact.id, signal);
+        return handleAttachmentUpload({ sessionId, ...file }, signal);
       }
-      if (!bridge) throw new Error("The MIDI export bridge is unavailable.");
-      const target = await bridge.createMidiDownload(commandInput.sessionId, commandInput.artifactRef, signal);
-      await (dependencies.openMidiDownload ?? openAudioDownload)(target, signal);
-      status = uiMessage("The MIDI file was sent to your default browser for export. Keep Live Smith open until it finishes.");
-      return buildStateAfterCommandMutation(undefined, { signal });
-    }
-
-    if (commandInput.kind === "open_audio_download") {
-      await attachmentSession(commandInput.sessionId);
-      if (!bridge) throw new Error("The audio download bridge is unavailable.");
-      const target = await bridge.createAudioDownload(commandInput.sessionId, commandInput.assetId, signal);
-      await (dependencies.openAudioDownload ?? openAudioDownload)(target, signal);
-      status = m("The local audio file was sent to your default browser for export. Keep Live Smith open until it finishes.");
+      if (!bridge) throw new Error("The artifact export bridge is unavailable.");
+      const target = artifact.kind === "midi"
+        ? await bridge.createMidiDownload(sessionId, artifact.id, signal)
+        : await bridge.createAudioDownload(sessionId, artifact.id, signal);
+      const openDownload = artifact.kind === "midi" ? dependencies.openMidiDownload : dependencies.openAudioDownload;
+      await (openDownload ?? openAudioDownload)(target, signal);
+      status = artifact.kind === "midi"
+        ? uiMessage("The MIDI file was sent to your default browser for export. Keep Live Smith open until it finishes.")
+        : m("The local audio file was sent to your default browser for export. Keep Live Smith open until it finishes.");
       return buildStateAfterCommandMutation(undefined, { signal });
     }
 
@@ -2717,6 +2726,20 @@ export async function runAgentFlow(
     return session;
   };
 
+  const readAudioArtifactFile = async (sessionId: string, assetId: string, signal: AbortSignal) => {
+    const session = (await listSessions(storageDirectory, projectKey)).find((entry) => entry.id === sessionId);
+    if (!session) throw new ChatBridgeResourceNotFoundError("Audio Session is unavailable in this Live Set.");
+    const { asset, bytes } = await readSessionAudioArtifact(storageDirectory, sessionId, assetId, signal).catch((error: unknown) => {
+      if (error instanceof AudioArtifactNotFoundError) throw new ChatBridgeResourceNotFoundError(error.message);
+      throw error;
+    });
+    const label = Buffer.from(asset.label, "utf8").toString("utf8").normalize("NFC")
+      .replace(/[\\/:*?"<>|\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim();
+    const name = [...label].slice(0, 20).join("") || "Audio";
+    const extension = asset.mediaType === "audio/wav" ? "wav" : "mp3";
+    return { bytes, mediaType: asset.mediaType, fileName: `${name}-${asset.id}.${extension}` };
+  };
+
   const buildStateAfterAttachmentMutation = async () => {
     try {
       return await buildState();
@@ -2753,6 +2776,12 @@ export async function runAgentFlow(
         input.sessionId,
         consumedAttachmentIds(events),
       );
+      const matchingFiles = pending.filter((attachment) => attachment.byteLength === input.bytes.byteLength
+        && attachment.fileName === sanitizedAttachmentFileName(input.fileName, attachment.mediaType));
+      if (matchingFiles.length) {
+        const sha256 = await hashAttachmentBytes(input.bytes, signal);
+        if (matchingFiles.some((attachment) => attachment.sha256 === sha256)) return;
+      }
       const pendingBytes = pending.reduce(
         (total, attachment) => total + attachment.byteLength,
         0,
@@ -3027,12 +3056,13 @@ export async function runAgentFlow(
               },
               withActionExecutionLock: (operation) =>
                 liveMutationQueue.run(signal, operation),
-              confirmActions: (plan, guard) => decidePlanApproval(
+              confirmActions: (plan, guard, operationId) => decidePlanApproval(
                 storageDirectory,
                 session.id,
                 plan,
                 () => stream.requestConfirmation({
                   kind: "apply",
+                  operationId,
                   message: plan.message,
                   groups: actionDiffGroups(plan.actions, plan.targets),
                   ...(guard.previews === undefined ? {} : { previews: guard.previews }),
@@ -3200,14 +3230,37 @@ export async function runAgentFlow(
       handlePluginAppRequest: (input, signal) => pluginApps.request(input, signal),
       prepareMidiImport: async (input, signal) => {
         if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the active Session before preparing MIDI import.");
-        const result = await prepareMidiArtifactImport({ ...input, context, storageDirectory, projectKey, signal });
+        const sessionInteraction = resolveSessionInteraction(await attachmentSession(input.sessionId));
+        const result = await prepareMidiArtifactImport({ ...input, context, storageDirectory, projectKey, signal,
+          ...(sessionInteraction ? { interaction: sessionInteraction } : {}) });
         if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while preparing MIDI import.");
         return result;
       },
       readSessionArtifacts: async (input, signal) => {
-        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the active Session before comparing candidates.");
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the active Session before browsing artifacts.");
         const result = await listSessionArtifacts({ ...input, storageDirectory, projectKey, signal });
-        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while loading candidates.");
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while loading artifacts.");
+        return result;
+      },
+      readSessionArtifact: async (input, signal) => {
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the active Session before reading an artifact.");
+        const result = await readSessionArtifact({ ...input, storageDirectory, projectKey, signal });
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while loading the artifact.");
+        return result;
+      },
+      readMidiArtifactDiff: async (input, signal) => {
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the active Session before reading MIDI differences.");
+        await attachmentSession(input.sessionId);
+        const result = await readMidiArtifactDiff({ ...input, storageDirectory, signal });
+        await attachmentSession(input.sessionId);
+        throwIfAborted(signal);
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while loading MIDI differences.");
+        return result;
+      },
+      readMidiPartPreview: async (input, signal) => {
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the active Session before previewing MIDI parts.");
+        const result = await readSessionMidiPartPreview({ ...input, storageDirectory, projectKey, signal });
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while loading the MIDI part.");
         return result;
       },
       closePluginApps: () => pluginApps.close(),
@@ -3215,16 +3268,7 @@ export async function runAgentFlow(
         await attachmentSession(sessionId);
         return readMidiArtifactFile(storageDirectory, sessionId, artifactRef, signal);
       },
-      readAudioAsset: async (sessionId, assetId, signal) => {
-        const session = (await listSessions(storageDirectory, projectKey)).find((entry) => entry.id === sessionId);
-        if (!session) throw new ChatBridgeResourceNotFoundError("Audio Session is unavailable in this Live Set.");
-        const jobs = await listAudioJobs(storageDirectory, sessionId);
-        if (!jobs.some((job) => job.outputAssets.some((asset) => asset.id === assetId))) {
-          throw new ChatBridgeResourceNotFoundError("Audio result is unavailable in this Session.");
-        }
-        const value = await readAudioAsset(storageDirectory, sessionId, assetId, signal);
-        return { bytes: value.bytes, mediaType: value.asset.mediaType };
-      },
+      readAudioAsset: readAudioArtifactFile,
       buildState: (signal) => buildState(
         undefined,
         signal === undefined ? {} : { signal },

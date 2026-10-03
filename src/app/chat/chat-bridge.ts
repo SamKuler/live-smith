@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
+import { isSessionTabs, type SessionShortcutId } from "../../model/session-tabs.js";
 import type { UiMessage } from "../../i18n/ui-message.js";
 import { sendMediaAssetResponse } from "./media-response.js";
 import type { IntegrationConnectionsView } from "../../plugins/integration-connections.js";
@@ -14,6 +15,9 @@ import { URL } from "node:url";
 import { resolveEditScopes, type EditScope } from "../../agent/edit-scopes.js";
 import type { AgentActionPreview } from "../../agent/action-preview.js";
 import type { SessionEvent } from "../../storage/events.js";
+import { isArtifactRef, type ArtifactRef } from "../../agent/artifact-contracts.js";
+import type { MidiArtifactDiff } from "../midi/midi-artifact-diff.js";
+import type { MidiPartPreview, SessionArtifactDetail } from "../session/session-artifacts.js";
 import type { SessionAttachmentRef } from "../../storage/attachments.js";
 import type { SessionModelSelection } from "../../storage/sessions.js";
 import { isSafeStorageId } from "../../storage/id.js";
@@ -34,6 +38,9 @@ import {
   compareCustomInstructionsRevisions,
   compareNetworkProxyRevisions,
   compareUiLanguageRevisions,
+  compareSessionTabsRevisions,
+  isSessionTabsRevision,
+  type SessionTabsRevision,
   isUiLanguage,
   isUiLanguageRevision,
   type UiLanguage,
@@ -320,6 +327,7 @@ export interface ChatBridgeConfirmationRequest {
   message: string;
   groups: ActionDiffGroup[];
   previews?: AgentActionPreview[];
+  operationId?: string;
 }
 
 export interface ChatBridgeStream {
@@ -372,6 +380,9 @@ export interface ChatBridge {
 interface ChatBridgeOptions {
   readMidiArtifact?(sessionId: string, artifactRef: string, signal: AbortSignal): Promise<{ bytes: Uint8Array; fileName: string }>;
   readSessionArtifacts?(input: { sessionId: string; offset: number }, signal: AbortSignal): Promise<unknown>;
+  readSessionArtifact?(input: { sessionId: string; artifact: ArtifactRef }, signal: AbortSignal): Promise<SessionArtifactDetail>;
+  readMidiArtifactDiff?(input: { sessionId: string; artifactRef: string; baseArtifactRef?: string }, signal: AbortSignal): Promise<MidiArtifactDiff>;
+  readMidiPartPreview?(input: { sessionId: string; artifactRef: string; partId: string }, signal: AbortSignal): Promise<MidiPartPreview>;
   prepareMidiImport?(input: { sessionId: string; artifactRef: string }, signal: AbortSignal): Promise<unknown>;
   readAttachment?(sessionId: string, attachmentId: string, signal: AbortSignal): Promise<{
     attachment: SessionAttachmentRef; bytes: Uint8Array;
@@ -379,7 +390,7 @@ interface ChatBridgeOptions {
   handlePluginAppRequest?(input: PluginAppRequest, signal: AbortSignal): Promise<unknown>;
   closePluginApps?(): Promise<void>;
   readAudioAsset?(sessionId: string, assetId: string, signal: AbortSignal): Promise<{
-    bytes: Uint8Array; mediaType: "audio/wav" | "audio/mpeg";
+    bytes: Uint8Array; mediaType: "audio/wav" | "audio/mpeg"; fileName?: string;
   }>;
   buildState(signal?: AbortSignal): Promise<ChatDialogState>;
   buildInvalidatedSessionState?(
@@ -536,6 +547,7 @@ type StateChangeSsePayloadBase =
       message: string;
       groups: ActionDiffGroup[];
       previews?: AgentActionPreview[];
+      operationId?: string;
       activity: StateChangeActivity;
     }
   | {
@@ -577,6 +589,8 @@ type StateChangeSsePayloadBase =
       networkProxyRevision: NetworkProxyRevision;
       uiLanguage: UiLanguage;
       uiLanguageRevision: UiLanguageRevision;
+      sessionTabs: SessionShortcutId[];
+      sessionTabsRevision: SessionTabsRevision;
       commandId: string;
     }
   | {
@@ -986,7 +1000,9 @@ export async function createChatBridge(
       !isNetworkProxySettings(settings.networkProxy) ||
       !isNetworkProxyRevision(settings.networkProxyRevision) ||
       !isUiLanguage(settings.uiLanguage) ||
-      !isUiLanguageRevision(settings.uiLanguageRevision)
+      !isUiLanguageRevision(settings.uiLanguageRevision) ||
+      !isSessionTabs(settings.sessionTabs) ||
+      !isSessionTabsRevision(settings.sessionTabsRevision)
     ) return state;
     if (latestGlobalSettingsChange === undefined) {
       latestGlobalSettingsChange = {
@@ -1003,6 +1019,8 @@ export async function createChatBridge(
         networkProxyRevision: settings.networkProxyRevision,
         uiLanguage: settings.uiLanguage,
         uiLanguageRevision: settings.uiLanguageRevision,
+        sessionTabs: settings.sessionTabs,
+        sessionTabsRevision: settings.sessionTabsRevision,
         commandId: stateSnapshotCommandId,
       };
       latestGlobalSettingsFromState = true;
@@ -1021,6 +1039,10 @@ export async function createChatBridge(
       settings.customInstructionsRevision,
       latestGlobalSettingsChange.customInstructionsRevision,
     ) > 0;
+    const sessionTabsFromState = compareSessionTabsRevisions(
+      settings.sessionTabsRevision,
+      latestGlobalSettingsChange.sessionTabsRevision,
+    ) > 0;
     const uiLanguageFromState = compareUiLanguageRevisions(
       settings.uiLanguageRevision,
       latestGlobalSettingsChange.uiLanguageRevision,
@@ -1037,7 +1059,7 @@ export async function createChatBridge(
       contextVisibilityFromState ||
       customInstructionsFromState ||
       networkProxyFromState ||
-      uiLanguageFromState || audioFromState
+      uiLanguageFromState || sessionTabsFromState || audioFromState
     ) {
       latestGlobalSettingsChange = {
         ...latestGlobalSettingsChange,
@@ -1065,6 +1087,10 @@ export async function createChatBridge(
         ...(uiLanguageFromState ? {
           uiLanguage: settings.uiLanguage,
           uiLanguageRevision: settings.uiLanguageRevision,
+        } : {}),
+        ...(sessionTabsFromState ? {
+          sessionTabs: settings.sessionTabs,
+          sessionTabsRevision: settings.sessionTabsRevision,
         } : {}),
         ...(networkProxyFromState
           ? {
@@ -1094,6 +1120,8 @@ export async function createChatBridge(
           latestGlobalSettingsChange.customInstructionsRevision,
         uiLanguage: latestGlobalSettingsChange.uiLanguage,
         uiLanguageRevision: latestGlobalSettingsChange.uiLanguageRevision,
+        sessionTabs: latestGlobalSettingsChange.sessionTabs,
+        sessionTabsRevision: latestGlobalSettingsChange.sessionTabsRevision,
         networkProxy: latestGlobalSettingsChange.networkProxy,
         networkProxyRevision:
           latestGlobalSettingsChange.networkProxyRevision,
@@ -1550,6 +1578,7 @@ export async function createChatBridge(
             kind: request.kind,
             message: request.message,
             groups: request.groups,
+            ...(request.operationId === undefined ? {} : { operationId: request.operationId }),
             ...(request.previews === undefined ? {} : { previews: request.previews }),
             activity: stateChangeActivity(activity),
           });
@@ -1592,6 +1621,9 @@ export async function createChatBridge(
         "/session-tools",
         "/midi-import-preview",
         "/session-artifacts",
+        "/session-artifact",
+        "/midi-artifact-diff",
+        "/midi-artifact-preview",
         "/confirm",
         "/send",
         "/steer",
@@ -1718,6 +1750,9 @@ export async function createChatBridge(
         const signal = beginReadOnlyBuild(response, handlerTerminal);
         await waitForStateMutations();
         if (closing || response.destroyed) return;
+        // The read includes mutations that reached their terminal publication while
+        // it waited; later changes during the state build remain outside this cut.
+        const readStateSnapshotCutRevision = latestStateRevision();
         sendJson(
           response,
           finalizeBridgeState(
@@ -1730,7 +1765,7 @@ export async function createChatBridge(
                   signal,
                 )
             ),
-            stateSnapshotCutRevision,
+            readStateSnapshotCutRevision,
           ),
         );
         return;
@@ -1827,6 +1862,7 @@ export async function createChatBridge(
             kind: pending.request.kind,
             message: pending.request.message,
             groups: pending.request.groups,
+            ...(pending.request.operationId === undefined ? {} : { operationId: pending.request.operationId }),
             ...(pending.request.previews === undefined ? {} : { previews: pending.request.previews }),
             activity: stateChangeActivity(activity ?? {
               sessionId: pending.sessionId,
@@ -2042,13 +2078,65 @@ export async function createChatBridge(
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/midi-artifact-preview") {
+        if (!options.readMidiPartPreview) { request.resume(); response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token"], "MIDI artifact preview");
+        assertJsonContentType(request);
+        const input = await readRequestBody(request) as Record<string, unknown>;
+        if (!input || typeof input !== "object" || Array.isArray(input) ||
+            Object.keys(input).some((key) => !["sessionId", "artifactRef", "partId"].includes(key)) ||
+            !isSafeStorageId(input.sessionId) || !isSafeStorageId(input.artifactRef) ||
+            typeof input.partId !== "string" || !input.partId || input.partId.length > 64) {
+          throw new ChatBridgeRequestValidationError("Choose a source part from a saved Session MIDI artifact.");
+        }
+        const signal = beginReadOnlyBuild(response, handlerTerminal);
+        const preview = await options.readMidiPartPreview({ sessionId: input.sessionId, artifactRef: input.artifactRef, partId: input.partId }, signal);
+        if (closing || response.destroyed) return;
+        sendJson(response, preview);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/session-artifact") {
+        if (!options.readSessionArtifact) { request.resume(); response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token"], "Session artifact");
+        assertJsonContentType(request);
+        const input = await readRequestBody(request) as Record<string, unknown>;
+        if (!input || typeof input !== "object" || Array.isArray(input) ||
+            Object.keys(input).some((key) => !["sessionId", "artifact"].includes(key)) ||
+            !isSafeStorageId(input.sessionId) || !isArtifactRef(input.artifact)) {
+          throw new ChatBridgeRequestValidationError("Choose a saved Session artifact.");
+        }
+        const result = await options.readSessionArtifact({ sessionId: input.sessionId, artifact: input.artifact }, beginReadOnlyBuild(response, handlerTerminal));
+        if (closing || response.destroyed) return;
+        sendJson(response, result);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/midi-artifact-diff") {
+        if (!options.readMidiArtifactDiff) { request.resume(); response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token"], "MIDI artifact differences");
+        assertJsonContentType(request);
+        const input = await readRequestBody(request) as Record<string, unknown>;
+        if (!input || typeof input !== "object" || Array.isArray(input) ||
+            Object.keys(input).some((key) => !["sessionId", "artifactRef", "baseArtifactRef"].includes(key)) ||
+            !isSafeStorageId(input.sessionId) || !isSafeStorageId(input.artifactRef) ||
+            input.baseArtifactRef !== undefined && !isSafeStorageId(input.baseArtifactRef)) {
+          throw new ChatBridgeRequestValidationError("Choose a saved MIDI version.");
+        }
+        const result = await options.readMidiArtifactDiff({ sessionId: input.sessionId, artifactRef: input.artifactRef,
+          ...(input.baseArtifactRef === undefined ? {} : { baseArtifactRef: input.baseArtifactRef as string }) }, beginReadOnlyBuild(response, handlerTerminal));
+        if (closing || response.destroyed) return;
+        sendJson(response, result);
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/session-artifacts") {
         if (!options.readSessionArtifacts) { request.resume(); response.writeHead(404).end("Not found"); return; }
         assertExactQueryParameters(url, ["token"], "Session artifacts");
         const input = await readRequestBody(request) as Record<string, unknown>;
         if (!input || typeof input !== "object" || Array.isArray(input) ||
             Object.keys(input).some((key) => !["sessionId", "offset"].includes(key)) || !isSafeStorageId(input.sessionId) ||
-            input.offset !== undefined && (!Number.isInteger(input.offset) || (input.offset as number) < 0 || (input.offset as number) > 1024)) {
+            input.offset !== undefined && (!Number.isSafeInteger(input.offset) || (input.offset as number) < 0)) {
           throw new ChatBridgeRequestValidationError("Choose a Session artifact page.");
         }
         sendJson(response, await options.readSessionArtifacts({ sessionId: input.sessionId, offset: input.offset as number ?? 0 }, beginReadOnlyBuild(response, handlerTerminal)));
@@ -2718,7 +2806,7 @@ export async function createChatBridge(
       if (pluginBodyMayBeUnread) request.resume();
       if (
         request.method === "POST" &&
-        ["/command", "/session-model-capabilities", "/session-tools", "/midi-import-preview", "/session-artifacts", "/confirm", "/send", "/steer", "/stop",
+        ["/command", "/session-model-capabilities", "/session-tools", "/midi-import-preview", "/session-artifacts", "/session-artifact", "/midi-artifact-diff", "/midi-artifact-preview", "/confirm", "/send", "/steer", "/stop",
           "/plugin-apps/open", "/plugin-apps/call", "/plugin-apps/resource", "/plugin-apps/close", "/plugin-apps/resources", "/plugin-apps/resource-templates"].includes(
           requestPath,
         )
@@ -3026,6 +3114,10 @@ export async function createChatBridge(
           change.customInstructionsRevision,
           latestGlobalSettingsChange.customInstructionsRevision,
         );
+        const sessionTabsOrder = compareSessionTabsRevisions(
+          change.sessionTabsRevision,
+          latestGlobalSettingsChange.sessionTabsRevision,
+        );
         const uiLanguageOrder = compareUiLanguageRevisions(
           change.uiLanguageRevision,
           latestGlobalSettingsChange.uiLanguageRevision,
@@ -3038,6 +3130,11 @@ export async function createChatBridge(
           change.integrationConnections?.revision ?? "0", latestGlobalSettingsChange.integrationConnections?.revision ?? "0",
         );
         if (
+          (
+            sessionTabsOrder === 0 &&
+            (change.sessionTabs.length !== latestGlobalSettingsChange.sessionTabs.length ||
+              change.sessionTabs.some((tab, index) => tab !== latestGlobalSettingsChange!.sessionTabs[index]))
+          ) ||
           (
             uiLanguageOrder === 0 &&
             change.uiLanguage !== latestGlobalSettingsChange.uiLanguage
@@ -3073,6 +3170,7 @@ export async function createChatBridge(
             networkProxyOrder <= 0 &&
             audioOrder <= 0 &&
             uiLanguageOrder <= 0 &&
+            sessionTabsOrder <= 0 &&
             !(
               latestGlobalSettingsFromState &&
               behaviorOrder === 0 &&
@@ -3080,7 +3178,8 @@ export async function createChatBridge(
               customInstructionsOrder === 0 &&
               networkProxyOrder === 0 &&
               audioOrder === 0 &&
-              uiLanguageOrder === 0
+              uiLanguageOrder === 0 &&
+              sessionTabsOrder === 0
             )
           )
         ) return;
@@ -3105,6 +3204,12 @@ export async function createChatBridge(
           customInstructionsRevision: customInstructionsOrder > 0
             ? change.customInstructionsRevision
             : latestGlobalSettingsChange.customInstructionsRevision,
+          sessionTabs: sessionTabsOrder > 0
+            ? change.sessionTabs
+            : latestGlobalSettingsChange.sessionTabs,
+          sessionTabsRevision: sessionTabsOrder > 0
+            ? change.sessionTabsRevision
+            : latestGlobalSettingsChange.sessionTabsRevision,
           uiLanguage: uiLanguageOrder > 0
             ? change.uiLanguage
             : latestGlobalSettingsChange.uiLanguage,
@@ -3341,7 +3446,7 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "load_session_model_capabilities" ||
     input.kind === "load_session_tools" ||
     input.kind === "run_plugin_tool" || input.kind === "run_audio_tool" ||
-    input.kind === "open_audio_download" || input.kind === "export_midi_artifact" || input.kind === "attach_midi_artifact" ||
+    input.kind === "export_artifact" || input.kind === "attach_artifact" ||
     input.kind === "open_attachment" ||
     input.kind === "import_midi_artifact" ||
     input.kind === "load_midi_continuation" || input.kind === "configure_midi_continuation" ||

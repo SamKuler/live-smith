@@ -8,7 +8,7 @@ import type { TestContext } from "node:test";
 import { LEGACY_AUDIO_SERVICE_ID, type AudioAsset } from "../../../src/audio-services/contracts.js";
 import { createHostAbortController } from "../../../src/runtime/host.js";
 import { saveAudioAsset } from "../../../src/storage/audio-assets.js";
-import { createAudioJob } from "../../../src/storage/audio-jobs.js";
+import { createAudioJob, updateAudioJob } from "../../../src/storage/audio-jobs.js";
 import { createSession } from "../../../src/storage/sessions.js";
 
 export const fingerprint = createHash("sha256").update("audio-storage-test-connection").digest("hex");
@@ -47,7 +47,12 @@ export async function audioStorageHarness(t: TestContext, input: AudioJobInput =
     jobId: job.id, role, label: role, bytes,
     origin: { kind: job.operation === "separate_stems" ? "attachment" : "generated" }, signal,
   });
-  return { storage, session, job, directory, signal, save };
+  const saveResult = async (role: AudioAsset["role"] = "vocals", bytes = waveBytes()) => {
+    const asset = await save(role, bytes);
+    await updateAudioJob(storage, session.id, job.id, { outputAssets: [asset] });
+    return asset;
+  };
+  return { storage, session, job, directory, signal, save, saveResult };
 }
 
 export function waveBytes(seconds = 1, dataSize = seconds * 8000): Uint8Array {

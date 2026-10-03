@@ -11,6 +11,7 @@
         setState,
       }) {
       const t = (sourceEnglish, namedParams) => window.LiveSmithI18n.t(sourceEnglish, namedParams);
+      const sessionShortcutIds = window.LiveSmithFactories.sessionShortcutIds;
       const hostedWebSearchMaxEventsPerSend =
         __HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND__;
       const maximumTransientAssistantDraftBytes =
@@ -35,6 +36,7 @@
         isWireEditScopes,
         isWireSessionModelSelection,
         isUiLanguage,
+        isSessionTabs,
         isWireOAuthAuth,
         isWireActionPreviews,
         isWireAudioCallback,
@@ -151,9 +153,8 @@
         "compact_session",
         "resume_audio_job",
         "download_audio_output",
-        "open_audio_download",
-        "export_midi_artifact",
-        "attach_midi_artifact",
+        "export_artifact",
+        "attach_artifact",
         "open_attachment",
       ]);
       const connectionState = window.LiveSmithFactories.createConnectionState({
@@ -211,6 +212,9 @@
         ? getState().settings.uiLanguage : "system";
       let confirmedUiLanguageRevision = isDecimalRevision(getState().settings?.uiLanguageRevision)
         ? getState().settings.uiLanguageRevision : "0";
+      let confirmedSessionTabs = [...getState().settings.sessionTabs];
+      let confirmedSessionTabsRevision = getState().settings.sessionTabsRevision;
+      let optimisticSessionTabs = null;
       let optimisticUiLanguage = null;
       let optimisticDefaultFollowUpBehavior = null;
       let optimisticContextUsageVisibility = null;
@@ -610,6 +614,7 @@
         authoritativeOwnedFields,
         sessionId,
         incomingCoveredThroughRevision,
+        snapshotAlreadyCovered,
       ) {
         const approvalProjection = approvalModeProjectionsBySession.get(sessionId);
         const editScopesProjection = editScopesProjectionsBySession.get(sessionId);
@@ -739,7 +744,7 @@
               : authoritativeOwnedFields?.has(key)
                 ? editScopesPatchOrder <= 0
                 : editScopesPatchOrder < 0 || !currentFieldChanged
-            : authoritativeOwnedFields?.has(key) || !currentFieldChanged;
+            : !snapshotAlreadyCovered && (authoritativeOwnedFields?.has(key) || !currentFieldChanged);
           const source = useAuthoritative
             ? authoritative.session
             : current.session;
@@ -1035,6 +1040,12 @@
       function preserveNewerCausalState(state, attempt) {
         const baseline = attempt.causalStateSnapshot;
         const current = getState();
+        // A later snapshot cut includes every mutation published by this response.
+        // Its named-field ownership cannot overwrite that already observed state.
+        const snapshotAlreadyCovered = compareDecimalRevisions(
+          state.bridgeStateRevision,
+          current.bridgeStateCoveredThroughRevision,
+        ) <= 0;
         const incomingCurrentRevisionOrder = compareDecimalRevisions(
           state.bridgeStateRevision,
           current.bridgeStateRevision,
@@ -1150,6 +1161,7 @@
               attempt.ownedSessionFields?.get(sessionId),
               sessionId,
               state.bridgeStateCoveredThroughRevision,
+              snapshotAlreadyCovered,
             ));
           }
           for (const collection of sessionStateCollections) {
@@ -1256,20 +1268,23 @@
           }
           if (attempt.ownedActiveSessionContentId === merged.activeSessionId) {
             merged.events = state.events;
-            merged.pendingAttachments = state.pendingAttachments;
           } else {
             merged.events = mergeImmutableEntries(
               current.events,
               state.events,
               "id",
             );
-            merged.pendingAttachments = mergeChangedEntries(
-              current.pendingAttachments,
-              state.pendingAttachments,
-              "id",
-              attempt.ownedPendingAttachmentIds,
-            );
           }
+          merged.pendingAttachments = snapshotAlreadyCovered
+            ? current.pendingAttachments
+            : attempt.ownedActiveSessionContentId === merged.activeSessionId
+              ? state.pendingAttachments
+              : mergeChangedEntries(
+                current.pendingAttachments,
+                state.pendingAttachments,
+                "id",
+                attempt.ownedPendingAttachmentIds,
+              );
           if (
             attempt.ownedActiveContextSessionId === merged.activeSessionId && incomingContextIsCurrent ||
             !currentActiveContextChanged
@@ -1948,6 +1963,8 @@
         state.settings.customInstructionsRevision = confirmedCustomInstructionsRevision;
         state.settings.uiLanguage = optimisticUiLanguage?.language ?? confirmedUiLanguage;
         state.settings.uiLanguageRevision = confirmedUiLanguageRevision;
+        state.settings.sessionTabs = [...(optimisticSessionTabs?.tabs ?? confirmedSessionTabs)];
+        state.settings.sessionTabsRevision = confirmedSessionTabsRevision;
         const confirmedConnections = connectionState.snapshot();
         if (confirmedConnections) state.integrationConnections = confirmedConnections;
         state.sunoAccounts = confirmedSunoAccounts.map((account) => ({ ...account }));
@@ -2011,7 +2028,22 @@
         return true;
       }
 
+      function adoptSessionTabs(tabs, revision, commandId) {
+        if (!isSessionTabs(tabs) || !isDecimalRevision(revision) ||
+            compareDecimalRevisions(revision, confirmedSessionTabsRevision) <= 0) return false;
+        confirmedSessionTabs = [...tabs];
+        confirmedSessionTabsRevision = revision;
+        const optimistic = optimisticSessionTabs;
+        if (optimistic) {
+          if (commandId === optimistic.commandId) optimistic.committedRevision = revision;
+          else if (compareDecimalRevisions(revision,
+            optimistic.committedRevision ?? optimistic.startedRevision) > 0) optimisticSessionTabs = null;
+        }
+        return true;
+      }
+
       function adoptGlobalSettingsFromState(state) {
+        adoptSessionTabs(state?.settings?.sessionTabs, state?.settings?.sessionTabsRevision);
         adoptIntegrationConnections(state.integrationConnections);
         adoptUiLanguage(state?.settings?.uiLanguage, state?.settings?.uiLanguageRevision);
         const behavior = state?.settings?.defaultFollowUpBehavior;
@@ -2132,12 +2164,15 @@
           Array.from(customInstructions).length > 8000 ||
           !isDecimalRevision(customInstructionsRevision) ||
           !isNetworkProxySettings(networkProxy) ||
+          !isSessionTabs(payload.sessionTabs) ||
+          !isDecimalRevision(payload.sessionTabsRevision) ||
           !isUiLanguage(payload.uiLanguage) ||
           !isDecimalRevision(payload.uiLanguageRevision) ||
           !isDecimalRevision(networkProxyRevision)
         ) return false;
         const audioAdopted = adoptIntegrationConnections(payload.integrationConnections);
-        let adopted = adoptUiLanguage(payload.uiLanguage, payload.uiLanguageRevision, payload.commandId) || audioAdopted;
+        const tabsAdopted = adoptSessionTabs(payload.sessionTabs, payload.sessionTabsRevision, payload.commandId);
+        let adopted = adoptUiLanguage(payload.uiLanguage, payload.uiLanguageRevision, payload.commandId) || audioAdopted || tabsAdopted;
         if (
           compareDecimalRevisions(
             customInstructionsRevision,
@@ -2761,6 +2796,8 @@
           kind === "save_global_settings" && payload.customInstructions !== undefined
         ) {
           requireView().clearGlobalSettingsFieldError("customInstructions");
+        } else if (kind === "save_global_settings" && payload.sessionTabs !== undefined) {
+          requireView().clearGlobalSettingsFieldError("sessionTabs");
         }
         let commandError = null;
         let commandWarning = null;
@@ -4124,6 +4161,31 @@
           syncOperationState();
         }
         return saved;
+      }
+
+      async function saveSessionTabs() {
+        if (document.getElementById("sessionTabs").disabled || optimisticSessionTabs) {
+          requireView().renderSessionShortcuts();
+          return false;
+        }
+        const tabs = sessionShortcutIds.filter((tab) =>
+          document.getElementById(`showSessionTab-${tab}`).checked);
+        const optimistic = {
+          tabs, commandId: createCorrelationId("command"),
+          startedRevision: confirmedSessionTabsRevision, committedRevision: null,
+        };
+        optimisticSessionTabs = optimistic;
+        writeEffectiveGlobalSettingsToState();
+        requireView().renderSessionShortcuts();
+        syncOperationState();
+        try {
+          return await runCommand("save_global_settings", { sessionTabs: tabs }, { commandId: optimistic.commandId });
+        } finally {
+          if (optimisticSessionTabs === optimistic) optimisticSessionTabs = null;
+          writeEffectiveGlobalSettingsToState();
+          requireView().renderSessionShortcuts();
+          syncOperationState();
+        }
       }
 
       async function saveContextUsageVisibility() {
@@ -6401,11 +6463,12 @@
           }
           if (payload.type === "command_confirm_request") {
             const attempt = activeCommandAttempt;
-            if (!hasOnlyWireKeys(payload, ["type", "commandId", "sessionId", "id", "kind", "message", "groups", "previews"]) ||
+            if (!hasOnlyWireKeys(payload, ["type", "commandId", "sessionId", "id", "kind", "message", "groups", "previews", "operationId"]) ||
                 !attempt || attempt.stopRequested || attempt.id !== payload.commandId || attempt.sessionId !== payload.sessionId ||
                 activeSessionId() !== payload.sessionId || !isWireCorrelationId(payload.id) || payload.kind !== "apply" ||
                 typeof payload.message !== "string" || !payload.message || !isWireActionDiffGroups(payload.groups) ||
-                !isWireActionPreviews(payload.previews, payload.kind, payload.groups) || attempt.confirmation?.id === payload.id) return;
+                !isWireActionPreviews(payload.previews, payload.kind, payload.groups) ||
+                (payload.operationId !== undefined && !isWireStorageId(payload.operationId)) || attempt.confirmation?.id === payload.id) return;
             attempt.confirmation?.controller.abort();
             const controller = new window.AbortController();
             attempt.confirmation = { id: payload.id, controller };
@@ -6556,6 +6619,8 @@
                 "networkProxyRevision",
                 "uiLanguage",
                 "uiLanguageRevision",
+                "sessionTabs",
+                "sessionTabsRevision",
                 "integrationConnections",
                 "commandId",
                 "bridgeStateRevision",
@@ -6570,6 +6635,8 @@
               !isDecimalRevision(payload.customInstructionsRevision) ||
               !isNetworkProxySettings(payload.networkProxy) ||
               !isDecimalRevision(payload.networkProxyRevision) ||
+              !isSessionTabs(payload.sessionTabs) ||
+              !isDecimalRevision(payload.sessionTabsRevision) ||
               !isUiLanguage(payload.uiLanguage) ||
               !isDecimalRevision(payload.uiLanguageRevision) ||
               (payload.integrationConnections !== undefined && !isWireIntegrationConnections(payload.integrationConnections)) ||
@@ -7101,6 +7168,7 @@
                 "message",
                 "groups",
                 "previews",
+                "operationId",
                 "activity",
                 "bridgeStateRevision",
               ]) ||
@@ -7115,7 +7183,8 @@
               (payload.kind === "apply"
                 ? !isWireActionDiffGroups(payload.groups)
                 : !Array.isArray(payload.groups) || payload.groups.length !== 0) ||
-              !isWireActionPreviews(payload.previews, payload.kind, payload.groups)
+              !isWireActionPreviews(payload.previews, payload.kind, payload.groups) ||
+              (payload.operationId !== undefined && (payload.kind !== "apply" || !isWireStorageId(payload.operationId)))
             ) return;
             const activity = stateChangeActivity(payload, true);
             if (
@@ -7164,7 +7233,8 @@
               payload.kind !== pending.kind ||
               payload.message !== pending.message ||
               !wireActionDiffGroupsEqual(payload.groups, pending.groups) ||
-              !sameJsonData(payload.previews, pending.previews)
+              !sameJsonData(payload.previews, pending.previews) ||
+              payload.operationId !== pending.operationId
             )) return;
             if (
               !isPendingReplay &&
@@ -7208,6 +7278,7 @@
               message: payload.message,
               groups: payload.groups || [],
               ...(payload.previews === undefined ? {} : { previews: payload.previews }),
+              ...(payload.operationId === undefined ? {} : { operationId: payload.operationId }),
             });
             if (applySendActivity(
               attempt,
@@ -7468,6 +7539,7 @@
         handleNetworkProxyUrlInput,
         handleCustomInstructionsInput,
         saveContextUsageVisibility,
+        saveSessionTabs,
         saveDefaultFollowUpBehavior,
         saveNetworkProxySettings,
         saveCustomInstructions,
@@ -7480,12 +7552,36 @@
         showStatus,
         startEventStream,
         createAppId: () => createCorrelationId("plugin-app"),
-        prepareMidiImport: async (input) => {
+        prepareMidiImport: async (input, signal) => {
           const response = await fetch(bridgeUrl("/midi-import-preview"), {
-            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input), signal,
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || t("MIDI import preview failed."));
+          return result;
+        },
+        readMidiPartPreview: async (input, signal) => {
+          const response = await fetch(bridgeUrl("/midi-artifact-preview"), {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input), signal,
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || t("MIDI part preview is unavailable."));
+          return result;
+        },
+        readSessionArtifact: async (input, signal) => {
+          const response = await fetch(bridgeUrl("/session-artifact"), {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input), signal,
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || t("Saved artifacts are unavailable."));
+          return result;
+        },
+        readMidiArtifactDiff: async (input, signal) => {
+          const response = await fetch(bridgeUrl("/midi-artifact-diff"), {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input), signal,
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || t("Saved artifacts are unavailable."));
           return result;
         },
         readSessionArtifacts: async (input) => {
@@ -7493,7 +7589,7 @@
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || t("Artifact comparison is unavailable."));
+          if (!response.ok) throw new Error(result.error || t("Saved artifacts are unavailable."));
           return result;
         },
         requestPluginApp: async (operation, input, signal) => {

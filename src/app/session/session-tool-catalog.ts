@@ -1,3 +1,5 @@
+import { midiArtifactAuthoringTool } from "../midi/midi-artifact-tools.js";
+import { sessionArtifactTools } from "./session-artifact-tools.js";
 import { creativeBriefProposalTool } from "../context/creative-brief.js";
 import { liveSmithTools } from "../../agent/tool-definitions.js";
 import { Buffer } from "node:buffer";
@@ -85,6 +87,11 @@ export async function loadSessionToolCatalog(input: {
   for (const tool of [...liveSmithTools({ readArrangementAudio: audioInputSupported }), creativeBriefProposalTool]) {
     addTool(liveGroup, tool.function.name, tool.function.description);
   }
+  if (input.storageDirectory) {
+    for (const tool of [...sessionArtifactTools, midiArtifactAuthoringTool]) {
+      addTool(liveGroup, tool.function.name, tool.function.description);
+    }
+  }
   groups.push(liveGroup);
 
   const audioCatalog = await loadAudioParameterGroups(input.storageDirectory, input.sessionId);
@@ -108,14 +115,14 @@ export async function loadSessionToolCatalog(input: {
       withAuthorization: input.withPluginAuthorization,
     }),
   });
+  if (pluginTools.hasAudioOutputs && !mediaGroup) {
+    const group: ToolGroup = { kind: "audio", pluginId: "live-smith.media", tools: [] };
+    for (const tool of sessionMediaTools(audioInputSupported)) addTool(group, tool.function.name, tool.function.description);
+    groups.push(group);
+  }
+
   try {
     throwIfAborted(input.signal);
-    for (const toolset of pluginTools.toolsets) {
-      if (toolset.id !== "live-smith.artifacts") continue;
-      for (const tool of toolset.tools()) {
-        addTool(liveGroup, tool.function.name, tool.function.description);
-      }
-    }
     const mcpGroups = new Map<string, ToolGroup>();
     for (const tool of pluginTools.catalogTools()) {
       const key = JSON.stringify([tool.pluginId, tool.serverId, tool.connectionId]);

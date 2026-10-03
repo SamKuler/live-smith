@@ -2,6 +2,7 @@ import { validateHeaderValue } from "node:http";
 import { isIP } from "node:net";
 import { URL, URLSearchParams } from "node:url";
 
+import { defaultSessionTabs, type SessionShortcutId } from "./session-tabs.js";
 import { cloneJsonValue } from "./json-clone.js";
 import type { IntegrationConnectionsSettings } from "../plugins/integration-connections.js";
 import type { UiLanguage } from "../i18n/languages.js";
@@ -187,6 +188,7 @@ export interface NetworkProxySettings {
 }
 export type NetworkProxyRevision = string;
 export type UiLanguageRevision = string;
+export type SessionTabsRevision = string;
 export type CustomInstructionsRevision = string;
 
 export const MAX_CUSTOM_INSTRUCTIONS_CODE_POINTS = 8_000;
@@ -206,6 +208,8 @@ export interface AgentSettings {
   networkProxyRevision: NetworkProxyRevision;
   uiLanguage: UiLanguage;
   uiLanguageRevision: UiLanguageRevision;
+  sessionTabs: SessionShortcutId[];
+  sessionTabsRevision: SessionTabsRevision;
   customInstructions: string;
   customInstructionsRevision: CustomInstructionsRevision;
   integrationConnections?: IntegrationConnectionsSettings;
@@ -255,6 +259,8 @@ export function freshEmptyAgentSettings(): AgentSettings {
     networkProxyRevision: "0",
     uiLanguage: "system",
     uiLanguageRevision: "0",
+    sessionTabs: [...defaultSessionTabs],
+    sessionTabsRevision: "0",
     customInstructions: "",
     customInstructionsRevision: "0",
   };
@@ -1486,5 +1492,20 @@ export function compareUiLanguageRevisions(
 }
 
 export function incrementUiLanguageRevision(revision: UiLanguageRevision): UiLanguageRevision {
+  return incrementCanonicalSettingsRevision(revision);
+}
+
+export function isSessionTabsRevision(value: unknown): value is SessionTabsRevision {
+  return isCanonicalSettingsRevision(value);
+}
+
+export function compareSessionTabsRevisions(
+  left: SessionTabsRevision,
+  right: SessionTabsRevision,
+): number {
+  return compareCanonicalSettingsRevisions(left, right);
+}
+
+export function incrementSessionTabsRevision(revision: SessionTabsRevision): SessionTabsRevision {
   return incrementCanonicalSettingsRevision(revision);
 }

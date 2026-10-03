@@ -279,3 +279,16 @@ test("read-only Sessions can observe and model turns receive refreshed saved sco
   assert.deepEqual(h.modelScopes, [[], ["midi"]]);
   assert.ok((await h.events()).some((event) => event.kind === "tool_result" && event.name === "inspect_song_info"));
 });
+
+test("agent request persists one correlated operation across ordinary manual and automatic edits", async (t) => {
+  for (const mode of ["manual", "everything"] as const) {
+    const h = await setup(t, ["structure"], mode);
+    await h.run(tempoPlan);
+    assert.deepEqual(h.mutations, [128]);
+    const operations = (await h.events()).flatMap((event) => event.applyOperation ? [event.applyOperation] : []);
+    assert.equal(operations[0]?.status, "proposed");
+    assert.equal(operations.at(-1)?.status, "applied");
+    assert.equal(operations.some((operation) => operation.status === "approved"), mode === "everything");
+    assert.equal(new Set(operations.map((operation) => operation.id)).size, 1);
+  }
+});

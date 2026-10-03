@@ -29,7 +29,7 @@ test("Suno stems use the native fixed model and actual instrument metadata, pres
   if (result.status !== "completed") return;
   assert.equal(result.outputs.length, 11);
   assert.deepEqual(result.failedOutputKeys, [stemIds[4]]);
-  assert.ok(result.outputs.some((entry) => entry.role === "suno_stem_fx"), "a silent stem is still a real returned output");
+  assert.ok(result.outputs.some((entry) => entry.role === "stem_fx"), "a silent stem is still a real returned output");
   assert.equal(h.api().filter((entry) => entry.path === submitPath).length, 1);
   h.done();
 });
@@ -44,7 +44,7 @@ test("two returned stem banks keep all 24 identities and roles when Stop races t
   assert.equal(result.kind, "task");
   if (result.kind !== "task") return;
   assert.deepEqual(result.expectedOutputs, stemManifest(24));
-  assert.equal(result.expectedOutputs![16]!.role, "suno_stem_guitar_alternative");
+  assert.equal(result.expectedOutputs![16]!.role, "stem_guitar_alternative");
   assert.equal(h.api().filter((entry) => entry.path === submitPath).length, 1);
 });
 
@@ -114,4 +114,24 @@ test("malformed or lost stem submissions never replay paid work", async () => {
   await h.adapter.prepare!(request, abort);
   await assert.rejects(h.adapter.submit(request, abort));
   assert.equal(h.api().filter((entry) => entry.path === submitPath).length, 1);
+});
+
+
+test("legacy saved stem manifests keep opaque role keys through provider inspection and selected download", async () => {
+  const legacy = stemManifest().map((entry) => ({ ...entry, role: `suno_${entry.role}` as const }));
+  const selected = legacy[0]!;
+  const url = `https://cdn1.suno.ai/${selected.key}.mp3`;
+  const h = replay([
+    { path: `/api/feed/?ids=${stemIds.slice(0, 12).join(",")}`, value: stemClips() },
+    { path: `/api/feed/?ids=${selected.key}`, value: [stemClips()[0]] },
+    { path: `/api/feed/?ids=${C}`, value: [clip(C, "complete", { is_download_unlocked: true })] },
+    { path: downloadPath(selected.key), value: { ok: true, status: "ready", download_url: url } },
+    { path: url, response: new Response(waveBytes().slice().buffer, { headers: { "Content-Type": "audio/wav" } }) },
+  ]);
+  const result = await h.adapter.inspect!(selected.key, signal(), legacy);
+  assert.equal(result.status, "completed");
+  if (result.status !== "completed") return;
+  assert.deepEqual(result.outputs.map(({ key, role }) => ({ key, role })), legacy);
+  assert.deepEqual(new Uint8Array(await h.adapter.downloadSelected!(selected, signal(), async (_signal, run) => run())), waveBytes());
+  h.done();
 });

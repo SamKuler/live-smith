@@ -52,6 +52,7 @@ test("chat bridge reconnect snapshots transient model state before replaying its
         message: "Apply?",
         groups: [{ title: "Filter", rows: ["Set Amount"] }],
         previews,
+        operationId: "apply-preview-history",
       });
       confirmationPending.resolve();
       await confirmation;
@@ -72,6 +73,7 @@ test("chat bridge reconnect snapshots transient model state before replaying its
     await confirmationPending.promise;
     const initial = (await readSsePayloadsThrough(liveEvents, "confirm_request")).at(-1)!;
     assert.deepEqual(initial.previews, previews);
+    assert.equal(initial.operationId, "apply-preview-history");
     bridge.publishGlobalSettings({
       defaultFollowUpBehavior: "steer",
       defaultFollowUpBehaviorRevision: "1",
@@ -83,6 +85,8 @@ test("chat bridge reconnect snapshots transient model state before replaying its
       networkProxyRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       commandId: "settings-command",
     });
     bridge.publishSessionApprovalMode(
@@ -131,6 +135,7 @@ test("chat bridge reconnect snapshots transient model state before replaying its
     assert.equal(confirmation.id, initial.id);
     assert.equal(confirmation.sendId, initial.sendId);
     assert.deepEqual(confirmation.previews, initial.previews);
+    assert.equal(confirmation.operationId, initial.operationId);
     const response = await fetch(endpoint("/confirm"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },

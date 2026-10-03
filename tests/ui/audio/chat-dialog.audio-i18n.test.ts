@@ -81,7 +81,7 @@ test("every registered audio tool has a translated title in the real activity DO
       { id: "event-audio-result", name, kind: "tool_result", content: "{}", createdAt: "2026-09-15T13:00:01.000Z" }];
     const h = await createDialogHarness(state);
     try {
-      assert.ok(h.document.querySelector(".timeline-activity-group")!.textContent!.includes(translated), name);
+      assert.ok(h.document.querySelector(".timeline-activity-step > summary")!.textContent!.includes(translated), name);
       assert.deepEqual(h.errors, []);
     } finally { h.close(); }
   }

@@ -1,3 +1,4 @@
+import { listPluginAudioArtifacts } from "../../storage/audio-artifacts.js";
 import { audioParameterGroups, parseAudioParameters } from "../../plugins/builtins/parameter-panel.js";
 import { appendSessionEvent, loadSessionEvents } from "../../storage/events.js";
 import { listAudioJobs } from "../../storage/audio-jobs.js";
@@ -18,7 +19,7 @@ export async function loadAudioParameterGroups(storageDirectory: string | undefi
   const jobs = storageDirectory ? await listAudioJobs(storageDirectory, sessionId) : [];
   const services = connections.map(({ id, name, pluginId, provider, modelId }) => ({ id, name, pluginId, provider,
     ...(modelId === undefined ? {} : { modelId }) }));
-  const groups = audioParameterGroups({ services, hasJobs: jobs.length > 0, identity: (id) => {
+  const groups = audioParameterGroups({ services, hasJobs: jobs.length > 0 || (await listPluginAudioArtifacts(storageDirectory, sessionId)).length > 0, identity: (id) => {
     const connection = connections.find((candidate) => candidate.id === id)!;
     return [connection.id, connection.name, connection.pluginId, connection.configuration, connection.secrets,
       integrationConnectionFingerprint(connection)];

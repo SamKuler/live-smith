@@ -368,6 +368,7 @@ test("MCP App HTTP lifecycle delivers resources, enforces tool visibility, publi
       assert.deepEqual(JSON.parse(events[2]!.content), args);
       assert.deepEqual(JSON.parse(events[3]!.content).structuredContent, pattern);
       assert.deepEqual(JSON.parse(events[3]!.content).artifacts, extension.artifacts);
+      assert.deepEqual(events[3]!.artifacts, [{ kind: "midi", id: artifact.artifactRef }]);
       assert.deepEqual((await bridge.state()).events, events);
       for (const name of ["missing_tool", "model_only", "foreign_only"]) {
         const denied = await bridge.post("/plugin-apps/call", { id: opened.id, name, arguments: {} });

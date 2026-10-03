@@ -597,8 +597,8 @@ It requires tool-call support, uses the ordinary provider adapters and consumes
 model usage normally. Native audio or MIDI input capability is unnecessary: the
 host reads symbolic notes and saves the returned tracks as Standard MIDI.
 
-Continuation requests admit only MIDI artifact list/inspect/save tools at
-execution. They omit hosted web search and cannot invoke Live actions, recovery
+Continuation requests admit only the Session artifact list, MIDI inspection and
+MIDI save tools at execution. They omit hosted web search and cannot invoke Live actions, recovery
 operations or unrelated paid Plugin tools. A local conditioning Plugin/MCP source
 runs through its own approved artifact contract without a chat-model request.
 The ordered-buffer workflow and persistence boundaries are described in

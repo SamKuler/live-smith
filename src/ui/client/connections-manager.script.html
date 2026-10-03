@@ -1,11 +1,12 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createConnectionsManager = function createConnectionsManager({
         addAudioConnection, clearAudioSecrets, confirmAction, getAudioConnections,
-        getState, openSection, runCommand, selectAudioConnection,
+        getState, openSection, runCommand, selectAudioConnection, stopCommand,
       }) {
         const t = (message, params) => window.LiveSmithI18n.t(message, params);
         const builtInDescriptors = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
         let busy = false;
+        let canCancelSignIn = false;
         let saving = false;
         let pendingAccountCommand = null;
         let draft = null;
@@ -412,8 +413,11 @@
           panel.append(status);
           const signIn = button("Sign in", "secondary mcp-oauth-sign-in", () => accountCommand("start_mcp_oauth"));
           signIn.disabled = !currentOAuthReady(current) || isDirty(current);
-          const signOut = button(authState(current.id) === "signing-in" ? "Cancel sign-in" : "Sign out", "secondary mcp-oauth-sign-out", () => accountCommand("logout_mcp_oauth"));
-          signOut.disabled = !current.saved?.oauth;
+          const ownSignIn = pendingAccountCommand?.connectionId === current.id && pendingAccountCommand.kind === "start_mcp_oauth";
+          const signOut = button(ownSignIn || authState(current.id) === "signing-in" ? "Cancel sign-in" : "Sign out",
+            ownSignIn ? "secondary mcp-oauth-cancel" : "secondary mcp-oauth-sign-out",
+            () => ownSignIn ? stopCommand() : accountCommand("logout_mcp_oauth"));
+          signOut.disabled = ownSignIn ? !canCancelSignIn : !current.saved?.oauth;
           panel.append(signIn, signOut);
           form.append(panel);
         }
@@ -465,7 +469,9 @@
           submit.setAttribute("aria-label", t("Save connection"));
           actions.append(submit);
           form.append(actions);
-          if (busy || saving) for (const control of form.querySelectorAll("input, select, textarea, button")) control.disabled = true;
+          if (busy || saving) for (const control of form.querySelectorAll("input, select, textarea, button")) {
+            if (!control.classList.contains("mcp-oauth-cancel")) control.disabled = true;
+          }
           container.append(form);
           updateEditorActions();
         }
@@ -733,7 +739,12 @@
           clearSecrets,
           selectAudio,
           openPluginConnections,
-          setBusy(value) { if (busy !== value) { busy = value; render(true); } },
+          setOperation(value) {
+            const cancellable = value.commandKind === "start_mcp_oauth" && value.canStop && !value.stopping;
+            if (busy !== value.busy || canCancelSignIn !== cancellable) {
+              busy = value.busy; canCancelSignIn = cancellable; render(true);
+            }
+          },
           initialize() {
             document.getElementById("addConnectionButton").addEventListener("click", () => openStandalone());
           },

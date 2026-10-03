@@ -9,12 +9,13 @@ import { strToU8, zipSync } from "fflate/browser";
 
 import type { LiveInteractionContext } from "../../../src/live/context.js";
 import { installPlugin, setPluginEnabled, setPluginMcpServerApproved } from "../../../src/storage/plugins.js";
+import { createSession } from "../../../src/storage/sessions.js";
 import { saveGlobalSettings } from "../../../src/storage/settings.js";
 import { chatDialogStateForWire, type ChatDialogState } from "../../../src/ui/chat-state.js";
 import { runAgentFlow } from "../../../src/app/agent-flow.js";
 import { parseCommandInput } from "../../../src/app/chat/chat-bridge-http.js";
 import { liveContextPresentationFixture } from "../context/support/live-context.test-harness.js";
-import { sessionToolCatalogOwner } from "../../../src/app/session/session-tool-catalog.js";
+import { loadSessionToolCatalog, sessionToolCatalogOwner } from "../../../src/app/session/session-tool-catalog.js";
 
 const serverSource = String.raw`
 import fs from "node:fs";
@@ -194,4 +195,19 @@ for (const source of ["plugin", "standalone"] as const) test(`explicit Session t
       assert.equal((await readState()).sessionToolCatalog, undefined);
     } },
   } as never, interaction, { renderHtml: () => "<html></html>" });
+});
+
+
+test("the Session catalog includes host MIDI authoring and readers without an installed Plugin", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-midi-catalog-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const session = await createSession(directory, { title: "Artifacts", projectKey: "project", scope: { kind: "selection", identity: "selection", label: "Artifacts" } });
+  const state = { settings: { profiles: [] }, runtimeProfile: null } as unknown as ChatDialogState;
+  const catalog = await loadSessionToolCatalog({ storageDirectory: directory, sessionId: session.id, state, signal: new AbortController().signal });
+  const live = catalog.groups.find((group) => group.kind === "live")!.tools;
+  for (const name of ["save_midi_artifact", "list_session_artifacts", "inspect_midi_artifact"]) {
+    assert.equal(live.filter((tool) => tool.name === name).length, 1, `${name} must be discoverable exactly once`);
+  }
+  const noStorage = await loadSessionToolCatalog({ storageDirectory: undefined, sessionId: "session-one", state, signal: new AbortController().signal });
+  assert.equal(noStorage.groups.flatMap((group) => group.tools).some((tool) => tool.name === "save_midi_artifact"), false);
 });

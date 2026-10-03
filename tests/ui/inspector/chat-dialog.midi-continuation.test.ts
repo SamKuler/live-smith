@@ -40,7 +40,7 @@ async function setup(input: { initialCount?: number; loaded?: boolean; plugin?: 
       previews++; if (input.deferPreview) await gate;
       return { ok: true, json: async () => ({ sessionId: body.sessionId, artifactRef: body.artifactRef, label: "Continuation",
         durationBeats: 8, parts: [{ id: "track-0-channel-1", sourceTrackIndex: 0, sourceTrackName: "Piano", channel: 1, noteCount: 8, durationBeats: 8 }],
-        timing: { tempoEventCount: 0, timeSignatureEventCount: 0 }, targets: [{ trackId: "2", trackName: "Piano" }], unavailableTargetCount: 0, maxMappings: 64 }) };
+        timing: { tempoEventCount: 0, timeSignatureEventCount: 0 }, targets: [{ trackId: "2", trackName: "Piano" }], unavailableTargetCount: 0, maxActions: 64 }) };
     }
     if (path === "/command" && String(body.kind).endsWith("midi_continuation")) {
       if (body.kind === "configure_midi_continuation") {
@@ -128,20 +128,20 @@ test("preview and cancelled import retain the head; only a new server queue adva
     assert.equal(s.previews, 1); assert.equal(midiCommands(h).length, 0);
     assert.equal(h.document.querySelectorAll(".midi-continuation-section").length, 2);
     s.setConsume(false);
-    h.click(".midi-continuation-import .plugin-result-import > summary");
-    h.click(".midi-continuation-import .plugin-result-load"); await h.settle();
-    assert.equal(h.document.querySelector<HTMLInputElement>(".midi-continuation-import .plugin-result-beat")!.value, "17");
-    h.select(".midi-continuation-import .plugin-result-track", "2");
-    h.click(".midi-continuation-import .plugin-result-apply"); await settleCommand(h);
+    h.click(".midi-continuation-import .plugin-result-import"); await h.settle();
+    assert.equal(h.document.querySelector<HTMLInputElement>(".midi-import-dialog .plugin-result-beat")!.value, "17");
+    h.select(".midi-import-dialog .plugin-result-track", "2");
+    h.click(".midi-import-dialog .plugin-result-apply"); await settleCommand(h);
     assert.equal(h.document.querySelectorAll(".midi-continuation-section").length, 2);
     assert.deepEqual(midiCommands(h)[0]!.body, { kind: "import_midi_continuation", sessionId: s.state.activeSessionId, artifactRef: "future-1",
       startBeat: 16, mappings: [{ partId: "track-0-channel-1", trackId: "2", trackName: "Piano" }], bufferId: "buffer-one" });
-    s.setConsume(true); h.click(".midi-continuation-import .plugin-result-load"); await h.settle();
-    h.select(".midi-continuation-import .plugin-result-track", "2"); h.input(".midi-continuation-import .plugin-result-beat", "25");
-    h.click(".midi-continuation-import .plugin-result-apply"); await settleCommand(h);
+    s.setConsume(true); h.click(".midi-continuation-import .plugin-result-import"); await h.settle();
+    h.select(".midi-import-dialog .plugin-result-track", "2"); h.input(".midi-import-dialog .plugin-result-beat", "25");
+    h.click(".midi-import-dialog .plugin-result-apply"); await settleCommand(h);
     assert.equal(h.document.querySelectorAll(".midi-continuation-section").length, 1);
     assert.match(h.document.querySelector(".midi-continuation-queue")!.textContent!, /Section 2.*beats 33–41/s);
-    assert.equal(h.document.querySelector<HTMLInputElement>(".midi-continuation-import .plugin-result-beat")!.value, "33");
+    h.click(".midi-continuation-import .plugin-result-import"); await h.settle();
+    assert.equal(h.document.querySelector<HTMLInputElement>(".midi-import-dialog .plugin-result-beat")!.value, "33");
     assert.equal(button(h, "Fill buffer").disabled, false);
     assert.equal(midiCommands(h).some((call) => (call.body as { kind: string }).kind === "fill_midi_continuation"), false);
     assert.deepEqual(h.errors, []);
@@ -163,6 +163,38 @@ test("Stop uses the active command and partial saved sections remain previewable
     assert.equal(button(h, "Fill buffer").disabled, false); assert.equal(midiCommands(h).length, 1);
     assert.deepEqual(h.errors, []);
   } finally { if (held) h.releaseHeldCommand(); h.close(); }
+});
+
+test("a retried continuation preview keeps its source parts through language changes", async () => {
+  const s = await setup({ initialCount: 1 }); const { h } = s;
+  const originalFetch = h.window.fetch;
+  let failPreview = true;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (url: string, init?: RequestInit) => {
+    if (failPreview && new URL(String(url)).pathname === "/midi-import-preview") {
+      failPreview = false;
+      return { ok: false, json: async () => ({ error: "Temporary preview failure" }) };
+    }
+    return originalFetch(url, init);
+  } });
+  try {
+    h.click(".midi-continuation-section > summary");
+    button(h, "Preview saved MIDI").click(); await h.settle();
+    const preview = h.document.querySelector<HTMLElement>(".midi-continuation-preview")!;
+    assert.match(preview.textContent!, /Temporary preview failure/);
+    button(h, "Preview saved MIDI").click(); await h.settle();
+    assert.match(preview.textContent!, /Track 1 · Piano · Channel 1 · 8 notes · 8 Beats/);
+    const part = preview.firstElementChild;
+    h.emitServerEvent({ type: "global_settings_changed", defaultFollowUpBehavior: s.state.settings.defaultFollowUpBehavior,
+      defaultFollowUpBehaviorRevision: s.state.settings.defaultFollowUpBehaviorRevision, showContextUsage: s.state.settings.showContextUsage,
+      contextUsageVisibilityRevision: s.state.settings.contextUsageVisibilityRevision, uiLanguage: "zh-CN", uiLanguageRevision: "1", commandId: "peer-language" });
+    await h.settle();
+    assert.equal(preview.firstElementChild, part);
+    assert.match(preview.textContent!, /Piano/);
+    assert.doesNotMatch(preview.textContent!, /Temporary preview failure|Channel|notes|Beats/);
+    assert.equal(s.previews, 1);
+    assert.deepEqual(commandCalls(h), []);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
 });
 
 test("failed Fill leaves saved sections intact and requires another explicit action", async () => {
@@ -230,4 +262,63 @@ test("a delayed Fill HTTP reply cannot rewind a newer server buffer snapshot", a
     assert.match(h.document.querySelector(".midi-continuation-queue")!.textContent!, /Section 2/);
     assert.deepEqual(h.errors, []);
   } finally { if (held) h.releaseHeldCommandResponse(); h.close(); }
+});
+
+
+test("language changes refresh continuation controls while preserving source and parameter drafts", async () => {
+  const s = await setup({ initialCount: 1 }); const { h } = s;
+  try {
+    h.input('.midi-continuation-prompt', 'Keep the English motif');
+    h.input('.midi-continuation-length', '12');
+    const prompt = h.document.querySelector<HTMLTextAreaElement>('.midi-continuation-prompt')!;
+    const source = h.document.querySelector<HTMLInputElement>('.midi-continuation-sources input')!;
+    h.emitServerEvent({ type: 'global_settings_changed', defaultFollowUpBehavior: s.state.settings.defaultFollowUpBehavior,
+      defaultFollowUpBehaviorRevision: s.state.settings.defaultFollowUpBehaviorRevision, showContextUsage: s.state.settings.showContextUsage,
+      contextUsageVisibilityRevision: s.state.settings.contextUsageVisibilityRevision, uiLanguage: 'zh-CN', uiLanguageRevision: '1', commandId: 'peer-language' });
+    await h.settle();
+    assert.equal(h.document.querySelector('.midi-continuation-setup h3')!.textContent, '源 MIDI Clip');
+    assert.equal(button(h, '保存续写设置').disabled, false);
+    assert.match(h.document.querySelector('.midi-continuation-queue')!.textContent!, /段落 1/);
+    assert.equal(h.document.querySelector('.midi-continuation-prompt'), prompt); assert.equal(prompt.value, 'Keep the English motif');
+    assert.equal(h.document.querySelector<HTMLInputElement>('.midi-continuation-length')!.value, '12');
+    assert.equal(h.document.querySelector('.midi-continuation-sources input'), source); assert.equal(source.checked, true);
+    assert.equal(commandCalls(h).length, 0); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+
+test("continuation Plugin parameters translate interface controls without touching authored fields or drafts", async () => {
+  const s = await setup({ initialCount: 0, plugin: true }); const { h } = s;
+  try {
+    const form = h.document.querySelector<HTMLFormElement>('.midi-continuation-parameters form')!;
+    const field = form.querySelector<HTMLTextAreaElement>('textarea')!;
+    h.input('#' + field.id, 'Primary');
+    h.emitServerEvent({ type: 'global_settings_changed', defaultFollowUpBehavior: s.state.settings.defaultFollowUpBehavior,
+      defaultFollowUpBehaviorRevision: s.state.settings.defaultFollowUpBehaviorRevision, showContextUsage: s.state.settings.showContextUsage,
+      contextUsageVisibilityRevision: s.state.settings.contextUsageVisibilityRevision, uiLanguage: 'zh-CN', uiLanguageRevision: '1', commandId: 'peer-language' });
+    await h.settle();
+    assert.equal(form.querySelector('h4')!.textContent, '参数');
+    assert.equal(form.querySelector('button[type="submit"]')!.textContent, '保存续写设置');
+    assert.equal(h.document.querySelector('.midi-continuation-parameters textarea'), field);
+    assert.equal(field.value, 'Primary');
+    assert.equal(form.querySelector(`label[for="${field.id}"]`)!.textContent, 'Style');
+    form.querySelector<HTMLButtonElement>('button[type="submit"]')!.click(); await settleCommand(h);
+    assert.equal((commandCalls(h).at(-1)!.body as any).generator.arguments.style, 'Primary');
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("bounded MIDI generation progress retains its counters through language changes", async () => {
+  const s = await setup({ initialCount: 0 }); const { h } = s; let held = false;
+  try {
+    h.holdNextCommand(); held = true; button(h, 'Fill buffer').click(); await h.settle();
+    h.emitServerEvent({ type: 'command_progress', commandId: h.commandIds[0],
+      message: { source: 'Generating MIDI section {section} ({count}/{capacity})', values: { section: '3', count: '2', capacity: '4' } } });
+    h.emitServerEvent({ type: 'global_settings_changed', defaultFollowUpBehavior: s.state.settings.defaultFollowUpBehavior,
+      defaultFollowUpBehaviorRevision: s.state.settings.defaultFollowUpBehaviorRevision, showContextUsage: s.state.settings.showContextUsage,
+      contextUsageVisibilityRevision: s.state.settings.contextUsageVisibilityRevision, uiLanguage: 'zh-CN', uiLanguageRevision: '1', commandId: 'peer-language' });
+    await h.settle();
+    assert.equal(h.document.querySelector('#status')!.textContent, '正在生成第 3 段 MIDI（2/4）');
+    h.releaseHeldCommand(); held = false; await settleCommand(h); assert.deepEqual(h.errors, []);
+  } finally { if (held) h.releaseHeldCommand(); h.close(); }
 });

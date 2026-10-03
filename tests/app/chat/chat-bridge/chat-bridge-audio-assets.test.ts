@@ -63,6 +63,7 @@ test("audio service revisions survive stale state reads and unrelated global set
     customInstructionsRevision: settings.customInstructionsRevision,
     networkProxy: settings.networkProxy, networkProxyRevision: settings.networkProxyRevision,
     uiLanguage: settings.uiLanguage, uiLanguageRevision: settings.uiLanguageRevision,
+    sessionTabs: settings.sessionTabs, sessionTabsRevision: settings.sessionTabsRevision,
     commandId: "save-audio",
   };
   const connection = {

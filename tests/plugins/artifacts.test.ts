@@ -9,8 +9,9 @@ import { promisify } from "node:util";
 import type { Tool } from "@modelcontextprotocol/client";
 
 import { createHostAbortController } from "../../src/runtime/host.js";
-import { audioStorageHarness, waveBytes } from "../storage/support/audio-storage-test-helpers.js";
-import { listMidiArtifacts } from "../../src/storage/midi-artifacts.js";
+import { audioStorageHarness, mp3Bytes, waveBytes } from "../storage/support/audio-storage-test-helpers.js";
+import { listPluginAudioArtifacts, readPluginAudioArtifact } from "../../src/storage/audio-artifacts.js";
+import { listMidiArtifacts, readMidiArtifact } from "../../src/storage/midi-artifacts.js";
 import { saveMidiArtifact } from "../../src/storage/midi-artifacts.js";
 import { midiBytes, noteTrack, endTrack } from "../attachments/support/midi-test-helpers.js";
 import {
@@ -104,7 +105,7 @@ test("artifact contracts reject malformed, conflicting and undeclared path argum
 
 test("artifact calls stage exact Session audio and persist only validated MIDI metadata", async (t) => {
   const h = await audioStorageHarness(t);
-  const source = await h.save("source", waveBytes(2));
+  const source = await h.saveResult("vocals", waveBytes(2));
   let stagingDirectory = "";
   const contract = pluginArtifactContract(artifactTool())!;
   const result = await callPluginToolWithArtifacts({
@@ -152,7 +153,7 @@ test("artifact calls stage exact Session audio and persist only validated MIDI m
 
 test("artifact calls reject host output arguments, private-path echoes and undeclared files", async (t) => {
   const h = await audioStorageHarness(t);
-  const source = await h.save();
+  const source = await h.saveResult();
   const contract = pluginArtifactContract(artifactTool())!;
   const base = {
     contract,
@@ -192,7 +193,7 @@ test("artifact calls reject host output arguments, private-path echoes and undec
 
 test("artifact output rejects directories, symlinks, FIFOs and cancellation cleans staging", async (t) => {
   const h = await audioStorageHarness(t);
-  const source = await h.save();
+  const source = await h.saveResult();
   const contract = pluginArtifactContract(artifactTool())!;
   const base = {
     contract,
@@ -331,7 +332,9 @@ test("declared MIDI conditioning stages exact read-only SMF input and validates 
       assert.equal((await fs.stat(file)).mode & 0o777, 0o400); assert.deepEqual(new Uint8Array(await fs.readFile(file)), midiFile());
       assert.equal(args.beats, 1); await fs.writeFile(String(args.destination), midiFile()); return { content: [] };
     } });
-  assert.equal(checked, 1); assert.equal(committed, 1); assert.equal(result.artifacts[0]!.generationKind, "continuation");
+  assert.equal(checked, 1); assert.equal(committed, 1);
+  assert.equal(result.artifacts[0]?.kind, "midi");
+  if (result.artifacts[0]?.kind === "midi") assert.equal(result.artifacts[0].generationKind, "continuation");
   assert.equal(result.artifacts[0]!.connectionId, "midi-generator"); await assert.rejects(fs.stat(staged));
   const existing = (await listMidiArtifacts(h.storage, h.session.id)).length;
   await assert.rejects(callPluginToolWithArtifacts({ contract, argumentsValue: { source: source.id, beats: 1 },
@@ -339,4 +342,75 @@ test("declared MIDI conditioning stages exact read-only SMF input and validates 
     outputPolicy: { generationKind: "continuation", validate: async () => { throw new Error("Source changed"); }, beforeCommit: () => {} },
     call: async (args) => { await fs.writeFile(String(args.destination), midiFile()); return { content: [] }; } }), /Source changed/);
   assert.equal((await listMidiArtifacts(h.storage, h.session.id)).length, existing);
+});
+
+test("audio output declarations admit WAV or MP3 and cannot declare MIDI continuation", () => {
+  const make = (output: Record<string, unknown>, continuation?: Record<string, unknown>) => artifactTool({
+    _meta: { [LIVE_SMITH_ARTIFACT_META_KEY]: { version: 1, inputs: [], outputs: [output], ...(continuation ? { continuation } : {}) } },
+  });
+  assert.deepEqual(pluginArtifactContract(make({ argument: "destination", kind: "audio", label: "Take" }))!.outputs,
+    [{ argument: "destination", kind: "audio", label: "Take", format: "wav" }]);
+  assert.equal(pluginArtifactContract(make({ argument: "destination", kind: "audio", label: "Take", format: "mp3" }))!.outputs[0]?.kind, "audio");
+  assert.throws(() => pluginArtifactContract(make({ argument: "destination", kind: "audio", label: "Take", format: "flac" })));
+  assert.throws(() => pluginArtifactContract(make({ argument: "destination", kind: "midi", label: "Take", format: "wav" })));
+  assert.throws(() => pluginArtifactContract(artifactTool({ _meta: { [LIVE_SMITH_ARTIFACT_META_KEY]: {
+    version: 1, inputs: [{ argument: "source", kind: "midi" }],
+    outputs: [{ argument: "destination", kind: "audio", label: "Take" }], continuation: { lengthArgument: "beats" },
+  } } })));
+});
+
+test("Plugin artifact labels preserve 120 Chinese characters through execution and storage", async (t) => {
+  const h = await audioStorageHarness(t);
+  const label = "旋律".repeat(60);
+  for (const output of [
+    { argument: "destination", kind: "midi" as const, label },
+    { argument: "destination", kind: "audio" as const, format: "wav" as const, label },
+    { argument: "destination", kind: "audio" as const, format: "mp3" as const, label },
+  ]) {
+    const tool = (outputLabel: string) => artifactTool({ _meta: { [LIVE_SMITH_ARTIFACT_META_KEY]: {
+      version: 1, inputs: [], outputs: [{ ...output, label: outputLabel }],
+    } } });
+    assert.throws(() => pluginArtifactContract(tool(`${label}曲`)), /output is invalid/);
+    const contract = pluginArtifactContract(tool(label))!;
+    const bytes = output.kind === "midi" ? midiFile() : output.format === "wav" ? waveBytes() : mp3Bytes();
+    const saved = await callPluginToolWithArtifacts({ contract, argumentsValue: {}, storageDirectory: h.storage,
+      temporaryDirectory: h.storage, sessionId: h.session.id, pluginId: "local-renderer", serverId: "local",
+      toolName: "render", signal: h.signal, call: async (args) => {
+        await fs.writeFile(String(args.destination), bytes);
+        return { content: [] };
+      } });
+    const artifact = saved.artifacts[0]!;
+    const read = artifact.kind === "midi"
+      ? await readMidiArtifact(h.storage, h.session.id, artifact.id, h.signal)
+      : await readPluginAudioArtifact(h.storage, h.session.id, artifact.id, h.signal);
+    assert.equal(artifact.label, label);
+    assert.equal(read.artifact.label, label);
+    assert.deepEqual(read.bytes, bytes);
+  }
+});
+
+test("Plugin audio outputs enforce declared format, bounded regular output and private-path policy", async (t) => {
+  const h = await audioStorageHarness(t);
+  const call = (format: "wav" | "mp3", writer: (target: string) => Promise<{ content: unknown[]; isError?: boolean }>) => callPluginToolWithArtifacts({
+    contract: { inputs: [], outputs: [{ argument: "destination", kind: "audio", label: "Take", format }] },
+    argumentsValue: {}, storageDirectory: h.storage, temporaryDirectory: h.storage, sessionId: h.session.id,
+    pluginId: "local-renderer", serverId: "local", toolName: "render", signal: h.signal,
+    call: async (args) => { assert.equal(path.extname(String(args.destination)), `.${format}`); return writer(String(args.destination)); },
+  });
+  for (const format of ["wav", "mp3"] as const) {
+    const bytes = format === "wav" ? waveBytes() : mp3Bytes();
+    const result = await call(format, async (target) => { await fs.writeFile(target, bytes); return { content: [] }; });
+    assert.equal(result.artifacts[0]?.kind, "audio");
+    assert.deepEqual((await readPluginAudioArtifact(h.storage, h.session.id, result.artifacts[0]!.id)).bytes, bytes);
+  }
+  for (const writer of [
+    async (target: string) => { await fs.writeFile(target, mp3Bytes()); return { content: [] }; },
+    async (target: string) => { await fs.symlink("/dev/null", target); return { content: [] }; },
+    async (target: string) => { await fs.rm(path.dirname(target), { recursive: true }); await fs.symlink(h.storage, path.dirname(target)); return { content: [] }; },
+    async (target: string) => { await fs.writeFile(target, waveBytes()); await fs.writeFile(path.join(path.dirname(target), "extra.wav"), waveBytes()); return { content: [] }; },
+    async (target: string) => { await fs.writeFile(target, waveBytes()); return { content: [{ type: "text", text: target }] }; },
+  ]) await assert.rejects(call("wav", writer));
+  const failed = await call("wav", async (target) => { await fs.writeFile(target, waveBytes()); return { content: [], isError: true }; });
+  assert.deepEqual(failed.artifacts, []);
+  assert.equal((await listPluginAudioArtifacts(h.storage, h.session.id)).length, 2);
 });

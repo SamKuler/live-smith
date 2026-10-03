@@ -24,7 +24,7 @@ export const connectionsMessages: Readonly<Record<string, string>> = {
   "Tool descriptions load automatically when this Session is idle. Connection status below reflects saved settings.": "此会话空闲时会自动加载工具说明。下方连接状态来自已保存的设置。",
   "Connect and sign in": "连接并登录",
   "Advanced sign-in settings": "高级登录设置",
-  "Connect saves this account and opens your browser for sign-in.": "连接后将打开浏览器进行登录。",
+  "Connect saves this account and opens your browser for sign-in.": "连接时会保存此账号，并打开浏览器进行登录。",
   "Save": "保存",
   "Extension settings": "扩展设置",
   "Add an audio service account to use its tools.": "添加音频服务账号以使用其工具。",

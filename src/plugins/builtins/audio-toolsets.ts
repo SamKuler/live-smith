@@ -89,7 +89,7 @@ export function sessionMediaTools(includeModelAudioInput: boolean): ModelFunctio
       type: "function" as const,
       function: {
         name: "listen_to_audio_asset",
-        description: "Listen to one locally saved audio result from this Session using the active model's verified audio-input capability. Use only when the user asks to hear, analyze, compare, transcribe, or reason about that audio. First use list_audio_jobs and copy an exact output asset id as assetRef. This reads local audio only; it does not download remote audio, spend provider allowance, or change Live.",
+        description: "Listen to one locally saved audio result from this Session using the active model's verified audio-input capability. Use only when the user asks to hear, analyze, compare, transcribe, or reason about that audio. Use an exact saved Plugin audio artifactRef, or use list_audio_jobs and copy an output asset id as assetRef. This reads local audio only; it does not download remote audio, spend provider allowance, or change Live.",
         parameters: {
           type: "object",
           additionalProperties: false,

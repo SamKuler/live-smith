@@ -1,22 +1,22 @@
 import type { Tool } from "@modelcontextprotocol/client";
-import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { cloneJsonValue } from "../model/json-clone.js";
 import { validateAgentPlan, type AgentPlan } from "../agent/actions.js";
+import { isArtifactLabel, type ArtifactPluginSource, type ArtifactRef } from "../agent/artifact-contracts.js";
+import { MAX_AUDIO_ASSET_BYTES } from "../audio-services/contracts.js";
 import { throwIfAborted } from "../runtime/host.js";
-import { readAudioAsset } from "../storage/audio-assets.js";
+import { readSessionAudioArtifact, savePluginAudioArtifact, type PluginAudioArtifact } from "../storage/audio-artifacts.js";
 import {
   MAX_MIDI_ARTIFACT_BYTES,
   parseMidiArtifact,
   readMidiArtifact,
   saveMidiArtifact,
   type MidiArtifact,
-  type MidiArtifactPluginSource as MidiArtifactSource,
 } from "../storage/midi-artifacts.js";
 import { isSafeStorageId } from "../storage/id.js";
-import { safeRegularFileOpenFlags } from "../live/safe-file-read.js";
+import { copyAudioFileSafely } from "../live/audio-attachment-source.js";
 import type { PluginArtifactToolContract, PluginToolResult } from "./contracts.js";
 
 export interface MidiArtifactOutputPolicy {
@@ -24,6 +24,8 @@ export interface MidiArtifactOutputPolicy {
   beforeCommit(): void;
   generationKind: "continuation";
 }
+
+export type PluginSavedArtifact = (MidiArtifact & { kind: "midi" }) | (PluginAudioArtifact & { kind: "audio" });
 
 export const LIVE_SMITH_ARTIFACT_META_KEY = "io.github.samkuler/live-smith-artifacts";
 const argumentPattern = /^[A-Za-z][A-Za-z0-9_]{0,63}$/u;
@@ -69,19 +71,23 @@ export function pluginArtifactContract(tool: Tool): PluginArtifactToolContract |
     return { argument: entry.argument as string, kind: entry.kind as "audio" | "midi" };
   });
   const outputs = raw.outputs.map((entry) => {
-    if (!plainRecord(entry) || Object.keys(entry).some((key) => !["argument", "kind", "label"].includes(key)) ||
+    if (!plainRecord(entry) || Object.keys(entry).some((key) => !["argument", "kind", "label", "format"].includes(key)) ||
         typeof entry.argument !== "string" || !argumentPattern.test(entry.argument) ||
-        entry.kind !== "midi" || !safeLabel(entry.label)) {
+        !isArtifactLabel(entry.label) || (entry.kind !== "midi" && entry.kind !== "audio") ||
+        entry.kind === "midi" && entry.format !== undefined ||
+        entry.kind === "audio" && entry.format !== undefined && entry.format !== "wav" && entry.format !== "mp3") {
       throw new Error("Plugin artifact output is invalid.");
     }
-    return { argument: entry.argument as string, kind: "midi" as const, label: entry.label };
+    return entry.kind === "audio"
+      ? { argument: entry.argument, kind: "audio" as const, label: entry.label, format: (entry.format ?? "wav") as "wav" | "mp3" }
+      : { argument: entry.argument, kind: "midi" as const, label: entry.label };
   });
   const argumentsSet = new Set([...inputs, ...outputs].map((entry) => entry.argument));
   if (argumentsSet.size !== inputs.length + outputs.length) throw new Error("Plugin artifact arguments conflict.");
   const continuation = raw.continuation;
   if (continuation !== undefined && (!plainRecord(continuation) || Object.keys(continuation).length !== 1 ||
       typeof continuation.lengthArgument !== "string" || !argumentPattern.test(continuation.lengthArgument) ||
-      argumentsSet.has(continuation.lengthArgument) || inputs.length !== 1 || inputs[0]?.kind !== "midi")) {
+      argumentsSet.has(continuation.lengthArgument) || inputs.length !== 1 || inputs[0]?.kind !== "midi" || outputs[0]?.kind !== "midi")) {
     throw new Error("MIDI continuation requires one MIDI conditioning input and a distinct length argument.");
   }
   return { inputs, outputs, ...(continuation ? { continuation: { lengthArgument: (continuation as { lengthArgument: string }).lengthArgument } } : {}) };
@@ -131,7 +137,7 @@ export function modelSchemaForArtifactTool(
   };
 }
 
-export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
+export async function callPluginToolWithArtifacts(input: ArtifactPluginSource & {
   contract: PluginArtifactToolContract;
   outputPolicy?: MidiArtifactOutputPolicy;
   argumentsValue: unknown;
@@ -142,9 +148,9 @@ export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
   toolName: string;
   signal: AbortSignal;
   forbiddenPaths?: readonly string[];
-  revisionOf?: string;
+  revisionOf?: ArtifactRef;
   call(argumentsValue: Record<string, unknown>): Promise<PluginToolResult>;
-}): Promise<{ result: PluginToolResult; artifacts: MidiArtifact[] }> {
+}): Promise<{ result: PluginToolResult; artifacts: PluginSavedArtifact[] }> {
   if (!plainRecord(input.argumentsValue)) throw new Error("Plugin tool arguments must be an object.");
   const temporaryRoot = input.temporaryDirectory ?? input.storageDirectory;
   if (!temporaryRoot || !path.isAbsolute(temporaryRoot)) throw new Error("Plugin artifact staging is unavailable.");
@@ -160,12 +166,16 @@ export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
     const outputDirectory = path.join(stagingDirectory, "output");
     await fs.mkdir(inputDirectory, { mode: 0o700 });
     await fs.mkdir(outputDirectory, { mode: 0o700 });
+    const directorySnapshots = await Promise.all([stagingDirectory, outputDirectory].map(async (directory) => {
+      const info = await fs.lstat(directory);
+      return { directory, dev: info.dev, ino: info.ino };
+    }));
     for (const [index, descriptor] of input.contract.inputs.entries()) {
       const artifactRef = argumentsValue[descriptor.argument];
       if (typeof artifactRef !== "string") throw new Error("Plugin artifact input reference is invalid.");
       const file = descriptor.kind === "midi"
         ? await readMidiArtifact(input.storageDirectory, input.sessionId, artifactRef, input.signal)
-        : await readAudioAsset(input.storageDirectory, input.sessionId, artifactRef, input.signal);
+        : await readSessionAudioArtifact(input.storageDirectory, input.sessionId, artifactRef, input.signal);
       const bytes = file.bytes;
       const extension = "asset" in file ? file.asset.mediaType === "audio/mpeg" ? "mp3" : "wav" : "mid";
       const target = path.join(inputDirectory, `${index + 1}.${extension}`);
@@ -173,12 +183,22 @@ export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
       argumentsValue[descriptor.argument] = target;
     }
     const output = input.contract.outputs[0]!;
-    const outputName = "1.mid";
+    if (input.outputPolicy && output.kind !== "midi") throw new Error("MIDI continuation requires a MIDI output.");
+    const outputName = output.kind === "midi" ? "1.mid" : `1.${output.format}`;
     const outputPath = path.join(outputDirectory, outputName);
     argumentsValue[output.argument] = outputPath;
     throwIfAborted(input.signal);
     const result = await input.call(argumentsValue);
     throwIfAborted(input.signal);
+    const assertStaging = async () => {
+      for (const snapshot of directorySnapshots) {
+        const actual = await fs.lstat(snapshot.directory);
+        if (!actual.isDirectory() || actual.isSymbolicLink() || actual.dev !== snapshot.dev || actual.ino !== snapshot.ino) {
+          throw new Error("Plugin artifact staging changed during execution.");
+        }
+      }
+    };
+    await assertStaging();
     const realStaging = await fs.realpath(stagingDirectory);
     assertPluginResultHasNoPrivatePaths(result, [
       stagingDirectory,
@@ -188,7 +208,16 @@ export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
     if (result.isError) return { result, artifacts: [] };
     const entries = await fs.readdir(outputDirectory);
     if (entries.length !== 1 || entries[0] !== outputName) throw new Error("Plugin produced undeclared artifact output.");
-    const bytes = await readRegularOutput(outputPath, input.signal);
+    const bytes = await readRegularOutput(outputPath, output.kind === "midi" ? MAX_MIDI_ARTIFACT_BYTES : MAX_AUDIO_ASSET_BYTES, input.signal);
+    await assertStaging();
+    if (output.kind === "audio") {
+      const artifact = await savePluginAudioArtifact(input.storageDirectory, input.sessionId, {
+        ...(input.pluginId === undefined ? { connectionId: input.connectionId } : { pluginId: input.pluginId }),
+        serverId: input.serverId, toolName: input.toolName, label: output.label, format: output.format,
+        ...(input.revisionOf ? { revisionOf: input.revisionOf } : {}), bytes, signal: input.signal,
+      });
+      return { result, artifacts: [{ ...artifact, kind: "audio" }] };
+    }
     parseMidiArtifact(bytes, input.signal);
     await input.outputPolicy?.validate(bytes);
     const artifact = await saveMidiArtifact(input.storageDirectory, input.sessionId, {
@@ -196,13 +225,13 @@ export async function callPluginToolWithArtifacts(input: MidiArtifactSource & {
       serverId: input.serverId,
       toolName: input.toolName,
       label: output.label,
-      ...(input.revisionOf ? { revisionOf: input.revisionOf } : {}),
+      ...(input.revisionOf?.kind === "midi" ? { revisionOf: input.revisionOf.id } : {}),
 
       ...(input.outputPolicy ? { generationKind: input.outputPolicy.generationKind, beforeCommit: input.outputPolicy.beforeCommit } : {}),
       bytes,
       signal: input.signal,
     });
-    return { result, artifacts: [artifact] };
+    return { result, artifacts: [{ ...artifact, kind: "midi" }] };
   } finally {
     if (stagingDirectory) await fs.rm(stagingDirectory, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -263,25 +292,12 @@ export async function materializeMidiArtifactActionPlan(input: {
   return validateAgentPlan({ ...value, actions });
 }
 
-async function readRegularOutput(target: string, signal: AbortSignal): Promise<Uint8Array> {
+async function readRegularOutput(target: string, maximumBytes: number, signal: AbortSignal): Promise<Uint8Array> {
   throwIfAborted(signal);
   const before = await fs.lstat(target);
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size < 1 ||
-      before.size > MAX_MIDI_ARTIFACT_BYTES) throw new Error("Plugin artifact output is not a bounded regular file.");
-  const handle = await fs.open(target, safeRegularFileOpenFlags(fsConstants));
-  try {
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
-      throw new Error("Plugin artifact output changed while opening.");
-    }
-    const bytes = new Uint8Array(await handle.readFile());
-    throwIfAborted(signal);
-    const after = await handle.stat();
-    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size || bytes.byteLength !== opened.size) {
-      throw new Error("Plugin artifact output changed while reading.");
-    }
-    return bytes;
-  } finally { await handle.close(); }
+      before.size > maximumBytes) throw new Error("Plugin artifact output is not a bounded regular file.");
+  return copyAudioFileSafely(target, signal, maximumBytes);
 }
 
 export function assertPluginResultHasNoPrivatePaths(
@@ -298,11 +314,6 @@ export function assertPluginResultHasNoPrivatePaths(
     if (Array.isArray(current)) pending.push(...current);
     else if (plainRecord(current)) pending.push(...Object.values(current));
   }
-}
-
-function safeLabel(value: unknown): value is string {
-  return typeof value === "string" && Boolean(value.trim()) && value.length <= 120 &&
-    !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 function plainRecord(value: unknown): value is Record<string, unknown> {

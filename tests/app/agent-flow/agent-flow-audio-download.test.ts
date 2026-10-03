@@ -102,13 +102,17 @@ test("local export opens only a verified same-Session file using an asset-only b
     await updateAudioJob(storage, state.activeSessionId, job.id, { status: "completed", outputAssets: [asset] });
     const foreign = await createSession(storage, { projectKey: "foreign-set", title: "Foreign",
       scope: { kind: "track", identity: "foreign-track", label: "Foreign" } });
-    const rejected = await post(url, { kind: "open_audio_download", sessionId: foreign.id, assetId: asset.id }, "foreign-export");
+    const rejected = await post(url, { kind: "export_artifact", sessionId: foreign.id, artifact: { kind: "audio", id: asset.id } }, "foreign-export");
     assert.equal(rejected.status, 404); await rejected.text(); assert.equal(opened, 0);
     const otherSession = await createSession(storage, { projectKey: state.sessions[0]!.projectKey, title: "Other",
       scope: { kind: "track", identity: "other-track", label: "Other" } });
-    const wrongOwner = await post(url, { kind: "open_audio_download", sessionId: otherSession.id, assetId: asset.id }, "wrong-owner-export");
+    const wrongOwner = await post(url, { kind: "export_artifact", sessionId: otherSession.id, artifact: { kind: "audio", id: asset.id } }, "wrong-owner-export");
     assert.equal(wrongOwner.status, 404); await wrongOwner.text(); assert.equal(opened, 0);
-    const response = await post(url, { kind: "open_audio_download", sessionId: state.activeSessionId, assetId: asset.id }, "export");
+    for (const sessionId of [foreign.id, otherSession.id]) {
+      const response = await post(url, { kind: "attach_artifact", sessionId, artifact: { kind: "audio", id: asset.id } }, `attach-wrong-owner-${sessionId}`);
+      assert.equal(response.status, 404); await response.text(); assert.equal(opened, 0);
+    }
+    const response = await post(url, { kind: "export_artifact", sessionId: state.activeSessionId, artifact: { kind: "audio", id: asset.id } }, "export");
     assert.equal(response.status, 200);
     const body = await response.text();
     assert.doesNotMatch(body, /eyJhbGci|audio-download\?token=/);
@@ -119,7 +123,7 @@ test("local export opens only a verified same-Session file using an asset-only b
     assert.notEqual(url.searchParams.get("token"), controlToken);
     const response = await fetch(url);
     assert.equal(response.status, 200);
-    assert.match(response.headers.get("content-disposition")!, /^attachment;/);
+    assert.match(response.headers.get("content-disposition")!, /attachment;.*filename\*=UTF-8''Music-asset_[a-f0-9]{64}\.wav/u);
     assert.deepEqual(new Uint8Array(await response.arrayBuffer()), waveBytes());
   });
   assert.equal(opened, 1);
@@ -149,7 +153,7 @@ test("local export completes while the same Session model request remains active
       const eventsBefore = await loadSessionEvents(storage, state.activeSessionId);
       const response = await fetch(endpoint(url, "/command"), { method: "POST", headers: {
         "Content-Type": "application/json", "X-Live-Smith-Command-Id": "export-during-send",
-      }, body: JSON.stringify({ kind: "open_audio_download", sessionId: state.activeSessionId, assetId: asset.id }),
+      }, body: JSON.stringify({ kind: "export_artifact", sessionId: state.activeSessionId, artifact: { kind: "audio", id: asset.id } }),
         signal: AbortSignal.timeout(2_000) });
       const body = await response.text();
       assert.equal(response.status, 200, body);

@@ -4,30 +4,10 @@ import type { UiMessage } from "../i18n/ui-message.js";
 export const SEPARATION_STEMS = [
   "vocals", "drums", "bass", "piano", "electric_guitar", "acoustic_guitar",
 ] as const;
-export const SUNO_STEM_BASE_ROLES = [
-  "suno_stem_vocals", "suno_stem_backing_vocals", "suno_stem_drums", "suno_stem_bass", "suno_stem_guitar", "suno_stem_keyboard",
-  "suno_stem_percussion", "suno_stem_strings", "suno_stem_synth", "suno_stem_fx", "suno_stem_brass", "suno_stem_woodwinds",
-] as const;
-export type SunoStemBaseRole = typeof SUNO_STEM_BASE_ROLES[number];
-export const SUNO_STEM_ROLES = [...SUNO_STEM_BASE_ROLES,
-  ...SUNO_STEM_BASE_ROLES.map((role): `${SunoStemBaseRole}_alternative` => `${role}_alternative`),
-] as const;
-export type SunoStemRole = typeof SUNO_STEM_ROLES[number];
 export type SeparationStem = (typeof SEPARATION_STEMS)[number];
-const sunoStemLabels: Record<SunoStemBaseRole, string> = {
-  suno_stem_vocals: "Lead vocals", suno_stem_backing_vocals: "Backing vocals", suno_stem_drums: "Drums",
-  suno_stem_bass: "Bass", suno_stem_guitar: "Guitar", suno_stem_keyboard: "Keyboards", suno_stem_percussion: "Percussion",
-  suno_stem_strings: "Strings", suno_stem_synth: "Synth", suno_stem_fx: "Effects", suno_stem_brass: "Brass", suno_stem_woodwinds: "Woodwinds",
-};
-export const AUDIO_OUTPUT_LABELS = {
-  vocals: "Vocals", drums: "Drums", bass: "Bass", piano: "Piano",
-  electric_guitar: "Electric guitar", acoustic_guitar: "Acoustic guitar", residual: "Remaining audio",
-  music: "Music", music_alternative: "Alternative music", sound_effect: "Sound effect",
-  sound_effect_alternative: "Alternative sound effect",
-  uploaded_audio: "Uploaded audio",
-  ...sunoStemLabels,
-  ...Object.fromEntries(SUNO_STEM_BASE_ROLES.map((role) => [`${role}_alternative`, `Alternative ${sunoStemLabels[role].toLowerCase()}`])) as Record<`${SunoStemBaseRole}_alternative`, string>,
-} as const;
+export { AUDIO_OUTPUT_LABELS } from "./audio-output.js";
+import type { AudioOutputRole, GeneratedAudioOutputRole } from "./audio-output.js";
+import type { ArtifactRef, ArtifactVersion } from "../agent/artifact-contracts.js";
 
 export const MAX_AUDIO_ASSET_BYTES = 128 * 1024 * 1024;
 export const MAX_AUDIO_ASSET_DURATION_SECONDS = 15 * 60;
@@ -128,7 +108,7 @@ export type AudioGenerationRequest =
   | { operation: "generate_sound_effect"; prompt: string; durationSeconds: number; loop: boolean };
 
 export interface GeneratedAudioOutput {
-  role: "music" | "music_alternative" | "sound_effect" | "sound_effect_alternative" | "uploaded_audio" | SunoStemRole;
+  role: GeneratedAudioOutputRole;
   bytes: Uint8Array;
 }
 
@@ -195,7 +175,9 @@ export interface AudioAsset {
   sessionId: string;
   jobId: string;
   label: string;
-  role: SeparationStem | "residual" | "source" | GeneratedAudioOutput["role"];
+  role: AudioOutputRole;
+  /** Absent on historical receipts, which remain readable without rewriting. */
+  version?: ArtifactVersion;
   mediaType: "audio/wav" | "audio/mpeg";
   byteLength: number;
   sha256: string;
@@ -273,6 +255,8 @@ export interface AudioJob {
   status: AudioJobStatus;
   createdAt: string;
   updatedAt: string;
+  /** Source selected when the request was admitted; immutable across resume/download. */
+  artifactSource?: ArtifactRef;
   sourceAssetId?: string;
   remoteSourceId?: string;
   remoteTaskId?: string;
@@ -316,7 +300,9 @@ export function audioJobView(job: AudioJob): AudioJobView {
     provider: job.provider, serviceId: job.serviceId, operation: job.operation,
     ...(job.modelId ? { modelId: job.modelId } : {}),
     ...(job.title ? { title: job.title } : {}),
-    outputs: job.outputAssets.map((asset) => ({ ...asset, origin: { ...asset.origin } })),
+    outputs: job.outputAssets.map((asset) => ({ ...asset, origin: { ...asset.origin },
+      ...(asset.version ? { version: { ...asset.version } } : {}),
+    })),
     ...(job.remoteOutputs ? { remoteOutputs: job.remoteOutputs.map(({ key, role }) => ({ key, role })) } : {}),
     ...(job.message ? { message: job.message } : {}),
     ...(job.remoteOutputs !== undefined && audioJobRemoteSettled(job) ? {

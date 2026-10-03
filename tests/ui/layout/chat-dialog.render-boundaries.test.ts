@@ -1257,6 +1257,8 @@ test("command selects regain focus after their temporary lock", async () => {
       },
     );
     harness.click("#settingsButton");
+    harness.click("#settingsInspectorScope");
+    harness.click("#agentTab");
     await expectFocusRestored(
       "#profileSelector",
       "activate_profile",

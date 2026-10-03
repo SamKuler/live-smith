@@ -306,7 +306,7 @@ function toolDefinition(
           ? standaloneMcpToolCallName(connection!.id, tool.name)
           : pluginToolCallName(pluginId, server.id, tool.name, connection?.id),
         description: `${connection ? `Named connection: ${connection.name}. ` : ""}${artifactContract
-          ? `${description} Live Smith stages declared Session audio inputs and saves one validated MIDI output; arguments never contain user filesystem paths. Do not retry an unknown outcome automatically; use list_session_artifacts to check saved results first.`
+          ? `${description} Live Smith stages declared Session artifact inputs and saves one validated ${artifactContract.outputs[0]!.kind === "midi" ? "MIDI" : "audio"} output; arguments never contain user filesystem paths. Do not retry an unknown outcome automatically; use list_session_artifacts to check saved results first.`
           : description}`,
         parameters,
       },

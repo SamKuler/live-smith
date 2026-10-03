@@ -1,3 +1,4 @@
+import { createLocaleBindings, type LocalizedText } from "./locale-bindings.js";
 import type { MidiContinuationCommand, MidiContinuationGeneratorChoice, MidiContinuationView } from "../../agent/midi-continuation-contracts.js";
 import type { PluginParameterPanel } from "../../plugins/parameter-panel.js";
 import type { ChatDialogState } from "../chat-state.js";
@@ -6,6 +7,7 @@ import { isMidiArtifactImportPreview } from "./wire-contracts/midi-import.js";
 
 interface Operation { busy: boolean; commandKind?: string | null; canStop: boolean; stopping: boolean }
 interface ParameterPanels {
+  refreshLocale(): void;
   create(panel: PluginParameterPanel, options: { initialValues?: Record<string, unknown>; submitLabel: string;
     description: string; showResult: false; onSubmit(args: Record<string, unknown>): Promise<void> }): HTMLElement;
 }
@@ -23,34 +25,35 @@ const generatorKey = (choice: MidiContinuationGeneratorChoice) => `${choice.tool
 const continuationCommands = new Set(["configure_midi_continuation", "fill_midi_continuation", "import_midi_continuation"]);
 
 function createView(deps: Dependencies) {
+  const bindings = createLocaleBindings();
   const t = (source: string, values?: Record<string, string>) => window.LiveSmithI18n?.t(source, values) ?? source;
-  const node = <T extends keyof HTMLElementTagNameMap>(tag: T, className: string, text?: string): HTMLElementTagNameMap[T] => {
-    const element = document.createElement(tag); element.className = className; if (text !== undefined) element.textContent = text; return element;
+  const node = <T extends keyof HTMLElementTagNameMap>(tag: T, className: string, text?: LocalizedText): HTMLElementTagNameMap[T] => {
+    const element = document.createElement(tag); element.className = className; if (text !== undefined) bindings.text(element, text); return element;
   };
   const root = document.getElementById("midiContinuationSection")!;
   const content = document.getElementById("midiContinuationContent")!;
   const load = document.getElementById("loadMidiContinuationButton") as HTMLButtonElement;
   const status = node("p", "field-hint midi-continuation-status"); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   const setup = node("div", "midi-continuation-setup");
-  const sourceList = node("div", "midi-continuation-sources"); sourceList.setAttribute("role", "group"); sourceList.setAttribute("aria-label", t("Source MIDI Clips"));
+  const sourceList = node("div", "midi-continuation-sources"); sourceList.setAttribute("role", "group"); bindings.attribute(sourceList, "aria-label", () => t("Source MIDI Clips"));
   const sourceHint = node("p", "field-hint");
   const length = node("input", "midi-continuation-length"); length.type = "number"; length.min = "1"; length.max = "256"; length.step = "any"; length.required = true;
   const capacity = node("input", "midi-continuation-capacity"); capacity.type = "number"; capacity.min = "1"; capacity.max = "4"; capacity.step = "1"; capacity.required = true;
   const generator = node("select", "midi-continuation-generator");
   const prompt = node("textarea", "midi-continuation-prompt"); prompt.rows = 3; prompt.maxLength = 8000;
-  const field = (label: string, control: HTMLElement) => { const wrapper = node("label", "midi-continuation-field"); wrapper.append(node("span", "", t(label)), control); return wrapper; };
+  const field = (label: string, control: HTMLElement) => { const wrapper = node("label", "midi-continuation-field"); wrapper.append(node("span", "", () => t(label)), control); return wrapper; };
   const numbers = node("div", "midi-continuation-numbers"); numbers.append(field("Section length (beats)", length), field("Buffer capacity", capacity));
   const promptField = field("Direction for generated sections", prompt);
   const parameters = node("div", "midi-continuation-parameters");
-  const save = node("button", "primary", t("Save continuation setup")); save.type = "button";
-  const reset = node("button", "secondary", t("Use saved setup")); reset.type = "button";
+  const save = node("button", "primary", () => t("Save continuation setup")); save.type = "button";
+  const reset = node("button", "secondary", () => t("Use saved setup")); reset.type = "button";
   const setupHint = node("p", "field-hint");
   const setupActions = node("div", "midi-continuation-actions"); setupActions.append(reset, save);
-  setup.append(node("h3", "", t("Source MIDI Clips")), sourceList, sourceHint, numbers, field("MIDI generator", generator), promptField, parameters, setupHint, setupActions);
+  setup.append(node("h3", "", () => t("Source MIDI Clips")), sourceList, sourceHint, numbers, field("MIDI generator", generator), promptField, parameters, setupHint, setupActions);
   const bufferInfo = node("p", "field-hint midi-continuation-buffer");
   const queue = node("div", "midi-continuation-queue");
-  const fill = node("button", "primary", t("Fill buffer")); fill.type = "button";
-  const stop = node("button", "secondary", t("Stop")); stop.type = "button";
+  const fill = node("button", "primary", () => t("Fill buffer")); fill.type = "button";
+  const stop = node("button", "secondary", () => t("Stop")); stop.type = "button";
   const fillActions = node("div", "midi-continuation-actions"); fillActions.append(fill, stop);
   const importRegion = node("fieldset", "midi-continuation-import");
   content.append(status, setup, bufferInfo, fillActions, queue, importRegion);
@@ -88,12 +91,12 @@ function createView(deps: Dependencies) {
     fill.disabled = locked || dirty || !buffer || view?.stale === true || buffer.queue.length >= buffer.capacity;
     const stoppable = continuationCommands.has(operation.commandKind ?? "");
     stop.hidden = !stoppable; stop.disabled = !operation.canStop || operation.stopping;
-    stop.textContent = t(operation.stopping ? "Stopping…" : "Stop");
+    bindings.text(stop, () => t(operation.stopping ? "Stopping…" : "Stop"));
     importRegion.disabled = locked || dirty || view?.stale === true;
-    setupHint.textContent = conflict() ? t("The saved setup changed. Use saved setup before editing again.") : dirty
+    bindings.text(setupHint, () => conflict() ? t("The saved setup changed. Use saved setup before editing again.") : dirty
       ? t("Save this setup or use saved values before filling or importing. Saving starts a new buffer; saved artifacts remain in this Session.")
       : generator.value === "model" && !modelReady() ? t("Choose a saved model with tool support, or an enabled MIDI generator.")
-      : t("Fill generates ordered future sections. Refill manually after importing; no automatic playback is scheduled.");
+      : t("Fill generates ordered future sections. Refill manually after importing; no automatic playback is scheduled."));
     root.setAttribute("aria-busy", String(Boolean(pending)));
   }
   function renderSources() {
@@ -101,15 +104,15 @@ function createView(deps: Dependencies) {
     for (const clip of view?.clips ?? []) {
       const row = node("label", "midi-continuation-clip");
       const check = node("input", ""); check.type = "checkbox"; check.checked = selected.has(clipKey(clip));
-      check.setAttribute("aria-label", `${clip.trackName} · ${clip.clipName || t("Untitled MIDI Clip")}`);
+      bindings.attribute(check, "aria-label", () => `${clip.trackName} · ${clip.clipName || t("Untitled MIDI Clip")}`);
       const copy = node("span", "midi-continuation-clip-copy");
-      copy.append(node("strong", "", clip.clipName || t("Untitled MIDI Clip")), node("span", "field-hint",
-        `${clip.trackName} · ${t(clip.location === "arrangement" ? "Arrangement" : "Session")} · ${t("Beats")} ${clip.startBeat + 1}–${clip.startBeat + clip.durationBeats + 1} · ${clip.noteCount} ${t("notes")}`));
+      copy.append(node("strong", "", () => clip.clipName || t("Untitled MIDI Clip")), node("span", "field-hint",
+        () => `${clip.trackName} · ${t(clip.location === "arrangement" ? "Arrangement" : "Session")} · ${t("Beats")} ${clip.startBeat + 1}–${clip.startBeat + clip.durationBeats + 1} · ${clip.noteCount} ${t("notes")}`));
       row.append(check, copy); sourceList.append(row);
       check.addEventListener("change", () => { if (check.checked) selected.add(clipKey(clip)); else selected.delete(clipKey(clip)); dirty = true; syncControls(); });
     }
-    sourceHint.textContent = !view?.clips.length ? t("No MIDI Clips are available in this snapshot.")
-      : view.clipsTruncated ? t("Source list is limited to 256 observed Clips. Select up to 16.") : t("Select up to 16 source MIDI Clips across tracks.");
+    bindings.text(sourceHint, () => !view?.clips.length ? t("No MIDI Clips are available in this snapshot.")
+      : view.clipsTruncated ? t("Source list is limited to 256 observed Clips. Select up to 16.") : t("Select up to 16 source MIDI Clips across tracks."));
   }
   function renderParameters() {
     parameters.replaceChildren(); promptField.hidden = generator.value !== "model";
@@ -129,7 +132,7 @@ function createView(deps: Dependencies) {
     baseBufferId = buffer?.id ?? null;
     selected = new Set(buffer?.sourceClips.map(clipKey).filter((key) => view!.clips.some((clip) => clipKey(clip) === key)) ?? []);
     length.value = String(buffer?.segmentBeats ?? 8); capacity.value = String(buffer?.capacity ?? 2); prompt.value = buffer?.prompt ?? "";
-    generator.replaceChildren(); const model = node("option", "", t("Current Session model")); model.value = "model"; generator.append(model);
+    generator.replaceChildren(); const model = node("option", "", () => t("Current Session model")); model.value = "model"; generator.append(model);
     for (const entry of view?.generators ?? []) { const option = node("option", "", entry.label); option.value = generatorKey(entry); generator.append(option); }
     generator.value = buffer?.generator.kind === "plugin" ? `${buffer.generator.toolName}:${buffer.generator.signature}` : "model";
     if (!generator.value) generator.value = "model";
@@ -138,16 +141,16 @@ function createView(deps: Dependencies) {
   async function run(command: MidiContinuationCommand): Promise<boolean> {
     if (!current() || operation.busy || pending) return false;
     const owner = sessionId; const ownAttempt = ++attempt; pending = command.kind; syncControls();
-    status.textContent = t(command.kind === "fill_midi_continuation" ? "Filling future MIDI sections…" : command.kind === "configure_midi_continuation" ? "Saving MIDI continuation setup…" : command.kind === "load_midi_continuation" ? "Observing MIDI Clips and generators…" : "Importing the next MIDI section…");
+    bindings.text(status, () => t(command.kind === "fill_midi_continuation" ? "Filling future MIDI sections…" : command.kind === "configure_midi_continuation" ? "Saving MIDI continuation setup…" : command.kind === "load_midi_continuation" ? "Observing MIDI Clips and generators…" : "Importing the next MIDI section…"));
     try {
       const completed = await deps.run(command);
       if (!current(owner) || attempt !== ownAttempt) return false;
       if (completed && command.kind === "configure_midi_continuation") hydrateSetup();
-      status.textContent = completed ? t(command.kind === "fill_midi_continuation" ? "Fill finished. Review the saved sections before importing." : command.kind === "import_midi_continuation" ? "Import finished. The server snapshot shows the remaining sections." : "MIDI continuation is ready.")
-        : t("Operation stopped or failed. Saved sections remain; review the Session status before trying again.");
+      bindings.text(status, () => completed ? t(command.kind === "fill_midi_continuation" ? "Fill finished. Review the saved sections before importing." : command.kind === "import_midi_continuation" ? "Import finished. The server snapshot shows the remaining sections." : "MIDI continuation is ready.")
+        : t("Operation stopped or failed. Saved sections remain; review the Session status before trying again."));
       return completed;
     } catch (error) {
-      if (current(owner) && attempt === ownAttempt) status.textContent = error instanceof Error ? error.message : t("MIDI continuation could not complete.");
+      if (current(owner) && attempt === ownAttempt) bindings.text(status, () => error instanceof Error ? error.message : t("MIDI continuation could not complete."));
       return false;
     } finally { if (attempt === ownAttempt) { pending = undefined; render(); syncControls(); } }
   }
@@ -162,7 +165,7 @@ function createView(deps: Dependencies) {
   }
   function renderQueue() {
     const view = getView(); const buffer = view?.buffer;
-    bufferInfo.textContent = buffer ? t("{ready} of {capacity} future sections ready · {applied} imported", { ready: String(buffer.queue.length), capacity: String(buffer.capacity), applied: String(buffer.consumedCount) }) : t("Save a setup to prepare a bounded MIDI buffer.");
+    bindings.text(bufferInfo, () => buffer ? t("{ready} of {capacity} future sections ready · {applied} imported", { ready: String(buffer.queue.length), capacity: String(buffer.capacity), applied: String(buffer.consumedCount) }) : t("Save a setup to prepare a bounded MIDI buffer."));
     const activeRefs = new Set(buffer?.queue.map((entry) => entry.artifactRef) ?? []);
     for (const key of previewRows.keys()) if (!activeRefs.has(key)) previewRows.delete(key);
     const rows: HTMLElement[] = [];
@@ -170,24 +173,25 @@ function createView(deps: Dependencies) {
       let details = previewRows.get(entry.artifactRef);
       if (!details) {
         details = node("details", "midi-continuation-section");
-        details.append(node("summary", "", `${t("Section {number}", { number: String(entry.sequence + 1) })} · ${entry.label} · ${entry.noteCount} ${t("notes")}`));
-        const preview = node("div", "midi-continuation-preview"); const previewButton = node("button", "secondary", t("Preview saved MIDI")); previewButton.type = "button";
+        details.append(node("summary", "", () => `${t("Section {number}", { number: String(entry.sequence + 1) })} · ${entry.label} · ${entry.noteCount} ${t("notes")}`));
+        const preview = node("div", "midi-continuation-preview"); const previewButton = node("button", "secondary", () => t("Preview saved MIDI")); previewButton.type = "button";
         const suggested = buffer!.insertBeat + entry.sequence * buffer!.segmentBeats;
-        details.append(node("p", "field-hint midi-continuation-range", t("Suggested Clip range: beats {start}–{end}", { start: String(suggested + 1), end: String(suggested + buffer!.segmentBeats + 1) })), previewButton, preview);
+        details.append(node("p", "field-hint midi-continuation-range", () => t("Suggested Clip range: beats {start}–{end}", { start: String(suggested + 1), end: String(suggested + buffer!.segmentBeats + 1) })), previewButton, preview);
         previewButton.addEventListener("click", async () => {
           const owner = sessionId; const bufferId = buffer!.id; previewButton.disabled = true;
           try {
             const result = await deps.preview({ sessionId: owner, artifactRef: entry.artifactRef });
             if (!current(owner) || getView()?.buffer?.id !== bufferId || !getView()?.buffer?.queue.some((candidate) => candidate.artifactRef === entry.artifactRef)) return;
             if (!isMidiArtifactImportPreview(result) || result.sessionId !== owner || result.artifactRef !== entry.artifactRef) throw new Error(t("MIDI import preview is unavailable."));
-            preview.replaceChildren(...result.parts.map((part) => node("p", "field-hint", `${t("Track")} ${part.sourceTrackIndex + 1} · ${part.sourceTrackName || "MIDI"} · ${t("Channel")} ${part.channel} · ${part.noteCount} ${t("notes")} · ${part.durationBeats} ${t("Beats")}`)));
-          } catch (error) { if (current(owner)) preview.textContent = error instanceof Error ? error.message : t("MIDI import preview failed."); }
-          finally { previewButton.disabled = false; }
+            preview.replaceChildren(...result.parts.map((part) => node("p", "field-hint", () => `${t("Track")} ${part.sourceTrackIndex + 1} · ${part.sourceTrackName || "MIDI"} · ${t("Channel")} ${part.channel} · ${part.noteCount} ${t("notes")} · ${part.durationBeats} ${t("Beats")}`)));
+          } catch (error) {
+            if (current(owner)) preview.replaceChildren(node("p", "field-hint", () => error instanceof Error ? error.message : t("MIDI import preview failed.")));
+          } finally { previewButton.disabled = false; }
         });
         previewRows.set(entry.artifactRef, details);
       }
       const suggested = buffer!.insertBeat + entry.sequence * buffer!.segmentBeats;
-      details.querySelector(".midi-continuation-range")!.textContent = t("Suggested Clip range: beats {start}–{end}", { start: String(suggested + 1), end: String(suggested + buffer!.segmentBeats + 1) });
+      bindings.text(details.querySelector(".midi-continuation-range")!, () => t("Suggested Clip range: beats {start}–{end}", { start: String(suggested + 1), end: String(suggested + buffer!.segmentBeats + 1) }));
       rows.push(details);
     }
     queue.replaceChildren(...rows);
@@ -197,7 +201,7 @@ function createView(deps: Dependencies) {
       headKey = nextHeadKey; importRegion.replaceChildren();
       if (head && buffer) {
         const owner = sessionId; const bufferId = buffer.id;
-        importRegion.append(node("legend", "", t("Import the next section")), deps.resultActions.create("midi_continuation", {
+        importRegion.append(node("legend", "", () => t("Import the next section")), deps.resultActions.create("midi_continuation", {
           artifacts: [{ kind: "midi", artifactRef: head.artifactRef, label: head.label, noteCount: head.noteCount, durationBeats: buffer.segmentBeats }],
         }, { importOnly: true, initialStartBeat: buffer.insertBeat + head.sequence * buffer.segmentBeats,
           onImport: async (input) => {
@@ -210,10 +214,12 @@ function createView(deps: Dependencies) {
     importRegion.hidden = !head;
   }
   function render() {
+    bindings.refresh(content);
+    parameterPanels.refreshLocale();
     const nextSession = deps.getState().activeSessionId;
     if (nextSession !== sessionId) {
       sessionId = nextSession; attempt++; pending = undefined; dirty = false; renderedView = ""; headKey = "";
-      selected.clear(); previewRows.clear(); queue.replaceChildren(); importRegion.replaceChildren(); status.textContent = "";
+      selected.clear(); previewRows.clear(); queue.replaceChildren(); importRegion.replaceChildren(); bindings.text(status, "");
     }
     const view = getView(); const key = JSON.stringify(view ?? null);
     if (key !== renderedView) {
@@ -222,9 +228,9 @@ function createView(deps: Dependencies) {
       renderQueue();
     }
     setup.hidden = !view; fillActions.hidden = !view?.buffer;
-    if (view?.stale) status.textContent = t(view.staleReason === "generator_changed" ? "The generator changed. Reload and save the setup again before filling or importing."
+    if (view?.stale) bindings.text(status, () => t(view.staleReason === "generator_changed" ? "The generator changed. Reload and save the setup again before filling or importing."
       : view.staleReason === "source_changed" ? "Source Clips changed. Reload and save the setup again before filling or importing."
-      : "The continuation source is unavailable. Reload before continuing.");
+      : "The continuation source is unavailable. Reload before continuing."));
     syncControls();
   }
   load.addEventListener("click", () => { void run({ kind: "load_midi_continuation", sessionId }); });

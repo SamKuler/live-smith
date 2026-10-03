@@ -6,6 +6,8 @@ import { appendSessionEvent, loadSessionEvents } from "../../storage/events.js";
 import { inspectMidiArtifacts } from "../../storage/midi-artifacts.js";
 import { MAX_PLUGIN_MCP_MESSAGE_BYTES, type PluginToolResult } from "../../plugins/contracts.js";
 import { appToolResultWithArtifacts, createRequestPluginTools, type PluginExecutionAuthorization, type RequestPluginTools } from "./request-plugin-tools.js";
+import { listPluginAudioArtifacts } from "../../storage/audio-artifacts.js";
+import type { PluginSavedArtifact } from "../../plugins/artifacts.js";
 import { ChatBridgeConflictError, ChatBridgeRequestValidationError } from "../chat/chat-bridge-http.js";
 
 // A page cursor may occupy its whole MCP frame; allow the instance ID and JSON envelope as well.
@@ -140,6 +142,7 @@ export function createPluginAppSessions(input: {
             if (result.history.outcomeUnknown) throw new Error("Plugin App tool outcome is unconfirmed.");
             await appendSessionEvent(input.storageDirectory, app.sessionId, {
               kind: "tool_result", name: definition.tool.function.name, content: result.history.content,
+              ...(result.history.artifacts ? { artifacts: result.history.artifacts } : {}),
             });
             return result.result;
           } catch {
@@ -177,8 +180,12 @@ async function recentAppToolResult(storageDirectory: string | undefined, session
     const result: unknown = resultEvent ? JSON.parse(resultEvent.content) : undefined;
     const artifactRefs = configRecord(result) && Array.isArray(result.artifacts)
       ? new Set(result.artifacts.filter(configRecord).map((artifact) => artifact.artifactRef)) : new Set();
-    const artifacts = artifactRefs.size
-      ? (await inspectMidiArtifacts(storageDirectory, sessionId)).artifacts.filter((artifact) => artifactRefs.has(artifact.id)) : [];
+    const artifacts: PluginSavedArtifact[] = artifactRefs.size ? [
+      ...(await inspectMidiArtifacts(storageDirectory, sessionId)).artifacts
+        .filter((artifact) => artifactRefs.has(artifact.id)).map((artifact) => ({ ...artifact, kind: "midi" as const })),
+      ...(await listPluginAudioArtifacts(storageDirectory, sessionId))
+        .filter((artifact) => artifactRefs.has(artifact.id)).map((artifact) => ({ ...artifact, kind: "audio" as const })),
+    ] : [];
     return { toolInput: args, ...(configRecord(result) && Array.isArray(result.content) ? { toolResult: appToolResultWithArtifacts({
       content: result.content,
       ...(result.structuredContent === undefined ? {} : { structuredContent: result.structuredContent }),

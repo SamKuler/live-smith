@@ -3,7 +3,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
-import { SUNO_STEM_ROLES, type AudioAsset } from "../../src/audio-services/contracts.js";
+import type { AudioAsset } from "../../src/audio-services/contracts.js";
+import { AUDIO_STEM_ROLES } from "../../src/audio-services/audio-output.js";
 import { readAudioAsset, readAudioSessionState } from "../../src/storage/audio-assets.js";
 import {
   AudioStorageError, audioAssetId, createAudioJob, listAudioJobs, updateAudioJob,
@@ -19,17 +20,18 @@ test("completed Suno stem history stays available beyond 1024 files", async (t) 
   } as const;
   const h = await audioStorageHarness(t, { ...input, stems: [] });
   const bytes = waveBytes(0.01);
-  const template = await h.save(SUNO_STEM_ROLES[0], bytes);
+  const template = await h.save(AUDIO_STEM_ROLES[0], bytes);
   const expectedAssets: AudioAsset[] = [];
 
   for (let jobIndex = 0; jobIndex < 21; jobIndex++) {
     const job = jobIndex === 0 ? h.job : await createAudioJob(h.storage, h.session.id, { ...input, stems: [] });
-    const expectedOutputs = SUNO_STEM_ROLES.map((role, outputIndex) => ({
-      key: `00000000-0000-4000-8000-${(jobIndex * SUNO_STEM_ROLES.length + outputIndex + 1).toString().padStart(12, "0")}`,
+    const expectedOutputs = AUDIO_STEM_ROLES.map((role, outputIndex) => ({
+      key: `00000000-0000-4000-8000-${(jobIndex * AUDIO_STEM_ROLES.length + outputIndex + 1).toString().padStart(12, "0")}`,
       role,
     }));
     const outputAssets = expectedOutputs.map(({ role }) => ({
       ...template, id: audioAssetId(job.id, role), jobId: job.id, role,
+      version: { groupId: audioAssetId(job.id, role), number: 1 },
     }));
     // Seed complete immutable files from a validated audio snapshot, then admit
     // every manifest and asset through the ordinary job storage boundary.

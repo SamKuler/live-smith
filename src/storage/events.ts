@@ -1,3 +1,5 @@
+import { isAgentApplyOperation, type AgentApplyOperation } from "../agent/action-preview.js";
+import { cloneJsonValue } from "../model/json-clone.js";
 import { isAttachmentProvenance } from "../attachments/provenance.js";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
@@ -24,7 +26,7 @@ import { isModelCitation, MAX_MODEL_CITATION_COUNT } from "../model/citations.js
 import type { ModelCitation, ModelHostedWebSearch } from "../model/contracts.js";
 import { isModelHostedWebSearch } from "../model/web-search.js";
 import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
-import { isArtifactRef, isArtifactSelection, type ArtifactRef, type ArtifactSelection } from "../agent/artifact-contracts.js";
+import { isArtifactRef, isArtifactRefs, isArtifactSelection, type ArtifactRef, type ArtifactSelection } from "../agent/artifact-contracts.js";
 
 export const MAX_USER_EVENT_ATTACHMENT_COUNT =
   MAX_PENDING_ATTACHMENT_COUNT;
@@ -84,6 +86,8 @@ export interface SessionEventInput {
   candidateSelection?: ArtifactSelection;
   parentCandidate?: ArtifactRef;
   requestEventId?: string;
+  applyOperation?: AgentApplyOperation;
+  artifacts?: ArtifactRef[];
 }
 
 export interface SessionEvent extends Omit<SessionEventInput, "attachments"> {
@@ -295,6 +299,8 @@ function isSessionEvent(
       "candidateSelection",
       "parentCandidate",
       "requestEventId",
+      "applyOperation",
+      "artifacts",
     ]) &&
     isSafeStorageId(record.id) &&
     typeof record.createdAt === "string" &&
@@ -303,6 +309,8 @@ function isSessionEvent(
     (record.kind === "candidate" ? isArtifactSelection(record.candidateSelection) : record.candidateSelection === undefined) &&
     (record.parentCandidate === undefined || (record.kind === "user" || record.kind === "tool_call") && isArtifactRef(record.parentCandidate)) &&
     (record.requestEventId === undefined || record.kind === "tool_call" && isSafeStorageId(record.requestEventId)) &&
+    (record.applyOperation === undefined || isAgentApplyOperation(record.applyOperation, record.kind)) &&
+    (record.artifacts === undefined || record.kind === "tool_result" && isArtifactRefs(record.artifacts)) &&
     (record.name === undefined || typeof record.name === "string") &&
     (record.recovery === undefined || (
       record.kind === "apply_result" && isSessionRecoveryLedger(record.recovery)
@@ -546,8 +554,11 @@ export function sessionSteeringContentSha256(
 function cloneSessionEvent(event: SessionEvent): SessionEvent {
   return {
     ...event,
+    ...(event.applyOperation ? { applyOperation: cloneJsonValue(event.applyOperation) } : {}),
+    ...(event.artifacts ? { artifacts: event.artifacts.map((ref) => ({ ...ref })) } : {}),
     ...(event.parentCandidate ? { parentCandidate: { ...event.parentCandidate } } : {}),
     ...(event.candidateSelection ? { candidateSelection: { ...event.candidateSelection,
+      ...(event.candidateSelection.action === "primary" ? { group: { ...event.candidateSelection.group } } : {}),
       candidate: event.candidateSelection.candidate ? { ...event.candidateSelection.candidate } : null } } : {}),
     ...(event.attachments === undefined
       ? {}

@@ -1,7 +1,7 @@
 import { isCreativeBrief } from "../../../agent/creative-brief.js";
 import { isAttachmentProvenance } from "../../../attachments/provenance.js";
-import type { AgentActionPreview, MidiActionPreview, MidiPreviewNote } from "../../../agent/action-preview.js";
-import { isArtifactRef, isArtifactSelection } from "../../../agent/artifact-contracts.js";
+import { isAgentActionPreviews, isAgentApplyOperation, type AgentActionPreview } from "../../../agent/action-preview.js";
+import { isArtifactRef, isArtifactRefs, isArtifactSelection } from "../../../agent/artifact-contracts.js";
 import { isEditScopes as isWireEditScopes } from "../../../agent/edit-scopes.js";
 import type { ConversationScope, ModelCitation, ModelContextUsage, ModelHostedWebSearch } from "../../../model/contracts.js";
 import type { AvailableSkillSummary } from "../../../skills/builtins.js";
@@ -24,8 +24,6 @@ import {
   WIRE_MAX_PENDING_TOTAL_ATTACHMENT_BYTES,
   WIRE_MAX_SKILL_ID_LENGTH,
   attachmentMediaTypeMatchesKind,
-  maximumMidiPreviewNotes,
-  maximumParameterPreviewValueItems,
   maximumRecoveryActionDigests,
   maximumSessionTitleCodePoints,
 } from "./contracts.js";
@@ -304,6 +302,8 @@ export function isWireSessionEvent(value: unknown, attachmentPolicy = "current")
       "candidateSelection",
       "parentCandidate",
       "requestEventId",
+      "applyOperation",
+      "artifacts",
     ]) ||
     !isWireStorageId(value.id) ||
     typeof value.createdAt !== "string" ||
@@ -325,6 +325,8 @@ export function isWireSessionEvent(value: unknown, attachmentPolicy = "current")
     (value.kind === "candidate" ? !isArtifactSelection(value.candidateSelection) : value.candidateSelection !== undefined) ||
     (value.parentCandidate !== undefined && ((value.kind !== "user" && value.kind !== "tool_call") || !isArtifactRef(value.parentCandidate))) ||
     (value.requestEventId !== undefined && (value.kind !== "tool_call" || !isWireStorageId(value.requestEventId))) ||
+    (value.applyOperation !== undefined && !isAgentApplyOperation(value.applyOperation, value.kind)) ||
+    (value.artifacts !== undefined && (value.kind !== "tool_result" || !isArtifactRefs(value.artifacts))) ||
     (value.name !== undefined && typeof value.name !== "string") ||
     (value.attachments !== undefined && (
       value.kind !== "user" ||
@@ -444,54 +446,9 @@ export function isWireSessionActivity(value: unknown, sessionIds: ReadonlySet<st
     typeof value.unread === "boolean";
 }
 
-export function isWirePreviewNote(note: unknown): note is MidiPreviewNote {
-  return isWireRecord(note) && hasOnlyWireKeys<NonNullable<MidiPreviewNote>>(note, [
-    "pitch", "startTime", "duration", "velocity", "muted", "probability",
-    "velocityDeviation", "releaseVelocity", "selected",
-  ]) && isInteger(note.pitch) && note.pitch >= 0 && note.pitch <= 127 &&
-    isFiniteNumber(note.startTime) && isFiniteNumber(note.duration) && note.duration > 0 &&
-    ["velocity", "probability", "velocityDeviation", "releaseVelocity"].every((key) =>
-      note[key] === undefined || isFiniteNumber(note[key])) &&
-    ["muted", "selected"].every((key) => note[key] === undefined || typeof note[key] === "boolean");
-}
-
-export function isWirePreviewSide(side: unknown, range: { start: number; end: number }): side is MidiActionPreview["before"] {
-  return isWireRecord(side) && hasOnlyWireKeys<NonNullable<MidiActionPreview["before"]>>(side, ["notes", "totalNoteCount", "omittedNoteCount"]) &&
-    isWireArray(side.notes) && side.notes.length <= maximumMidiPreviewNotes && side.notes.every(isWirePreviewNote) &&
-    side.notes.every((note) => note.startTime >= range.start && note.startTime < range.end &&
-      note.startTime + note.duration <= range.end + 1e-7) &&
-    isSafeInteger(side.totalNoteCount) && side.totalNoteCount >= side.notes.length &&
-    side.omittedNoteCount === side.totalNoteCount - side.notes.length;
-}
-
 export function isWireActionPreviews(previews: unknown, kind: unknown, groups: ActionDiffGroup[]): previews is AgentActionPreview[] | undefined {
-  if (previews === undefined) return true;
-  if (kind !== "apply" || !isWireArray(previews) || previews.length !== 1 ||
-    groups.reduce((count, group) => count + group.rows.length, 0) !== 1) return false;
-  const preview = previews[0];
-  if (!isWireRecord(preview) || preview.actionIndex !== 0 || preview.status !== "proposed" ||
-    typeof preview.targetLabel !== "string") return false;
-  if (preview.kind === "midi-notes") {
-    const range = preview.range;
-    return hasOnlyWireKeys(preview, ["kind", "actionIndex", "status", "targetLabel", "range", "before", "after"]) &&
-      isWireRecord(range) && hasOnlyWireKeys(range, ["coordinate", "start", "end"]) &&
-      range.coordinate === "clip-beats" && isFiniteNumber(range.start) && isFiniteNumber(range.end) &&
-      range.start >= 0 && range.end > range.start && isWirePreviewSide(preview.before, { start: range.start, end: range.end }) && isWirePreviewSide(preview.after, { start: range.start, end: range.end });
-  }
-  return preview.kind === "parameter-value" && hasOnlyWireKeys(preview, [
-    "kind", "actionIndex", "status", "targetLabel", "parameterName", "before", "after",
-    "minimum", "maximum", "isQuantized", "valueItems",
-  ]) && typeof preview.parameterName === "string" &&
-    isFiniteNumber(preview.before) && isFiniteNumber(preview.after) &&
-    isFiniteNumber(preview.minimum) && isFiniteNumber(preview.maximum) &&
-    preview.minimum <= preview.maximum &&
-    preview.before >= preview.minimum && preview.before <= preview.maximum &&
-    preview.after >= preview.minimum && preview.after <= preview.maximum &&
-    (preview.isQuantized === undefined || typeof preview.isQuantized === "boolean") &&
-    (preview.valueItems === undefined || isWireArray(preview.valueItems) &&
-      preview.valueItems.length <= maximumParameterPreviewValueItems && preview.valueItems.every((item) =>
-      isWireRecord(item) && hasOnlyWireKeys(item, ["name", "shortName"]) &&
-      typeof item.name === "string" && typeof item.shortName === "string"));
+  return previews === undefined || kind === "apply" &&
+    groups.reduce((count, group) => count + group.rows.length, 0) === 1 && isAgentActionPreviews(previews);
 }
 
 export function isWireLiveContext(context: unknown): context is ChatLiveContext {

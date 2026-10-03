@@ -1,4 +1,6 @@
 import { isMcpOAuthConfiguration } from "../../../plugins/mcp/oauth-contract.js";
+import { AUDIO_STEM_ROLES, isGeneratedStemRole } from "../../../audio-services/audio-output.js";
+import { isArtifactVersion } from "../../../agent/artifact-contracts.js";
 import type { AudioAsset, AudioJobView } from "../../../audio-services/contracts.js";
 import type { SunoAccountView } from "../../../audio-services/suno/suno-session-contracts.js";
 import type { AudioParameterPanel, AudioParameterSuggestions } from "../../../plugins/builtins/parameter-panel.js";
@@ -26,7 +28,6 @@ import {
   audioServiceCapabilities,
   isBuiltInAudioPluginId,
   singleOutputAudioOperations,
-  sunoStemRoles,
   usesImportedSession,
 } from "./contracts.js";
 import {
@@ -147,8 +148,9 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
 
   function isWireAudioAsset(value: unknown, sessionId: unknown, jobId: unknown): value is AudioAsset {
     if (!isWireRecord(value) || !hasOnlyWireKeys<NonNullable<AudioAsset>>(value, ["id", "sessionId", "jobId", "label", "role",
-      "mediaType", "byteLength", "sha256", "durationSeconds", "sampleRate", "channels", "origin"]) ||
+      "mediaType", "byteLength", "sha256", "durationSeconds", "sampleRate", "channels", "origin", "version"]) ||
       !isWireStorageId(value.id) || value.sessionId !== sessionId || value.jobId !== jobId ||
+      (value.version !== undefined && !isArtifactVersion(value.version, value.id as string)) ||
       typeof value.label !== "string" || value.label.length > 1024 ||
       (typeof value.role !== "string" || !Object.hasOwn(WIRE_AUDIO_OUTPUT_LABELS, value.role)) ||
       !includes(["audio/wav", "audio/mpeg"], value.mediaType) ||
@@ -160,7 +162,7 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
     const origin = value.origin;
     return isWireRecord(origin) && hasOnlyWireKeys(origin, ["kind", "startBeat", "endBeat", "tempo", "sourceAssetId"]) &&
       includes(["attachment", "arrangement", "asset", "generated"], origin.kind) &&
-      (origin.kind !== "generated" || hasOnlyWireKeys(origin, ["kind"])) &&
+      (origin.kind !== "generated" || hasOnlyWireKeys(origin, ["kind", "sourceAssetId"])) &&
       ["startBeat", "endBeat", "tempo"].every((key) => origin[key] === undefined || isFiniteNumber(origin[key]) && origin[key] >= 0) &&
       (origin.sourceAssetId === undefined || isWireStorageId(origin.sourceAssetId));
   }
@@ -184,7 +186,7 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
 
   function audioJobOutputLimit(job: Record<string, unknown>): number {
     const descriptor = typeof job.provider === "string" ? audioServiceCapabilities[job.provider] : undefined;
-    return job.operation === "extract_music_stems" ? sunoStemRoles.length : singleOutputAudioOperations.has(job.operation) ? 1 : descriptor!.generationOutputCount;
+    return job.operation === "extract_music_stems" ? AUDIO_STEM_ROLES.length : singleOutputAudioOperations.has(job.operation) ? 1 : descriptor!.generationOutputCount;
   }
 
   function isWireRemoteAudioOutputs(job: Record<string, unknown>): boolean {
@@ -195,7 +197,7 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
       (job.status !== "ready" || outputs.length > 0) &&
       outputs.every((output) => isWireRecord(output) && hasOnlyWireKeys(output, ["key", "role"]) &&
         typeof output.key === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(output.key) &&
-        (job.operation === "extract_music_stems" ? includes(sunoStemRoles, output.role) : job.operation === "upload_music" ? output.role === "uploaded_audio" : job.operation === "generate_sound_sample"
+        (job.operation === "extract_music_stems" ? isGeneratedStemRole(output.role) : job.operation === "upload_music" ? output.role === "uploaded_audio" : job.operation === "generate_sound_sample"
           ? includes(["sound_effect", "sound_effect_alternative"], output.role)
           : output.role === "music" || output.role === "music_alternative" && !singleOutputAudioOperations.has(job.operation))) &&
       new Set(outputs.map((output) => wireField(output, "key"))).size === outputs.length &&
@@ -252,7 +254,7 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
         job.outputs.every((asset) => isWireAudioAsset(asset, sessionId, job.id) &&
           (job.operation === "separate_stems"
             ? (stems.includes(asset.role) || asset.role === "residual") && asset.origin.kind !== "generated"
-            : asset.origin.kind === "generated" && (job.operation === "extract_music_stems" ? includes(sunoStemRoles, asset.role) : job.operation === "upload_music" ? asset.role === "uploaded_audio" : job.operation === "generate_sound_sample"
+            : asset.origin.kind === "generated" && (job.operation === "extract_music_stems" ? isGeneratedStemRole(asset.role) : job.operation === "upload_music" ? asset.role === "uploaded_audio" : job.operation === "generate_sound_sample"
               ? includes(["sound_effect", "sound_effect_alternative"], asset.role)
               : job.operation === "generate_sound_effect" ? asset.role === "sound_effect"
               : asset.role === "music" || asset.role === "music_alternative" && !singleOutputAudioOperations.has(job.operation) && descriptor.generationOutputCount > 1)));

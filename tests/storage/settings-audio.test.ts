@@ -100,8 +100,9 @@ test("Plugin-owned Connection settings round-trip, deep clone, and hide secrets"
 });
 
 test("schema v8 audioServices migrate losslessly to schema v10 Integration Connections", () => {
+  const { sessionTabs, sessionTabsRevision, ...historical } = freshEmptyAgentSettings();
   const source = {
-    ...freshEmptyAgentSettings(),
+    ...historical,
     schemaVersion: 8,
     audioServices: {
       revision: "7",
@@ -250,8 +251,9 @@ test("callback validation rejects malformed or credential-bearing values without
 
 test("historical single LALAL connection migrates on read and the next write persists only schema v10", async () => {
   const { directory, file, save } = await fixture();
+  const { sessionTabs, sessionTabsRevision, ...historical } = freshEmptyAgentSettings();
   const source = JSON.stringify({
-    ...freshEmptyAgentSettings(),
+    ...historical,
     schemaVersion: 8,
     audioService: {
       provider: "lalal",

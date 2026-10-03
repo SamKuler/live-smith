@@ -25,6 +25,7 @@ import {
   incrementDefaultFollowUpBehaviorRevision,
   incrementNetworkProxyRevision,
   incrementUiLanguageRevision,
+  incrementSessionTabsRevision,
   isUiLanguage,
   type UiLanguage,
   isDefaultFollowUpBehavior,
@@ -39,6 +40,7 @@ import {
   type NetworkProxySettings,
   type SavedProfile,
 } from "../model/profile.js";
+import { isSessionTabs, type SessionShortcutId } from "../model/session-tabs.js";
 import { isMissingFileError } from "./errors.js";
 import {
   ensurePrivateFile,
@@ -86,6 +88,7 @@ export interface SaveSavedProfileOptions {
 
 export type GlobalSettingsPatch =
   | {
+      sessionTabs?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
       showContextUsage?: never;
@@ -94,6 +97,7 @@ export type GlobalSettingsPatch =
       customInstructions?: never;
     }
   | {
+      sessionTabs?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage: boolean;
@@ -102,6 +106,7 @@ export type GlobalSettingsPatch =
       customInstructions?: never;
     }
   | {
+      sessionTabs?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -110,6 +115,7 @@ export type GlobalSettingsPatch =
       customInstructions?: never;
     }
   | {
+      sessionTabs?: never;
       uiLanguage: UiLanguage;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -118,6 +124,7 @@ export type GlobalSettingsPatch =
       customInstructions?: never;
     }
   | {
+      sessionTabs?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -126,12 +133,22 @@ export type GlobalSettingsPatch =
       customInstructions?: never;
     }
   | {
+      sessionTabs?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
       networkProxy?: never;
       integrationConnections?: never;
       customInstructions: string;
+    }
+  | {
+      sessionTabs: SessionShortcutId[];
+      uiLanguage?: never;
+      defaultFollowUpBehavior?: never;
+      showContextUsage?: never;
+      networkProxy?: never;
+      integrationConnections?: never;
+      customInstructions?: never;
     };
 
 export type { IntegrationConnectionsSettingsPatch } from "../plugins/integration-connections.js";
@@ -309,6 +326,7 @@ export async function saveGlobalSettings(
     "showContextUsage",
   );
   const hasUiLanguage = Object.prototype.hasOwnProperty.call(input, "uiLanguage");
+  const hasSessionTabs = Object.prototype.hasOwnProperty.call(input, "sessionTabs");
   const hasIntegrationConnections = Object.prototype.hasOwnProperty.call(input, "integrationConnections");
   const hasNetworkProxy = Object.prototype.hasOwnProperty.call(
     input,
@@ -322,7 +340,7 @@ export async function saveGlobalSettings(
     Number(hasFollowUpBehavior) +
       Number(hasContextUsage) +
       Number(hasNetworkProxy) + Number(hasUiLanguage) + Number(hasIntegrationConnections) +
-      Number(hasCustomInstructions) !== 1 ||
+      Number(hasCustomInstructions) + Number(hasSessionTabs) !== 1 ||
     Object.keys(input).length !== 1
   ) {
     throw new Error("Global settings update must contain exactly one setting.");
@@ -338,6 +356,9 @@ export async function saveGlobalSettings(
   }
   if (hasUiLanguage && !isUiLanguage(input.uiLanguage)) {
     throw new Error("UI language must be system, en, or zh-CN.");
+  }
+  if (hasSessionTabs && !isSessionTabs(input.sessionTabs)) {
+    throw new ProfileValidationError("sessionTabs", "Session tabs must contain unique supported tab IDs.");
   }
   const networkProxy = hasNetworkProxy
     ? normalizeNetworkProxySettings(input.networkProxy)
@@ -457,6 +478,11 @@ export async function saveGlobalSettings(
         ? {
             uiLanguage: input.uiLanguage!,
             uiLanguageRevision: incrementUiLanguageRevision(settings.uiLanguageRevision),
+          }
+        : hasSessionTabs
+        ? {
+            sessionTabs: input.sessionTabs!,
+            sessionTabsRevision: incrementSessionTabsRevision(settings.sessionTabsRevision),
           }
         : hasCustomInstructions
         ? {

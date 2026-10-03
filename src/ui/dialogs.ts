@@ -15,7 +15,6 @@ import connectionsManagerScript from "./client/connections-manager.script.html";
 import toolsInspectorScript from "./client/tools-inspector.script.html";
 import pluginParametersScript from "./client/plugin-parameters.script.html";
 import pluginUserConfigScript from "./client/plugin-user-config.script.html";
-import actionPreviewScript from "./client/action-preview.script.html";
 import i18nScript from "./client/i18n.script.html";
 import { serializeUiI18nData } from "./i18n/messages.js";
 import bootstrapScript from "./client/bootstrap.script.html";
@@ -45,7 +44,6 @@ export function chatHtml(
   bridge: { baseUrl: string; token: string },
 ): string {
   return composeChatDocument(chatDialog, state, bridge, {
-    actionPreview: actionPreviewScript,
     i18n: i18nScript,
     attachments: attachmentsScript,
     attachmentMedia: attachmentMediaScript,

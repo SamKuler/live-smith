@@ -401,7 +401,7 @@ test("every asset boundary rejects roles owned by another operation or provider,
   }
 });
 
-test("generated roles require a generated origin with no source, timing, or unknown metadata", async (t) => {
+test("generated roles require a generated origin without self-reference, timing, or unknown metadata", async (t) => {
   const h = await audioStorageHarness(t, generationJobCases[0]!.input);
   const asset = await h.save("music");
   const target = path.join(h.directory, `${asset.id}.asset.json`);

@@ -1,3 +1,4 @@
+import { uiMessage, type UiMessage } from "../../i18n/ui-message.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import type { AgentLoopTraceEvent } from "../../agent/loop.js";
 import type { MidiContinuationBuffer, MidiContinuationGenerator, MidiContinuationClipRef } from "../../agent/midi-continuation-contracts.js";
@@ -72,7 +73,7 @@ export async function fillMidiContinuation(input: Runtime & {
   bufferId: string;
   validateGenerator(generator: MidiContinuationGenerator): Promise<void>;
   generate(buffer: MidiContinuationBuffer, record: (event: AgentLoopTraceEvent) => Promise<void>): Promise<MidiArtifact>;
-  onProgress(message: string): Promise<void>;
+  onProgress(message: UiMessage): Promise<void>;
 }): Promise<MidiContinuationBuffer> {
   await requireActiveSession(input);
   let buffer = await readMidiContinuation(input.storageDirectory, input.sessionId, input.signal);
@@ -91,7 +92,7 @@ export async function fillMidiContinuation(input: Runtime & {
         const record = { ...event, ...(event.kind === "tool_call" ? { parentCandidate, requestEventId: request.id } : {}) } as SessionEventInput;
         await appendSessionEvent(input.storageDirectory, input.sessionId, record);
       };
-      await input.onProgress(`Generating MIDI section ${buffer.nextSequence + 1} (${buffer.queue.length + 1}/${buffer.capacity})`);
+      await input.onProgress(uiMessage("Generating MIDI section {section} ({count}/{capacity})", { section: String(buffer.nextSequence + 1), count: String(buffer.queue.length + 1), capacity: String(buffer.capacity) }));
       const artifact = await input.generate(cloneJsonValue(buffer), record);
       await requireActiveSession(input);
       assertMidiContinuationSource(input.context, buffer, input.signal);

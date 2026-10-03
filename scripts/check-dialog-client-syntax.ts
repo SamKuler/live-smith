@@ -19,7 +19,6 @@ const clientFragments = [
   "bridge-client",
   "audio-results",
   "session-timeline",
-  "action-preview",
   "bootstrap",
 ] as const;
 

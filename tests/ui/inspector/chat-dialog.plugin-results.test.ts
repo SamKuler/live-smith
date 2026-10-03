@@ -7,15 +7,15 @@ import { commandCalls, createDialogHarness, jsonCalls, stateFixture, waitForCond
 const midiPreview = { sessionId: "", artifactRef: "midi-one", label: "Pattern", durationBeats: 12,
   parts: [{ id: "track-0-channel-1", sourceTrackIndex: 0, sourceTrackName: "Lead", channel: 1, noteCount: 24, durationBeats: 12 }],
   timing: { tempoEventCount: 1, timeSignatureEventCount: 1 },
-  targets: [{ trackId: "2", trackName: "Lead" }, { trackId: "3", trackName: "Bass" }], unavailableTargetCount: 0, maxMappings: 64 };
+  targets: [{ trackId: "2", trackName: "Lead" }, { trackId: "3", trackName: "Bass" }], unavailableTargetCount: 0, maxActions: 64 };
 
 async function loadMidiPreview(h: Awaited<ReturnType<typeof createDialogHarness>>) {
-  h.click(".plugin-result-load");
+  h.click(".plugin-result-import");
   await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected observed MIDI targets.");
 }
 
 async function fixture(withApp = false, result: unknown = { content: [{ type: "text", text: "Three bars saved <img src=x>" }],
-  artifacts: [{ kind: "midi", artifactRef: "midi-one", label: "Pattern", noteCount: 24, durationBeats: 12 }] }) {
+  artifacts: [{ kind: "midi", artifactRef: "midi-one", label: "Pattern", noteCount: 24, durationBeats: 12 }] }, preview = midiPreview) {
   const state = stateFixture();
   state.openSettingsOnLoad = false;
   state.integrationConnections = { revision: "1", connections: [{ id: "patterns", name: "Patterns", enabled: true,
@@ -32,7 +32,7 @@ async function fixture(withApp = false, result: unknown = { content: [{ type: "t
   const h = await createDialogHarness(state);
   const originalFetch = h.window.fetch;
   Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
-    if (new URL(String(input)).pathname === "/midi-import-preview") return { ok: true, json: async () => ({ ...midiPreview, sessionId: state.activeSessionId }) };
+    if (new URL(String(input)).pathname === "/midi-import-preview") return { ok: true, json: async () => ({ ...preview, sessionId: state.activeSessionId, artifactRef: JSON.parse(String(init?.body)).artifactRef }) };
     return originalFetch(input, init);
   } });
   h.click("#sessionInspectorScope"); h.click("#toolsTab");
@@ -67,7 +67,7 @@ test("structured-only results display literal bounded JSON and preserve artifact
     assert.equal(h.document.querySelector(".plugin-result-summary")!.textContent, JSON.stringify(structuredContent, null, 2));
     assert.equal(h.document.querySelector(".plugin-result-summary")!.tagName, "PRE");
     assert.equal(h.document.querySelector(".plugin-result-card img"), null);
-    assert.equal(h.document.querySelector<HTMLOptionElement>(".plugin-result-artifact option")!.value, "structured-midi");
+    assert.ok(h.document.querySelector(".plugin-result-import"));
     h.click(".plugin-result-chat");
     await h.settle();
     assert.match(h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value, /structured-midi/);
@@ -138,7 +138,6 @@ test("MIDI result requests a scoped import with host confirmation and never reru
   const { h, state } = await fixture();
   let held = false;
   try {
-    h.click(".plugin-result-import > summary");
     await loadMidiPreview(h);
     h.select(".plugin-result-track", "2");
     h.input(".plugin-result-beat", "9");
@@ -147,13 +146,14 @@ test("MIDI result requests a scoped import with host confirmation and never reru
     await waitForCondition(() => commandCalls(h).length === 1, "Expected explicit MIDI import command.");
     assert.deepEqual(commandCalls(h)[0]!.body, { kind: "import_midi_artifact", sessionId: state.activeSessionId,
       artifactRef: "midi-one", mappings: [{ partId: "track-0-channel-1", trackId: "2", trackName: "Lead" }], startBeat: 8 });
-    const event = { type: "command_confirm_request", commandId: h.commandIds.at(-1), sessionId: state.activeSessionId,
+    const event = { type: "command_confirm_request", operationId: "import-operation", commandId: h.commandIds.at(-1), sessionId: state.activeSessionId,
       id: "approval-one", kind: "apply", message: "Import this MIDI clip", groups: [{ title: "Lead", rows: ["Create clip at beat 9"] }] };
     h.emitRawServerEvent({ ...event, commandId: "wrong-command" });
     assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
     h.emitRawServerEvent(event);
     await waitForCondition(() => !h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, "Expected import preview approval.");
     assert.match(h.document.querySelector("#appConfirmationDetails")!.textContent!, /Create clip at beat 9/);
+    assert.equal(h.document.querySelector(".midi-import-dialog"), null, "the import dialog releases the host approval UI");
     h.emitRawServerEvent(event);
     await h.acceptAppConfirmation();
     assert.deepEqual(jsonCalls(h, "/confirm").map((call) => call.body), [{ id: "approval-one", apply: true }]);
@@ -198,18 +198,18 @@ test("part mapping previews common starts and source boundaries, rejects overlap
     return originalFetch(input, init);
   } });
   try {
-    assert.equal(h.document.querySelector<HTMLButtonElement>(".plugin-result-apply")!.disabled, true);
+    assert.equal(h.document.querySelector(".midi-import-dialog"), null);
     await loadMidiPreview(h);
+    assert.equal(h.document.querySelector<HTMLButtonElement>(".plugin-result-apply")!.disabled, false);
+    h.select('[aria-label="Destination for Lead · Channel 1"]', "2");
+    h.select('[aria-label="Destination for Bass · Channel 2"]', "2");
     assert.equal(h.document.querySelector<HTMLButtonElement>(".plugin-result-apply")!.disabled, true);
-    h.select('[aria-label="Track 1 · Lead · Channel 1 · 24 notes"]', "2");
-    h.select('[aria-label="Track 2 · Bass · Channel 2 · 8 notes"]', "2");
-    assert.equal(h.document.querySelector<HTMLButtonElement>(".plugin-result-apply")!.disabled, true);
-    assert.match(h.document.querySelector('[role="status"].plugin-result-import-status')!.textContent!, /different destination/);
-    h.select('[aria-label="Track 2 · Bass · Channel 2 · 8 notes"]', "3");
+    assert.match(h.document.querySelector('[role="status"].midi-import-status')!.textContent!, /different destination/);
+    h.select('[aria-label="Destination for Bass · Channel 2"]', "3");
     h.input(".plugin-result-beat", "9");
     const preview = h.document.querySelector('[aria-label="Clip preview"]')!.textContent!;
-    assert.match(preview, /Lead · Channel 1 · 24 notes → Lead · Beats 9–21/);
-    assert.match(preview, /Bass · Channel 2 · 8 notes → Bass · Beats 9–17/);
+    assert.match(preview, /Lead · Channel 1 → Lead · beats 9–21/);
+    assert.match(preview, /Bass · Channel 2 → Bass · beats 9–17/);
     assert.equal(commandCalls(h).length, 0);
     h.click(".plugin-result-apply"); await h.settle();
     assert.deepEqual(commandCalls(h)[0]!.body, { kind: "import_midi_artifact", sessionId: state.activeSessionId,
@@ -221,11 +221,12 @@ test("part mapping previews common starts and source boundaries, rejects overlap
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 
-  const merged = await fixture();
+  const merged = await fixture(false, undefined, { ...midiPreview, parts: [...midiPreview.parts,
+    { id: "track-1-channel-2", sourceTrackIndex: 1, sourceTrackName: "Bass", channel: 2, noteCount: 8, durationBeats: 8 }] });
   try {
     await loadMidiPreview(merged.h);
     merged.h.select(".plugin-result-mode", "merge");
-    merged.h.select('[aria-label="All source parts"]', "2");
+    merged.h.select('[aria-label="Destination for All source parts"]', "2");
     merged.h.click(".plugin-result-apply"); await merged.h.settle();
     assert.deepEqual(commandCalls(merged.h)[0]!.body, { kind: "import_midi_artifact", sessionId: merged.state.activeSessionId,
       artifactRef: "midi-one", startBeat: 0, trackId: "2", trackName: "Lead", mergeParts: true });
@@ -246,12 +247,151 @@ test("late MIDI preview cannot enable importing into a different Session", async
     return originalFetch(input, init);
   } });
   try {
-    h.click(".plugin-result-load");
+    h.click(".plugin-result-import");
     await waitForCondition(() => loading, "Expected pending preview.");
+    h.document.querySelector<HTMLButtonElement>(".midi-import-header button")!.click();
     h.click('.session-entry[data-session-id="session-2"] .session-row'); await h.settle();
     release(); await h.settle();
     assert.equal(commandCalls(h).filter((call) => (call.body as { kind: string }).kind === "import_midi_artifact").length, 0);
     assert.equal(h.document.querySelector(".plugin-result-track"), null);
     assert.deepEqual(h.errors, []);
   } finally { release(); h.close(); }
+});
+
+
+test("MIDI mapping accepts full-size Live handle strings and submits them without numeric coercion", async () => {
+  const { h, state } = await fixture();
+  const trackId = String((1n << 151n) + 7n);
+  const originalFetch = h.window.fetch;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === "/midi-import-preview") return { ok: true, json: async () => ({ ...midiPreview,
+      sessionId: state.activeSessionId, targets: [{ trackId, trackName: "Lead" }] }) };
+    return originalFetch(input, init);
+  } });
+  try {
+    await loadMidiPreview(h);
+    h.select(".plugin-result-track", trackId);
+    assert.equal(h.document.querySelector<HTMLButtonElement>(".plugin-result-apply")!.disabled, false);
+    h.click(".plugin-result-apply"); await h.settle();
+    assert.deepEqual(commandCalls(h)[0]!.body, { kind: "import_midi_artifact", sessionId: state.activeSessionId,
+      artifactRef: "midi-one", startBeat: 0, mappings: [{ partId: "track-0-channel-1", trackId, trackName: "Lead" }] });
+    assert.equal(jsonCalls(h, "/send").length, 0);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+
+test("opening MIDI import observes automatically, suggests the bound target and closes without writes", async () => {
+  const { h } = await fixture(false, undefined, { ...midiPreview, suggestedTrackId: "3", suggestedStartBeat: 8 } as typeof midiPreview);
+  try {
+    const launch = h.document.querySelector<HTMLButtonElement>(".plugin-result-import")!; launch.focus();
+    await loadMidiPreview(h);
+    assert.equal(h.document.querySelector(".plugin-result-artifact"), null, "a bound single artifact needs no file picker");
+    assert.equal(h.document.querySelector<HTMLSelectElement>(".plugin-result-track")!.value, "3");
+    assert.equal(h.document.querySelector<HTMLInputElement>(".plugin-result-beat")!.value, "9");
+    assert.equal(commandCalls(h).length, 0);
+    h.document.querySelector(".midi-import-dialog")!.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.equal(h.document.querySelector(".midi-import-dialog"), null);
+    assert.equal(h.document.activeElement, launch);
+    assert.equal(commandCalls(h).length, 0);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("new-track import includes only checked parts and uses the edited destination name", async () => {
+  const { h, state } = await fixture(false, undefined, { ...midiPreview, targets: [], parts: [...midiPreview.parts,
+    { id: "track-1-channel-2", sourceTrackIndex: 1, sourceTrackName: "Bass", channel: 2, noteCount: 8, durationBeats: 8 }] });
+  try {
+    await loadMidiPreview(h);
+    assert.equal(h.document.querySelector<HTMLSelectElement>(".plugin-result-track")!.value, "new");
+    const parts = h.document.querySelectorAll<HTMLInputElement>(".midi-import-part-enabled"); parts[0]!.click();
+    h.input('[aria-label="New track name for Bass · Channel 2"]', "Verse bass");
+    h.click(".plugin-result-apply"); await h.settle();
+    assert.deepEqual(commandCalls(h)[0]!.body, { kind: "import_midi_artifact", sessionId: state.activeSessionId,
+      artifactRef: "midi-one", startBeat: 0, mappings: [{ partId: "track-1-channel-2", createTrack: true, trackName: "Verse bass" }] });
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("closing a pending MIDI dialog aborts its read and ignores the late result", async () => {
+  const { h, state } = await fixture();
+  let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+  let signal: AbortSignal | undefined;
+  const originalFetch = h.window.fetch;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === "/midi-import-preview") {
+      signal = init?.signal ?? undefined; await gate;
+      return { ok: true, json: async () => ({ ...midiPreview, sessionId: state.activeSessionId }) };
+    }
+    return originalFetch(input, init);
+  } });
+  try {
+    h.click(".plugin-result-import"); await waitForCondition(() => Boolean(signal), "Expected cancellable preview read");
+    h.document.querySelector<HTMLButtonElement>(".midi-import-header button")!.click();
+    assert.equal(signal!.aborted, true);
+    release(); await h.settle();
+    assert.equal(h.document.querySelector(".midi-import-dialog"), null);
+    assert.equal(commandCalls(h).length, 0);
+    assert.deepEqual(h.errors, []);
+  } finally { release(); h.close(); }
+});
+
+test("refreshing Live targets and switching import modes preserve the mapping draft", async () => {
+  const { h, state } = await fixture(false, undefined, { ...midiPreview, parts: [...midiPreview.parts,
+    { id: "track-1-channel-2", sourceTrackIndex: 1, sourceTrackName: "Bass", channel: 2, noteCount: 8, durationBeats: 8 }] });
+  try {
+    await loadMidiPreview(h);
+    h.document.querySelector<HTMLInputElement>(".midi-import-part-enabled")!.click();
+    h.input('[aria-label="New track name for Bass · Channel 2"]', "Verse bass");
+    h.input(".plugin-result-beat", "17");
+    h.select(".plugin-result-mode", "merge");
+    h.select(".plugin-result-track", "2");
+    h.select(".plugin-result-mode", "parts");
+    h.click(".plugin-result-load");
+    await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected refreshed mapping");
+    assert.equal(h.document.querySelector<HTMLInputElement>(".midi-import-part-enabled")!.checked, false);
+    assert.equal(h.document.querySelector<HTMLInputElement>('[aria-label="New track name for Bass · Channel 2"]')!.value, "Verse bass");
+    assert.equal(h.document.querySelector<HTMLInputElement>(".plugin-result-beat")!.value, "17");
+    h.click(".plugin-result-apply"); await h.settle();
+    assert.deepEqual(commandCalls(h)[0]!.body, { kind: "import_midi_artifact", sessionId: state.activeSessionId,
+      artifactRef: "midi-one", startBeat: 16, mappings: [{ partId: "track-1-channel-2", createTrack: true, trackName: "Verse bass" }] });
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("refreshing a removed destination requires an explicit replacement instead of silently dropping its part", async () => {
+  const preview = { ...midiPreview, targets: [...midiPreview.targets] };
+  const { h } = await fixture(false, undefined, preview);
+  try {
+    await loadMidiPreview(h);
+    h.select(".plugin-result-track", "2");
+    preview.targets = [{ trackId: "3", trackName: "Bass" }];
+    h.click(".plugin-result-load");
+    await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected refreshed mapping");
+    assert.equal(h.document.querySelector<HTMLSelectElement>(".plugin-result-track")!.value, "2");
+    assert.equal(h.document.querySelector<HTMLButtonElement>(".plugin-result-apply")!.disabled, true);
+    assert.match(h.document.querySelector(".midi-import-status")!.textContent!, /Choose an available destination/);
+    h.click(".plugin-result-apply"); assert.equal(commandCalls(h).length, 0);
+    h.select(".plugin-result-track", "3");
+    h.click(".plugin-result-apply"); await h.settle();
+    assert.equal((commandCalls(h)[0]!.body as { mappings: { trackId: string }[] }).mappings[0]!.trackId, "3");
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("saved Plugin audio exposes exact-file transfers without a MIDI import action", async () => {
+  const { h, state } = await fixture(false, { content: [{ type: 'text', text: 'Rendered take' }],
+    artifacts: [{ kind: 'audio', artifactRef: 'audio_artifact_take', label: 'Processed take', durationSeconds: 8, mediaType: 'audio/wav' }] });
+  try {
+    assert.equal(h.document.querySelector('.plugin-result-import'), null);
+    const action = (label: string) => [...h.document.querySelectorAll<HTMLButtonElement>('.plugin-result-file button')].find((button) => button.textContent === label)!;
+    action('Export audio').click(); await h.settle();
+    assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: 'export_artifact', sessionId: state.activeSessionId,
+      artifact: { kind: 'audio', id: 'audio_artifact_take' } });
+    action('Attach to message').click(); await h.settle();
+    assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: 'attach_artifact', sessionId: state.activeSessionId,
+      artifact: { kind: 'audio', id: 'audio_artifact_take' } });
+    assert.equal(h.document.activeElement?.id, 'prompt');
+    assert.equal(jsonCalls(h, '/send').length, 0); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
 });

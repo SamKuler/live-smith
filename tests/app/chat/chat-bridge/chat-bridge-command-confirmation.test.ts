@@ -6,7 +6,7 @@ import type { ChatDialogState } from "../../../../src/ui/chat-state.js";
 import { createChatBridge } from "../../../../src/app/chat/chat-bridge.js";
 
 const state = { status: "Ready" } as ChatDialogState;
-const approval = { kind: "apply" as const, message: "Create a MIDI clip", groups: [] };
+const approval = { kind: "apply" as const, operationId: "apply-midi-import", message: "Create a MIDI clip", groups: [] };
 const endpoint = (url: string, pathname: string) => { const target = new URL(url); target.pathname = pathname; return target; };
 function post(url: string, pathname: string, body: unknown, commandId?: string) {
   return fetch(endpoint(url, pathname), { method: "POST", headers: { "Content-Type": "application/json",

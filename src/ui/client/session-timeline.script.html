@@ -9,6 +9,8 @@
         getPendingConfirmation,
         getPendingUserMessage,
         renderActionPreview,
+        refreshActionPreviews,
+        artifactPreviews,
         editMessageDraft,
         isMessageEditLocked,
         hasSessionLocalWork,
@@ -31,7 +33,7 @@
         month: "short",
       });
       const inspectorGroups = {
-        session: ["context", "skills", "tools", "artifacts"],
+        session: window.LiveSmithFactories.sessionInspectorTabs,
         settings: ["agent", "extensions", "app"],
       };
       const inspectorTabs = Object.values(inspectorGroups).flat();
@@ -50,6 +52,8 @@
       let renderedAssistantDraftLocale = window.LiveSmithI18n.locale;
       let pendingReasoningSummaryFocus = null;
       const messageRenderSnapshots = new WeakMap();
+      const operationReviews = new Map();
+      const activityItems = new Map();
       const scrollbarIdleTimers = new WeakMap();
       let pendingTimelinePosition = null;
       const activeSessionIdsThisWindow = new Set([getState().activeSessionId]);
@@ -180,7 +184,7 @@
       function handleConfirmationKeydown(event) {
         const confirmation = getPendingConfirmation();
         if (!confirmation) return;
-        const card = document.querySelector(".confirm-card");
+        const card = document.querySelector("[data-pending-confirmation], .confirm-card");
         if (!card) return;
         if (event.key === "Escape") {
           event.preventDefault();
@@ -192,10 +196,9 @@
 
       document.addEventListener("keydown", handleConfirmationKeydown);
 
-      function switchInspectorTab(tab) {
-        const selected = inspectorTabs.includes(tab) ? tab : "agent";
-        activeInspectorGroup = inspectorGroups.session.includes(selected) ? "session" : "settings";
-        selectedInspectorTabs[activeInspectorGroup] = selected;
+      function renderInspectorTabs() {
+        const selected = selectedInspectorTabs[activeInspectorGroup];
+        const visibleTabs = inspectorGroups[activeInspectorGroup];
         for (const group of Object.keys(inspectorGroups)) {
           document.getElementById(`${group}InspectorScope`)
             .setAttribute("aria-pressed", String(group === activeInspectorGroup));
@@ -204,37 +207,37 @@
           const active = name === selected;
           const tabButton = document.getElementById(`${name}Tab`);
           const panel = document.getElementById(`${name}Panel`);
-          tabButton.hidden = !inspectorGroups[activeInspectorGroup].includes(name);
+          tabButton.hidden = !visibleTabs.includes(name);
           tabButton.classList.toggle("active", active);
           tabButton.setAttribute("aria-selected", String(active));
           tabButton.tabIndex = active ? 0 : -1;
           panel.hidden = !active;
         }
+      }
+
+      function switchInspectorTab(tab) {
+        const selected = inspectorTabs.includes(tab) ? tab : "agent";
+        activeInspectorGroup = inspectorGroups.session.includes(selected) ? "session" : "settings";
+        selectedInspectorTabs[activeInspectorGroup] = selected;
+        renderInspectorTabs();
         onInspectorTabChange(selected);
       }
 
       function switchInspectorGroup(group) {
-        switchInspectorTab(selectedInspectorTabs[group] || "agent");
+        activeInspectorGroup = group === "session" ? "session" : "settings";
+        renderInspectorTabs();
+        onInspectorTabChange(selectedInspectorTabs[activeInspectorGroup]);
       }
 
       function handleInspectorTabKeydown(event) {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
-        const currentTab = String(event.currentTarget?.id || "")
-          .replace(/Tab$/, "");
-        const tabs = inspectorGroups[activeInspectorGroup];
+        const currentTab = String(event.currentTarget?.id || "").replace(/Tab$/, "");
+        const tabs = inspectorGroups[activeInspectorGroup].filter((name) => !document.getElementById(`${name}Tab`).hidden);
+        if (!tabs.length) return;
         const currentIndex = Math.max(0, tabs.indexOf(currentTab));
-        const targetTab = event.key === "Home"
-          ? tabs[0]
-          : event.key === "End"
-            ? tabs[tabs.length - 1]
-            : tabs[
-              (
-                currentIndex +
-                (event.key === "ArrowRight" ? 1 : -1) +
-                tabs.length
-              ) % tabs.length
-            ];
+        const targetTab = event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[tabs.length - 1]
+          : tabs[(currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
         switchInspectorTab(targetTab);
         document.getElementById(`${targetTab}Tab`).focus();
       }
@@ -1622,10 +1625,10 @@
       }
 
       function setConfirmationState(pending) {
-        const card = document.querySelector(".confirm-card");
+        const card = document.querySelector("[data-pending-confirmation], .confirm-card");
         if (!card) return;
         card.setAttribute("aria-busy", String(pending));
-        for (const button of card.querySelectorAll("button")) {
+        for (const button of card.querySelectorAll(".confirm-buttons button")) {
           button.disabled = pending;
         }
         if (!pending) {
@@ -1641,7 +1644,7 @@
         }
         const timeline = document.getElementById("timeline");
         for (const child of timeline.children) {
-          if (child === card) continue;
+          if (child === card || child.contains(card)) { child.removeAttribute("inert"); continue; }
           if (active) child.setAttribute("inert", "");
           else child.removeAttribute("inert");
         }
@@ -1674,7 +1677,7 @@
             if (reasoningItem) reasoningItem.replaceWith(replacement);
             else {
               const nextItem = timeline.querySelector(
-                ".assistant.streaming, .queued-follow-up, .confirm-card",
+                ".assistant.streaming, .queued-follow-up, [data-confirmation-block], .confirm-card",
               );
               timeline.insertBefore(replacement, nextItem);
             }
@@ -1707,7 +1710,7 @@
               markMessageArrival(assistantItem);
             }
             const nextLocalItem = timeline.querySelector(
-              ".queued-follow-up, .confirm-card",
+              ".queued-follow-up, [data-confirmation-block], .confirm-card",
             );
             timeline.insertBefore(assistantItem, nextLocalItem);
           } else {
@@ -1725,7 +1728,7 @@
         ) {
           timeline.append(buildEmptyState());
         }
-        const confirmation = timeline.querySelector(".confirm-card");
+        const confirmation = timeline.querySelector("[data-pending-confirmation], .confirm-card");
         if (confirmation) setConfirmationModalActive(true, confirmation);
         if (pendingTimelinePosition) schedulePendingTimelinePosition();
         else if (nearBottom) timeline.scrollTop = timeline.scrollHeight;
@@ -1827,6 +1830,12 @@
 
       function timelineActivityEntries(events) {
         const entries = [];
+        const operations = new Map();
+        for (const event of events) if (event.applyOperation) {
+          const list = operations.get(event.applyOperation.id) || [];
+          list.push(event); operations.set(event.applyOperation.id, list);
+        }
+        const seenOperations = new Set();
         for (let index = 0; index < events.length;) {
           if (!isTimelineActivityEvent(events[index])) {
             entries.push(events[index]);
@@ -1837,34 +1846,31 @@
           while (index < events.length && isTimelineActivityEvent(events[index])) {
             index += 1;
           }
-          entries.push(...timelineActivityRunEntries(events.slice(start, index)));
+          entries.push(...timelineActivityRunEntries(events.slice(start, index), operations, seenOperations));
         }
         return entries;
       }
 
-      function timelineActivityRunEntries(run) {
+      function timelineActivityRunEntries(run, operations, seenOperations) {
         const entries = [];
-        const steps = timelineActivitySteps(run);
-        const stepByEventId = new Map();
-        for (const step of steps) {
-          for (const event of step.events) stepByEventId.set(event.id, step);
-        }
         let segment = [];
-        const flushSegment = () => {
-          appendTimelineActivitySegment(entries, segment);
-          segment = [];
-        };
+        const flush = () => { appendTimelineActivitySegment(entries, segment); segment = []; };
+        const steps = timelineActivitySteps(run);
+        const covered = new Set(steps.flatMap((step) => step.events.map((event) => event.id)));
+        const byFirstEvent = new Map(steps.map((step) => [step.events[0].id, step]));
         for (const event of run) {
-          const step = stepByEventId.get(event.id);
-          if (!step) {
-            flushSegment();
-            entries.push(event);
-            continue;
-          }
-          if (segment.at(-1) !== step) segment.push(step);
+          const step = byFirstEvent.get(event.id);
+          if (!step) { if (!covered.has(event.id)) { flush(); entries.push(event); } continue; }
+          const operation = step.events.find((item) => item.applyOperation)?.applyOperation;
+          if (operation) {
+            if (!seenOperations.has(operation.id)) {
+              seenOperations.add(operation.id);
+              segment.push({ id: operation.id, operationId: operation.id,
+                events: [...step.events.filter((item) => !item.applyOperation), ...operations.get(operation.id)] });
+            }
+          } else segment.push(step);
         }
-        flushSegment();
-        return entries;
+        flush(); return entries;
       }
 
       function appendTimelineActivitySegment(entries, steps) {
@@ -1949,6 +1955,11 @@
         }
         const timeline = document.getElementById("timeline");
         const sameSession = renderedTimelineSessionId === state.activeSessionId;
+        if (!sameSession) { operationReviews.clear(); activityItems.clear(); }
+        const operationIds = new Set((state.events || []).flatMap((event) => event.applyOperation ? [event.applyOperation.id] : []));
+        if (pendingConfirmation?.operationId) operationIds.add(pendingConfirmation.operationId);
+        for (const id of operationReviews.keys()) if (!operationIds.has(id)) operationReviews.delete(id);
+        artifactPreviews.sync(state.activeSessionId, (state.events || []).flatMap((event) => event.artifacts || []));
         if (pendingReasoningSummaryFocus?.sessionId !== state.activeSessionId) {
           pendingReasoningSummaryFocus = null;
         }
@@ -2028,7 +2039,7 @@
         const nearBottom =
           timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 48;
         const events = (state.events || []).filter((event) =>
-          event.kind !== "reasoning" || event.content.trim().length > 0
+          event.kind !== "candidate" && (event.kind !== "reasoning" || event.content.trim().length > 0)
         );
 
         if (
@@ -2043,17 +2054,21 @@
           desiredNodes.push(buildEmptyState());
         }
 
+        let confirmation = null;
+        const visibleActivityIds = new Set();
         for (const entry of timelineActivityEntries(events)) {
           if (entry.activitySteps) {
             const steps = entry.activitySteps;
-            const group = buildTimelineActivityGroup(steps);
-            const groupId = group.dataset.activityGroupId;
+            const pendingStep = steps.find((step) => step.operationId && step.operationId === pendingConfirmation?.operationId);
+            const group = steps.length > 1 ? buildTimelineActivityGroup(steps) : null;
+            group?.toggleAttribute("data-confirmation-block", Boolean(pendingStep));
+            const groupId = group?.dataset.activityGroupId;
             const previousGroupOpen = activityGroupDetailsState.get(groupId);
-            if (activityStepsGainedAttention(steps, activityStepDetailsState)) {
+            if (group && (pendingStep || activityStepsGainedAttention(steps, activityStepDetailsState))) {
               group.open = true;
-            } else if (previousGroupOpen !== undefined) {
+            } else if (group && previousGroupOpen !== undefined) {
               group.open = previousGroupOpen;
-            } else if (steps.some((step) =>
+            } else if (group && steps.some((step) =>
               activityStepNeedsAttention(step) ||
               activityStepDetailsState.get(step.id)?.open === true ||
               focusedActivityStepId === step.id ||
@@ -2064,11 +2079,13 @@
             )) {
               group.open = true;
             }
-            const items = group.querySelector(
-              ":scope > .timeline-activity-group-items",
-            );
+            const items = group?.querySelector(":scope > .timeline-activity-group-items");
+            const stepNodes = [];
             for (const step of steps) {
-              const item = buildTimelineActivityStep(step);
+              visibleActivityIds.add(step.id);
+              const pending = pendingStep === step ? pendingConfirmation : null;
+              const item = buildTimelineActivityStep(step, pending);
+              item.toggleAttribute("data-confirmation-block", !group && Boolean(pending));
               restoreTimelineActivityStepDetails(
                 item,
                 step,
@@ -2076,9 +2093,11 @@
                 detailsState,
                 focusedSummaryEventId,
               );
-              items.append(item);
+              if (pending) { item.open = true; confirmation = item.querySelector("[data-pending-confirmation]"); }
+              stepNodes.push(item);
             }
-            desiredNodes.push(group);
+            if (group) { reconcileChildNodes(items, stepNodes); desiredNodes.push(group); }
+            else desiredNodes.push(stepNodes[0]);
             continue;
           }
           const previousPending = existingMessages.get("pending");
@@ -2168,9 +2187,20 @@
           ));
         }
 
-        const confirmation = pendingConfirmation ? buildConfirmCard(pendingConfirmation) : null;
-        if (confirmation) desiredNodes.push(confirmation);
+        if (pendingConfirmation && !confirmation) {
+          if (pendingConfirmation.operationId) {
+            const step = { id: pendingConfirmation.operationId, operationId: pendingConfirmation.operationId, events: [] };
+            visibleActivityIds.add(step.id);
+            const item = buildTimelineActivityStep(step, pendingConfirmation); item.open = true; item.setAttribute("data-confirmation-block", "");
+            confirmation = item.querySelector("[data-pending-confirmation]");
+            desiredNodes.push(item);
+          } else { confirmation = buildConfirmCard(pendingConfirmation); desiredNodes.push(confirmation); }
+        }
+        for (const id of activityItems.keys()) if (!visibleActivityIds.has(id)) activityItems.delete(id);
         reconcileChildNodes(timeline, desiredNodes);
+        if (sameSession && focusBeforeRender?.isConnected && timeline.contains(focusBeforeRender) && focusBeforeRender !== document.activeElement) {
+          focusBeforeRender.focus({ preventScroll: true });
+        }
         syncMessageActions();
         const durableReasoningFocus = reasoningSummaryFocusTarget(
           timeline,
@@ -2334,35 +2364,37 @@
         return group;
       }
 
-      function buildTimelineActivityStep(step) {
+      function buildTimelineActivityStep(step, confirm = null) {
         const status = activityStepStatus(step);
-        const item = document.createElement("details");
-        item.className = "timeline-activity-step";
-        item.dataset.activityStepId = step.id;
-        item.dataset.status = status;
-
-        const summary = buildTimelineActivitySummary(
-          step,
-          "timeline-activity-step-summary",
-        );
-
-        const detail = document.createElement("div");
-        detail.className = "timeline-activity-detail";
-        for (const event of step.events) {
-          const section = document.createElement("section");
-          section.className = "timeline-activity-detail-section";
-          section.dataset.eventId = event.id;
-          const label = document.createElement("div");
-          label.className = "timeline-activity-detail-label";
-          label.textContent = activityEventLabel(event);
-          const content = document.createElement("div");
-          content.className = "timeline-activity-detail-content";
-          content.textContent = event.content || "";
-          section.append(label, content);
-          detail.append(section);
+        let view = activityItems.get(step.id);
+        if (!view) {
+          const item = document.createElement("details"); item.className = "timeline-activity-step";
+          item.dataset.activityStepId = step.id;
+          const detail = document.createElement("div"); detail.className = "timeline-activity-detail";
+          item.append(buildTimelineActivitySummary(step, "timeline-activity-step-summary"), detail);
+          view = { item, detail, snapshot: "" }; activityItems.set(step.id, view);
         }
-        item.append(summary, detail);
-        return item;
+        view.item.dataset.status = status;
+        const snapshot = JSON.stringify([step.events, confirm, window.LiveSmithI18n.locale]);
+        if (snapshot !== view.snapshot) {
+          view.item.querySelector(":scope > summary").replaceWith(buildTimelineActivitySummary(step, "timeline-activity-step-summary"));
+          const content = [];
+          if (step.operationId) {
+            content.push(renderOperationReview(step.operationId, step.events, confirm));
+          } else {
+            const midiRefs = step.events.flatMap((event) => event.artifacts || []).filter((ref) => ref.kind === "midi");
+            if (midiRefs.length) {
+              for (const ref of midiRefs) { const preview = artifactPreviews.render(ref); if (preview) content.push(preview); }
+            } else for (const event of step.events) {
+              const section = document.createElement("section"); section.className = "timeline-activity-detail-section"; section.dataset.eventId = event.id;
+              const label = document.createElement("div"); label.className = "timeline-activity-detail-label"; label.textContent = activityEventLabel(event);
+              const body = document.createElement("div"); body.className = "timeline-activity-detail-content"; body.textContent = event.content || "";
+              section.append(label, body); content.push(section);
+            }
+          }
+          reconcileChildNodes(view.detail, content); view.snapshot = snapshot;
+        }
+        return view.item;
       }
 
       function buildTimelineActivitySummary(step, className) {
@@ -2397,6 +2429,11 @@
       }
 
       function activityStepStatus(step) {
+        if (step.operationId) {
+          if (getPendingConfirmation()?.operationId === step.operationId) return "waiting";
+          const operation = [...step.events].reverse().find((event) => event.applyOperation)?.applyOperation;
+          return ({ applied: "complete", partial: "partial", failed: "failed", cancelled: "stopped", approved: "approved" })[operation?.status] || "unconfirmed";
+        }
         const terminal = [...step.events].reverse().find(
           (event) =>
             event.kind === "tool_result" ||
@@ -2446,6 +2483,11 @@
       }
 
       function activityStepTitle(step, status) {
+        if (step.operationId) {
+          if (status === "waiting") return t("Needs approval");
+          if (["approved", "unconfirmed"].includes(status)) return t("Live changes");
+        }
+        if (step.events.some((event) => event.artifacts?.some((ref) => ref.kind === "midi"))) return t("Saved MIDI");
         const call = step.events.find((event) => event.kind === "tool_call");
         const terminal = [...step.events].reverse().find(
           (event) =>
@@ -2482,6 +2524,11 @@
       }
 
       function activityStepExcerpt(step) {
+        if (step.operationId) {
+          return step.events.find((event) => event.applyOperation?.previews?.length)?.applyOperation.previews[0].targetLabel ||
+            step.events.find((event) => event.kind === "apply_requested")?.content.split("\n")[0] || "";
+        }
+        if (step.events.some((event) => event.artifacts?.some((ref) => ref.kind === "midi"))) return "";
         const call = step.events.find((event) => event.kind === "tool_call");
         const applyLifecycle = call?.name === "apply_live_actions" || (
           !call && step.events.some((event) => event.kind.startsWith("apply_"))
@@ -2554,6 +2601,9 @@
       }
 
       function activityStatusLabel(status) {
+        if (status === "waiting") return t("Waiting for approval");
+        if (status === "approved") return t("Approved");
+        if (status === "unconfirmed") return t("No confirmed result");
         if (status === "pending") return t("In progress");
         if (status === "stopped") return t("Stopped");
         if (status === "failed") return t("Failed");
@@ -2569,6 +2619,52 @@
         if (event.kind === "apply_result") return t("Apply result");
         if (event.kind === "error") return t("Error");
         return event.kind;
+      }
+
+      function renderOperationReview(id, events, confirm) {
+        let view = operationReviews.get(id);
+        if (!view) {
+          const root = document.createElement("section"); root.className = "timeline-activity-detail-section"; root.dataset.operationId = id;
+          const previews = document.createElement("div");
+          const description = document.createElement("p"); description.className = "timeline-activity-detail-content";
+          const groups = document.createElement("div");
+          const outcome = document.createElement("div"); outcome.className = "timeline-activity-detail-content"; outcome.setAttribute("role", "status");
+          const buttons = document.createElement("div"); buttons.className = "confirm-buttons";
+          const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "secondary"; cancel.dataset.confirmCancel = "";
+          const apply = document.createElement("button"); apply.type = "button"; apply.className = "primary";
+          buttons.append(cancel, apply); root.append(previews, description, groups, outcome, buttons);
+          view = { root, previews, description, groups, outcome, buttons, cancel, apply, previewKey: "" }; operationReviews.set(id, view);
+        }
+        const proposed = events.find((event) => event.applyOperation?.status === "proposed");
+        const latest = [...events].reverse().find((event) => event.applyOperation);
+        const previews = proposed?.applyOperation?.previews || confirm?.previews || [];
+        const previewKey = JSON.stringify(previews);
+        if (view.previewKey !== previewKey) { view.previews.replaceChildren(...previews.map(renderActionPreview)); view.previewKey = previewKey; }
+        view.previews.hidden = previews.length === 0;
+        refreshActionPreviews?.(view.previews);
+        view.description.textContent = proposed?.content || confirm?.message || "";
+        view.description.hidden = !view.description.textContent || Boolean(confirm?.groups?.length);
+        view.groups.replaceChildren();
+        for (const group of confirm?.groups || []) {
+          const heading = document.createElement("div"); heading.className = "confirm-group-title"; heading.textContent = window.LiveSmithI18n.format(group.title);
+          const list = document.createElement("ul"); list.className = "confirm-rows";
+          for (const row of group.rows) { const item = document.createElement("li"); item.textContent = window.LiveSmithI18n.format(row); list.append(item); }
+          view.groups.append(heading, list);
+        }
+        view.groups.hidden = view.groups.childElementCount === 0;
+        view.outcome.textContent = latest?.kind === "apply_result" ? latest.content : "";
+        view.outcome.hidden = !view.outcome.textContent;
+        view.cancel.textContent = t("Cancel"); view.apply.textContent = t("Apply"); view.buttons.hidden = !confirm;
+        view.cancel.disabled = view.apply.disabled = Boolean(confirm && isConfirmationLocked?.());
+        view.root.toggleAttribute("data-pending-confirmation", Boolean(confirm));
+        if (confirm) {
+          view.root.setAttribute("role", "alertdialog"); view.root.setAttribute("aria-label", confirm.message);
+          view.cancel.onclick = () => resolveConfirm(confirm.id, false); view.apply.onclick = () => resolveConfirm(confirm.id, true);
+        } else {
+          view.root.removeAttribute("role"); view.root.removeAttribute("aria-label"); view.root.removeAttribute("aria-busy");
+          view.cancel.onclick = view.apply.onclick = null;
+        }
+        return view.root;
       }
 
       function buildConfirmCard(confirm) {
@@ -2973,7 +3069,6 @@
       }
 
       function eventLabel(event) {
-        if (event.kind === "candidate") return t("Artifact selection");
         if (event.kind === "user") return t("You");
         if (event.kind === "assistant") return "Live Smith";
         if (event.kind === "reasoning") return t("Thinking");

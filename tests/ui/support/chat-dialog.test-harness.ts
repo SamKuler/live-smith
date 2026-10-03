@@ -1,3 +1,4 @@
+import { defaultSessionTabs, isSessionTabs, type SessionShortcutId } from "../../../src/model/session-tabs.js";
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
 import { createHash, webcrypto } from "node:crypto";
@@ -163,7 +164,6 @@ const pluginAppsScript = await buildClientScript("src/ui/client/plugin-apps.ts",
 const audioParametersScript = await buildClientScript("src/ui/client/audio-parameters.ts", false);
 const bridgeContractsScript = await buildClientScript("src/ui/client/bridge-contracts.ts", false);
 const clientScripts = {
-  actionPreview: readClientScript("action-preview"),
   i18n: readClientScript("i18n"),
   attachments: readClientScript("attachments"),
   attachmentMedia: readClientScript("attachment-media"),
@@ -386,6 +386,8 @@ function stateFixture(): ChatBridgeState {
       customInstructionsRevision: "0",
       showContextUsage: true,
       contextUsageVisibilityRevision: "0",
+      sessionTabs: [...defaultSessionTabs],
+      sessionTabsRevision: "0",
       networkProxy: { mode: "none", url: "" },
       networkProxyRevision: "0",
       profiles: [
@@ -932,6 +934,10 @@ async function createDialogHarness(
         event.networkProxy as NetworkProxySettings,
       );
       serverState.settings.networkProxyRevision = event.networkProxyRevision;
+      if (isSessionTabs(event.sessionTabs) && typeof event.sessionTabsRevision === "string") {
+        serverState.settings.sessionTabs = [...event.sessionTabs];
+        serverState.settings.sessionTabsRevision = event.sessionTabsRevision;
+      }
       if (isUiLanguage(event.uiLanguage) &&
           typeof event.uiLanguageRevision === "string") {
         serverState.settings.uiLanguage = event.uiLanguage;
@@ -946,6 +952,8 @@ async function createDialogHarness(
     }
     const event = { ...(payload as Record<string, unknown>) };
     if (event.type === "global_settings_changed") {
+      if (!Object.hasOwn(event, "sessionTabs")) event.sessionTabs = [...serverState.settings.sessionTabs];
+      if (!Object.hasOwn(event, "sessionTabsRevision")) event.sessionTabsRevision = serverState.settings.sessionTabsRevision;
       event.networkProxy ??= cloneState(serverState.settings.networkProxy);
       event.networkProxyRevision ??= serverState.settings.networkProxyRevision;
       event.customInstructions ??= serverState.settings.customInstructions;
@@ -1546,6 +1554,7 @@ async function createDialogHarness(
                 editScopes?: EditScope[];
                 defaultFollowUpBehavior?: "queue" | "steer";
                 showContextUsage?: boolean;
+                sessionTabs?: SessionShortcutId[];
                 uiLanguage?: UiLanguage;
                 networkProxy?: NetworkProxySettings;
                 integrationConnections?: import("../../../src/plugins/integration-connections.js").IntegrationConnectionsSettingsPatch;
@@ -1680,6 +1689,9 @@ async function createDialogHarness(
                       before?.pluginId && builtInAudioPluginById(before.pluginId) ||
                       after?.pluginId && builtInAudioPluginById(after.pluginId)),
                   };
+                } else if (command.sessionTabs) {
+                  serverState.settings.sessionTabs = [...command.sessionTabs];
+                  serverState.settings.sessionTabsRevision = String(BigInt(serverState.settings.sessionTabsRevision) + 1n);
                 } else if (command.uiLanguage) {
                   serverState.settings.uiLanguage = command.uiLanguage;
                   serverState.settings.uiLanguageRevision = String(BigInt(serverState.settings.uiLanguageRevision) + 1n);

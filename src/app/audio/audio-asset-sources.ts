@@ -1,13 +1,13 @@
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 
-import type { AudioAsset } from "../../audio-services/contracts.js";
+import { cloneJsonValue } from "../../model/json-clone.js";
 import type {
   AudioAssetSampleSource,
   ManagedSampleSource,
   ManagedSampleSources,
 } from "../../live/sample-source.js";
 import { throwIfAborted } from "../../runtime/host.js";
-import { readExpectedAudioAsset } from "../../storage/audio-assets.js";
+import { readExpectedSessionAudioArtifact, type SessionAudioArtifact } from "../../storage/audio-artifacts.js";
 import { createManagedSampleImport } from "./request-audio-sources.js";
 
 export async function addAudioAssetSampleSources(
@@ -18,7 +18,7 @@ export async function addAudioAssetSampleSources(
     signal: AbortSignal;
   },
   sources: Map<string, ManagedSampleSource>,
-  assets: readonly AudioAsset[],
+  assets: readonly SessionAudioArtifact[],
 ): Promise<void> {
   throwIfAborted(input.signal);
   if (assets.length && !input.storageDirectory) {
@@ -28,7 +28,7 @@ export async function addAudioAssetSampleSources(
     if (asset.sessionId !== input.sessionId) {
       throw new Error("The audio asset does not belong to this Session.");
     }
-    const expected: AudioAsset = { ...asset, origin: { ...asset.origin } };
+    const expected = cloneJsonValue(asset);
     const identity = `audio-asset:${expected.id}:${expected.sha256}`;
     const existing = sources.get(expected.id);
     if (existing) {
@@ -44,7 +44,7 @@ export async function addAudioAssetSampleSources(
       mediaType: expected.mediaType,
       failureMessage: "Live Smith could not import the audio asset into the Live project.",
       async readBytes() {
-        return readExpectedAudioAsset(
+        return readExpectedSessionAudioArtifact(
           input.storageDirectory, input.sessionId, expected, input.signal,
         );
       },

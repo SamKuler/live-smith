@@ -50,7 +50,7 @@ import { EDIT_SCOPES, EDIT_SCOPE_LABELS } from "../agent/edit-scopes.js";
 import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
 import { MAX_SESSION_TITLE_CODE_POINTS } from "../storage/sessions.js";
 import { MAX_MIDI_PREVIEW_NOTES, MAX_PARAMETER_PREVIEW_VALUE_ITEMS } from "../agent/action-preview.js";
-import { SEPARATION_STEMS, SUNO_STEM_ROLES, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
+import { SEPARATION_STEMS, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
   MAX_AUDIO_SESSION_JOBS, MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_JOB_TITLE_CHARACTERS,
   AUDIO_OUTPUT_LABELS } from "../audio-services/contracts.js";
 
@@ -60,7 +60,6 @@ import { MAX_PLUGIN_PARAMETER_FIELDS, MAX_PLUGIN_PARAMETER_TEXT } from "../plugi
 import { MAX_PLUGIN_CONFIG_FIELDS, MAX_PLUGIN_CONFIG_TEXT } from "../plugins/user-config.js";
 
 export interface ChatClientScripts {
-  actionPreview: string;
   i18n: string;
   attachments: string;
   attachmentMedia?: string;
@@ -231,7 +230,6 @@ function injectSessionContract(script: string): string {
       JSON.stringify(BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS))
     .replaceAll("__MAX_INTEGRATION_CONNECTIONS__", String(MAX_INTEGRATION_CONNECTIONS))
     .replaceAll("__SEPARATION_STEMS__", () => JSON.stringify(SEPARATION_STEMS))
-    .replaceAll("__SUNO_STEM_ROLES__", () => JSON.stringify(SUNO_STEM_ROLES))
     .replaceAll("__AUDIO_OUTPUT_LABELS__", () => JSON.stringify(AUDIO_OUTPUT_LABELS))
     .replaceAll("__MAX_AUDIO_JOB_TITLE_CHARACTERS__", String(MAX_AUDIO_JOB_TITLE_CHARACTERS))
     .replaceAll("__MAX_AUDIO_ASSET_BYTES__", String(MAX_AUDIO_ASSET_BYTES))
@@ -295,7 +293,6 @@ export function composeChatDocument(
     ))),
     __MARKDOWN_RENDERER_SCRIPT__: scripts.markdownRenderer,
     __SESSION_TIMELINE_SCRIPT__: injectSessionContract(injectAttachmentContract(scripts.sessionTimeline)),
-    __ACTION_PREVIEW_SCRIPT__: scripts.actionPreview,
     __BOOTSTRAP_SCRIPT__: injectEditScopeContract(scripts.bootstrap),
   };
   // Substitute the authored template once; inserted Session data and scripts are not templates.

@@ -309,6 +309,7 @@
           getState,
           openSection: openExtensionCategory,
           runCommand: bridgeClient.runCommand,
+          stopCommand: bridgeClient.stopActiveCommand,
           selectAudioConnection: bridgeClient.handleAudioServiceSelection,
         });
 
@@ -323,8 +324,18 @@
             prompt.dispatchEvent(new Event("input", { bubbles: true }));
             prompt.focus();
         };
+        const transferArtifact = async (kind, input) => {
+          const completed = await bridgeClient.runCommand(kind, input, { cancellable: true });
+          if (completed && kind === "attach_artifact" && getState().activeSessionId === input.sessionId) {
+            try { await pluginApps.close(); }
+            catch { bridgeClient.showStatus(i18n.message("MCP App could not be closed."), true); return completed; }
+            if (getState().activeSessionId !== input.sessionId) return completed;
+            setInspectorOpen(false); document.getElementById("prompt").focus();
+          }
+          return completed;
+        };
         const pluginResults = factories.createPluginResults({
-          getState,
+          getState, transferArtifact,
           prepareMidiImport: bridgeClient.prepareMidiImport,
           useInChat: useResultInChat,
           importMidi: async (input) => {
@@ -338,15 +349,10 @@
             return completed && known;
           },
         });
-        const artifactComparison = factories.createArtifactComparison({
-          transfer: async (kind, input) => {
-            const completed = await bridgeClient.runCommand(kind, input, { cancellable: true });
-            if (completed && kind === "attach_midi_artifact" && getState().activeSessionId === input.sessionId) {
-              setInspectorOpen(false); document.getElementById("prompt").focus();
-            }
-            return completed;
-          },
-          getState, read: bridgeClient.readSessionArtifacts,
+        const artifactLibrary = factories.createArtifactLibrary({
+          transfer: transferArtifact,
+          getState, read: bridgeClient.readSessionArtifacts, readArtifact: bridgeClient.readSessionArtifact,
+          readMidiArtifactDiff: bridgeClient.readMidiArtifactDiff, readMidiPartPreview: bridgeClient.readMidiPartPreview,
           select: async (input) => {
             let known = false;
             const completed = await bridgeClient.runCommand("select_artifact", input, { onOutcome: (outcome) => { known = outcome.known; } });
@@ -357,6 +363,14 @@
           audioUrl: (sessionId, id) => bridgeConfig.baseUrl + "/audio-assets/" + encodeURIComponent(id) +
             "?token=" + encodeURIComponent(bridgeConfig.token) + "&sessionId=" + encodeURIComponent(sessionId),
         });
+        const chatArtifactPreviews = factories.createChatArtifactPreviews({
+          getState, readArtifact: bridgeClient.readSessionArtifact, transfer: transferArtifact, resultActions: pluginResults,
+          openArtifact: (artifact) => {
+            openInspectorSection("artifacts", "sessionArtifacts");
+            artifactLibrary.openArtifact(artifact);
+          },
+        });
+        window.addEventListener("pagehide", () => chatArtifactPreviews.dispose());
         const pluginApps = factories.createPluginApps({
           resultActions: pluginResults,
           getState,
@@ -367,7 +381,7 @@
           listResources: (input, templates, signal) => bridgeClient.requestPluginApp(templates ? "resource-templates" : "resources", input, signal),
           closeApp: (id) => bridgeClient.requestPluginApp("close", { id }),
         });
-        window.addEventListener("pagehide", () => { void pluginApps.close(); });
+        window.addEventListener("pagehide", () => { pluginResults.close(); void pluginApps.close(); });
         const pluginUserConfig = factories.createPluginUserConfigPanels({ getState, runCommand: bridgeClient.runCommand });
         const audioParameters = factories.createAudioParameterPanels({ getState, runCommand: bridgeClient.runCommand });
         window.addEventListener("pagehide", () => { audioParameters.close(); });
@@ -407,12 +421,13 @@
             composerOperationState.sendInProgress || composerOperationState.attachmentInProgress ||
             composerOperationState.skillInProgress,
           runCommand: bridgeClient.runCommand,
-          open: () => openInspectorSection("context", "creativeBriefSection"),
         });
 
         const sessionTimeline = factories.createSessionTimeline({
           attachmentViewer,
           renderActionPreview: actionPreview.render,
+          refreshActionPreviews: actionPreview.refreshLocale,
+          artifactPreviews: chatArtifactPreviews,
           getState,
           getAssistantDraft: bridgeClient.getAssistantDraft,
           getReasoningDraft: bridgeClient.getReasoningDraft,
@@ -428,7 +443,7 @@
           resolveConfirm: bridgeClient.resolveConfirm,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
-          onInspectorTabChange: (tab) => artifactComparison.setVisible(tab === "artifacts"),
+          onInspectorTabChange: (tab) => artifactLibrary.setVisible(tab === "artifacts" && !document.getElementById("inspectorPane").hidden),
         });
 
         const toolsInspector = factories.createToolsInspector({
@@ -614,7 +629,7 @@
           const context = state.liveContext;
           const button = document.getElementById("liveContextSummaryButton");
           const matchesSession = context?.sessionId === state.activeSessionId;
-          setPropertyIfChanged(button, "hidden", !matchesSession);
+          setPropertyIfChanged(button, "hidden", !matchesSession || !state.settings.sessionTabs.includes("context"));
           if (!matchesSession) return;
           const available = context.availability === "available";
           const title = available ? context.value.title : context.label;
@@ -632,6 +647,25 @@
             : t("{title} · Object unavailable. Open Context for details.", { title });
           setPropertyIfChanged(button, "title", description);
           setAttributeIfChanged(button, "aria-label", t("Session context: {description}", { description }));
+        }
+
+        function renderSessionShortcuts() {
+          const tabs = getState().settings.sessionTabs;
+          const row = document.getElementById("composerShortcuts");
+          const focused = document.activeElement;
+          renderLiveContext();
+          for (const button of row.querySelectorAll("[data-session-shortcut]")) {
+            if (button.dataset.sessionShortcut !== "context") {
+              setPropertyIfChanged(button, "hidden", !tabs.includes(button.dataset.sessionShortcut));
+            }
+          }
+          setPropertyIfChanged(row, "hidden", ![...row.children].some((button) => !button.hidden));
+          for (const control of document.querySelectorAll("[data-session-tab]")) {
+            setPropertyIfChanged(control, "checked", tabs.includes(control.dataset.sessionTab));
+          }
+          if (row.contains(focused) && focused.closest("[hidden]")) {
+            document.getElementById("prompt").focus({ preventScroll: true });
+          }
         }
 
         function renderContextSummary(summary) {
@@ -981,7 +1015,7 @@
           const inspector = document.getElementById("inspectorPane");
           const focusWasInside = !open && inspector.contains(document.activeElement);
           inspector.hidden = !open;
-          artifactComparison.setVisible(open && !document.getElementById("artifactsPanel").hidden);
+          artifactLibrary.setVisible(open && !document.getElementById("artifactsPanel").hidden);
           const settingsButton = document.getElementById("settingsButton");
           settingsButton.setAttribute("aria-expanded", String(open));
           settingsButton.setAttribute(
@@ -994,7 +1028,7 @@
 
         function openInspector(tab) {
           const origin = document.activeElement;
-          sessionTimeline.switchInspectorTab(tab || "agent");
+          if (tab) sessionTimeline.switchInspectorTab(tab);
           setInspectorOpen(true);
           if (origin?.closest("#inspectorPane") && origin.closest("[hidden]")) {
             document.querySelector('.tab-bar [aria-selected="true"]')?.focus({ preventScroll: true });
@@ -1055,7 +1089,7 @@
 
         function toggleInspector() {
           const inspector = document.getElementById("inspectorPane");
-          if (inspector.hidden) openInspector("agent");
+          if (inspector.hidden) openInspector();
           else setInspectorOpen(false);
         }
 
@@ -1336,6 +1370,7 @@
             contextTokenFormatter = new Intl.NumberFormat(i18n.locale);
             profileEditor.refreshLocale?.();
             composerInput.refreshLocale();
+            pluginResults.refreshLocale();
             setInspectorOpen(!document.getElementById("inspectorPane").hidden);
             setSessionsPaneCollapsed(sessionsPaneCollapsed);
             renderActiveCommandFeedback();
@@ -1343,7 +1378,7 @@
           if (preserveStatus) renderStatusPresentation();
           else renderStateStatus();
           renderContextSummary(getState().contextSummary || "");
-          renderLiveContext();
+          renderSessionShortcuts();
           renderComposerRuntimeControls();
           renderSendPresentation();
           renderComposerContextUsage();
@@ -1361,7 +1396,7 @@
           skillManager.render();
           pluginManager.render();
           pluginApps.sync();
-          artifactComparison.render();
+          artifactLibrary.render();
           audioParameters.sync();
           toolsInspector.render();
           midiContinuation.render();
@@ -1734,6 +1769,7 @@
           if (defaultFollowUp.disabled !== sessionSettingDisabled) {
             defaultFollowUp.disabled = sessionSettingDisabled;
           }
+          setPropertyIfChanged(document.getElementById("sessionTabs"), "disabled", sessionSettingDisabled);
           const showContextUsage = document.getElementById("showContextUsage");
           if (showContextUsage.disabled !== sessionSettingDisabled) {
             showContextUsage.disabled = sessionSettingDisabled;
@@ -1772,12 +1808,13 @@
           attachments.setBusy(commandAdmissionBusy);
           skillManager.setBusy(skillsBusy);
           pluginManager.setBusy(skillsBusy);
-          connectionsManager.setBusy(skillsBusy);
+          connectionsManager.setOperation({ busy: skillsBusy, commandKind, canStop: commandCanStop, stopping: commandStopInProgress });
           toolsInspector.setBusy(operationBusy);
           pluginApps.setBusy(operationBusy);
           audioParameters.setBusy(operationBusy);
           pluginResults.setBusy(operationBusy);
-          artifactComparison.setBusy(operationBusy);
+          artifactLibrary.setBusy(operationBusy);
+          chatArtifactPreviews.setBusy(operationBusy);
           midiContinuation.setOperation({ busy: operationBusy, commandKind, canStop: commandCanStop, stopping: commandStopInProgress });
 
           if (
@@ -1819,6 +1856,7 @@
           render: renderApplication,
           renderAssistantDraft: sessionTimeline.renderAssistantDraft,
           renderContextUsage: renderComposerContextUsage,
+          renderSessionShortcuts,
           renderSessions: sessionTimeline.renderSessions,
           syncSessionPresentation: sessionTimeline.syncSessionPresentation,
           renderApprovalMode: profileEditor.renderApprovalMode,
@@ -1886,6 +1924,7 @@
           runCommand: bridgeClient.runCommand,
           saveApprovalMode: profileEditor.saveApprovalMode,
           saveContextUsageVisibility: bridgeClient.saveContextUsageVisibility,
+          saveSessionTabs: bridgeClient.saveSessionTabs,
           saveDefaultFollowUpBehavior: bridgeClient.saveDefaultFollowUpBehavior,
           setUiLanguage: bridgeClient.setUiLanguage,
           saveNetworkProxySettings: bridgeClient.saveNetworkProxySettings,
@@ -1918,7 +1957,7 @@
           renderApplication();
           setSessionsPaneCollapsed(false);
           setInspectorOpen(Boolean(getState().openSettingsOnLoad || !activeProfile()));
-          sessionTimeline.switchInspectorTab("agent");
+          sessionTimeline.switchInspectorGroup(getState().openSettingsOnLoad || !activeProfile() ? "settings" : "session");
           window.addEventListener("languagechange", () => {
             if (i18n.preference === "system") renderApplication({ preserveStatus: true });
           });

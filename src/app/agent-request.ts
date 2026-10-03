@@ -1,4 +1,5 @@
-import { createMidiArtifactAuthoringToolset, createSessionMidiArtifactToolset } from "./midi/midi-artifact-tools.js";
+import { createMidiArtifactAuthoringToolset } from "./midi/midi-artifact-tools.js";
+import { createSessionArtifactToolset } from "./session/session-artifact-tools.js";
 import { creativeBriefProposalTool, proposeCreativeBrief } from "./context/creative-brief.js";
 import { ModelInputTooLargeError } from "../model/connection-error.js";
 import { artifactSourceInstructions, pendingArtifactParentFromEvents, type ArtifactRef } from "../agent/artifact-contracts.js";
@@ -323,9 +324,26 @@ export async function handleAgentRequest(
   let audioSampleSourceInstructions = requestAudioSampleSourceInstructions(requestAudioSources);
   const requestAttachmentQuota = prepared.attachmentQuota;
   let requestDocumentTextCharacters = prepared.documentTextCharacters;
-  const audioTools = await createRequestAudioTools({
+  const pluginTools: Awaited<ReturnType<typeof createRequestPluginTools>> = await createRequestPluginTools({
+    onAudioArtifacts: (artifacts) => audioTools.registerArtifacts(artifacts),
+    ...(prepared.userEvent.parentCandidate ? { artifactRevisionOf: prepared.userEvent.parentCandidate } : {}),
+    storageDirectory,
+    pluginConfigSnapshots: prepared.skillContext.pluginConfigSnapshots ?? {},
+    ...(context.environment?.tempDirectory === undefined
+      ? {}
+      : { temporaryDirectory: context.environment.tempDirectory }),
+    sessionId: session.id,
+    signal: callbacks.signal,
+    fetchImpl: providerFetchForStorage(storageDirectory),
+    ...(callbacks.withPluginAuthorization
+      ? { withAuthorization: callbacks.withPluginAuthorization }
+      : {}),
+  });
+  const audioTools: Awaited<ReturnType<typeof createRequestAudioTools>> = await createRequestAudioTools({
     context, storageDirectory, sessionId: session.id, requestId: prepared.userEvent.id,
     attachmentRefs: requestAudioAttachmentRefs,
+    hasPluginAudioOutputs: pluginTools.hasAudioOutputs,
+    ...(prepared.userEvent.parentCandidate ? { artifactSource: prepared.userEvent.parentCandidate } : {}),
     target: interaction.target, signal: callbacks.signal, onProgress: callbacks.onProgress,
     ...(callbacks.withGenerationAuthorization ? { withGenerationAuthorization: callbacks.withGenerationAuthorization } : {}),
     ...(callbacks.audioProcessing ? { processing: callbacks.audioProcessing } : {}),
@@ -342,21 +360,7 @@ export async function handleAgentRequest(
         audioAssetSampleSourceInstructions(requestAudioSources),
       ].filter(Boolean).join("\n\n");
     },
-  });
-  const pluginTools = await createRequestPluginTools({
-    ...(prepared.userEvent.parentCandidate?.kind === "midi" ? { midiRevisionOf: prepared.userEvent.parentCandidate.id } : {}),
-    storageDirectory,
-    pluginConfigSnapshots: prepared.skillContext.pluginConfigSnapshots ?? {},
-    ...(context.environment?.tempDirectory === undefined
-      ? {}
-      : { temporaryDirectory: context.environment.tempDirectory }),
-    sessionId: session.id,
-    signal: callbacks.signal,
-    fetchImpl: providerFetchForStorage(storageDirectory),
-    ...(callbacks.withPluginAuthorization
-      ? { withAuthorization: callbacks.withPluginAuthorization }
-      : {}),
-  });
+  }).catch(async (error: unknown) => { await pluginTools.close(); throw error; });
   let externalTools: ToolRegistry;
   try {
     externalTools = new ToolRegistry([
@@ -365,7 +369,7 @@ export async function handleAgentRequest(
         tools: () => [creativeBriefProposalTool],
         callTool: async (call) => proposeCreativeBrief(call.arguments, session.creativeBrief ?? ""),
       },
-      ...(storageDirectory ? [createSessionMidiArtifactToolset({ storageDirectory, sessionId: session.id, signal: callbacks.signal }),
+      ...(storageDirectory ? [createSessionArtifactToolset({ storageDirectory, sessionId: session.id, signal: callbacks.signal }),
         createMidiArtifactAuthoringToolset({ storageDirectory, sessionId: session.id,
         runtimeProfile, signal: callbacks.signal,
         ...(prepared.userEvent.parentCandidate?.kind === "midi" ? { revisionOf: prepared.userEvent.parentCandidate.id } : {}),
@@ -1290,6 +1294,7 @@ interface AgentRequestCallbacks {
   confirmActions(
     plan: AgentPlan,
     guard: AgentActionPreflightGuard<AgentPlanBindings>,
+    operationId: string,
   ): Promise<boolean | AgentConfirmationDecision>;
   confirmRecoveryResolution?(message: string): Promise<boolean>;
   withActionExecutionLock?(
@@ -1339,6 +1344,7 @@ async function appendAgentLoopTraceEvent(
       kind: event.kind,
       name: event.name,
       content: event.content,
+      ...(event.kind === "tool_result" && event.artifacts ? { artifacts: event.artifacts } : {}),
       ...(event.kind === "tool_call" && parentCandidate ? { parentCandidate,
         ...(requestEventId ? { requestEventId } : {}) } : {}),
     });
@@ -1347,6 +1353,7 @@ async function appendAgentLoopTraceEvent(
   return appendEvent(storageDirectory, sessionId, {
     kind: event.kind,
     content: event.content,
+    ...("applyOperation" in event && event.applyOperation ? { applyOperation: event.applyOperation } : {}),
     ...(event.kind === "web_search" ? { webSearch: event.webSearch } : {}),
     ...(event.kind === "assistant" && event.citations?.length
       ? { citations: event.citations }

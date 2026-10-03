@@ -19,7 +19,7 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
       number: new Intl.NumberFormat(i18n.locale).format(role === "music_alternative" ? 2 : 1),
     });
     if (role === "music" || role === "music_alternative") return t("Version {number}", {
-      number: new Intl.NumberFormat(i18n.locale).format(role === "music_alternative" ? 2 : 1),
+      number: new Intl.NumberFormat(i18n.locale).format(job.outputs.find((asset) => asset.role === role)?.version?.number ?? (role === "music_alternative" ? 2 : 1)),
     });
     return t(outputLabels[role]);
   }
@@ -143,7 +143,7 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
     const job = audioResultJob(output);
     const asset = job?.outputs.find((entry) => entry.id === output.dataset.audioOutput && entry.sessionId === activeSessionId());
     if (!asset) return;
-    void runCommand("open_audio_download", { sessionId: activeSessionId(), assetId: asset.id }, { cancellable: true });
+    void runCommand("export_artifact", { sessionId: activeSessionId(), artifact: { kind: "audio", id: asset.id } }, { cancellable: true });
   }
 
   function renderAudioResults(group, job) {

@@ -233,9 +233,9 @@ export async function saveSessionAttachment(
       ...(claimedMediaType === undefined ? {} : { claimedMediaType }),
       ...(signal === undefined ? {} : { signal }),
     });
-    const sha256 = await hashBytes(bytes, signal);
+    const sha256 = await hashAttachmentBytes(bytes, signal);
     throwIfAborted(signal);
-    const fileName = sanitizedFileName(fileNameClaim, classification.mediaType);
+    const fileName = sanitizedAttachmentFileName(fileNameClaim, classification.mediaType);
 
     return withStorageTransaction(storageDirectory, async (transaction) => {
       throwIfAborted(signal);
@@ -907,7 +907,7 @@ async function verifyBytes(
 ): Promise<void> {
   if (
     bytes.byteLength !== metadata.byteLength ||
-    await hashBytes(bytes, signal) !== metadata.sha256
+    await hashAttachmentBytes(bytes, signal) !== metadata.sha256
   ) {
     throw new AttachmentStorageCorruptionError();
   }
@@ -1175,7 +1175,7 @@ function ascii(bytes: Uint8Array, start: number, end: number): string {
   return String.fromCharCode(...bytes.subarray(start, end));
 }
 
-function sanitizedFileName(
+export function sanitizedAttachmentFileName(
   value: string,
   mediaType: AttachmentMediaType,
 ): string {
@@ -1225,7 +1225,7 @@ function defaultFileName(
   }
 }
 
-async function hashBytes(
+export async function hashAttachmentBytes(
   bytes: Uint8Array,
   signal?: AbortSignal,
 ): Promise<string> {

@@ -4,7 +4,7 @@ import type { AgentLoopTraceEvent } from "../../agent/loop.js";
 import { writeStandardMidi } from "../../attachments/midi-writer.js";
 import { validatePluginParameters } from "../../plugins/parameter-panel.js";
 import { throwIfAborted } from "../../runtime/host.js";
-import { readMidiArtifact, saveMidiArtifact, type MidiArtifact } from "../../storage/midi-artifacts.js";
+import { readMidiArtifact, saveMidiArtifact, type MidiArtifact, type ParsedMidiArtifact } from "../../storage/midi-artifacts.js";
 import { activeSavedProfile, savedProfileRevision, type AgentSettings } from "../../storage/settings.js";
 import type { AgentSession } from "../../storage/sessions.js";
 import { effectiveSessionModelSelection } from "../model/dialog-model-state.js";
@@ -26,6 +26,19 @@ export function midiContinuationGenerators(tools: RequestPluginTools): MidiConti
   }] : []);
 }
 
+/** Output admission and subsequent generation use the same bounded conditioning encoding. */
+export function encodeMidiContinuationConditioning(source: ParsedMidiArtifact, parent: ParsedMidiArtifact, signal: AbortSignal): Uint8Array {
+  // Track order and names are not stable voice identities across generated artifacts.
+  // Keep both files' parts independent instead of combining unrelated voices by index.
+  const tracks = [
+    ...source.parts.map((part) => ({ name: part.sourceTrackName ?? `Original part ${part.sourceTrackIndex + 1}`,
+      channel: part.channel, notes: part.notes })),
+    ...parent.parts.map((part) => ({ name: part.sourceTrackName ?? `Previous part ${part.sourceTrackIndex + 1}`,
+      channel: part.channel, notes: part.notes.map((note) => ({ ...note, startTime: note.startTime + source.durationBeats })) })),
+  ];
+  return writeStandardMidi({ tracks, durationBeats: source.durationBeats + parent.durationBeats, signal });
+}
+
 /** A single conditioning file retains the original voices followed by the previous generated section. */
 async function pluginConditioningSource(input: {
   storageDirectory: string | undefined; buffer: MidiContinuationBuffer; signal: AbortSignal; beforeCommit(): void;
@@ -34,15 +47,7 @@ async function pluginConditioningSource(input: {
   if (!previous) return input.buffer.sourceArtifactRef;
   const source = await readMidiArtifact(input.storageDirectory, input.buffer.sessionId, input.buffer.sourceArtifactRef, input.signal);
   const parent = await readMidiArtifact(input.storageDirectory, input.buffer.sessionId, previous, input.signal);
-  // Track order and names are not stable voice identities across generated artifacts.
-  // Keep both files' parts independent instead of combining unrelated voices by index.
-  const tracks = [
-    ...source.parsed.parts.map((part) => ({ name: part.sourceTrackName ?? `Original part ${part.sourceTrackIndex + 1}`,
-      channel: part.channel, notes: part.notes })),
-    ...parent.parsed.parts.map((part) => ({ name: part.sourceTrackName ?? `Previous part ${part.sourceTrackIndex + 1}`,
-      channel: part.channel, notes: part.notes.map((note) => ({ ...note, startTime: note.startTime + source.parsed.durationBeats })) })),
-  ];
-  const bytes = writeStandardMidi({ tracks, durationBeats: source.parsed.durationBeats + parent.parsed.durationBeats, signal: input.signal });
+  const bytes = encodeMidiContinuationConditioning(source.parsed, parent.parsed, input.signal);
   const condition = await saveMidiArtifact(input.storageDirectory, input.buffer.sessionId, {
     source: { kind: "host", operation: "midi-conditioning-context" }, serverId: "host", toolName: "condition_midi_continuation",
     label: `MIDI context for section ${input.buffer.nextSequence + 1}`, bytes, signal: input.signal, beforeCommit: input.beforeCommit,
@@ -64,7 +69,7 @@ export async function generateMidiContinuationWithPlugin(input: {
   const previous = new Set(input.tools.midiArtifacts().map((artifact) => artifact.id));
   await input.onEvent({ kind: "tool_call", name: generator.toolName, content: JSON.stringify(args) });
   const result = await input.tools.callTool({ id: `midi-section-${input.buffer.nextSequence}`, name: generator.toolName, arguments: JSON.stringify(args) });
-  await input.onEvent({ kind: "tool_result", name: generator.toolName, content: result.content });
+  await input.onEvent({ kind: "tool_result", name: generator.toolName, content: result.content, ...(result.artifacts ? { artifacts: result.artifacts } : {}) });
   throwIfAborted(input.signal);
   if (result.failed || result.outcomeUnknown) throw new Error("The MIDI generator did not return a confirmed artifact. Existing buffer entries were retained.");
   const created = input.tools.midiArtifacts().filter((artifact) => !previous.has(artifact.id));

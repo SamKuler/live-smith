@@ -1,3 +1,4 @@
+import { deleteSessionPluginAudioArtifacts, listSessionPluginAudioDirectoryIds } from "../../storage/audio-artifacts.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import {
   deleteSessionAttachments,
@@ -35,6 +36,7 @@ export function createSessionLifecycle(dependencies: SessionLifecycleOptions) {
     await deleteSessionEvents(storageDirectory, sessionId);
     await deleteSessionAttachments(storageDirectory, sessionId);
     await deleteSessionAudio(storageDirectory, sessionId);
+    await deleteSessionPluginAudioArtifacts(storageDirectory, sessionId);
     await deleteSessionMidiArtifacts(storageDirectory, sessionId);
   };
 
@@ -103,6 +105,7 @@ export function createSessionLifecycle(dependencies: SessionLifecycleOptions) {
     );
     const orphanCandidates = new Set([
       ...await listSessionAudioDirectoryIds(storageDirectory),
+      ...await listSessionPluginAudioDirectoryIds(storageDirectory),
       ...await listSessionMidiArtifactDirectoryIds(storageDirectory),
       ...await listSessionAttachmentDirectoryIds(
         storageDirectory,

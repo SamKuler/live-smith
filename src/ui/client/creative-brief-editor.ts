@@ -6,7 +6,6 @@ interface Dependencies {
   getState(): ChatBridgeState;
   isBusy(): boolean;
   runCommand(kind: string, input: { sessionId: string; creativeBrief: string; expectedCreativeBrief: string }, options: { cancellable: boolean }): Promise<boolean>;
-  open(): void;
 }
 
 export function createCreativeBriefEditor(deps: Dependencies) {
@@ -71,10 +70,10 @@ export function createCreativeBriefEditor(deps: Dependencies) {
     set(element("creativeBriefProposal"), "hidden", !proposal);
     set(element("creativeBriefProposalText"), "textContent", proposal?.creativeBrief || t("Empty brief"));
     set(useProposal, "disabled", pendingSessionId !== undefined || dirty || !proposal);
-    const button = element<HTMLButtonElement>("creativeBriefButton");
+    const buttonState = proposal ? "suggestion" : dirty ? "draft" : saved ? "saved" : "empty";
+    const button = element<HTMLButtonElement>("briefShortcut");
     set(button, "textContent", t("Brief"));
     set(button, "title", proposal ? t("Brief suggestion") : dirty ? t("Brief · draft") : saved ? t("Brief · saved") : t("Creative brief"));
-    const buttonState = proposal ? "suggestion" : dirty ? "draft" : saved ? "saved" : "empty";
     if (button.dataset.state !== buttonState) button.dataset.state = buttonState;
     if (button.getAttribute("aria-label") !== t("Creative brief")) button.setAttribute("aria-label", t("Creative brief"));
   }
@@ -122,7 +121,6 @@ export function createCreativeBriefEditor(deps: Dependencies) {
         render();
       }
     });
-    element("creativeBriefButton").addEventListener("click", deps.open);
   }
   return { initialize, render, hasDraft: (sessionId: string) => {
     const draft = drafts.get(sessionId);

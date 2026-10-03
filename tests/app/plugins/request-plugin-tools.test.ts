@@ -1,4 +1,4 @@
-import { createSessionMidiArtifactToolset } from "../../../src/app/midi/midi-artifact-tools.js";
+import { createSessionArtifactToolset } from "../../../src/app/session/session-artifact-tools.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test from "node:test";
@@ -215,10 +215,10 @@ test("an unavailable saved MIDI artifact is reported without blocking the Sessio
   });
   t.after(() => request.close());
   assert.equal(request.unavailableMidiArtifacts, 1);
-  const listed = await createSessionMidiArtifactToolset({ storageDirectory: directory, sessionId: session.id }).callTool({ id: "list", name: "list_session_artifacts", arguments: "{}" });
+  const listed = await createSessionArtifactToolset({ storageDirectory: directory, sessionId: session.id }).callTool({ id: "list", name: "list_session_artifacts", arguments: "{}" });
   assert.deepEqual(JSON.parse(listed.content), {
     artifacts: [], unavailableCount: 1,
-    warning: "One or more saved MIDI artifacts are unavailable. Their metadata was preserved.",
+    warning: "One or more saved artifacts are unavailable. Their metadata was preserved.",
   });
   const next = await saveMidiArtifact(directory, session.id, {
     pluginId: "audio-to-midi", serverId: "local", toolName: "transcribe",
@@ -229,7 +229,7 @@ test("an unavailable saved MIDI artifact is reported without blocking the Sessio
 
 test("approved artifact tools receive exact staged audio and return only saved MIDI references", async (t) => {
   const h = await audioStorageHarness(t);
-  const source = await h.save();
+  const source = await h.saveResult();
   await installPlugin(h.storage, artifactPackageBytes());
   await setPluginMcpServerApproved(h.storage, "artifact-converter", "local", true);
   await setPluginEnabled(h.storage, "artifact-converter", true);
@@ -277,7 +277,7 @@ test("approved artifact tools receive exact staged audio and return only saved M
     noteCount: artifact.noteCount,
     durationBeats: artifact.durationBeats,
   })), [{ kind: "midi", label: "Transcribed MIDI", noteCount: 1, durationBeats: 1 }]);
-  const reader = createSessionMidiArtifactToolset({ storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal });
+  const reader = createSessionArtifactToolset({ storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal });
   const listed = await reader.callTool({
     id: "list",
     name: "list_session_artifacts",
@@ -291,7 +291,8 @@ test("approved artifact tools receive exact staged audio and return only saved M
   await fs.writeFile(`${h.storage}/live-smith-midi/${h.session.id}/${parsed.artifacts[0].artifactRef}.mid`, new Uint8Array(35));
   const corrupt = await reader.callTool({ id: "list-corrupt", name: "list_session_artifacts", arguments: "{}" });
   assert.equal(JSON.parse(corrupt.content).unavailableCount, 1);
-  assert.deepEqual(JSON.parse(corrupt.content).artifacts, []);
+  assert.deepEqual(JSON.parse(corrupt.content).artifacts.filter((artifact: { kind: string }) => artifact.kind === "midi"), []);
+  assert.ok(JSON.parse(corrupt.content).artifacts.some((artifact: { artifactRef: string }) => artifact.artifactRef === source.id));
 });
 
 test("artifact permission revocation after discovery blocks the local call before staging", async (t) => {

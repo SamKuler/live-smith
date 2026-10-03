@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { UiMessage } from "../../../src/i18n/ui-message.js";
 import { writeStandardMidi } from "../../../src/attachments/midi-writer.js";
 import { fillMidiContinuation, consumeMidiContinuation, assertMidiContinuationSource } from "../../../src/app/midi/midi-continuation.js";
 import { generateMidiContinuationWithModel } from "../../../src/app/midi/midi-continuation-model.js";
 import { readMidiContinuation, saveMidiArtifact, readMidiArtifact, listMidiArtifacts } from "../../../src/storage/midi-artifacts.js";
 import { loadSessionEvents } from "../../../src/storage/events.js";
-import { createSessionMidiArtifactToolset } from "../../../src/app/midi/midi-artifact-tools.js";
+import { createSessionArtifactToolset } from "../../../src/app/session/session-artifact-tools.js";
 import { artifactGenerationsFromEvents, listSessionArtifacts } from "../../../src/app/session/session-artifacts.js";
 import { captureMidiContinuationContext } from "../../../src/app/midi/midi-continuation-context.js";
 import { continuationHarness } from "./support/continuation-harness.js";
@@ -14,8 +15,8 @@ const tracks = (pitch: number) => [{ name: "Bass", channel: 1, notes: [{ pitch, 
   { name: "Lead", channel: 2, notes: [{ pitch: pitch + 24, startTime: 1, duration: 2, velocity: 100 }] }];
 
 test("Fill creates ordered sections, consumes only the applied head and refills only vacant slots", async (t) => {
-  const h = await continuationHarness(t); const parents: (string | undefined)[] = [];
-  const fill = () => fillMidiContinuation({ ...h, bufferId: h.buffer.id, validateGenerator: async () => {}, onProgress: async () => {},
+  const h = await continuationHarness(t); const parents: (string | undefined)[] = []; const progress: UiMessage[] = [];
+  const fill = () => fillMidiContinuation({ ...h, bufferId: h.buffer.id, validateGenerator: async () => {}, onProgress: async (message) => { progress.push(message); },
     generate: async (buffer, record) => {
       parents.push(buffer.queue.at(-1)?.artifactRef ?? buffer.lastArtifactRef);
       await record({ kind: "tool_call", name: "save_midi_artifact", content: JSON.stringify({ sequence: buffer.nextSequence }) });
@@ -31,6 +32,9 @@ test("Fill creates ordered sections, consumes only the applied head and refills 
   assert.deepEqual((await readMidiContinuation(h.directory, h.session.id))!.queue, first.queue);
   await consumeMidiContinuation({ ...h, bufferId: h.buffer.id, artifactRef: first.queue[0]!.artifactRef, startBeat: 16 });
   const refilled = await fill(); assert.equal(parents.length, 3); assert.equal(parents[2], first.queue[1]!.artifactRef);
+  assert.deepEqual(progress.map((message) => { assert.notEqual(typeof message, "string"); return typeof message === "string" ? null : message.values; }), [
+    { section: "1", count: "1", capacity: "2" }, { section: "2", count: "2", capacity: "2" }, { section: "3", count: "2", capacity: "2" },
+  ]);
   assert.deepEqual(refilled.queue.map((item) => item.sequence), [1, 2]); assert.equal(refilled.consumedCount, 1);
   assert.equal(refilled.insertBeat + refilled.queue[0]!.sequence * refilled.segmentBeats, 24);
   const events = await loadSessionEvents(h.directory, h.session.id);
@@ -39,6 +43,7 @@ test("Fill creates ordered sections, consumes only the applied head and refills 
   assert.equal(generations.get(`midi:${refilled.queue[1]!.artifactRef}`)?.parent?.id, first.queue[1]!.artifactRef);
   assert.equal((await readMidiArtifact(h.directory, h.session.id, first.queue[0]!.artifactRef)).artifact.generationKind, "continuation");
   const candidates = await listSessionArtifacts(h);
+  assert.ok(candidates.artifacts.every((artifact) => artifact.sourceLabel === "AI-generated MIDI"));
   assert.equal(candidates.total, 3, "internal conditioning snapshots are not generated candidates");
   for (const candidate of candidates.artifacts) {
     assert.equal(candidate.version!.number, 1, "future sections start independent revision groups");
@@ -58,7 +63,7 @@ test("source fingerprint ignores selection and unrelated new clips but rejects m
 
 test("restricted current-model generation saves actual multitrack bytes and consumes the saved creative brief", async (t) => {
   const h = await continuationHarness(t); let turns = 0;
-  const readTools = createSessionMidiArtifactToolset({ storageDirectory: h.directory, sessionId: h.session.id, signal: h.signal });
+  const readTools = createSessionArtifactToolset({ storageDirectory: h.directory, sessionId: h.session.id, signal: h.signal });
   const artifact = await generateMidiContinuationWithModel({ storageDirectory: h.directory, buffer: h.buffer, runtimeProfile: h.runtime,
     readTools, signal: h.signal, creativeBrief: h.session.creativeBrief!, beforeSave: async () => {}, beforeCommit: () => assertMidiContinuationSource(h.context, h.buffer, h.signal),
     onEvent: async () => {}, onProgress: async () => {}, requestTurn: async (input) => {

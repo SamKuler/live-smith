@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { URL } from "node:url";
+import { setTimeout } from "node:timers";
 
 import type { ChatBridgeState, ChatDialogState } from "../../../../src/ui/chat-state.js";
 import { createChatBridge } from "../../../../src/app/chat/chat-bridge.js";
@@ -135,3 +137,67 @@ test("send admission rechecks state after configuration snapshot", async () => {
     await bridge.close();
   }
 });
+
+for (const kind of ["command", "attachment selection"] as const) {
+  test(`state coverage includes the ${kind} terminal it waits for and peer invalidations received during that wait`, async () => {
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const local = { sessions: [{ id: "s1", creativeBrief: "Local brief" }] } as ChatDialogState;
+    const peer = { sessions: [{ id: "s1", creativeBrief: "Peer brief" }] } as ChatDialogState;
+    let state = local;
+    const mutate = async () => {
+      started.resolve();
+      await finish.promise;
+      return local;
+    };
+    const bridge = await createChatBridge({
+      buildState: async () => state,
+      buildInvalidatedSessionState: async () => state,
+      renderHtml: () => "<html></html>",
+      handleCommand: mutate,
+      handleSend: async () => {},
+      preflightAttachmentUpload: async () => {},
+      handleAttachmentSelection: mutate,
+    });
+    const endpoint = (pathname: string) => {
+      const url = new URL(bridge.url); url.pathname = pathname; return url;
+    };
+    const url = endpoint(kind === "command" ? "/command" : "/attachments/source-a");
+    if (kind !== "command") {
+      url.searchParams.set("sessionId", "s1");
+      url.searchParams.set("mode", "copy");
+      url.searchParams.set("replace", "true");
+    }
+    const mutation = fetch(url, kind === "command" ? {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Live-Smith-Command-Id": "brief-save" },
+      body: JSON.stringify({ kind: "set_session_creative_brief", sessionId: "s1", expectedCreativeBrief: "", creativeBrief: "Local brief" }),
+    } : { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: new Uint8Array() });
+    let read: Promise<Response> | undefined;
+    try {
+      await started.promise;
+      const readUrl = endpoint("/state"); readUrl.searchParams.set("sessionId", "s1");
+      read = fetch(readUrl);
+      assert.equal(await Promise.race([
+        read.then(() => "finished"), new Promise((resolve) => setTimeout(() => resolve("waiting"), 50)),
+      ]), "waiting");
+      state = peer;
+      bridge.publishSessionStateInvalidation("s1");
+      finish.resolve();
+      const mutationResponse = await mutation;
+      assert.equal(mutationResponse.status, kind === "command" ? 200 : 201);
+      const committed = await mutationResponse.json() as ChatBridgeState;
+      const refreshed = await (await read).json() as ChatBridgeState;
+      assert.equal(committed.sessions[0]!.creativeBrief, "Local brief");
+      assert.equal(refreshed.sessions[0]!.creativeBrief, "Peer brief");
+      assert.equal(committed.bridgeStateCoveredThroughRevision, "0", "a mutation response keeps its original causal cut");
+      assert.ok(BigInt(refreshed.bridgeStateCoveredThroughRevision) >= BigInt(committed.bridgeStateRevision),
+        "the read starts its snapshot after the mutation publication and the peer invalidation");
+      assert.ok(BigInt(refreshed.bridgeStateRevision) > BigInt(refreshed.bridgeStateCoveredThroughRevision));
+    } finally {
+      finish.resolve();
+      await mutation.catch(() => undefined);
+      await read?.catch(() => undefined);
+      await bridge.close();
+    }
+  });
+}

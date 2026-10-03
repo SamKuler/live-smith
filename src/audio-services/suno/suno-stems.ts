@@ -1,26 +1,28 @@
 import { randomUUID } from "node:crypto";
-import { SUNO_STEM_BASE_ROLES, SUNO_STEM_ROLES, type SunoStemBaseRole, type AudioDownloadAuthorization, type AudioJob, type SunoStemRole } from "../contracts.js";
+import type { AudioDownloadAuthorization, AudioJob } from "../contracts.js";
+import { AUDIO_STEM_BASE_ROLES, AUDIO_STEM_ROLES, isGeneratedStemRole, type AudioStemBaseRole, type AudioStemRole } from "../audio-output.js";
+import { canonicalAudioOutputRole, type LegacyAudioOutputRole } from "../audio-output-compatibility.js";
 import type { createSunoHttp } from "./suno-http.js";
 import { sunoObject, sunoUuid, type SunoSession } from "./suno-catalog.js";
 import { sourceActionAllowed } from "./suno-editing.js";
 import { downloadSunoClip } from "./suno-download.js";
 
 type Http = ReturnType<typeof createSunoHttp>;
-const stemGroups: Record<string, SunoStemBaseRole> = {
-  Vocals: "suno_stem_vocals", Backing_Vocals: "suno_stem_backing_vocals", Drums: "suno_stem_drums",
-  Bass: "suno_stem_bass", Guitar: "suno_stem_guitar", Keyboard: "suno_stem_keyboard", Percussion: "suno_stem_percussion",
-  Strings: "suno_stem_strings", Synth: "suno_stem_synth", FX: "suno_stem_fx", Brass: "suno_stem_brass", Woodwinds: "suno_stem_woodwinds",
+const stemGroups: Record<string, AudioStemBaseRole> = {
+  Vocals: "stem_vocals", Backing_Vocals: "stem_backing_vocals", Drums: "stem_drums",
+  Bass: "stem_bass", Guitar: "stem_guitar", Keyboard: "stem_keyboard", Percussion: "stem_percussion",
+  Strings: "stem_strings", Synth: "stem_synth", FX: "stem_fx", Brass: "stem_brass", Woodwinds: "stem_woodwinds",
 };
-const stemNames: Record<string, SunoStemBaseRole> = {
-  "Lead Vocal": "suno_stem_vocals", "Backing Vocals": "suno_stem_backing_vocals", "Drum Kit": "suno_stem_drums",
-  Bass: "suno_stem_bass", Guitar: "suno_stem_guitar", Keyboards: "suno_stem_keyboard", Percussion: "suno_stem_percussion",
-  "String Section": "suno_stem_strings", Synth: "suno_stem_synth", "Sound Effects": "suno_stem_fx",
-  "Brass Section": "suno_stem_brass", Woodwinds: "suno_stem_woodwinds",
+const stemNames: Record<string, AudioStemBaseRole> = {
+  "Lead Vocal": "stem_vocals", "Backing Vocals": "stem_backing_vocals", "Drum Kit": "stem_drums",
+  Bass: "stem_bass", Guitar: "stem_guitar", Keyboards: "stem_keyboard", Percussion: "stem_percussion",
+  "String Section": "stem_strings", Synth: "stem_synth", "Sound Effects": "stem_fx",
+  "Brass Section": "stem_brass", Woodwinds: "stem_woodwinds",
 };
-export const baseSunoStemRole = (role: SunoStemRole): SunoStemBaseRole => role.replace(/_alternative$/u, "") as SunoStemBaseRole;
-export const isSunoStemRole = (value: unknown): value is SunoStemRole => SUNO_STEM_ROLES.includes(value as SunoStemRole);
+export const baseSunoStemRole = (role: AudioStemRole | LegacyAudioOutputRole): AudioStemBaseRole => canonicalAudioOutputRole(role).replace(/_alternative$/u, "") as AudioStemBaseRole;
+export const isSunoStemRole = isGeneratedStemRole;
 
-export function sunoStemRole(clip: Record<string, unknown>, http: Http): SunoStemBaseRole {
+export function sunoStemRole(clip: Record<string, unknown>, http: Http): AudioStemBaseRole {
   const metadata = sunoObject(clip.metadata, http);
   const group = typeof metadata.stem_type_group_name === "string" ? metadata.stem_type_group_name : undefined;
   const name = typeof metadata.stem_name === "string" ? metadata.stem_name : typeof metadata.stem === "string" ? metadata.stem : undefined;
@@ -60,11 +62,11 @@ export async function prepareSunoStems(http: Http, session: SunoSession, sourceI
 
 export function sunoStemManifest(value: unknown, http: Http): NonNullable<AudioJob["expectedOutputs"]> {
   const body = sunoObject(value, http);
-  if (!Array.isArray(body.clips) || body.clips.length < 1 || body.clips.length > SUNO_STEM_ROLES.length) throw http.fail("invalid stem submission manifest.");
+  if (!Array.isArray(body.clips) || body.clips.length < 1 || body.clips.length > AUDIO_STEM_ROLES.length) throw http.fail("invalid stem submission manifest.");
   const manifest = body.clips.map((raw, index) => {
     const clip = sunoObject(raw, http);
     const instrument = sunoStemRole(clip, http);
-    const role: SunoStemRole = index < SUNO_STEM_BASE_ROLES.length ? instrument : `${instrument}_alternative`;
+    const role: AudioStemRole = index < AUDIO_STEM_BASE_ROLES.length ? instrument : `${instrument}_alternative`;
     return { key: sunoUuid(clip.id, http), role };
   }).sort((a, b) => a.key.localeCompare(b.key));
   if (new Set(manifest.map((entry) => entry.key)).size !== manifest.length ||
@@ -75,7 +77,7 @@ export function sunoStemManifest(value: unknown, http: Http): NonNullable<AudioJ
 }
 
 /** Resolve download ownership from the selected stem's freshly read lineage. */
-export async function downloadSunoStem(http: Http, clipId: string, role: SunoStemRole, signal: AbortSignal,
+export async function downloadSunoStem(http: Http, clipId: string, role: AudioStemRole | LegacyAudioOutputRole, signal: AbortSignal,
   authorizeDownload: boolean, authorization?: AudioDownloadAuthorization): Promise<Uint8Array> {
   const clips = await http.request("GET", `/api/feed/?ids=${sunoUuid(clipId, http)}`, undefined, signal);
   if (!Array.isArray(clips) || clips.length !== 1) throw http.fail("stem download source is unavailable.");

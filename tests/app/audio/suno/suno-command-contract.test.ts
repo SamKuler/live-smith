@@ -2,13 +2,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseCommandInput } from "../../../../src/app/chat/chat-bridge-http.js";
 
-test("local audio export accepts only a Session-owned asset reference", () => {
-  const input = { kind: "open_audio_download", sessionId: "session-one", assetId: "asset-one" };
-  assert.deepEqual(parseCommandInput(input), input);
-  for (const patch of [{ assetId: "../asset" }, { sessionId: "../session" }, { url: "https://example.test" },
-    { path: "/private/file" }, { token: "secret" }, { serviceId: "suno-one" }]) {
-    assert.throws(() => parseCommandInput({ ...input, ...patch }));
+test("artifact transfers accept only a typed Session-owned reference", () => {
+  for (const kind of ["export_artifact", "attach_artifact"]) {
+    for (const media of ["audio", "midi"]) {
+      const input = { kind, sessionId: "session-one", artifact: { kind: media, id: "asset-one" } };
+      assert.deepEqual(parseCommandInput(input), input);
+      for (const patch of [{ artifact: { kind: media, id: "../asset" } }, { artifact: { kind: "video", id: "asset-one" } },
+        { artifact: { kind: media, id: "asset-one", url: "https://example.test" } }, { artifact: "asset-one" },
+        { sessionId: "../session" }, { url: "https://example.test" }, { path: "/private/file" },
+        { token: "secret" }, { serviceId: "suno-one" }, { assetId: "asset-one" }, { artifactRef: "midi-one" }]) {
+        assert.throws(() => parseCommandInput({ ...input, ...patch }));
+      }
+    }
   }
+  for (const input of [
+    { kind: "open_audio_download", sessionId: "session-one", assetId: "asset-one" },
+    { kind: "export_midi_artifact", sessionId: "session-one", artifactRef: "midi-one" },
+    { kind: "attach_midi_artifact", sessionId: "session-one", artifactRef: "midi-one" },
+  ]) assert.throws(() => parseCommandInput(input));
 });
 
 test("explicit Suno download selects exactly one existing job output, never a URL or generation", () => {

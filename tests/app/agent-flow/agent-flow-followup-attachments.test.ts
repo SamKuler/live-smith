@@ -1,9 +1,11 @@
+import { saveAudioAsset } from "../../../src/storage/audio-assets.js";
+import { createAudioJob, updateAudioJob } from "../../../src/storage/audio-jobs.js";
 import { saveMidiArtifact, parseMidiArtifact } from "../../../src/storage/midi-artifacts.js";
 import { midiBytes, noteTrack } from "../../attachments/support/midi-test-helpers.js";
 import { consumedAttachmentIds } from "../../../src/app/agent-request.js";
 import { ModelInputTooLargeError } from "../../../src/model/connection-error.js";
 import { readSessionAttachmentBytes } from "../../../src/storage/attachments.js";
-import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
+import { waveBytes, mp3Bytes } from "../../storage/support/audio-storage-test-helpers.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
@@ -100,7 +102,7 @@ function steer(flow: Flow, sendId: string, steerId: string, prompt: string, ids:
   }, body: JSON.stringify({ prompt, sessionId: flow.sessionId }) });
 }
 
-async function upload(flow: Flow, fileName: string, bytes: Uint8Array = png): Promise<SessionAttachmentRef> {
+async function upload(flow: Flow, fileName: string, bytes: Uint8Array = png, expectedFileName = fileName): Promise<SessionAttachmentRef> {
   const target = endpoint(flow.url, "/attachments");
   target.searchParams.set("sessionId", flow.sessionId); target.searchParams.set("fileName", fileName);
   const response = await fetch(target, { method: "POST", headers: { "Content-Type": "application/octet-stream" },
@@ -108,7 +110,7 @@ async function upload(flow: Flow, fileName: string, bytes: Uint8Array = png): Pr
     signal: AbortSignal.timeout(10_000) });
   const body = await expectStatus(response, 201);
   const state = JSON.parse(body) as ChatDialogState;
-  const attachment = state.pendingAttachments.find((entry) => entry.fileName === fileName);
+  const attachment = state.pendingAttachments.find((entry) => entry.fileName === expectedFileName);
   assert.ok(attachment, "The uploaded attachment must remain pending");
   return attachment;
 }
@@ -419,24 +421,35 @@ test("saved MIDI versions export portable bytes and attach to the next message d
   await withFlow(t, async (flow) => {
     const bytes = midiBytes({ tracks: [noteTrack({ pitch: 60 }), noteTrack({ pitch: 48, channel: 2 })] });
     const original = await saveMidiArtifact(flow.directory, flow.sessionId, { connectionId: "midi-generator", serverId: "local",
-      toolName: "compose", label: "主歌/钢琴", bytes, signal: new AbortController().signal });
+      toolName: "compose", label: "主歌/钢琴\u200f", bytes, signal: new AbortController().signal });
     expectedBytes = midiBytes({ tracks: [noteTrack({ pitch: 64 }), noteTrack({ pitch: 48, channel: 2 })] });
     const version = await saveMidiArtifact(flow.directory, flow.sessionId, { connectionId: "midi-generator", serverId: "local",
-      toolName: "compose", label: "主歌/钢琴", bytes: expectedBytes, revisionOf: original.id, signal: new AbortController().signal });
+      toolName: "compose", label: "主歌/钢琴\u200f", bytes: expectedBytes, revisionOf: original.id, signal: new AbortController().signal });
     const running = send(flow, "Keep this request open.", [], "midi-export-open-send");
     try {
       await entered;
-      const command = async (kind: string, commandId: string) => {
+      const command = async (kind: string, commandId: string, artifactRef = version.id) => {
         const response = await fetch(endpoint(flow.url, "/command"), { method: "POST", headers: {
           "Content-Type": "application/json", "X-Live-Smith-Command-Id": commandId,
-        }, body: JSON.stringify({ kind, sessionId: flow.sessionId, artifactRef: version.id }), signal: AbortSignal.timeout(5000) });
+        }, body: JSON.stringify({ kind, sessionId: flow.sessionId, artifact: { kind: "midi", id: artifactRef } }), signal: AbortSignal.timeout(5000) });
         const text = await response.text(); assert.equal(response.status, 200, text); return JSON.parse(text) as ChatDialogState;
       };
-      const attached = await command("attach_midi_artifact", "attach-midi-version");
+      const attached = await command("attach_artifact", "attach-midi-version");
       const attachment = attached.pendingAttachments.find((item) => item.mediaType === "audio/midi")!;
       assert.ok(attachment); assert.match(attachment.fileName, /-v2-.*\.mid$/u); assert.doesNotMatch(attachment.fileName, /[\/]/u);
       assert.deepEqual(await readSessionAttachmentBytes(flow.directory, flow.sessionId, attachment.id), expectedBytes);
-      await command("export_midi_artifact", "export-midi-version"); assert.equal(exported, true);
+      const repeated = await command("attach_artifact", "reattach-midi-version");
+      assert.deepEqual(repeated.pendingAttachments.map((item) => item.id), [attachment.id]);
+      const sameBytesVersion = await saveMidiArtifact(flow.directory, flow.sessionId, { connectionId: "midi-generator", serverId: "local",
+        toolName: "compose", label: "主歌/钢琴\u200f", bytes: expectedBytes, revisionOf: version.id, signal: new AbortController().signal });
+      await command("attach_artifact", "attach-midi-original", original.id);
+      const different = await command("attach_artifact", "attach-midi-next-version", sameBytesVersion.id);
+      assert.equal(different.pendingAttachments.length, 3, "different versions remain distinct even when bytes match");
+      await upload(flow, "reference.png");
+      const full = await command("attach_artifact", "reattach-midi-at-capacity");
+      assert.equal(full.pendingAttachments.length, 4);
+      assert.equal(full.pendingAttachments.filter((item) => item.id === attachment.id).length, 1);
+      await command("export_artifact", "export-midi-version"); assert.equal(exported, true);
       assert.equal(flow.requests.length, 1);
       assert.deepEqual(midiDocuments(flow.requests[0]!), []);
       release(); const result = await running; assert.equal(result.status, 200, await result.text());
@@ -445,6 +458,9 @@ test("saved MIDI versions export portable bytes and attach to the next message d
       const documents = midiDocuments(flow.requests[1]!);
       assert.equal(documents.length, 1);
       assert.equal(documents[0]![0].trackCount, 2);
+      const reused = await command("attach_artifact", "attach-midi-after-send");
+      assert.ok(reused.pendingAttachments.some((item) => item.fileName === attachment.fileName && item.id !== attachment.id),
+        "a sent version can be attached to a later request");
       assert.deepEqual(documents[0]!.filter((entry: { type: string }) => entry.type === "note")
         .map((entry: { pitch: number }) => entry.pitch), [64, 48]);
     } finally { release(); const response = await running; if (!response.bodyUsed) await response.text(); }
@@ -459,4 +475,106 @@ test("saved MIDI versions export portable bytes and attach to the next message d
     const bytes = new Uint8Array(await response.arrayBuffer()); assert.deepEqual(bytes, expectedBytes!);
     assert.equal(parseMidiArtifact(bytes).parts.length, 2); exported = true;
   } });
+});
+
+
+for (const { label, fileName, storedName } of [
+  { label: "unchanged names", fileName: "notes.txt", storedName: "notes.txt" },
+  { label: "direction controls", fileName: "notes\u200f.txt", storedName: "notes.txt" },
+  { label: "decomposed Unicode", fileName: "Cafe\u0301.txt", storedName: "Café.txt" },
+  { label: "empty sanitized basenames", fileName: "../\u200f", storedName: "document.txt" },
+]) {
+  test(`draft uploads reuse identical files with ${label} but retain changed content`, async (t) => {
+    await withFlow(t, async (flow) => {
+      const original = Buffer.from("take A");
+      const changed = Buffer.from("take B");
+      const first = await upload(flow, fileName, original, storedName);
+      const repeated = await upload(flow, fileName, original, storedName);
+      assert.equal(first.id, repeated.id);
+      assert.deepEqual((await pending(flow)).map((entry) => entry.id), [first.id]);
+      const canonical = await upload(flow, storedName, original);
+      assert.equal(canonical.id, first.id);
+      await upload(flow, fileName, changed, storedName);
+      const files = await pending(flow);
+      assert.deepEqual(files.map((file) => file.fileName), [storedName, storedName]);
+      assert.deepEqual(await Promise.all(files.map((file) => readSessionAttachmentBytes(flow.directory, flow.sessionId, file.id))),
+        [new Uint8Array(original), new Uint8Array(changed)]);
+      assert.equal(flow.requests.length, 0);
+    }, async () => ({ content: "Done.", toolCalls: [] }));
+  });
+}
+
+async function saveLocalAudioOutput(flow: Flow, bytes: Uint8Array) {
+  const job = await createAudioJob(flow.directory, flow.sessionId, { provider: "elevenlabs", serviceId: "local-fixture",
+    connectionFingerprint: "a".repeat(64), operation: "generate_music", stems: [] });
+  const asset = await saveAudioAsset(flow.directory, flow.sessionId, { jobId: job.id, role: "music",
+    label: "主歌/钢琴 🎵", origin: { kind: "generated" }, bytes, signal: new AbortController().signal });
+  await updateAudioJob(flow.directory, flow.sessionId, job.id, { status: "completed", outputAssets: [asset] });
+  return asset;
+}
+
+async function attachAudioOutput(flow: Flow, id: string, commandId: string) {
+  return fetch(endpoint(flow.url, "/command"), { method: "POST", headers: {
+    "Content-Type": "application/json", "X-Live-Smith-Command-Id": commandId,
+  }, body: JSON.stringify({ kind: "attach_artifact", sessionId: flow.sessionId, artifact: { kind: "audio", id } }),
+    signal: AbortSignal.timeout(5_000) });
+}
+
+for (const [format, bytes] of [["WAV", waveBytes()], ["MP3", mp3Bytes()]] as const) {
+  test(`saved ${format} outputs attach original files during generation and retain normal audio admission`, async (t) => {
+    const entered = deferred(); const release = deferred();
+    await withFlow(t, async (flow) => {
+      const asset = await saveLocalAudioOutput(flow, bytes);
+      const second = await saveLocalAudioOutput(flow, bytes);
+      const third = await saveLocalAudioOutput(flow, bytes);
+      const running = send(flow, "Keep this request open.", [], "audio-attach-open-send");
+      try {
+        await entered.promise;
+        const attached = JSON.parse(await expectStatus(await attachAudioOutput(flow, asset.id, "attach-audio"), 200)) as ChatDialogState;
+        const attachment = attached.pendingAttachments[0]!;
+        assert.equal(attachment.kind, "audio");
+        assert.equal(attachment.mediaType, asset.mediaType);
+        assert.equal(attachment.fileName, `主歌 钢琴 🎵-${asset.id}.${format.toLowerCase()}`);
+        assert.deepEqual(await readSessionAttachmentBytes(flow.directory, flow.sessionId, attachment.id), bytes);
+        const repeated = JSON.parse(await expectStatus(await attachAudioOutput(flow, asset.id, "reattach-audio"), 200)) as ChatDialogState;
+        assert.deepEqual(repeated.pendingAttachments.map((entry) => entry.id), [attachment.id]);
+        const distinct = JSON.parse(await expectStatus(await attachAudioOutput(flow, second.id, "attach-second-audio"), 200)) as ChatDialogState;
+        assert.equal(distinct.pendingAttachments.length, 2, "same bytes and label from different outputs remain distinct");
+        assert.notEqual(distinct.pendingAttachments[0]!.fileName, distinct.pendingAttachments[1]!.fileName);
+        await expectStatus(await attachAudioOutput(flow, third.id, "attach-third-audio"), 413);
+        const full = JSON.parse(await expectStatus(await attachAudioOutput(flow, asset.id, "reattach-at-audio-capacity"), 200)) as ChatDialogState;
+        assert.deepEqual(full.pendingAttachments.map((entry) => entry.id), distinct.pendingAttachments.map((entry) => entry.id));
+        assert.equal(flow.requests.length, 1);
+        assert.deepEqual(flow.requests[0]!.currentUserContent.filter((part) => part.type === "audio"), []);
+        release.resolve(); await expectStatus(await running, 200);
+        await expectStatus(await send(flow, "Listen to this original output.", [attachment.id], "send-audio-output"), 200);
+        const audio = flow.requests[1]!.currentUserContent.filter((part) => part.type === "audio");
+        assert.equal(audio.length, 1); assert.deepEqual(audio[0]!.bytes, bytes);
+        const reused = JSON.parse(await expectStatus(await attachAudioOutput(flow, asset.id, "attach-audio-after-send"), 200)) as ChatDialogState;
+        assert.ok(reused.pendingAttachments.some((entry) => entry.fileName === attachment.fileName && entry.id !== attachment.id));
+      } finally {
+        release.resolve(); const response = await running; if (!response.bodyUsed) await response.text();
+      }
+    }, async (_request, turn) => {
+      if (turn === 1) { entered.resolve(); await release.promise; }
+      return { content: "Done.", toolCalls: [] };
+    }, undefined, true);
+  });
+}
+
+test("attaching saved audio does not bypass the active Profile's audio input policy", async (t) => {
+  await withFlow(t, async (flow) => {
+    const asset = await saveLocalAudioOutput(flow, waveBytes());
+    const attached = JSON.parse(await expectStatus(await attachAudioOutput(flow, asset.id, "attach-for-incompatible-model"), 200)) as ChatDialogState;
+    const attachment = attached.pendingAttachments[0]!;
+    assert.equal(attachment.kind, "audio");
+    assert.equal(flow.requests.length, 0);
+    const sent = await send(flow, "Listen to this output.", [attachment.id], "send-incompatible-audio");
+    const error = await sent.text();
+    assert.equal(sent.status, 500, error);
+    assert.equal(JSON.parse(error).promptPersistence, "not_persisted");
+    assert.match(error, /cannot read audio attachments/u);
+    assert.equal(flow.requests.length, 0);
+    assert.deepEqual((await pending(flow)).map((entry) => entry.id), [attachment.id]);
+  });
 });

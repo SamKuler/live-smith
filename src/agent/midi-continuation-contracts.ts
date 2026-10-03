@@ -1,3 +1,4 @@
+import { isLiveObjectId } from "../live/object-id.js";
 import type { MidiArtifactImportCommand } from "../app/midi-artifact-import.js";
 import type { PluginParameterPanel } from "../plugins/parameter-panel.js";
 
@@ -41,7 +42,7 @@ export function isMidiContinuationBuffer(value: unknown): value is MidiContinuat
   if (!record(value) || !keys(value, ["id", "sessionId", "sourceArtifactRef", "sourceFingerprint", "sourceClips", "segmentBeats", "capacity", "insertBeat", "nextSequence", "consumedCount", "lastArtifactRef", "queue", "generator", "prompt", "updatedAt"]) ||
       !id(value.id) || !id(value.sessionId) || !id(value.sourceArtifactRef) || !hash(value.sourceFingerprint) ||
       !Array.isArray(value.sourceClips) || !value.sourceClips.length || value.sourceClips.length > 16 ||
-      !value.sourceClips.every((entry) => record(entry) && keys(entry, ["trackId", "clipId"]) && id(entry.trackId) && id(entry.clipId)) ||
+      !value.sourceClips.every((entry) => record(entry) && keys(entry, ["trackId", "clipId"]) && isLiveObjectId(entry.trackId) && isLiveObjectId(entry.clipId)) ||
       new Set(value.sourceClips.map((entry) => `${entry.trackId}:${entry.clipId}`)).size !== value.sourceClips.length ||
       typeof value.segmentBeats !== "number" || !Number.isFinite(value.segmentBeats) || value.segmentBeats < 1 || value.segmentBeats > 256 ||
       !Number.isInteger(value.capacity) || Number(value.capacity) < 1 || Number(value.capacity) > 4 ||

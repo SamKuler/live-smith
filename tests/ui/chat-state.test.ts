@@ -252,6 +252,8 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
       customInstructionsRevision: "0",
       showContextUsage: true,
       contextUsageVisibilityRevision: "0",
+      sessionTabs: ["context", "brief", "artifacts"],
+      sessionTabsRevision: "0",
       networkProxy: { mode: "none", url: "" },
       networkProxyRevision: "0",
       profiles: [],

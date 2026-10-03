@@ -51,33 +51,71 @@ Tools that provide an MCP App also offer **Open interface**. The Plugin supplies
 the layout and interaction; its interface runs in an isolated frame and uses the
 same approved MCP server. Closing the interface cancels pending operations.
 Completed tool results offer **Use in chat**, which adds a reference to the
-composer, and saved MIDI offers **Insert into Live**. Load its source parts and
-the current Live MIDI tracks, map each selected track/channel part to a different
-destination, and choose a common Arrangement start beat. The preview shows the
-resulting Clip boundaries, including source offsets and trailing silence. Choose
-**Merge all parts into one Clip** explicitly for a single destination. Tempo,
-meter and controller events remain in the saved file; import writes notes only
-and leaves the Set's tempo and meter unchanged. Import follows the Session's
-Edit Scope and approval mode, without requiring a model request. An interrupted
-import preserves recovery information and must be inspected before retrying.
+composer. Saved MIDI offers **Add to Live**, opening a separate import dialog
+that reads the file's source parts and current Live tracks automatically. Select
+the parts to import, use new MIDI tracks or map them to existing destinations,
+and choose a common Arrangement start beat. A single part can use the Session's
+bound MIDI track; a bound Arrangement range supplies the suggested start.
+**Merge all parts into one Clip** combines the complete file explicitly. The
+preview shows new tracks and resulting Clip boundaries before the ordinary
+Session approval flow. New tracks require the corresponding Edit Scope.
+Tempo, meter and controller events remain in the saved file; import writes notes
+only and leaves the Set's tempo and meter unchanged. An interrupted import
+preserves recovery information and must be inspected before retrying.
 
-**Session → Artifacts** (also available from the composer's **Artifacts** button) collects this Session's downloaded audio and saved
-MIDI results. Choose up to four artifacts to compare audio playback, MIDI note
-previews, source parts and recorded generation parameters. Mark a preferred
-artifact explicitly; that selection survives reopening the Session. A missing
-historical tool call leaves its parameters unavailable. MIDI previews share the
-same pitch and beat scales across selected versions. Changing the comparison or
-refreshing it preserves audio position and MIDI import drafts. **Back to chat**
-pauses artifact audio and returns to the composer.
+**Session → Artifacts** collects this Session's saved MIDI, downloaded service audio and Plugin WAV/MP3 results. Other supported
+file formats remain chat attachments. Each MIDI or audio work has one entry containing its
+versions. Open the entry and choose a version to inspect, export, attach or add
+to Live. The version's source is shown explicitly; the source can be an older
+version in the same group. **Make primary** saves the work's default version;
+reopening its entry selects that version, while an explicitly selected version
+remains the target of export, attachment and further work. Clearing the primary
+returns the default to the latest available version.
+
+For MIDI, **Version comparison** defaults to the source version and allows any other
+version in the same work as the comparison baseline. It reads both complete MIDI files and
+shows a short change summary and an overlaid piano roll for the selected part.
+Uniform transposition is identified across complete parts; other summaries cover
+pitch, timing, length and velocity changes. The chart marks the two versions on
+one beat/pitch scale. Newly saved model and Plugin MIDI results also appear in
+chat inside the existing tool result. Expand it for a compact note preview,
+part selection, Export MIDI, Add to Live, and
+Open artifact actions. Each card refers to its exact saved version. Saving MIDI
+does not edit Live or require Live edit approval. Older text-only results remain
+available through Artifacts. Both MIDI preview and comparison use the same scrollable
+piano roll: zoom in or out, move horizontally, focus the first notes/changes, or
+choose **Full view**. Long files initially show a 16-beat window near the
+first relevant note. The compared files retain their actual timing and length. Renamed parts can retain their correspondence through a unique MIDI channel;
+ambiguous parts or notes may remain additions and removals. Tempo,
+meter and controller events are not compared.
+
+Built-in generation alternatives share a work when their output kinds are
+compatible. Revisions retain their explicit source across resume and later
+download. Stem files remain separate components with source provenance; they are
+not numbered as alternative versions of a complete song. MIDI and audio files
+have separate version groups even when one was produced from the other.
+
+**Preview part** isolates one MIDI track/channel part. Opening an artifact loads
+its complete notes within the saved-file limit; catalog entries retain a small overview. It does not alter the
+saved file or export; **Add to Live** carries the part choice into the import dialog.
+
+**Attach to message** and **Export** are available for both MIDI and audio.
+They reuse the exact saved file without calling a model or audio provider.
+Repeated attachment of the same pending file reuses its existing reference;
+distinct MIDI versions and audio outputs remain separate. Model input support
+and attachment budgets still apply when sending. A missing historical tool call
+leaves its generation parameters unavailable. Refreshing the list retains the
+selected version and audio playback; **Back to chat** pauses artifact audio and
+returns to the composer.
 
 **Continue in chat** (or **Create next version** for MIDI) selects a source for the next chat request and adds a draft
 to the composer. Add the desired changes and send it through the usual model and
 tool permissions. The source is consumed when that initial user message is saved;
 Steer and manual tool calls do not consume it. The resulting tool calls retain
-their parent artifact even if a later preferred choice changes. Clearing the
+their parent artifact even if a later request uses another source. Clearing the
 next-request source leaves the original files intact. MIDI artifacts use the
 same mapped import preview; audio import is prepared in chat and uses the existing
-scoped audio action and approval preview. Artifact comparison does not audition
+scoped audio action and approval preview. The artifact library does not audition
 Live instruments or roll back applied changes.
 
 Ask the current model to save a MIDI artifact to generate a file without changing
@@ -109,6 +147,15 @@ velocity randomization are not rendered. The context is limited to 16 source Cli
 and 4096 expanded notes. Each future section starts its own version group; revising
 one of its saved artifacts does not replace a queued section. Local tool conditioning retains original and previous
 parts as separate SMF tracks within the existing 32-track/4096-note file limits.
+Plugin output must fit the 960-PPQ conditioning format. Same-pitch overlaps and
+notes that collapse to zero ticks are rejected before entering the buffer.
+
+**Settings → App → Chat shortcuts** controls the entries above the message input.
+Context, Brief and Artifacts appear together by default; Skills and Tools can be enabled
+individually. Brief opens the creative brief section in Context; other shortcuts open
+their Inspector panels. Hiding shortcuts preserves
+all Inspector tabs, saved content, enabled Skills and tool permissions. The preference
+is shared across windows.
 
 Choose **Settings → App → Interface language** to use **English**, **简体中文**, or follow the
 system language. The preference is shared across Live Smith windows. Switching
@@ -414,14 +461,22 @@ All modes still inspect the relevant Live state, validate actions, and check tha
 the Set has not changed before applying an edit. One approved plan may create
 more than one Live Undo step.
 
-For a single supported edit to an existing MIDI Clip or device/mixer parameter,
-the confirmation card also shows an observed **Before** and **Proposed after**.
+Live edits use the existing expandable tool activity and retain their proposal
+and execution result in Session history. A single operation has one disclosure;
+consecutive operations share a group. **Manual** shows Apply and Cancel; automatic approval
+runs without those buttons. Applied, cancelled, failed, and partially applied
+operations have distinct states. Approval alone never counts as a completed edit.
+
+For a single supported MIDI Clip creation, note edit, or device/mixer parameter edit,
+expand the card to view the observed **Before** and **Proposed after**.
 MIDI previews use Clip-relative beats and the same pitch/time scales on both
 sides. Large previews show at most 256 notes per side and state how many were
 omitted. Parameter previews show raw SDK values and observed ranges; they do not
 guess display units or map value labels to numbers. The full action list remains
-visible. Plans involving several actions, new objects, or unavailable before/after
-data use the action list without a preview. A preview describes the proposal,
+visible. MIDI creation previews cover empty Arrangement or Session destinations
+and exact reusable MIDI Clips. Plans involving several actions, other new
+objects, overlapping Arrangement Clips, or unavailable before/after data use the
+action list without a preview. A preview describes the proposal,
 not a completed edit or an audio audition; the selected approval mode still applies.
 
 Scope changes are saved per Session and synchronized across open dialogs. You
@@ -448,8 +503,9 @@ Previous Sessions can be restored explicitly; matching names alone do not make
 an old conversation the same Live object.
 
 **Creative brief** keeps the current Session's style, references, section structure,
-track roles, and material to preserve in one editable document. Open **Brief** in
-the composer or **Session → Context**, then choose **Save brief**. The limit is
+track roles, and material to preserve in one editable document. Open
+**Session → Context**, or use the **Brief** shortcut above the message input,
+then choose **Save brief**. The limit is
 8,000 characters. Saved briefs remain available after model changes and context
 compaction. The model can offer a suggestion; **Edit suggestion** puts it into a
 local draft and **Save brief** explicitly accepts it. Suggestions never save
@@ -481,9 +537,9 @@ tools. Manage packages in **Settings → Extensions → Plugins**; each package 
 to its capabilities in **MCP** and **Skills**. A Plugin starts disabled. Local MCP servers require explicit approval and
 run as your operating-system user; Live Smith does not provide an OS sandbox.
 Remote MCP servers also require approval. A Plugin tool cannot edit Live directly:
-declared audio input is staged as a temporary read-only file, declared MIDI output
-is validated and saved to the Session, and importing it remains a separate scoped
-and approved Live action. Removing a Plugin does not remove already saved Session
+declared MIDI/audio inputs are staged as temporary read-only files, and declared
+MIDI or WAV/MP3 outputs are validated and saved to the Session. Import remains a
+separate scoped and approved Live action. Removing a Plugin does not remove already saved Session
 artifacts. Remove a Plugin's connections and stop referencing its Skills before
 deleting the Plugin.
 

@@ -8,7 +8,7 @@ import type { AudioAsset } from "../../../../src/audio-services/contracts.js";
 import type { ManagedSampleSource } from "../../../../src/live/sample-source.js";
 import { createHostAbortController } from "../../../../src/runtime/host.js";
 import { saveAudioAsset } from "../../../../src/storage/audio-assets.js";
-import { createAudioJob } from "../../../../src/storage/audio-jobs.js";
+import { createAudioJob, updateAudioJob } from "../../../../src/storage/audio-jobs.js";
 import { createSession } from "../../../../src/storage/sessions.js";
 
 export async function assetHarness(t: TestContext, kind: "separation" | "generation" = "separation") {
@@ -45,12 +45,16 @@ export async function assetHarness(t: TestContext, kind: "separation" | "generat
     storageDirectory: directory, sessionId: session.id, signal: controller.signal,
   };
   const sources = new Map<string, ManagedSampleSource>();
+  const committed = new Map<string, AudioAsset>();
   async function save(role: AudioAsset["role"] = kind === "generation" ? "music" : "vocals", bytes = waveBytes()) {
-    return saveAudioAsset(directory, session.id, {
+    const asset = await saveAudioAsset(directory, session.id, {
       jobId: job.id, label: "/untrusted/label.wav", role, bytes,
       origin: kind === "generation" ? { kind: "generated" } : { kind: "arrangement", startBeat: 4, endBeat: 8, tempo: 120 },
       signal: controller.signal,
     });
+    committed.set(asset.id, asset);
+    await updateAudioJob(directory, session.id, job.id, { outputAssets: [...committed.values()] });
+    return asset;
   }
   return { directory, session, controller, job, staged, operations, sources, save, host: input.context,
     input: { ...input, context: input.context as never } };

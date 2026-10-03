@@ -34,7 +34,7 @@ test("standalone artifacts require independent grants and preserve only Connecti
   for (const [input, output] of [[false, false], [true, false], [false, true], [true, true]] as const) {
     await t.test(`input=${input}, output=${output}`, async (t) => {
       const h = await audioStorageHarness(t);
-      const source = await h.save();
+      const source = await h.saveResult();
       await saveGlobalSettings(h.storage, { integrationConnections: { action: "upsert", expectedRevision: "0",
         connection: connection(input, output) } });
       let calls = 0;

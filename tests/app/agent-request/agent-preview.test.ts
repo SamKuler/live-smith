@@ -75,3 +75,25 @@ test("confirmation receives the same guard and a changed numeric target performs
   assert.equal(fixture.writes, 0);
   assert.equal(guard.previews?.[0]?.kind === "parameter-value" ? guard.previews[0].before : undefined, 10);
 });
+
+for (const reuse of [false, true]) {
+  test(`MIDI ${reuse ? "replacement" : "creation"} carries a proposal while the guarded destination still rejects drift`, async () => {
+    const fixture = midiPreviewFixture([{ pitch: 48, startTime: 0, duration: 4 }]);
+    if (!reuse) fixture.track.arrangementClips.length = 0;
+    const plan: AgentPlan = { message: "Create phrase", actions: [{
+      type: "create_midi_clip", name: "Phrase", startBeat: 32, durationBeats: 8,
+      notes: [{ pitch: 60, startTime: 0, duration: 4, velocity: 96 }],
+    }] };
+    const guard = await preflightAgentPlan(fixture.context, { target: { track: fixture.track } } as never, plan,
+      new AbortController().signal, async () => "Observed");
+    const preview = guard.previews?.[0];
+    assert.equal(preview?.kind, "midi-notes");
+    assert.equal(preview.before.totalNoteCount, reuse ? 1 : 0);
+    await guard();
+    if (reuse) fixture.notes[0]!.pitch = 49;
+    else fixture.track.arrangementClips.push(fixture.clip);
+    await assert.rejects(guard, /changed/);
+    assert.equal(preview.before.totalNoteCount, reuse ? 1 : 0);
+    assert.equal(fixture.writes, 0);
+  });
+}

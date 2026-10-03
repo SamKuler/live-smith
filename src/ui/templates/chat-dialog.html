@@ -29,7 +29,6 @@
       __BRIDGE_CLIENT_SCRIPT__
       __MARKDOWN_RENDERER_SCRIPT__
       __SESSION_TIMELINE_SCRIPT__
-      __ACTION_PREVIEW_SCRIPT__
       __BOOTSTRAP_SCRIPT__
     </script>
     <style>/*__CHAT_STYLES__*/</style>
@@ -73,7 +72,13 @@
             <div id="pendingAttachments" class="pending-attachments" role="list" aria-label="Pending file attachments" aria-busy="false" hidden data-i18n-aria-label="Pending file attachments"></div>
             <div id="composerAutocomplete" class="composer-autocomplete floating-surface" role="listbox" aria-label="Composer suggestions" hidden data-i18n-aria-label="Composer suggestions"></div>
             <div class="composer-surface">
-            <button id="liveContextSummaryButton" class="live-context-summary" type="button" aria-controls="contextPanel" onclick="LiveSmithUI.openInspector('context')" hidden><span class="context-caption" data-i18n="Context">Context</span><span id="liveContextTitle" class="context-title"></span><span id="liveContextLocation" class="context-location"></span></button>
+            <div id="composerShortcuts" class="composer-shortcuts" role="group" aria-label="Chat shortcuts" data-i18n-aria-label="Chat shortcuts" hidden>
+              <button id="liveContextSummaryButton" class="composer-shortcut live-context-summary" data-session-shortcut="context" type="button" aria-controls="contextPanel" onclick="LiveSmithUI.openInspector('context')" hidden><span class="context-caption" data-i18n="Context">Context</span><span id="liveContextTitle" class="context-title"></span><span id="liveContextLocation" class="context-location"></span></button>
+              <button id="briefShortcut" class="composer-shortcut" data-session-shortcut="brief" type="button" aria-controls="creativeBriefSection" onclick="LiveSmithUI.openInspectorSection('context', 'creativeBriefSection')" hidden data-i18n="Brief">Brief</button>
+              <button id="artifactsShortcut" class="composer-shortcut" data-session-shortcut="artifacts" type="button" aria-controls="artifactsPanel" onclick="LiveSmithUI.openInspector('artifacts')" hidden data-i18n="Artifacts">Artifacts</button>
+              <button id="skillsShortcut" class="composer-shortcut" data-session-shortcut="skills" type="button" aria-controls="skillsPanel" onclick="LiveSmithUI.openInspector('skills')" hidden data-i18n="Skills">Skills</button>
+              <button id="toolsShortcut" class="composer-shortcut" data-session-shortcut="tools" type="button" aria-controls="toolsPanel" onclick="LiveSmithUI.openInspector('tools')" hidden data-i18n="Tools">Tools</button>
+            </div>
             <label class="visually-hidden" for="prompt" data-i18n="Message Live Smith">Message Live Smith</label>
             <textarea id="prompt" name="prompt" rows="1" aria-label="Message Live Smith" aria-autocomplete="list" aria-controls="composerAutocomplete" aria-expanded="false" autocomplete="off" spellcheck="true" placeholder="Describe your idea…" data-i18n-placeholder="Describe your idea…" data-i18n-aria-label="Message Live Smith"></textarea>
             <div class="composer-toolbar">
@@ -88,8 +93,6 @@
                     <span id="attachmentCapabilityHint" class="attachment-capability-hint" role="status" aria-live="polite" hidden></span>
                   </div>
                 </div>
-                <button id="creativeBriefButton" class="creative-brief-button composer-control" type="button" aria-label="Creative brief" aria-controls="creativeBriefSection" data-i18n-aria-label="Creative brief" data-i18n="Brief">Brief</button>
-                <button id="artifactsButton" class="composer-control" type="button" aria-controls="artifactsPanel" aria-label="Compare saved artifacts" title="Compare saved artifacts" onclick="LiveSmithUI.openInspector('artifacts')" data-i18n-aria-label="Compare saved artifacts" data-i18n-title="Compare saved artifacts" data-i18n="Artifacts">Artifacts</button>
                 <label class="approval-mode-label" title="Manual requests approval for every Apply request." data-i18n-title="Manual requests approval for every Apply request.">
                   <span class="approval-mode-copy visually-hidden" data-i18n="Apply">Apply</span>
                   <select id="approvalMode" name="approvalMode" class="approval-mode-select composer-select composer-control" aria-label="Apply approval mode" onchange="LiveSmithUI.saveApprovalMode()" data-i18n-aria-label="Apply approval mode">
@@ -147,9 +150,9 @@
           </div>
           <div class="tab-bar" role="tablist" aria-label="Inspector Views" data-i18n-aria-label="Inspector Views">
             <button id="contextTab" type="button" role="tab" aria-selected="false" aria-controls="contextPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('context')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Context">Context</button>
+            <button id="artifactsTab" type="button" role="tab" aria-selected="false" aria-controls="artifactsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('artifacts')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Artifacts">Artifacts</button>
             <button id="skillsTab" type="button" role="tab" aria-selected="false" aria-controls="skillsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('skills')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Skills">Skills</button>
             <button id="toolsTab" type="button" role="tab" aria-selected="false" aria-controls="toolsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('tools')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Tools">Tools</button>
-            <button id="artifactsTab" type="button" role="tab" aria-selected="false" aria-controls="artifactsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('artifacts')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Artifacts">Artifacts</button>
             <button id="agentTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="agentPanel" tabindex="0" onclick="LiveSmithUI.openInspector('agent')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="Agent">Agent</button>
             <button id="extensionsTab" type="button" role="tab" aria-selected="false" aria-controls="extensionsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('extensions')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="Extensions">Extensions</button>
             <button id="appTab" type="button" role="tab" aria-selected="false" aria-controls="appPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('app')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="App">App</button>
@@ -514,6 +517,38 @@
                   <span class="settings-switch-track" aria-hidden="true"></span>
                 </label>
               </section>
+              <section id="sessionTabsSettings" class="settings-section" aria-labelledby="sessionTabsHeading">
+                <h3 id="sessionTabsHeading" data-i18n="Chat shortcuts">Chat shortcuts</h3>
+                <p id="sessionTabsHint" class="field-hint" data-i18n="Choose which shortcuts appear above the message input.">Choose which shortcuts appear above the message input.</p>
+                <fieldset id="sessionTabs" class="session-tab-settings" aria-labelledby="sessionTabsHeading" aria-describedby="sessionTabsHint">
+                  <legend class="visually-hidden" data-i18n="Chat shortcuts">Chat shortcuts</legend>
+                  <label class="settings-switch" for="showSessionTab-context">
+                    <span data-i18n="Context">Context</span>
+                    <input id="showSessionTab-context" type="checkbox" role="switch" data-session-tab="context" onchange="LiveSmithUI.saveSessionTabs()" />
+                    <span class="settings-switch-track" aria-hidden="true"></span>
+                  </label>
+                  <label class="settings-switch" for="showSessionTab-brief">
+                    <span data-i18n="Brief">Brief</span>
+                    <input id="showSessionTab-brief" type="checkbox" role="switch" data-session-tab="brief" onchange="LiveSmithUI.saveSessionTabs()" />
+                    <span class="settings-switch-track" aria-hidden="true"></span>
+                  </label>
+                  <label class="settings-switch" for="showSessionTab-artifacts">
+                    <span data-i18n="Artifacts">Artifacts</span>
+                    <input id="showSessionTab-artifacts" type="checkbox" role="switch" data-session-tab="artifacts" onchange="LiveSmithUI.saveSessionTabs()" />
+                    <span class="settings-switch-track" aria-hidden="true"></span>
+                  </label>
+                  <label class="settings-switch" for="showSessionTab-skills">
+                    <span data-i18n="Skills">Skills</span>
+                    <input id="showSessionTab-skills" type="checkbox" role="switch" data-session-tab="skills" onchange="LiveSmithUI.saveSessionTabs()" />
+                    <span class="settings-switch-track" aria-hidden="true"></span>
+                  </label>
+                  <label class="settings-switch" for="showSessionTab-tools">
+                    <span data-i18n="Tools">Tools</span>
+                    <input id="showSessionTab-tools" type="checkbox" role="switch" data-session-tab="tools" onchange="LiveSmithUI.saveSessionTabs()" />
+                    <span class="settings-switch-track" aria-hidden="true"></span>
+                  </label>
+                </fieldset>
+              </section>
               <section id="networkSettingsSection" class="settings-section" aria-labelledby="networkSettingsHeading">
                 <h3 id="networkSettingsHeading" data-i18n="Network Proxy">Network Proxy</h3>
                 <div class="network-proxy-panel">
@@ -786,7 +821,7 @@
             <div class="settings">
               <section id="sessionArtifacts" class="settings-scope" aria-labelledby="artifactHeading">
                 <div class="inspector-scope-header"><h2 id="artifactHeading" data-i18n="Artifacts">Artifacts</h2><button id="closeArtifactsButton" type="button" class="secondary inspector-heading-action" onclick="LiveSmithUI.returnToChat()" data-i18n="Back to chat">Back to chat</button></div>
-                <section id="artifactComparison" aria-label="Artifact comparison" data-i18n-aria-label="Artifact comparison"></section>
+                <section id="artifactLibrary" aria-label="Saved artifacts" data-i18n-aria-label="Saved artifacts"></section>
               </section>
             </div>
           </div>

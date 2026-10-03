@@ -106,12 +106,6 @@
         strip.replaceChildren();
         strip.hidden = attachments.length === 0;
         strip.setAttribute("aria-busy", String(busy));
-        if (attachments.length) {
-          const heading = document.createElement("span");
-          heading.className = "pending-attachments-heading";
-          heading.textContent = t("Next request");
-          strip.append(heading);
-        }
         for (const attachment of attachments) {
           const chip = document.createElement("span");
           chip.className = "attachment-chip";

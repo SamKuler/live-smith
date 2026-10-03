@@ -77,7 +77,7 @@ test("waveform range, loop audition and excerpt submission replace only the next
     assert.equal(selections[0]!.url.searchParams.get("start"), "0.25"); assert.equal(selections[0]!.url.searchParams.get("end"), "0.5");
     assert.equal(selections[0]!.url.searchParams.get("replace"), "true");
     assert.deepEqual([...harness.document.querySelectorAll<HTMLElement>("#pendingAttachments [data-attachment-id]")].map((chip) => chip.dataset.attachmentId), ["selected-1"]);
-    assert.match(harness.document.querySelector("#pendingAttachments")!.textContent!, /Next request.*Selected excerpt/s);
+    assert.match(harness.document.querySelector(".attachment-selection-label")!.textContent!, /0\.250–0\.500 s/);
     assert.match(harness.document.querySelector(".attachment-remove")!.getAttribute("aria-label")!, /Undo selection/);
     assert.equal(harness.document.querySelector(".attachment-audio-editor"), null);
     assert.deepEqual(harness.errors, []);
@@ -149,3 +149,63 @@ test("history reuse submits only the saved reference without a file upload", asy
     assert.equal(harness.calls.filter((call) => call.path === "/attachments").length, 0);
   } finally { harness.close(); }
 });
+
+for (const peerChange of ["replace", "undo", "add"] as const) {
+  test(`a delayed excerpt response preserves the peer ${peerChange} of the next-request files`, async () => {
+    const { harness, attachment } = await setup();
+    const fetch = harness.window.fetch;
+    let release!: () => void;
+    const delayedResponse = new Promise<void>((resolve) => { release = resolve; });
+    let selectedResponse: ReturnType<typeof audioCapableState> | undefined;
+    let peerResponse: ReturnType<typeof audioCapableState> | undefined;
+    Object.defineProperty(harness.window, "fetch", { configurable: true, value: async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const response = await fetch(input, init);
+      const url = new URL(String(input));
+      const readJson = response.json.bind(response);
+      if (url.pathname.startsWith("/attachments/") && init?.method === "POST") {
+        response.json = async () => {
+          const body = await readJson();
+          selectedResponse = body;
+          await delayedResponse;
+          return body;
+        };
+      } else if (url.pathname === "/state") {
+        response.json = async () => { const body = await readJson(); peerResponse = body; return body; };
+      }
+      return response;
+    } });
+    const pendingIds = () => [...harness.document.querySelectorAll<HTMLElement>("#pendingAttachments [data-attachment-id]")]
+      .map((chip) => chip.dataset.attachmentId);
+    try {
+      await openEditor(harness);
+      field(harness, ".attachment-selection-start", ".25"); field(harness, ".attachment-selection-end", ".5");
+      harness.click(".attachment-use-excerpt");
+      await waitForCondition(() => selectedResponse !== undefined, "Expected the committed excerpt response to be held");
+      const peer = cloneState(selectedResponse!);
+      const selected = peer.pendingAttachments[0]!;
+      if (peerChange === "replace") peer.pendingAttachments = [{ ...selected, id: "peer-excerpt", durationSeconds: .125,
+        provenance: { sourceId: selected.id, replacedIds: [selected.id, attachment.id], startSeconds: 0, endSeconds: .125 },
+      } as typeof attachment];
+      else if (peerChange === "undo") peer.pendingAttachments = [attachment];
+      else peer.pendingAttachments.push(pendingDocument("peer-notes", "Notes.txt", "text/plain"));
+      const expectedIds = peer.pendingAttachments.map((item) => item.id);
+      harness.setServerState(peer);
+      harness.emitServerEvent({ type: "session_state_invalidated", sessionId: "session-1" });
+      await waitForCondition(() => peerResponse !== undefined && pendingIds().join() === expectedIds.join(),
+        "Expected the peer pending snapshot before the delayed excerpt response");
+      assert.ok(BigInt(peerResponse!.bridgeStateCoveredThroughRevision) >= BigInt(selectedResponse!.bridgeStateRevision));
+      release();
+      await harness.settleAttachmentOperation();
+      assert.deepEqual(pendingIds(), expectedIds);
+      harness.input("#prompt", "Hear the current files"); harness.click("#sendButton");
+      await harness.settle();
+      const sent = harness.calls.find((call) => call.path === "/send")!;
+      assert.deepEqual(JSON.parse(new Headers(sent.headers).get("X-Live-Smith-Attachment-Ids")!), expectedIds);
+      assert.deepEqual(harness.errors, []);
+    } finally {
+      release();
+      await harness.settle();
+      harness.close();
+    }
+  });
+}

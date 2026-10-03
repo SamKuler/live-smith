@@ -1,4 +1,6 @@
 import { midiArtifactView } from "../midi/midi-artifact-tools.js";
+import type { ArtifactRef } from "../../agent/artifact-contracts.js";
+import type { PluginAudioArtifact } from "../../storage/audio-artifacts.js";
 import type { McpAuthProvider } from "../../plugins/mcp/oauth-contract.js";
 import { createMcpOAuthAuthProvider } from "./mcp-oauth.js";
 import { ToolRegistry, type Toolset } from "../../plugins/registry.js";
@@ -17,7 +19,7 @@ import {
   type StandaloneMcpConnection,
 } from "../../plugins/integration-connections.js";
 import { loadAgentSettings } from "../../storage/settings.js";
-import { callPluginToolWithArtifacts, LIVE_SMITH_ARTIFACT_META_KEY, type MidiArtifactOutputPolicy } from "../../plugins/artifacts.js";
+import { callPluginToolWithArtifacts, LIVE_SMITH_ARTIFACT_META_KEY, type MidiArtifactOutputPolicy, type PluginSavedArtifact } from "../../plugins/artifacts.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { inspectMidiArtifacts, type MidiArtifact } from "../../storage/midi-artifacts.js";
 import { canonicalStorageDirectory, storageScopeKey, type StorageScopeKey } from "../../storage/scope.js";
@@ -40,6 +42,7 @@ export interface RequestPluginTools extends Toolset {
   toolsets: readonly Toolset[];
   catalogTools(): readonly RequestPluginCatalogTool[];
   issues: readonly PluginToolIssue[];
+  readonly hasAudioOutputs: boolean;
   unavailableMidiArtifacts: number;
   midiArtifacts(): readonly MidiArtifact[];
   close(): Promise<void>;
@@ -161,7 +164,8 @@ export async function createRequestPluginTools(input: {
   createPackage?: typeof createMcpPluginPackage;
   createStandaloneConnection?: typeof createStandaloneMcpConnection;
   pluginConfigSnapshots?: Readonly<Record<string, { sha256: string; revision: string }>>;
-  midiRevisionOf?: string;
+  artifactRevisionOf?: ArtifactRef;
+  onAudioArtifacts?(artifacts: readonly PluginAudioArtifact[]): void | Promise<void>;
 }): Promise<RequestPluginTools> {
   const packages: ManagedMcpSource[] = [];
   const toolsets: Toolset[] = [];
@@ -381,6 +385,8 @@ export async function createRequestPluginTools(input: {
     return {
       id: "live-smith.mcp",
       toolsets,
+      hasAudioOutputs: catalogRoutes.some((routes) => [...routes.values()].some(({ definition }) =>
+        definition.artifactContract?.outputs.some((output) => output.kind === "audio"))),
       catalogTools: () => catalogRoutes.flatMap((routes) => [...routes.values()].filter(({ definition }) =>
         appVisibility(definition.app, "model") || definition.app?.resourceUri).map(({ definition, connection, runtime, configurationRevision, managed }) => {
         const identity = {
@@ -462,7 +468,8 @@ async function callMcpTool(
     sessionId: string;
     signal: AbortSignal;
     withAuthorization?: PluginExecutionAuthorization;
-    midiRevisionOf?: string;
+    artifactRevisionOf?: ArtifactRef;
+    onAudioArtifacts?(artifacts: readonly PluginAudioArtifact[]): void | Promise<void>;
   },
   midiArtifacts: Map<string, MidiArtifact>,
   onAppResult?: (result: PluginToolResult) => void,
@@ -496,12 +503,12 @@ async function callMcpTool(
             argumentsValue,
             { sessionId: input.sessionId, signal: input.signal },
           ),
-          artifacts: [] as MidiArtifact[],
+          artifacts: [] as PluginSavedArtifact[],
         };
       }
       return callPluginToolWithArtifacts({
         contract: definition.artifactContract,
-        ...(input.midiRevisionOf ? { revisionOf: input.midiRevisionOf } : {}),
+        ...(input.artifactRevisionOf ? { revisionOf: input.artifactRevisionOf } : {}),
 
         ...(input.midiOutputPolicy ? { outputPolicy: input.midiOutputPolicy } : {}),
         argumentsValue,
@@ -524,7 +531,12 @@ async function callMcpTool(
         },
       });
     });
-    for (const artifact of execution.artifacts) midiArtifacts.set(artifact.id, artifact);
+    const audioArtifacts: PluginAudioArtifact[] = [];
+    for (const artifact of execution.artifacts) {
+      if (artifact.kind === "midi") midiArtifacts.set(artifact.id, artifact);
+      else { const { kind: _kind, ...saved } = artifact; audioArtifacts.push(saved); }
+    }
+    if (audioArtifacts.length) await input.onAudioArtifacts?.(audioArtifacts);
     onAppResult?.(appToolResultWithArtifacts(execution.result, execution.artifacts));
     return {
       content: JSON.stringify({
@@ -535,9 +547,10 @@ async function callMcpTool(
           structuredContent: execution.result.structuredContent,
         }),
         ...(execution.artifacts.length ? {
-          artifacts: execution.artifacts.map(midiArtifactView),
+          artifacts: execution.artifacts.map(pluginArtifactView),
         } : {}),
       }),
+      ...(execution.artifacts.length ? { artifacts: execution.artifacts.map((artifact) => ({ kind: artifact.kind, id: artifact.id })) } : {}),
       ...(execution.result.isError ? { failed: true } : {}),
     };
   } catch {
@@ -595,8 +608,17 @@ async function assertStandaloneAdmission(
 }
 
 /** Replaces the reserved result extension with artifacts validated and owned by this host. */
-export function appToolResultWithArtifacts(result: PluginToolResult, artifacts: readonly MidiArtifact[]): PluginToolResult {
+export function appToolResultWithArtifacts(result: PluginToolResult, artifacts: readonly PluginSavedArtifact[]): PluginToolResult {
   return { ...result, _meta: { ...result._meta,
-    [LIVE_SMITH_ARTIFACT_META_KEY]: { version: 1, artifacts: artifacts.map(midiArtifactView) },
+    [LIVE_SMITH_ARTIFACT_META_KEY]: { version: 1, artifacts: artifacts.map(pluginArtifactView) },
   } };
+}
+
+function pluginArtifactView(artifact: PluginSavedArtifact) {
+  return artifact.kind === "midi" ? midiArtifactView(artifact) : {
+    kind: "audio" as const, artifactRef: artifact.id, label: artifact.label, createdAt: artifact.createdAt,
+    mediaType: artifact.mediaType, durationSeconds: artifact.durationSeconds, sampleRate: artifact.sampleRate,
+    channels: artifact.channels, byteLength: artifact.byteLength, version: artifact.version,
+    ...(artifact.sourceArtifact ? { sourceArtifact: artifact.sourceArtifact } : {}),
+  };
 }

@@ -307,7 +307,7 @@ test("saved files request a default-browser download without WebView navigation 
       assert.equal(player.closest<HTMLElement>("[data-audio-result]")!.hidden, false);
       h.holdNextCommand(); localDownload.click(); await h.settle();
       assert.deepEqual(commandCalls(h).map((call) => call.body), [{
-        kind: "open_audio_download", sessionId: state.activeSessionId, assetId: asset.id,
+        kind: "export_artifact", sessionId: state.activeSessionId, artifact: { kind: "audio", id: asset.id },
       }]);
       const message = "The local audio file was sent to your default browser for download. Keep Live Smith open until it finishes.";
       h.emitServerEvent({ type: "command_progress", commandId: h.commandIds.at(-1), message });
@@ -353,7 +353,7 @@ for (const change of ["session", "detached", "output", "job"] as const) {
       localDownload.disabled = false;
       localDownload.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true }));
       await h.settle();
-      assert.equal(commandCalls(h).filter((call) => (call.body as { kind: string }).kind === "open_audio_download").length, 0);
+      assert.equal(commandCalls(h).filter((call) => (call.body as { kind: string }).kind === "export_artifact").length, 0);
       assert.equal(h.window.location.href, "http://dialog.test/chat");
       assert.deepEqual(h.windowOpenAttempts, []);
       assert.deepEqual(h.errors, []);
@@ -374,7 +374,7 @@ test("local export remains available during an active send and preserves its req
     assert.equal(download(h, 1).disabled, true);
     h.holdNextCommand(); localDownload.click(); localDownload.click(); await h.settle();
     assert.deepEqual(commandCalls(h).map((call) => call.body), [{
-      kind: "open_audio_download", sessionId: state.activeSessionId, assetId: asset.id,
+      kind: "export_artifact", sessionId: state.activeSessionId, artifact: { kind: "audio", id: asset.id },
     }]);
     assert.equal(localDownload.disabled, true);
     h.releaseHeldCommand(); await h.settle();
@@ -396,7 +396,7 @@ test("local export blocks pending remote confirmation, suppresses duplicates, an
   const h = await createDialogHarness(state);
   try {
     const localDownload = button(h, "[data-download-local-audio]");
-    const exports = () => commandCalls(h).filter((call) => (call.body as { kind: string }).kind === "open_audio_download");
+    const exports = () => commandCalls(h).filter((call) => (call.body as { kind: string }).kind === "export_artifact");
     download(h, 1).click();
     assert.equal(localDownload.disabled, true);
     localDownload.dispatchEvent(new h.window.MouseEvent("click", { bubbles: true })); await h.settle();

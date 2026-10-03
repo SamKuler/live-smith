@@ -1,3 +1,4 @@
+import { isLiveObjectId } from "../../../live/object-id.js";
 import type { MidiArtifactImportPreview } from "../../../app/midi-artifact-preview.js";
 
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -8,7 +9,7 @@ const duration = (value: unknown): value is number => typeof value === "number" 
 export function isMidiArtifactImportPreview(value: unknown): value is MidiArtifactImportPreview {
   if (!record(value) || !boundedString(value.sessionId, 128) || !boundedString(value.artifactRef, 128) ||
       !boundedString(value.label, 120) || !duration(value.durationBeats) || !count(value.unavailableTargetCount, 100_000) ||
-      value.maxMappings !== 64 || !record(value.timing) || !count(value.timing.tempoEventCount, 200_000) ||
+      value.maxActions !== 64 || !record(value.timing) || !count(value.timing.tempoEventCount, 200_000) ||
       !count(value.timing.timeSignatureEventCount, 200_000) || !Array.isArray(value.parts) ||
       !value.parts.length || value.parts.length > 512 || !Array.isArray(value.targets)) return false;
   return value.parts.every((part) => record(part) && boundedString(part.id, 64) &&
@@ -16,6 +17,10 @@ export function isMidiArtifactImportPreview(value: unknown): value is MidiArtifa
     count(part.channel, 16) && part.channel > 0 && count(part.noteCount, 4096) && part.noteCount > 0 &&
     duration(part.durationBeats) && (part.sourceTrackName === undefined || boundedString(part.sourceTrackName, 120))) &&
     new Set(value.parts.map((part) => part.id)).size === value.parts.length &&
-    value.targets.every((target) => record(target) && boundedString(target.trackId, 30) && /^[0-9]+$/u.test(target.trackId) && boundedString(target.trackName)) &&
-    new Set(value.targets.map((target) => target.trackId)).size === value.targets.length;
+    value.targets.every((target) => record(target) && isLiveObjectId(target.trackId) && boundedString(target.trackName)) &&
+    new Set(value.targets.map((target) => target.trackId)).size === value.targets.length &&
+    (value.suggestedTrackId === undefined || isLiveObjectId(value.suggestedTrackId) &&
+      value.targets.some((target) => target.trackId === value.suggestedTrackId)) &&
+    (value.suggestedStartBeat === undefined || typeof value.suggestedStartBeat === "number" &&
+      Number.isFinite(value.suggestedStartBeat) && value.suggestedStartBeat >= 0);
 }

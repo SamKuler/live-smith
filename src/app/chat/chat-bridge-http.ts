@@ -1,8 +1,11 @@
+import { isSessionTabs, type SessionShortcutId } from "../../model/session-tabs.js";
+import { MAX_AGENT_PLAN_ACTIONS } from "../../agent/actions.js";
+import { isLiveObjectId } from "../../live/object-id.js";
 import type { MidiContinuationCommand } from "../../agent/midi-continuation-contracts.js";
 import { isCreativeBrief, MAX_CREATIVE_BRIEF_CODE_POINTS } from "../../agent/creative-brief.js";
 import { MAX_AUDIO_PARAMETER_BYTES } from "../../plugins/builtins/parameter-panel.js";
 import type { MidiArtifactImportCommand } from "../midi-artifact-import.js";
-import { isArtifactSelection, type ArtifactSelection } from "../../agent/artifact-contracts.js";
+import { isArtifactRef, isArtifactSelection, type ArtifactRef, type ArtifactSelectionCommand } from "../../agent/artifact-contracts.js";
 import { Buffer } from "node:buffer";
 import type { IncomingMessage } from "node:http";
 import { clearTimeout, setTimeout } from "node:timers";
@@ -135,7 +138,7 @@ export interface RawPluginBodyReadOptions extends RawAttachmentBodyReadOptions {
 export type ChatBridgeCommandInput =
   | MidiContinuationCommand
   | MidiArtifactImportCommand
-  | { kind: "select_artifact"; sessionId: string; selection: ArtifactSelection }
+  | { kind: "select_artifact"; sessionId: string; selection: ArtifactSelectionCommand }
   | {
       kind: "save_profile";
       profile: DraftProfile;
@@ -172,6 +175,7 @@ export type ChatBridgeCommandInput =
     }
   | {
       kind: "save_global_settings";
+      sessionTabs?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
       integrationConnections?: never;
@@ -181,6 +185,7 @@ export type ChatBridgeCommandInput =
     }
   | {
       kind: "save_global_settings";
+      sessionTabs?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage: boolean;
@@ -190,6 +195,7 @@ export type ChatBridgeCommandInput =
     }
   | {
       kind: "save_global_settings";
+      sessionTabs?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -199,6 +205,7 @@ export type ChatBridgeCommandInput =
     }
   | {
       kind: "save_global_settings";
+      sessionTabs?: never;
       uiLanguage: UiLanguage;
       integrationConnections?: never;
       defaultFollowUpBehavior?: never;
@@ -208,6 +215,7 @@ export type ChatBridgeCommandInput =
     }
   | {
       kind: "save_global_settings";
+      sessionTabs?: never;
       integrationConnections: IntegrationConnectionsSettingsPatch;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
@@ -217,7 +225,18 @@ export type ChatBridgeCommandInput =
     }
   | {
       kind: "save_global_settings";
+      sessionTabs?: never;
       customInstructions: string;
+      uiLanguage?: never;
+      defaultFollowUpBehavior?: never;
+      showContextUsage?: never;
+      networkProxy?: never;
+      integrationConnections?: never;
+    }
+  | {
+      kind: "save_global_settings";
+      sessionTabs: SessionShortcutId[];
+      customInstructions?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -226,9 +245,8 @@ export type ChatBridgeCommandInput =
     }
   | { kind: "resume_audio_job"; sessionId: string; jobId: string }
   | { kind: "download_audio_output"; sessionId: string; jobId: string; outputKey: string }
-  | { kind: "open_audio_download"; sessionId: string; assetId: string }
-  | { kind: "export_midi_artifact"; sessionId: string; artifactRef: string }
-  | { kind: "attach_midi_artifact"; sessionId: string; artifactRef: string }
+  | { kind: "export_artifact"; sessionId: string; artifact: ArtifactRef }
+  | { kind: "attach_artifact"; sessionId: string; artifact: ArtifactRef }
   | { kind: "open_attachment"; sessionId: string; attachmentId: string }
   | { kind: "open_suno_website" }
   | { kind: "open_suno_platform" }
@@ -1060,7 +1078,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   if (kind === "save_global_settings") {
     assertOnlyInputKeys(
       input,
-      ["kind", "defaultFollowUpBehavior", "showContextUsage", "networkProxy", "uiLanguage", "integrationConnections", "customInstructions"],
+      ["kind", "defaultFollowUpBehavior", "showContextUsage", "networkProxy", "uiLanguage", "integrationConnections", "customInstructions", "sessionTabs"],
       `${kind} command`,
     );
     const hasFollowUpBehavior = Object.prototype.hasOwnProperty.call(
@@ -1072,6 +1090,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       "showContextUsage",
     );
     const hasUiLanguage = Object.prototype.hasOwnProperty.call(input, "uiLanguage");
+    const hasSessionTabs = Object.prototype.hasOwnProperty.call(input, "sessionTabs");
     const hasAudioService = Object.prototype.hasOwnProperty.call(input, "integrationConnections");
     const hasCustomInstructions = Object.prototype.hasOwnProperty.call(input, "customInstructions");
     const hasNetworkProxy = Object.prototype.hasOwnProperty.call(
@@ -1082,11 +1101,17 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       Number(hasFollowUpBehavior) +
         Number(hasContextUsage) +
         Number(hasNetworkProxy) +
-        Number(hasUiLanguage) + Number(hasAudioService) + Number(hasCustomInstructions) !== 1
+        Number(hasUiLanguage) + Number(hasAudioService) + Number(hasCustomInstructions) + Number(hasSessionTabs) !== 1
     ) {
       throw new ChatBridgeRequestValidationError(
         "save_global_settings must contain exactly one setting.",
       );
+    }
+    if (hasSessionTabs) {
+      if (!isSessionTabs(input.sessionTabs)) {
+        throw new ChatBridgeRequestValidationError("sessionTabs must contain unique supported tab IDs.");
+      }
+      return { kind, sessionTabs: input.sessionTabs };
     }
     if (hasUiLanguage) {
       if (!isUiLanguage(input.uiLanguage)) {
@@ -1160,19 +1185,12 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     }
     return { kind, sessionId: input.sessionId, jobId: input.jobId, outputKey: input.outputKey };
   }
-  if (kind === "export_midi_artifact" || kind === "attach_midi_artifact") {
-    assertOnlyInputKeys(input, ["kind", "sessionId", "artifactRef"], `${kind} command`);
-    if (!isSafeStorageId(input.sessionId) || !isSafeStorageId(input.artifactRef)) {
-      throw new ChatBridgeRequestValidationError("Choose a saved MIDI version in this Session.");
+  if (kind === "export_artifact" || kind === "attach_artifact") {
+    assertOnlyInputKeys(input, ["kind", "sessionId", "artifact"], `${kind} command`);
+    if (!isSafeStorageId(input.sessionId) || !isArtifactRef(input.artifact)) {
+      throw new ChatBridgeRequestValidationError("Choose a saved artifact in this Session.");
     }
-    return { kind, sessionId: input.sessionId, artifactRef: input.artifactRef };
-  }
-  if (kind === "open_audio_download") {
-    assertOnlyInputKeys(input, ["kind", "sessionId", "assetId"], "open_audio_download command");
-    if (!isSafeStorageId(input.sessionId) || !isSafeStorageId(input.assetId)) {
-      throw new ChatBridgeRequestValidationError("Choose a saved audio file in this Session.");
-    }
-    return { kind, sessionId: input.sessionId, assetId: input.assetId };
+    return { kind, sessionId: input.sessionId, artifact: input.artifact };
   }
   if (kind === "open_attachment") {
     assertOnlyInputKeys(input, ["kind", "sessionId", "attachmentId"], "open_attachment command");
@@ -1336,7 +1354,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     const generator = input.generator;
     if (!isSafeStorageId(input.sessionId) || input.expectedBufferId !== null && !isSafeStorageId(input.expectedBufferId) ||
         !Array.isArray(input.sourceClips) || !input.sourceClips.length || input.sourceClips.length > 16 ||
-        !input.sourceClips.every((ref) => ref && typeof ref === "object" && !Array.isArray(ref) && Object.keys(ref).length === 2 && isSafeStorageId(ref.trackId) && isSafeStorageId(ref.clipId)) ||
+        !input.sourceClips.every((ref) => ref && typeof ref === "object" && !Array.isArray(ref) && Object.keys(ref).length === 2 && isLiveObjectId(ref.trackId) && isLiveObjectId(ref.clipId)) ||
         new Set(input.sourceClips.map((ref) => `${ref.trackId}:${ref.clipId}`)).size !== input.sourceClips.length ||
         typeof input.segmentBeats !== "number" || !Number.isFinite(input.segmentBeats) || input.segmentBeats < 1 || input.segmentBeats > 256 ||
         !Number.isInteger(input.capacity) || Number(input.capacity) < 1 || Number(input.capacity) > 4 ||
@@ -1361,22 +1379,23 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     return { ...imported, kind, bufferId };
   }
   if (kind === "import_midi_artifact") {
-    assertOnlyInputKeys(input, ["kind", "sessionId", "artifactRef", "trackName", "trackId", "mergeParts", "mappings", "startBeat", "name"], `${kind} command`);
+    assertOnlyInputKeys(input, ["kind", "sessionId", "artifactRef", "trackName", "trackId", "createTrack", "mergeParts", "mappings", "startBeat", "name"], `${kind} command`);
     const validName = (value: unknown): value is string => typeof value === "string" && Boolean(value.trim()) && value.length <= 256;
-    const validTrackId = (value: unknown): value is string => typeof value === "string" && /^[0-9]{1,30}$/u.test(value);
     const mappings = input.mappings;
     if (mappings !== undefined) {
-      if (input.trackName !== undefined || input.trackId !== undefined || input.mergeParts !== undefined ||
-          !Array.isArray(mappings) || !mappings.length || mappings.length > 64 ||
+      if (input.trackName !== undefined || input.trackId !== undefined || input.createTrack !== undefined || input.mergeParts !== undefined ||
+          !Array.isArray(mappings) || !mappings.length || mappings.length > MAX_AGENT_PLAN_ACTIONS ||
           mappings.some((entry) => !entry || typeof entry !== "object" || Array.isArray(entry) ||
-            Object.keys(entry).some((key) => !["partId", "trackId", "trackName"].includes(key)) ||
+            Object.keys(entry).some((key) => !["partId", "trackId", "trackName", "createTrack"].includes(key)) ||
             typeof entry.partId !== "string" || !/^track-[0-9]{1,2}-channel-(?:[1-9]|1[0-6])$/u.test(entry.partId) ||
-            !validTrackId(entry.trackId) || !validName(entry.trackName)) ||
+            !(entry.createTrack === true ? entry.trackId === undefined : entry.createTrack === undefined && isLiveObjectId(entry.trackId)) || !validName(entry.trackName)) ||
           new Set(mappings.map((entry) => entry.partId)).size !== mappings.length ||
-          new Set(mappings.map((entry) => entry.trackId)).size !== mappings.length) {
-        throw new ChatBridgeRequestValidationError("Map each selected source part to a different observed MIDI track (at most 64 parts).");
+          new Set(mappings.filter((entry) => !entry.createTrack).map((entry) => entry.trackId)).size !== mappings.filter((entry) => !entry.createTrack).length ||
+          mappings.reduce((count, entry) => count + (entry.createTrack ? 2 : 1), 0) > MAX_AGENT_PLAN_ACTIONS) {
+        throw new ChatBridgeRequestValidationError("Choose separate MIDI destinations within the track and Clip action limit.");
       }
-    } else if (!validName(input.trackName) || input.trackId !== undefined && !validTrackId(input.trackId) ||
+    } else if (!validName(input.trackName) || input.trackId !== undefined && !isLiveObjectId(input.trackId) ||
+        input.createTrack !== undefined && (input.createTrack !== true || input.trackId !== undefined) ||
         input.mergeParts !== undefined && typeof input.mergeParts !== "boolean") {
       throw new ChatBridgeRequestValidationError("Choose a MIDI destination and explicit import mode.");
     }
@@ -1388,6 +1407,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     return { kind, sessionId: input.sessionId, artifactRef: input.artifactRef,
       ...(mappings === undefined ? { trackName: input.trackName as string,
         ...(input.trackId === undefined ? {} : { trackId: input.trackId as string }),
+        ...(input.createTrack === undefined ? {} : { createTrack: true }),
         ...(input.mergeParts === undefined ? {} : { mergeParts: input.mergeParts as boolean }) }
         : { mappings: mappings as NonNullable<MidiArtifactImportCommand["mappings"]> }),
       startBeat: input.startBeat,
@@ -1395,10 +1415,12 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   }
   if (kind === "select_artifact") {
     assertOnlyInputKeys(input, ["kind", "sessionId", "selection"], `${kind} command`);
-    if (!isSafeStorageId(input.sessionId) || !isArtifactSelection(input.selection)) {
+    if (!isSafeStorageId(input.sessionId) || !isArtifactSelection(input.selection) || input.selection.action === "prefer") {
       throw new ChatBridgeRequestValidationError("Choose a saved artifact and selection action.");
     }
-    return { kind, sessionId: input.sessionId, selection: input.selection };
+    return { kind, sessionId: input.sessionId, selection: input.selection.action === "primary"
+      ? { action: "primary", group: { ...input.selection.group }, candidate: input.selection.candidate ? { ...input.selection.candidate } : null }
+      : { action: "continue", candidate: input.selection.candidate ? { ...input.selection.candidate } : null } };
   }
   if (kind === "run_plugin_tool" || kind === "run_audio_tool") {
     assertOnlyInputKeys(input, ["kind", "sessionId", "toolName", "signature", "arguments"], `${kind} command`);

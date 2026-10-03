@@ -32,6 +32,8 @@ test("Custom Instructions reconcile independently from other global settings", a
     networkProxyRevision: "0",
     uiLanguage: "system",
     uiLanguageRevision: "0",
+    sessionTabs: ["context", "brief", "artifacts"],
+    sessionTabsRevision: "0",
     commandId: "custom-1",
   });
   let projected = await (await fetch(stateUrl)).json() as ChatDialogState;

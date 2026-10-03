@@ -6,8 +6,10 @@ import type {
   NetworkProxyRevision,
   UiLanguage,
   UiLanguageRevision,
+  SessionTabsRevision,
   NetworkProxySettings,
 } from "../../model/profile.js";
+import type { SessionShortcutId } from "../../model/session-tabs.js";
 import { storageScopeKey } from "../../storage/scope.js";
 import type { IntegrationConnectionsView } from "../../plugins/integration-connections.js";
 
@@ -23,6 +25,8 @@ export interface GlobalSettingsChange {
   networkProxyRevision: NetworkProxyRevision;
   uiLanguage: UiLanguage;
   uiLanguageRevision: UiLanguageRevision;
+  sessionTabs: SessionShortcutId[];
+  sessionTabsRevision: SessionTabsRevision;
   commandId: string;
 }
 

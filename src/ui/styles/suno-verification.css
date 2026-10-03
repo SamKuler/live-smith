@@ -1,6 +1,7 @@
 @layer theme, base, components, utilities;
 @import "./tokens.css";
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "./components/focus.css";
 
 @layer base {
   :host {
@@ -25,5 +26,5 @@
   button:hover { @apply bg-surface-hover; }
   button.secondary { @apply border-border bg-pane text-muted; }
   button:disabled { @apply cursor-default opacity-60; }
-  button:focus-visible { outline: 2px solid var(--color-border-hover); outline-offset: 2px; }
+  button:focus-visible { @apply bg-surface-hover underline; text-underline-offset: 3px; }
 }

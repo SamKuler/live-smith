@@ -1,6 +1,7 @@
 @layer theme, base, components, utilities;
 @import "./tokens.css";
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "./components/focus.css";
 
 @layer base {
 * {
@@ -44,7 +45,7 @@ button:hover {
 }
 
 button:focus-visible {
-  outline: 2px solid var(--color-focus);
-  outline-offset: 2px;
+  @apply bg-result-action-hover underline;
+  text-underline-offset: 3px;
 }
 }

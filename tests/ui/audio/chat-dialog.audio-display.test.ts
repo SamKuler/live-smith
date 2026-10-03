@@ -160,3 +160,20 @@ test("preview, download and export control names distinguish different jobs", as
     }
   } finally { h.close(); }
 });
+
+
+test("downloaded music displays its persisted work version after a job is revised", async () => {
+  const state = resultState();
+  const local = { ...job(state.activeSessionId).outputs[0]!, role: "music" as const,
+    origin: { kind: "generated" as const, sourceAssetId: "earlier-audio" },
+    version: { groupId: "original-audio", number: 4, derivedFromId: "earlier-audio" } };
+  state.audioJobs![0]!.outputs = [local];
+  const h = await createDialogHarness(state);
+  try {
+    const output = h.document.querySelector<HTMLElement>('[data-audio-output="asset-one"]')!;
+    assert.equal(output.querySelector("[data-audio-output-label]")!.textContent, "Version 4");
+    output.querySelector<HTMLButtonElement>("[data-preview-audio]")!.click();
+    assert.match(output.querySelector("audio")!.getAttribute("aria-label")!, /Version 4/);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});

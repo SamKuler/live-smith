@@ -4,6 +4,7 @@ import * as path from "node:path";
 import test from "node:test";
 
 import type { AudioAsset } from "../../../src/audio-services/contracts.js";
+import { savePluginAudioArtifact } from "../../../src/storage/audio-artifacts.js";
 import { resolveSampleSource } from "../../../src/live/sample-source.js";
 import { createSession } from "../../../src/storage/sessions.js";
 import { addAudioAssetSampleSources, audioAssetSampleSourceInstructions } from "../../../src/app/audio/audio-asset-sources.js";
@@ -91,4 +92,20 @@ test("asset import revalidates the expected hash and complete metadata before st
   }
   assert.equal(h.staged.length, 0);
   assert.deepEqual(await fs.readdir(h.directory), filesBefore);
+});
+
+test("Plugin audio artifacts register and import through the same snapshot boundary", async (t) => {
+  const h = await assetHarness(t);
+  const bytes = mp3Bytes();
+  const artifact = await savePluginAudioArtifact(h.directory, h.session.id, {
+    connectionId: "renderer", serverId: "server", toolName: "render", label: "Private title",
+    bytes, format: "mp3", signal: h.controller.signal,
+  });
+  await addAudioAssetSampleSources(h.input, h.sources, [artifact]);
+  artifact.label = "Later mutation";
+  await prepareRequestAudioSampleSources(sourceBindings(...h.sources.values()), h.controller.signal);
+  assert.equal(h.staged.length, 1);
+  assert.deepEqual(h.staged[0]!.bytes, bytes);
+  assert.equal(path.extname(h.staged[0]!.filePath), ".mp3");
+  assert.doesNotMatch(audioAssetSampleSourceInstructions(h.sources), /Private title|Later mutation|live-smith-audio/);
 });

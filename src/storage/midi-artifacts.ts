@@ -1,3 +1,4 @@
+import { allocateArtifactVersion, artifactVersion, isArtifactLabel, isArtifactVersion, type ArtifactPluginSource, type ArtifactVersion } from "../agent/artifact-contracts.js";
 import { isMidiContinuationBuffer, type MidiContinuationBuffer } from "../agent/midi-continuation-contracts.js";
 import type { NoteDescription } from "@ableton-extensions/sdk";
 import { createHash } from "node:crypto";
@@ -40,18 +41,12 @@ const metadataKeys = new Set([
 const hashPattern = /^[a-f0-9]{64}$/u;
 const ownerIdPattern = /^[^\u0000-\u001f\u007f]{1,128}$/u;
 
-export type MidiArtifactPluginSource =
-  | { pluginId: string; connectionId?: never }
-  | { connectionId: string; pluginId?: never };
+export type MidiArtifactPluginSource = ArtifactPluginSource;
 
-export interface MidiArtifactVersion {
-  groupId: string;
-  number: number;
-  derivedFromId?: string;
-}
+export type MidiArtifactVersion = ArtifactVersion;
 
 export function midiArtifactVersion(artifact: MidiArtifact): MidiArtifactVersion {
-  return artifact.version ? { ...artifact.version } : { groupId: artifact.id, number: 1 };
+  return artifactVersion(artifact);
 }
 
 export type MidiArtifactHostSource =
@@ -182,16 +177,17 @@ export async function saveMidiArtifact(
     bytes: Uint8Array;
     signal: AbortSignal;
     revisionOf?: string;
+    groupWith?: string;
   },
 ): Promise<MidiArtifact> {
   if (!storageDirectory || !path.isAbsolute(storageDirectory)) throw new MidiArtifactStorageError();
   requireSafeStorageId(sessionId, "Session ID");
   if (input.generationKind !== undefined && input.generationKind !== "continuation" || !validArtifactSource(input) || !ownerIdPattern.test(input.serverId) ||
-      !ownerIdPattern.test(input.toolName) || !safeLabel(input.label) ||
+      !ownerIdPattern.test(input.toolName) || !isArtifactLabel(input.label) ||
       !(input.bytes instanceof Uint8Array) || input.bytes.byteLength > MAX_MIDI_ARTIFACT_BYTES) {
     throw new MidiArtifactStorageError();
   }
-  if (input.revisionOf !== undefined && !isSafeStorageId(input.revisionOf)) throw new MidiArtifactStorageError("Choose an existing MIDI version in this Session.");
+  if ([input.revisionOf, input.groupWith].some((id) => id !== undefined && !isSafeStorageId(id))) throw new MidiArtifactStorageError("Choose an existing MIDI version in this Session.");
   throwIfAborted(input.signal);
   const bytes = new Uint8Array(input.bytes);
   const parsed = parseMidiArtifact(bytes, input.signal);
@@ -217,15 +213,13 @@ export async function saveMidiArtifact(
     await requireSession(storageDirectory, sessionId);
     const directory = await bindSessionDirectory(storageDirectory, sessionId, true);
     const entries = await readArtifacts(directory!);
-    if (input.revisionOf) {
-      const source = entries.artifacts.find((entry) => entry.id === input.revisionOf);
-      if (!source) throw new MidiArtifactStorageError("The source MIDI version is unavailable in this Session.");
-      const groupId = midiArtifactVersion(source).groupId;
-      const number = Math.max(...entries.records.filter((entry) => midiArtifactVersion(entry).groupId === groupId)
-        .map((entry) => midiArtifactVersion(entry).number)) + 1;
-      if (!Number.isSafeInteger(number)) throw new MidiArtifactStorageError();
-      artifact.version = { groupId, number, derivedFromId: source.id };
-    } else artifact.version = { groupId: artifact.id, number: 1 };
+    for (const ref of [input.revisionOf, input.groupWith]) {
+      if (ref && !entries.artifacts.some((entry) => entry.id === ref)) {
+        throw new MidiArtifactStorageError("The source MIDI version is unavailable in this Session.");
+      }
+    }
+    try { artifact.version = allocateArtifactVersion(artifact.id, entries.records, input); }
+    catch (error) { throw new MidiArtifactStorageError(error instanceof Error ? error.message : undefined); }
     if (entries.artifacts.length + entries.unavailableCount >= MAX_MIDI_ARTIFACTS_PER_SESSION ||
         await storedMidiBytes(directory!) + bytes.byteLength > MAX_MIDI_SESSION_BYTES) {
       throw new MidiArtifactStorageError("This Session has reached its MIDI artifact storage limit.");
@@ -472,7 +466,7 @@ function decodeArtifact(value: unknown): MidiArtifact {
       value.generationKind !== undefined && value.generationKind !== "continuation" ||
       typeof value.serverId !== "string" || !ownerIdPattern.test(value.serverId) ||
       typeof value.toolName !== "string" || !ownerIdPattern.test(value.toolName) ||
-      !safeLabel(value.label) || !Number.isInteger(value.byteLength) || (value.byteLength as number) < 22 ||
+      !isArtifactLabel(value.label) || !Number.isInteger(value.byteLength) || (value.byteLength as number) < 22 ||
       (value.byteLength as number) > MAX_MIDI_ARTIFACT_BYTES || typeof value.sha256 !== "string" ||
       !hashPattern.test(value.sha256) || (value.format !== 0 && value.format !== 1) ||
       !Number.isInteger(value.trackCount) || (value.trackCount as number) < 1 || (value.trackCount as number) > MAX_MIDI_ARTIFACT_TRACKS ||
@@ -482,13 +476,7 @@ function decodeArtifact(value: unknown): MidiArtifact {
       typeof value.durationBeats !== "number" || !Number.isFinite(value.durationBeats) || value.durationBeats <= 0 ||
       value.durationBeats > MAX_MIDI_DURATION_BEATS || typeof value.createdAt !== "string" ||
       !Number.isFinite(Date.parse(value.createdAt))) throw new MidiArtifactStorageError();
-  if (value.version !== undefined) {
-    const version = value.version;
-    if (!plainRecord(version) || Object.keys(version).some((key) => !["groupId", "number", "derivedFromId"].includes(key)) ||
-        !isSafeStorageId(version.groupId) || !Number.isSafeInteger(version.number) || (version.number as number) < 1 ||
-        (version.number === 1 ? version.groupId !== value.id || version.derivedFromId !== undefined
-          : !isSafeStorageId(version.derivedFromId) || version.derivedFromId === value.id)) throw new MidiArtifactStorageError();
-  }
+  if (value.version !== undefined && !isArtifactVersion(value.version, value.id as string)) throw new MidiArtifactStorageError();
   return cloneArtifact(value as unknown as MidiArtifact);
 }
 
@@ -537,10 +525,6 @@ async function requireSession(storageDirectory: string, sessionId: string): Prom
 function artifactRoot(storageDirectory: string): string { return path.join(storageDirectory, "live-smith-midi"); }
 function metadataPath(directory: DirectoryBinding, id: string): string { return path.join(directory.path, `${id}.midi.json`); }
 function blobPath(directory: DirectoryBinding, id: string): string { return path.join(directory.path, `${id}.mid`); }
-function safeLabel(value: unknown): value is string {
-  return typeof value === "string" && Boolean(value.trim()) && value.length <= 120 &&
-    !/[\u0000-\u001f\u007f]/u.test(value);
-}
 function plainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) &&
     Object.getPrototypeOf(value) === Object.prototype;

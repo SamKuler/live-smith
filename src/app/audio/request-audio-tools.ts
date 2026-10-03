@@ -9,7 +9,7 @@ import type { AgentExternalToolResult } from "../../agent/loop.js";
 import {
   audioJobRemoteSettled, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
   AudioToolOutcomeUnknownError, AudioServiceHttpError,
-  type AudioAsset, type AudioOrigin, type AudioGenerationRequest,
+  type AudioOrigin, type AudioGenerationRequest,
 } from "../../audio-services/contracts.js";
 import { readArrangementAudio } from "../../live/observer.js";
 import type { LiveTarget } from "../../live/target.js";
@@ -17,7 +17,7 @@ import type { ModelToolCall } from "../../model/contracts.js";
 import { createBuiltInAudioToolsets } from "../../plugins/builtins/audio-toolsets.js";
 import { builtInAudioPluginById } from "../../plugins/builtins/index.js";
 import { ToolRegistry } from "../../plugins/registry.js";
-import { readAudioAsset, readExpectedAudioAsset } from "../../storage/audio-assets.js";
+import { listPluginAudioArtifacts, readSessionAudioArtifact, readExpectedSessionAudioArtifact, type SessionAudioArtifact } from "../../storage/audio-artifacts.js";
 import { loadSessionEvents } from "../../storage/events.js";
 import { listAudioJobs } from "../../storage/audio-jobs.js";
 import { readSessionAttachmentBytes, type AudioSessionAttachmentRef } from "../../storage/attachments.js";
@@ -39,13 +39,15 @@ export async function createRequestAudioTools(input: {
   storageDirectory: string | undefined;
   sessionId: string;
   requestId: string;
+  hasPluginAudioOutputs?: boolean;
+  artifactSource?: AudioProcessingContext["artifactSource"];
   /** Host-owned observations shared only by manual calls in the same Session. */
   observedMusicClips?: Map<string, Set<string>>;
   attachmentRefs: readonly AudioSessionAttachmentRef[];
   target: LiveTarget;
   signal: AbortSignal;
   onProgress(message: UiMessage): Promise<void> | void;
-  onAssets(assets: readonly AudioAsset[]): Promise<void> | void;
+  onAssets(assets: readonly SessionAudioArtifact[]): Promise<void> | void;
   modelAudioInput?: {
     canAccept(byteLength: number): boolean;
   };
@@ -87,16 +89,18 @@ export async function createRequestAudioTools(input: {
       rememberClips(connection.id, observedAudioPluginClipIds(connection, events).map((id) => ({ id })));
     }
   }
-  const assets = new Map<string, AudioAsset>();
-  const registerAssets = async (values: readonly AudioAsset[]): Promise<void> => {
+  const assets = new Map<string, SessionAudioArtifact>();
+  const registerAssets = async (values: readonly SessionAudioArtifact[]): Promise<void> => {
     for (const asset of values) assets.set(asset.id, asset);
     await input.onAssets(values);
   };
   await registerAssets(audioAssetsFromJobs(jobs));
+  await registerAssets(await listPluginAudioArtifacts(input.storageDirectory, input.sessionId));
   const processing: AudioProcessingContext = {
     storageDirectory: input.storageDirectory, sessionId: input.sessionId,
     signal: input.signal, onProgress: input.onProgress, ...input.processing,
     admittedConnections,
+    ...(input.artifactSource ? { artifactSource: { ...input.artifactSource } } : {}),
     ...(input.withGenerationAuthorization ? { withGenerationAuthorization: input.withGenerationAuthorization } : {}),
   };
 
@@ -114,10 +118,10 @@ export async function createRequestAudioTools(input: {
     }
     if (source.kind === "audio_asset") {
       const expected = assets.get(source.assetRef);
-      if (!expected) throw new Error("Audio asset reference is unavailable. Use list_audio_jobs to read this Session's current results.");
-      const { asset, bytes } = await readAudioAsset(input.storageDirectory, input.sessionId, source.assetRef, input.signal);
+      if (!expected) throw new Error("Audio asset reference is unavailable. Use a saved Plugin output or list_audio_jobs to read this Session's current results.");
+      const { asset, bytes } = await readSessionAudioArtifact(input.storageDirectory, input.sessionId, source.assetRef, input.signal);
       if (asset.sha256 !== expected.sha256) throw new Error("Audio asset changed after it was observed.");
-      return { bytes, label: asset.label, origin: { ...asset.origin, kind: "asset", sourceAssetId: asset.id } };
+      return { bytes, label: asset.label, origin: { ...("origin" in asset ? asset.origin : {}), kind: "asset", sourceAssetId: asset.id } };
     }
     const { kind: _kind, ...locator } = source;
     const tempo = input.context.application.song.tempo;
@@ -144,13 +148,13 @@ export async function createRequestAudioTools(input: {
         if (request.kind === "listen_to_audio_asset") {
           const expected = assets.get(request.assetRef);
           if (!expected) {
-            return { content: "That audio asset is not available in this Session. Use list_audio_jobs and copy an exact output asset id.",
+            return { content: "That audio asset is not available in this Session. Use an exact saved Plugin output or an output asset id from list_audio_jobs.",
               failed: true, invalidArguments: true };
           }
           if (!input.modelAudioInput?.canAccept(expected.byteLength)) {
             return { content: "That audio asset cannot fit within this model request's audio input limits. Choose a smaller saved MP3 or continue without listening to it.", failed: true };
           }
-          const bytes = await readExpectedAudioAsset(
+          const bytes = await readExpectedSessionAudioArtifact(
             input.storageDirectory, input.sessionId, expected, input.signal,
           );
           throwIfAborted(input.signal);
@@ -240,7 +244,7 @@ export async function createRequestAudioTools(input: {
       return { content: "Audio processing could not complete. Check Connections settings and this Session's saved audio jobs before retrying. No Live changes were performed by this tool.", failed: true, stop: true };
     }
   };
-  const toolsets = services.length || jobs.length
+  const toolsets = services.length || jobs.length || assets.size || input.hasPluginAudioOutputs
     ? createBuiltInAudioToolsets({
         services,
         includeModelAudioInput: Boolean(input.modelAudioInput),
@@ -250,6 +254,7 @@ export async function createRequestAudioTools(input: {
   const registry = new ToolRegistry(toolsets);
   return {
     toolsets,
+    registerArtifacts: registerAssets,
     tools: registry.tools(),
     execute(call: ModelToolCall) {
       return registry.callTool(call);

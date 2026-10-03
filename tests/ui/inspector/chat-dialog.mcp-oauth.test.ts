@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { commandCalls, createDialogHarness, stateFixture } from "../support/chat-dialog.test-harness.js";
+import { commandCalls, createDialogHarness, stateFixture, waitForCondition } from "../support/chat-dialog.test-harness.js";
 
 function state() {
   const value = stateFixture();
@@ -129,3 +129,44 @@ for (const outcome of ["failed", "unknown"] as const) {
     assert.deepEqual(h.errors, []);
   });
 }
+
+
+test("the pending MCP sign-in can be cancelled in its own connection panel", async () => {
+  const h = await createDialogHarness(state());
+  let held = false;
+  try {
+    h.click('[data-connection-id="mcp-account"] .connection-choice');
+    h.holdNextCommand(); held = true;
+    h.click(".mcp-oauth-sign-in");
+    await waitForCondition(() => commandCalls(h).length === 1, "Expected sign-in command");
+    const cancel = () => [...h.document.querySelectorAll<HTMLButtonElement>(".plugin-connection-editor button")]
+      .find((button) => button.textContent === "Cancel sign-in");
+    assert.ok(cancel(), "The active login needs a local cancellation action");
+    assert.equal(cancel()!.disabled, false);
+    cancel()!.click(); await h.settle();
+    assert.equal(h.commandStopIds.length, 1);
+    assert.equal(commandCalls(h).length, 1, "Cancellation stops the active command instead of launching concurrent logout");
+    assert.equal(cancel()!.disabled, true);
+    h.releaseHeldCommand(); held = false; await h.settle();
+    assert.deepEqual(h.errors, []);
+  } finally { if (held) h.releaseHeldCommand(); h.close(); }
+});
+
+
+test("Chinese OAuth controls preserve account identity and refresh after sign-in", async () => {
+  const value = pluginState(); value.settings.uiLanguage = 'zh-CN';
+  const h = await createDialogHarness(value);
+  try {
+    h.click('.plugin-add-connection');
+    h.input('[name="connectionName"]', 'Primary');
+    assert.equal(h.document.querySelector('.plugin-connection-editor .editor-save')!.textContent, '连接并登录');
+    assert.match(h.document.querySelector('.plugin-connection-editor')!.textContent!, /保存此账号/);
+    h.click('.plugin-connection-editor .editor-save'); await h.settle();
+    assert.equal(h.document.querySelector('.mcp-oauth-state')!.textContent, '已登录');
+    assert.equal(h.document.querySelector<HTMLInputElement>('[name="connectionName"]')!.value, 'Primary');
+    const save = (commandCalls(h)[0]!.body as any).integrationConnections.connection;
+    assert.equal(save.name, 'Primary'); assert.equal(save.oauth.clientId, 'workspace-client');
+    assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: 'start_mcp_oauth', connectionId: save.id });
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});

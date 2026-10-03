@@ -4,7 +4,7 @@ import { isMidiContinuationBuffer, type MidiContinuationBuffer } from "../../src
 
 test("continuation contracts preserve ordered future sections and enforce real capacity", () => {
   const buffer: MidiContinuationBuffer = { id: "buffer", sessionId: "session", sourceArtifactRef: "source", sourceFingerprint: "a".repeat(64),
-    sourceClips: [{ trackId: "1", clipId: "2" }], segmentBeats: 16, capacity: 2, insertBeat: 32,
+    sourceClips: [{ trackId: String((1n << 151n) + 1n), clipId: String((1n << 151n) + 2n) }], segmentBeats: 16, capacity: 2, insertBeat: 32,
     nextSequence: 3, consumedCount: 1, lastArtifactRef: "second",
     queue: [{ artifactRef: "first", sequence: 1, label: "Section 2", noteCount: 32 }, { artifactRef: "second", sequence: 2, label: "Section 3", noteCount: 40 }],
     generator: { kind: "model", profileId: "profile", model: "model", configurationFingerprint: "b".repeat(64) }, prompt: "", updatedAt: new Date().toISOString() };

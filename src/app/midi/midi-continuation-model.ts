@@ -1,3 +1,4 @@
+import { type UiMessage } from "../../i18n/ui-message.js";
 import type { MidiContinuationBuffer } from "../../agent/midi-continuation-contracts.js";
 import { runAgentLoop, type AgentLoopTraceEvent } from "../../agent/loop.js";
 import { writeStandardMidi } from "../../attachments/midi-writer.js";
@@ -20,7 +21,7 @@ export async function generateMidiContinuationWithModel(input: {
   beforeCommit(): void;
   creativeBrief?: string;
   onEvent(event: AgentLoopTraceEvent): Promise<void>;
-  onProgress(message: string): Promise<void>;
+  onProgress(message: UiMessage): Promise<void>;
 }): Promise<MidiArtifact> {
   if (!input.runtimeProfile.capabilities.tools) throw new Error("The selected model must support tool calls to save MIDI artifacts.");
   let artifact: MidiArtifact | undefined;
@@ -29,7 +30,7 @@ export async function generateMidiContinuationWithModel(input: {
     id: "live-smith.midi-authoring",
     tools: () => [{ type: "function", function: { name: "save_midi_artifact", description: `Save one multitrack MIDI continuation of exactly ${input.buffer.segmentBeats} beats. All note times are relative to the new section. This creates a Session artifact without changing Live.`, parameters: midiArtifactAuthoringSchema } }],
     async callTool(call) {
-      if (artifact) return { content: JSON.stringify({ artifacts: [{ kind: "midi", artifactRef: artifact.id, label: artifact.label }] }), stop: true };
+      if (artifact) return { content: JSON.stringify({ artifacts: [{ kind: "midi", artifactRef: artifact.id, label: artifact.label }] }), artifacts: [{ kind: "midi", id: artifact.id }], stop: true };
       let bytes: Uint8Array, label: string;
       try {
         const parsed = parseMidiArtifactAuthoringArguments(JSON.parse(call.arguments)); label = parsed.label;
@@ -47,7 +48,7 @@ export async function generateMidiContinuationWithModel(input: {
         generationKind: "continuation", beforeCommit: input.beforeCommit,
       });
       return { content: JSON.stringify({ artifacts: [{ kind: "midi", artifactRef: artifact.id, label: artifact.label,
-        durationBeats: artifact.durationBeats, trackCount: artifact.trackCount, noteCount: artifact.noteCount }] }), stop: true };
+        durationBeats: artifact.durationBeats, trackCount: artifact.trackCount, noteCount: artifact.noteCount }] }), artifacts: [{ kind: "midi", id: artifact.id }], stop: true };
       } catch (error) {
         throwIfAborted(input.signal); saveFailure = error;
         return { content: "The MIDI artifact could not be saved against the current source.", failed: true, stop: true };

@@ -100,29 +100,35 @@ function renderedRows(harness: DialogHarness): string[] {
   return [...harness.document.querySelectorAll(".confirm-rows li")].map((row) => row.textContent ?? "");
 }
 
-test("MIDI confirmation shows proposed accessible before and after notes while retaining complete action details", async (t) => {
+test("MIDI confirmation switches an accessible shared piano roll between the observed and proposed notes", async (t) => {
   const harness = await pendingSend(t);
   const preview = midiPreview();
   preview.targetLabel = '低音 <img src="x" onerror="alert(1)"> & <take>';
-  const request = confirmation(harness, { previews: [preview] });
-  harness.emitServerEvent(request);
+  harness.emitServerEvent(confirmation(harness, { previews: [preview] }));
   await harness.settle();
 
   const article = element(harness, "article.action-preview");
+  const svg = element<SVGSVGElement>(harness, ".action-preview svg[role=img]");
   assert.ok(article.closest(".confirm-card"));
   assert.ok(article.textContent?.includes(preview.targetLabel));
   assert.equal(article.querySelector("img, take, script"), null);
-  assert.match(article.textContent ?? "", /proposed/i);
-  assert.equal(harness.document.querySelectorAll(".action-preview").length, 1);
+  assert.equal(article.querySelectorAll("svg[role=img]").length, 1);
+  assert.match(svg.getAttribute("aria-label") ?? "", /^Proposed after:/);
+  assert.equal(element(harness, '.midi-preview-switch [data-side="after"]').getAttribute("aria-pressed"), "true");
   for (const name of ["before", "after"] as const) {
-    const side = element(harness, `.midi-preview-side[data-side="${name}"]`);
-    const svg = side.querySelector("svg[role=img]");
-    assert.ok(svg);
+    harness.click(`.midi-preview-switch [data-side="${name}"]`);
+    assert.equal(element(harness, ".action-preview svg[role=img]"), svg);
+    assert.equal(element(harness, `.midi-preview-switch [data-side="${name}"]`).getAttribute("aria-pressed"), "true");
     assert.match(svg.getAttribute("aria-label") ?? "", new RegExp(`\\b${preview[name].totalNoteCount} notes?\\b`, "i"));
     assert.match(svg.getAttribute("aria-label") ?? "", /clip beats/i);
-    assert.equal(side.querySelectorAll(".midi-preview-note").length, preview[name].notes.length);
-    assert.equal(side.querySelector(".preview-limits"), null);
+    assert.deepEqual([...svg.querySelectorAll(".piano-roll-note")].map((note) => Number(note.getAttribute("data-pitch"))), preview[name].notes.map((note) => note.pitch));
+    assert.equal(element(harness, ".preview-limits").hidden, true);
   }
+  const muted = element<SVGElement>(harness, '.piano-roll-note[data-pitch="45"]');
+  const reported = element<SVGElement>(harness, '.piano-roll-note[data-pitch="38"]');
+  assert.match(muted.textContent ?? "", /velocity unreported.*muted/);
+  assert.match(reported.textContent ?? "", /velocity 95/);
+  assert.ok(Number(muted.style.opacity) < Number(reported.style.opacity));
   assert.deepEqual(renderedRows(harness), ["1. Update notes in the Bass clip"]);
   assert.deepEqual(jsonCalls(harness, "/confirm"), []);
   assert.equal(jsonCalls(harness, "/send").length, 1);
@@ -131,7 +137,7 @@ test("MIDI confirmation shows proposed accessible before and after notes while r
   assert.deepEqual(harness.errors, []);
 });
 
-test("a bounded MIDI preview reports full counts and omissions without drawing omitted notes", async (t) => {
+test("a bounded MIDI preview reports full counts and omissions without inventing omitted notes", async (t) => {
   const harness = await pendingSend(t);
   const preview = midiPreview();
   preview.range.end = 64;
@@ -144,16 +150,20 @@ test("a bounded MIDI preview reports full counts and omissions without drawing o
   harness.emitServerEvent(confirmation(harness, { previews: [preview] }));
   await harness.settle();
 
-  const before = element(harness, '.midi-preview-side[data-side="before"]');
-  const after = element(harness, '.midi-preview-side[data-side="after"]');
-  assert.equal(before.querySelectorAll(".midi-preview-note").length, 256);
-  assert.match(before.querySelector("svg[role=img]")?.getAttribute("aria-label") ?? "", /\b300 notes\b/);
-  assert.match(before.querySelector(".preview-limits")?.textContent ?? "", /\b44 notes omitted\b/i);
-  assert.match(before.querySelector(".preview-limits")?.textContent ?? "", /\b256\b/);
-  assert.match(before.querySelector(".preview-limits")?.textContent ?? "", /\b300\b/);
-  assert.equal(after.querySelectorAll(".midi-preview-note").length, 0);
-  assert.match(after.querySelector("svg[role=img]")?.getAttribute("aria-label") ?? "", /\b0 notes\b/);
-  assert.equal(after.querySelector(".preview-limits"), null);
+  harness.click('.midi-preview-switch [data-side="before"]');
+  harness.click('.action-preview .piano-roll-full');
+  const svg = element(harness, ".action-preview svg[role=img]");
+  const limits = element(harness, ".preview-limits");
+  assert.equal(svg.querySelectorAll(".piano-roll-note").length, 256);
+  assert.match(svg.getAttribute("aria-label") ?? "", /\b300 notes\b/);
+  assert.equal(limits.hidden, false);
+  assert.match(limits.textContent ?? "", /\b44 notes omitted\b/i);
+  assert.match(limits.textContent ?? "", /\b256\b/);
+  assert.match(limits.textContent ?? "", /\b300\b/);
+  harness.click('.midi-preview-switch [data-side="after"]');
+  assert.equal(svg.querySelectorAll(".piano-roll-note").length, 0);
+  assert.match(svg.getAttribute("aria-label") ?? "", /\b0 notes\b/);
+  assert.equal(limits.hidden, true);
   assert.deepEqual(jsonCalls(harness, "/confirm"), []);
   assert.deepEqual(harness.errors, []);
 });
@@ -165,11 +175,13 @@ test("empty MIDI sides remain accessible without inventing note marks", async (t
   preview.after = { notes: [], totalNoteCount: 0, omittedNoteCount: 0 };
   harness.emitServerEvent(confirmation(harness, { previews: [preview] }));
   await harness.settle();
+  const svg = element(harness, ".action-preview svg[role=img]");
   for (const name of ["before", "after"]) {
-    const side = element(harness, `.midi-preview-side[data-side="${name}"]`);
-    assert.match(side.querySelector("svg[role=img]")?.getAttribute("aria-label") ?? "", /\b0 notes\b/);
-    assert.equal(side.querySelectorAll(".midi-preview-note").length, 0);
-    assert.equal(side.querySelector(".preview-limits"), null);
+    harness.click(`.midi-preview-switch [data-side="${name}"]`);
+    assert.match(svg.getAttribute("aria-label") ?? "", /\b0 notes\b/);
+    assert.equal(svg.querySelectorAll(".piano-roll-note").length, 0);
+    assert.equal(element(harness, ".preview-limits").hidden, true);
+    assert.equal(element<HTMLButtonElement>(harness, ".action-preview .piano-roll-focus").disabled, true);
   }
   assert.deepEqual(harness.errors, []);
 });
@@ -182,14 +194,46 @@ test("MIDI note endpoints within the floating-point tolerance remain visible on 
   }
   harness.emitServerEvent(confirmation(harness, { previews: [preview] }));
   await harness.settle();
-  assert.ok(harness.document.querySelector("article.action-preview"));
+  const svg = element(harness, ".action-preview svg[role=img]");
   for (const name of ["before", "after"] as const) {
-    const side = element(harness, `.midi-preview-side[data-side="${name}"]`);
-    assert.equal(side.querySelectorAll(".midi-preview-note").length, preview[name].notes.length);
-    assert.match(side.querySelector("svg[role=img]")?.getAttribute("aria-label") ?? "", new RegExp(`\\b${preview[name].totalNoteCount} notes?\\b`, "i"));
-    assert.equal(side.querySelector(".preview-limits"), null);
+    harness.click(`.midi-preview-switch [data-side="${name}"]`);
+    assert.equal(svg.querySelectorAll(".piano-roll-note").length, preview[name].notes.length);
+    assert.match(svg.getAttribute("aria-label") ?? "", new RegExp(`\\b${preview[name].totalNoteCount} notes?\\b`, "i"));
+    assert.equal(element(harness, ".preview-limits").hidden, true);
   }
   assert.deepEqual(jsonCalls(harness, "/confirm"), []);
+  assert.deepEqual(harness.errors, []);
+});
+
+test("switching MIDI sides retains the pitch domain and the zoomed, panned viewport", async (t) => {
+  const harness = await pendingSend(t);
+  const preview = midiPreview();
+  preview.range.end = 128;
+  preview.before.notes = [{ pitch: 24, startTime: 32, duration: 4 }, { pitch: 60, startTime: 40, duration: 1 }];
+  preview.after.notes = [{ pitch: 96, startTime: 32, duration: 4 }, { pitch: 60, startTime: 40, duration: 1 }, { pitch: 72, startTime: 64, duration: 4 }];
+  harness.emitServerEvent(confirmation(harness, { previews: [preview] }));
+  await harness.settle();
+  harness.click('.action-preview .piano-roll-zoom-in');
+  harness.input('.action-preview .piano-roll-position', '36');
+  const svg = element(harness, ".action-preview svg[role=img]");
+  const chart = svg.parentElement!;
+  const position = element<HTMLInputElement>(harness, '.action-preview .piano-roll-position');
+  const bounds = chart.querySelector('.piano-roll-scale')?.textContent;
+  const commonNote = svg.querySelector('.piano-roll-note[data-pitch="60"]');
+  assert.ok(commonNote);
+  const notePosition = ['x', 'y', 'width', 'height'].map((key) => commonNote.getAttribute(key));
+  harness.click('.midi-preview-switch [data-side="before"]');
+  assert.equal(position.value, '36');
+  assert.equal(chart.querySelector('.piano-roll-scale')?.textContent, bounds);
+  assert.equal(element(harness, '.action-preview .piano-roll-span').textContent, '8 beats');
+  assert.deepEqual(['x', 'y', 'width', 'height'].map((key) => svg.querySelector('.piano-roll-note[data-pitch="60"]')?.getAttribute(key)), notePosition);
+  position.dispatchEvent(new harness.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  assert.equal(position.value, '38');
+  harness.click('.action-preview .piano-roll-full');
+  assert.equal(position.hidden, true);
+  assert.equal(svg.querySelectorAll('.piano-roll-note').length, 2);
+  assert.deepEqual(jsonCalls(harness, '/confirm'), []);
+  assert.deepEqual(commandCalls(harness), []);
   assert.deepEqual(harness.errors, []);
 });
 
@@ -345,11 +389,11 @@ test("a newer proposed preview replaces the prior generation and older replay ca
   await harness.settle();
   assert.equal(harness.document.querySelectorAll(".action-preview").length, 1);
   assert.ok(element(harness, ".action-preview").textContent?.includes(second.targetLabel));
-  assert.equal(harness.document.querySelector(".midi-preview-side"), null);
+  assert.equal(harness.document.querySelector(".midi-piano-roll"), null);
   harness.emitRawServerEvent(replay);
   await harness.settle();
   assert.ok(element(harness, ".action-preview").textContent?.includes(second.targetLabel));
-  assert.equal(harness.document.querySelector(".midi-preview-side"), null);
+  assert.equal(harness.document.querySelector(".midi-piano-roll"), null);
   assert.deepEqual(renderedRows(harness), ["1. Set Lead device Gain"]);
   assert.deepEqual(jsonCalls(harness, "/confirm"), []);
   assert.deepEqual(harness.errors, []);

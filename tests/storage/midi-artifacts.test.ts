@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test, { type TestContext } from "node:test";
 
+import { allocateArtifactVersion, isArtifactVersion } from "../../src/agent/artifact-contracts.js";
 import { AttachmentProcessingError } from "../../src/attachments/contracts.js";
 import { createHostAbortController } from "../../src/runtime/host.js";
 import {
@@ -344,4 +345,39 @@ test("model and host MIDI artifact identities remain distinct from Plugin identi
   assert.deepEqual(host.source, { kind: "host", operation: "live-midi-context" });
   await assert.rejects(saveMidiArtifact(h.directory, h.session.id, { source: { kind: "host", operation: "live-midi-context" }, pluginId: "forged-plugin", serverId: "host", toolName: "save_midi_artifact", label: "Invalid", bytes: midiFile(), signal: h.signal } as never), MidiArtifactStorageError);
   assert.equal((await listMidiArtifacts(h.directory, h.session.id)).length, 2);
+});
+
+
+test("version allocation distinguishes independent siblings from revisions and keeps retry identity", () => {
+  const original = { id: "audio-first", version: allocateArtifactVersion("audio-first", []) };
+  const sibling = { id: "audio-second", version: allocateArtifactVersion("audio-second", [original], { groupWith: original.id }) };
+  const revision = { id: "audio-third", version: allocateArtifactVersion("audio-third", [original, sibling], { revisionOf: original.id }) };
+  assert.deepEqual(sibling.version, { groupId: original.id, number: 2 });
+  assert.deepEqual(revision.version, { groupId: original.id, number: 3, derivedFromId: original.id });
+  const records = [original, sibling, revision];
+  assert.deepEqual(allocateArtifactVersion(sibling.id, records, { groupWith: original.id }), sibling.version);
+  assert.deepEqual(allocateArtifactVersion("next", records, { revisionOf: sibling.id, groupWith: original.id }),
+    { groupId: original.id, number: 4, derivedFromId: sibling.id });
+  assert.equal(isArtifactVersion(sibling.version, sibling.id), true);
+  assert.throws(() => allocateArtifactVersion("next", records, { revisionOf: "missing" }));
+  assert.throws(() => allocateArtifactVersion("next", [...records, { id: "unrelated" }], { revisionOf: sibling.id, groupWith: "unrelated" }));
+  const retry = allocateArtifactVersion(sibling.id, records); retry.number = 40;
+  assert.equal(sibling.version.number, 2);
+});
+
+test("concurrent MIDI siblings reserve unique versions and missing blobs retain allocated numbers", async (t) => {
+  const h = await harness(t);
+  const save = (options: { revisionOf?: string; groupWith?: string } = {}) => saveMidiArtifact(h.directory, h.session.id, {
+    pluginId: "generator", serverId: "local", toolName: "make", label: "Theme", bytes: midiFile(), signal: h.signal, ...options,
+  });
+  const original = await save();
+  const siblings = await Promise.all(Array.from({ length: 4 }, () => save({ groupWith: original.id })));
+  assert.deepEqual(siblings.map((artifact) => artifact.version!.number).sort(), [2, 3, 4, 5]);
+  assert.ok(siblings.every((artifact) => artifact.version!.groupId === original.id && artifact.version!.derivedFromId === undefined));
+  const latest = siblings.find((artifact) => artifact.version!.number === 5)!;
+  await fs.rm(path.join(h.directory, "live-smith-midi", h.session.id, `${latest.id}.mid`));
+  const revision = await save({ revisionOf: siblings[0]!.id });
+  assert.deepEqual(revision.version, { groupId: original.id, number: 6, derivedFromId: siblings[0]!.id });
+  assert.equal((await inspectMidiArtifacts(h.directory, h.session.id)).unavailableCount, 1);
+  assert.deepEqual((await readMidiArtifact(h.directory, h.session.id, siblings[0]!.id)).artifact.version, siblings[0]!.version);
 });

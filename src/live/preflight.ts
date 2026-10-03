@@ -23,6 +23,7 @@ import {
   type ParameterActionPreview,
 } from "../agent/action-preview.js";
 import { calculateMidiNoteEdit, type MidiNoteEditAction } from "./midi-transform.js";
+import { sessionMidiClipCanBeReused } from "./action-bindings.js";
 import {
   assertParameterValueInObservedRange,
   findExactParameterMatch,
@@ -175,7 +176,7 @@ async function observeActionPreflight(
           matchingClip,
         );
       }
-      return fingerprint(action.type, {
+      const state = {
         song: songIdentity,
         track: trackIdentity(track),
         ...(lane ? { takeLane: takeLaneTargetIdentity(lane) } : {}),
@@ -192,7 +193,17 @@ async function observeActionPreflight(
                 .map(clipContentIdentity),
             }
           : {}),
-      });
+      };
+      const clipName = state.matchingClip?.name ?? action.name;
+      const preview = includePreview && !state.overlappingClips?.length
+        ? midiNotesPreview(
+            `MIDI clip${clipName ? ` "${clipName}"` : ""} on track "${state.track.name}"${state.takeLane ? ` in Take Lane "${state.takeLane.name}"` : ""}`,
+            state.matchingClip?.duration ?? action.durationBeats,
+            state.matchingClip?.notes ?? [],
+            action.notes,
+          )
+        : undefined;
+      return { fingerprint: fingerprint(action.type, state), ...(preview ? { preview } : {}) };
     }
     case "create_session_midi_clip": {
       const track = resolveMidiTrack(context, action.trackName, target);
@@ -208,14 +219,25 @@ async function observeActionPreflight(
           `Session slot ${action.slotIndex} on track "${track.name}" must be empty (requireEmpty: true). Inspect the current Session slots and choose an empty destination.`,
         );
       }
-      return fingerprint(action.type, {
+      const midiClip = clip instanceof MidiClip ? clipContentIdentity(clip) : undefined;
+      const state = {
         song: songIdentity,
         track: trackIdentity(track),
         slot: {
           id: requireHandleIdentity(slot, "clip slot"),
-          clip: clip ? clipContentIdentity(clip) : null,
+          clip: midiClip ?? (clip ? clipContentIdentity(clip) : null),
         },
-      });
+      };
+      const clipName = action.name ?? midiClip?.name;
+      const preview = includePreview && (!clip || sessionMidiClipCanBeReused(clip, action.durationBeats))
+        ? midiNotesPreview(
+            `MIDI clip${clipName ? ` "${clipName}"` : ""} in Session slot ${action.slotIndex} on track "${state.track.name}"`,
+            midiClip?.duration ?? action.durationBeats,
+            midiClip?.notes ?? [],
+            action.notes,
+          )
+        : undefined;
+      return { fingerprint: fingerprint(action.type, state), ...(preview ? { preview } : {}) };
     }
     case "replace_midi_clip_segment": {
       const track = resolveMidiTrack(context, action.trackName, target);
@@ -723,7 +745,7 @@ function takeLaneIdentity(
 
 function takeLaneTargetIdentity(
   lane: import("@ableton-extensions/sdk").TakeLane<"1.0.0">,
-): object {
+) {
   return {
     id: requireHandleIdentity(lane, "Take Lane"),
     name: lane.name,
@@ -1022,17 +1044,29 @@ function midiPreflightObservation(
     if (!Number.isFinite(clip.duration) || clip.duration <= 0 ||
         typeof clip.name !== "string" || typeof state.track.name !== "string") return result;
     const after = calculateMidiNoteEdit(clip, action).notes;
-    if (![clip.notes, after].every((notes) => notes.every((note) => midiNoteFitsPreview(note, clip.duration)))) return result;
-    result.preview = {
-      kind: "midi-notes", actionIndex: 0, status: "proposed",
-      targetLabel: `MIDI clip "${clip.name}" on track "${state.track.name}"`,
-      range: { coordinate: "clip-beats", start: 0, end: clip.duration },
-      before: midiPreviewSide(clip.notes), after: midiPreviewSide(after),
-    };
+    const preview = midiNotesPreview(
+      `MIDI clip "${clip.name}" on track "${state.track.name}"`, clip.duration, clip.notes, after,
+    );
+    if (preview) result.preview = preview;
   } catch {
     // Prediction is optional; the executor retains its own validation and errors.
   }
   return result;
+}
+
+function midiNotesPreview(
+  targetLabel: string,
+  duration: number,
+  before: readonly NoteDescription[],
+  after: readonly NoteDescription[],
+): MidiActionPreview | undefined {
+  if (!Number.isFinite(duration) || duration <= 0 ||
+    ![before, after].every((notes) => notes.every((note) => midiNoteFitsPreview(note, duration)))) return undefined;
+  return {
+    kind: "midi-notes", actionIndex: 0, status: "proposed", targetLabel,
+    range: { coordinate: "clip-beats", start: 0, end: duration },
+    before: midiPreviewSide(before), after: midiPreviewSide(after),
+  };
 }
 
 function midiPreviewSide(notes: readonly NoteDescription[]): MidiActionPreview["before"] {

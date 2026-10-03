@@ -1,3 +1,4 @@
+import { isLiveObjectId } from "../../../live/object-id.js";
 import { isMidiContinuationBuffer, type MidiContinuationView } from "../../../agent/midi-continuation-contracts.js";
 import type { PluginParameterPanel } from "../../../plugins/parameter-panel.js";
 import { hasOnlyWireKeys, isWireRecord, isWireStorageId } from "./primitives.js";
@@ -13,7 +14,7 @@ export function isWireMidiContinuation(value: unknown, sessionId: unknown,
       value.buffer !== undefined && (!isMidiContinuationBuffer(value.buffer) || value.buffer.sessionId !== sessionId)) return false;
   return value.clips.every((clip) => isWireRecord(clip) && hasOnlyWireKeys<MidiContinuationView["clips"][number]>(clip,
     ["trackId", "clipId", "trackName", "clipName", "location", "startBeat", "durationBeats", "noteCount"]) &&
-    isWireStorageId(clip.trackId) && isWireStorageId(clip.clipId) && text(clip.trackName, 1024) && text(clip.clipName, 1024) &&
+    isLiveObjectId(clip.trackId) && isLiveObjectId(clip.clipId) && text(clip.trackName, 1024) && text(clip.clipName, 1024) &&
     ["arrangement", "session"].includes(clip.location as string) && typeof clip.startBeat === "number" && Number.isFinite(clip.startBeat) && clip.startBeat >= 0 &&
     positive(clip.durationBeats) && Number.isSafeInteger(clip.noteCount) && Number(clip.noteCount) >= 0) &&
     new Set(value.clips.map((clip) => `${clip.trackId}:${clip.clipId}`)).size === value.clips.length &&

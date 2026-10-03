@@ -176,3 +176,26 @@ test("only local MCP tools may declare the Live Smith artifact bridge", async ()
   assert.ok(discovered.issues.some((issue) => issue.serverId === "secondary" && issue.code === "invalid_tool"));
   await plugin.close();
 });
+
+test("local artifact discovery projects the declared media kind into the model contract", async () => {
+  for (const outputKind of ["midi", "audio"] as const) {
+    const inputKind = outputKind === "audio" ? "midi" : "audio";
+    const plugin = createMcpPluginPackage(await prepared(["primary"]), { connector: async () => ({
+      listTools: async () => [{ name: "process", description: "Process an artifact",
+        inputSchema: { type: "object", properties: { source: { type: "string" }, destination: { type: "string" } }, required: ["source", "destination"] },
+        _meta: { [LIVE_SMITH_ARTIFACT_META_KEY]: { version: 1,
+          inputs: [{ argument: "source", kind: inputKind }],
+          outputs: [{ argument: "destination", kind: outputKind, label: "Result", ...(outputKind === "audio" ? { format: "mp3" } : {}) }],
+        } },
+      }], callTool: async () => ({ content: [] }), close: async () => undefined,
+    }) });
+    try {
+      const discovered = await plugin.tools({ sessionId: "session", signal: createHostAbortController().signal });
+      const tool = discovered.tools[0]!;
+      assert.equal(tool.artifactContract?.outputs[0]?.kind, outputKind);
+      assert.match(tool.tool.function.description ?? "", new RegExp(`validated ${outputKind === "midi" ? "MIDI" : "audio"} output`));
+      assert.match(JSON.stringify(tool.tool.function.parameters), new RegExp(`Session ${inputKind} artifact reference`));
+      assert.doesNotMatch(JSON.stringify(tool.tool.function.parameters), /destination/);
+    } finally { await plugin.close(); }
+  }
+});

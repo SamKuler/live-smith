@@ -72,7 +72,8 @@ test("a scope denial after only no-ops does not create unfinished Live work", as
     onEvent: (event) => { events.push(event); },
   });
   assert.equal(result.message, "No changes were needed or permitted.");
-  assert.equal(events.some((event) => event.kind === "apply_result"), false);
+  assert.equal(events.find((event) => event.kind === "apply_result")?.applyOperation?.status, "failed");
+  assert.equal(events.some((event) => event.kind === "apply_result" && event.recovery?.active), false);
   assert.ok(events.some((event) => event.kind === "tool_result" && /edit scope/.test(event.content)));
 });
 

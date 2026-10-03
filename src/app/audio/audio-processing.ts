@@ -1,3 +1,4 @@
+import type { ArtifactRef } from "../../agent/artifact-contracts.js";
 import { performance } from "node:perf_hooks";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -31,6 +32,8 @@ export interface AudioProcessingContext {
   storageDirectory: string | undefined;
   sessionId: string;
   signal: AbortSignal;
+  /** Selected artifact captured at send admission, before any asynchronous work. */
+  artifactSource?: ArtifactRef;
   /** Saved connections captured before this request advertises audio tools. */
   admittedConnections?: readonly RuntimeIntegrationConnection[];
   onProgress?(message: UiMessage): Promise<void> | void;
@@ -103,6 +106,7 @@ export async function separateAudioStems(
   const job = await createAudioJob(context.storageDirectory, context.sessionId, {
     provider: settings.provider, serviceId: settings.id, operation: "separate_stems",
     connectionFingerprint: integrationConnectionFingerprint(settings), stems,
+    ...(context.artifactSource ? { artifactSource: context.artifactSource } : {}),
   });
   const release = acquireAudioJob(context.storageDirectory, job.id);
   try { return await ownJob(context, job, settings, adapter, source); }

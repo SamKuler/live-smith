@@ -3,13 +3,13 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
-import { pendingArtifactParentFromEvents, preferredArtifactFromEvents } from "../../../src/agent/artifact-contracts.js";
+import { pendingArtifactParentFromEvents } from "../../../src/agent/artifact-contracts.js";
 import { handleAgentRequest, type AgentModelTurnRequester } from "../../../src/app/agent-request.js";
 import { runtimeProfileForSavedProfile } from "../../../src/app/model/model-request.js";
 import { listSessionArtifacts, selectSessionArtifact } from "../../../src/app/session/session-artifacts.js";
 import type { DirectApiProfile } from "../../../src/model/profile.js";
 import { createHostAbortController } from "../../../src/runtime/host.js";
-import { loadSessionEvents, type SessionEvent } from "../../../src/storage/events.js";
+import { appendSessionEvent, loadSessionEvents, type SessionEvent } from "../../../src/storage/events.js";
 import { inspectMidiArtifacts, midiArtifactVersion, readMidiArtifact, saveMidiArtifact } from "../../../src/storage/midi-artifacts.js";
 import { createSession } from "../../../src/storage/sessions.js";
 import { midiBytes, noteTrack } from "../../attachments/support/midi-test-helpers.js";
@@ -71,6 +71,8 @@ test("ordinary chat authors multitrack MIDI in an empty read-only Session and in
   });
   assert.equal(result, "Saved for review.");
   assert.equal(turn, 4);
+  const history = await loadSessionEvents(h.directory, h.session.id);
+  assert.deepEqual(history.find((event) => event.kind === "tool_result" && event.name === "save_midi_artifact")?.artifacts, [{ kind: "midi", id: ref }]);
   const saved = await readMidiArtifact(h.directory, h.session.id, ref);
   assert.deepEqual(saved.artifact.source, { kind: "model", profileId: "profile", model: "model" });
   assert.equal(saved.artifact.toolName, "save_midi_artifact");
@@ -83,7 +85,7 @@ test("ordinary chat authors multitrack MIDI in an empty read-only Session and in
   h.assertLiveUnchanged();
 });
 
-test("an admitted chat revision stays bound to v1 when preferred and next-chat source change during the request", async (t) => {
+test("an admitted chat revision stays bound to v1 when historical preferences and the next-chat source change during the request", async (t) => {
   const h = await setup(t);
   const original = await h.seed("Theme", 60);
   const alternative = await h.seed("Other theme", 72);
@@ -99,7 +101,7 @@ test("an admitted chat revision stays bound to v1 when preferred and next-chat s
     return done();
   }, async (event) => {
     if (event.kind === "user" && !event.steeringReceipt) {
-      await selectSessionArtifact({ ...h.input, selection: { action: "prefer", candidate: b } });
+      await appendSessionEvent(h.directory, h.session.id, { kind: "candidate", content: "Preferred artifact selected.", candidateSelection: { action: "prefer", candidate: b } });
       await selectSessionArtifact({ ...h.input, selection: { action: "continue", candidate: b } });
     }
   });
@@ -114,7 +116,7 @@ test("an admitted chat revision stays bound to v1 when preferred and next-chat s
   assert.deepEqual(savedCall.parentCandidate, a);
   assert.equal(savedCall.requestEventId, user.id);
   assert.deepEqual(pendingArtifactParentFromEvents(events), b);
-  assert.deepEqual(preferredArtifactFromEvents(events), b);
+  assert.ok(events.some((event) => event.candidateSelection?.action === "prefer"));
   const candidate = (await listSessionArtifacts(h.input)).artifacts.find((entry) => entry.ref.id === ref)!;
   assert.deepEqual(candidate.parent, a);
   assert.equal(candidate.generation?.requestEventId, user.id);

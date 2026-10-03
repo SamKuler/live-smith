@@ -1,5 +1,6 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       (() => {
+        const factories = window.LiveSmithFactories;
         const limits = __PLUGIN_PARAMETER_LIMITS__;
         const numberKeys = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength"];
         const fieldKeys = ["name", "title", "description", "type", "required", "default", "enum", ...numberKeys];
@@ -26,6 +27,7 @@
         };
 
         window.LiveSmithFactories.createPluginParameterPanels = ({ getState, runCommand, resultActions }) => {
+          const bindings = factories.createLocaleBindings();
           const t = (source, values) => window.LiveSmithI18n.t(source, values);
           const drafts = new Map();
           let owner = null;
@@ -35,7 +37,7 @@
           function element(tag, className, content) {
             const node = document.createElement(tag);
             node.className = className;
-            if (content !== undefined) node.textContent = content;
+            if (content !== undefined) bindings.text(node, content);
             return node;
           }
 
@@ -90,7 +92,7 @@
             const form = element("form", "plugin-parameters");
             container.append(form);
             form.dataset.parameterTool = panel.toolName;
-            form.append(element("h4", "plugin-parameters-title", t("Parameters")));
+            form.append(element("h4", "plugin-parameters-title", () => t("Parameters")));
             const fieldset = element("fieldset", "plugin-parameters-fields");
             form.append(fieldset);
             const controls = new Map();
@@ -110,8 +112,8 @@
                 include = document.createElement("input");
                 include.type = "checkbox";
                 include.checked = saved.included;
-                include.setAttribute("aria-label", t("Include {name}", { name: field.title }));
-                optional.append(include, document.createTextNode(t("Use parameter")));
+                bindings.attribute(include, "aria-label", () => t("Include {name}", { name: field.title }));
+                optional.append(include, element("span", "", () => t("Use parameter")));
                 heading.append(optional);
               }
               row.append(heading);
@@ -190,24 +192,24 @@
               controls.set(field.name, control);
               fieldset.append(row);
             }
-            if (!panel.fields.length) fieldset.append(element("p", "field-hint", t("This tool has no editable parameters.")));
+            if (!panel.fields.length) fieldset.append(element("p", "field-hint", () => t("This tool has no editable parameters.")));
             const actions = element("div", "plugin-parameter-actions");
-            const reset = element("button", "secondary", t("Reset parameters"));
+            const reset = element("button", "secondary", () => t("Reset parameters"));
             reset.type = "button";
             reset.addEventListener("click", () => { drafts.set(key, defaults(panel, options.initialValues)); container.replaceWith(create(panel, options)); });
-            const run = element("button", "primary", t(options.submitLabel || "Run tool"));
+            const run = element("button", "primary", () => t(options.submitLabel || "Run tool"));
             run.type = "submit";
             run.disabled = disabled;
             actions.append(reset, run);
             fieldset.append(actions);
-            form.append(element("p", "field-hint", t(options.description || "Runs this tool with these values. Results are saved in this Session.")));
+            form.append(element("p", "field-hint", () => t(options.description || "Runs this tool with these values. Results are saved in this Session.")));
             const latest = options.showResult === false ? undefined : [...getState().events].reverse().find((event) => event.kind === "tool_result" && event.name === panel.toolName);
             if (latest) {
               let parsed;
               try { parsed = JSON.parse(latest.content); } catch {}
               if (resultActions && parsed) container.append(resultActions.create(panel.toolName, parsed));
               else {
-                form.append(element("h4", "plugin-parameters-title", t("Last result")));
+                form.append(element("h4", "plugin-parameters-title", () => t("Last result")));
                 const result = element("pre", "plugin-parameter-result", readableResult(latest.content));
                 result.setAttribute("translate", "no");
                 form.append(result);
@@ -242,6 +244,6 @@
             for (const run of document.querySelectorAll('.plugin-parameters button[type="submit"]')) run.disabled = disabled;
           }
 
-          return { create, setBusy };
+          return { create, setBusy, refreshLocale: () => bindings.refresh(document.documentElement) };
         };
       })();

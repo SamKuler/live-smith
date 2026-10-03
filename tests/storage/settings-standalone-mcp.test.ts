@@ -186,7 +186,8 @@ test("schema v9 Plugin records migrate on read without rewriting or widening the
     { id: "package", name: "Package", pluginId: "existing-plugin", enabled: false,
       configuration: { serverId: "account", pluginDigest: "a".repeat(64) }, secrets: { TOKEN: "fixture-old-mcp" } },
   ];
-  const source = { ...freshEmptyAgentSettings(), schemaVersion: 9,
+  const { sessionTabs, sessionTabsRevision, ...historical } = freshEmptyAgentSettings();
+  const source = { ...historical, schemaVersion: 9,
     integrationConnections: { connections, revision: "9007199254740999", lastChangeTouchesAudio: true } };
   const original = JSON.stringify(source, null, 2);
   await fs.writeFile(h.file, original, { mode: 0o600 });

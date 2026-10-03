@@ -1,4 +1,6 @@
-import { createHash } from "node:crypto";
+import type { AgentApplyOperation } from "./action-preview.js";
+import type { ArtifactRef } from "./artifact-contracts.js";
+import { createHash, randomUUID } from "node:crypto";
 import { EditScopeDeniedError } from "./edit-scopes.js";
 
 import {
@@ -50,13 +52,14 @@ export type AgentLoopTraceEvent =
       webSearch: ModelHostedWebSearch;
     }
   | { kind: "tool_call"; name: string; content: string }
-  | { kind: "tool_result"; name: string; content: string }
-  | { kind: "apply_requested"; content: string }
-  | { kind: "apply_auto_approved"; content: string }
+  | { kind: "tool_result"; name: string; content: string; artifacts?: ArtifactRef[] }
+  | { kind: "apply_requested"; content: string; applyOperation?: AgentApplyOperation }
+  | { kind: "apply_auto_approved"; content: string; applyOperation?: AgentApplyOperation }
   | {
       kind: "apply_result";
       content: string;
       recovery?: AgentRecoveryLedgerUpdate;
+      applyOperation?: AgentApplyOperation;
     }
   | { kind: "error"; content: string };
 
@@ -152,6 +155,7 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   confirmActions(
     plan: AgentPlan,
     guard: AgentActionPreflightGuard<ExecutionBindings>,
+    operationId: string,
   ): Promise<boolean | AgentConfirmationDecision>;
   /** Always resolves through an explicit user decision; automatic approval is forbidden. */
   confirmRecoveryResolution?(message: string): Promise<boolean>;
@@ -275,6 +279,7 @@ interface ToolCallExecutionResult {
 
 export interface AgentExternalToolResult {
   content: string;
+  artifacts?: ArtifactRef[];
   failed?: boolean;
   invalidArguments?: boolean;
   /** Binary input supplied to the next model turn only after the text result is recorded. */
@@ -884,6 +889,20 @@ async function executeToolCall(
   recoveryState: AgentRecoveryState,
 ): Promise<ToolCallExecutionResult> {
   let applyPlan: AgentPlan | undefined;
+  let operationId: string | undefined;
+  let applyResultRecorded = false;
+  const recordApplyResult = async (
+    content: string,
+    status: "applied" | "partial" | "cancelled" | "failed",
+    recovery?: AgentRecoveryLedgerUpdate,
+  ) => {
+    await emitTraceEvent(options, {
+      kind: "apply_result", content,
+      ...(operationId ? { applyOperation: { id: operationId, status } } : {}),
+      ...(recovery ? { recovery } : {}),
+    });
+    applyResultRecorded = true;
+  };
   let applyActionKeys: readonly (readonly string[])[] | undefined;
   try {
     if (options.admittedToolNames && !options.admittedToolNames.includes(toolCall.name)) {
@@ -901,6 +920,7 @@ async function executeToolCall(
       try {
         await emitTraceEvent(options, {
           kind: "tool_result", name: toolCall.name, content: result.content,
+          ...(result.artifacts ? { artifacts: result.artifacts } : {}),
         });
       } catch {
         const { modelInputPart: _privateModelInput, ...safeOutcome } = result;
@@ -1131,15 +1151,18 @@ async function executeToolCall(
       }
       const summary = summarizeActionPlan(plan);
       await options.onProgress?.(progressLabelForActionPlan(plan));
+      operationId = `apply_${randomUUID()}`;
       await emitTraceEvent(options, {
         kind: "apply_requested",
         content: summary,
+        applyOperation: { id: operationId, status: "proposed",
+          ...(revalidateActions.previews ? { previews: revalidateActions.previews } : {}) },
       });
       if (options.hasPendingSteering?.()) {
         throw new AgentSteeringBeforeApplyError();
       }
       throwIfAborted(options.signal);
-      const rawDecision = await options.confirmActions(plan, revalidateActions);
+      const rawDecision = await options.confirmActions(plan, revalidateActions, operationId);
       const decision: AgentConfirmationDecision = typeof rawDecision === "boolean"
         ? { confirmed: rawDecision, source: "user" }
         : rawDecision;
@@ -1155,6 +1178,7 @@ async function executeToolCall(
           : "Low Risk";
         await emitTraceEvent(options, {
           kind: "apply_auto_approved",
+          applyOperation: { id: operationId, status: "approved" },
           content: [
             `${actionCount} ${actionCount === 1 ? "change" : "changes"} · ${modeLabel}`,
             "Automatic approval. Standard safety checks completed.",
@@ -1165,10 +1189,7 @@ async function executeToolCall(
 
       if (!decision.confirmed) {
         const content = "User cancelled the proposed Live actions. Do not claim they were applied.";
-        await emitTraceEvent(options, {
-          kind: "apply_result",
-          content,
-        });
+        await recordApplyResult(content, "cancelled");
         return {
           toolContent: content,
           userMessage: `${summary}\n\nActions were not applied.`,
@@ -1242,11 +1263,7 @@ async function executeToolCall(
           ? recoveryLedgerUpdate(recoveryState)
           : undefined;
         try {
-          await emitTraceEvent(options, {
-            kind: "apply_result",
-            content,
-            ...(recoveryUpdate ? { recovery: recoveryUpdate } : {}),
-          });
+          await recordApplyResult(content, outcome.mutationCount > 0 ? "partial" : options.signal?.aborted ? "cancelled" : "failed", recoveryUpdate);
         } catch (error) {
           throw new AgentApplyResultReportingError(outcome.results, error);
         }
@@ -1286,11 +1303,7 @@ async function executeToolCall(
           ? recoveryLedgerUpdate(recoveryState)
           : undefined;
       try {
-        await emitTraceEvent(options, {
-          kind: "apply_result",
-          content,
-          ...(recoveryUpdate ? { recovery: recoveryUpdate } : {}),
-        });
+        await recordApplyResult(content, "applied", recoveryUpdate);
       } catch (error) {
         throw new AgentApplyResultReportingError(outcome.results, error);
       }
@@ -1313,6 +1326,12 @@ async function executeToolCall(
 
     throw new Error(`Unsupported model tool call: ${toolCall.name}`);
   } catch (error) {
+    if (operationId && !applyResultRecorded &&
+      !(error instanceof AgentPartialCompletionError) &&
+      !(error instanceof AgentApplyResultReportingError)) {
+      await recordApplyResult(errorMessage(error),
+        options.signal?.aborted || error instanceof AgentSteeringBeforeApplyError ? "cancelled" : "failed");
+    }
     const scopeDenial = error instanceof EditScopeDeniedError
       ? error
       : error instanceof AgentPartialCompletionError &&
@@ -1321,6 +1340,7 @@ async function executeToolCall(
         ? error.cause
         : undefined;
     if (scopeDenial) {
+      if (operationId && !applyResultRecorded) await recordApplyResult(scopeDenial.message, options.signal?.aborted ? "cancelled" : "failed");
       throwIfAborted(options.signal);
       const content = `${scopeDenial.message}\nNo Live changes from this plan were applied.`;
       await emitTraceEvent(options, {
@@ -1352,10 +1372,7 @@ async function executeToolCall(
       };
     }
     if (error instanceof AgentSteeringBeforeApplyError) {
-      await emitTraceEvent(options, {
-        kind: "apply_result",
-        content: error.message,
-      });
+      if (!applyResultRecorded) await recordApplyResult(error.message, "cancelled");
       return {
         toolContent: error.message,
         userMessage: error.message,
@@ -1390,11 +1407,7 @@ async function executeToolCall(
         const recoveryUpdate = recoveryState.requiresExplicitResolution
           ? recoveryLedgerUpdate(recoveryState)
           : undefined;
-        await emitTraceEvent(options, {
-          kind: "apply_result",
-          content: failureContent,
-          ...(recoveryUpdate ? { recovery: recoveryUpdate } : {}),
-        });
+        await recordApplyResult(failureContent, error.completedMutationCount > 0 ? "partial" : options.signal?.aborted ? "cancelled" : "failed", recoveryUpdate);
       } catch (reportingError) {
         throw new AgentApplyResultReportingError(
           error.completedResults,

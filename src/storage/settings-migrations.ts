@@ -14,6 +14,7 @@ import {
   isApprovalMode,
   isUiLanguage,
   isUiLanguageRevision,
+  isSessionTabsRevision,
   isContextUsageVisibilityRevision,
   isCustomInstructionsRevision,
   isDefaultFollowUpBehavior,
@@ -39,6 +40,8 @@ import {
   type SavedProfile,
   type UiLanguage,
 } from "../model/profile.js";
+
+import { defaultSessionTabs, isSessionTabs, sessionShortcutIds } from "../model/session-tabs.js";
 
 export { CURRENT_AGENT_SETTINGS_SCHEMA_VERSION } from "../model/profile.js";
 
@@ -304,7 +307,12 @@ function migrateSettingsV8ToV9(value: unknown): AgentSettingsV9 {
 }
 
 function migrateSettingsV9ToV10(value: unknown): AgentSettings {
-  return { ...validateSettingsV9(value), schemaVersion: 10 };
+  return {
+    ...validateSettingsV9(value),
+    schemaVersion: 10,
+    sessionTabs: [...defaultSessionTabs],
+    sessionTabsRevision: "0",
+  };
 }
 
 function validateSettingsV1(value: unknown): AgentSettingsV1 {
@@ -635,11 +643,24 @@ function validateSettingsV9(value: unknown): AgentSettingsV9 {
 function validateSettingsV10(value: unknown): AgentSettings {
   const record = settingsRecord(value);
   if (settingsSchemaVersion(record) !== 10) throw unsupportedSchemaVersion();
-  const { integrationConnections, ...settingsV9 } = record;
+  const {
+    integrationConnections,
+    sessionTabs = defaultSessionTabs,
+    sessionTabsRevision = "0",
+    ...settingsV9
+  } = record;
+  if (!isSessionTabs(sessionTabs)) {
+    throw new ProfileValidationError("sessionTabs", "Session tabs must contain unique supported tab IDs.");
+  }
+  if (!isSessionTabsRevision(sessionTabsRevision)) {
+    throw new ProfileValidationError("sessionTabsRevision", "Session tabs revision must be a canonical decimal string.");
+  }
   const validated = validateSettingsV9({ ...settingsV9, schemaVersion: 9 });
   return {
     ...validated,
     schemaVersion: 10,
+    sessionTabs: sessionShortcutIds.filter((tab) => sessionTabs.includes(tab)),
+    sessionTabsRevision,
     ...(integrationConnections === undefined ? {} : {
       integrationConnections: normalizeIntegrationConnectionsSettings(integrationConnections),
     }),

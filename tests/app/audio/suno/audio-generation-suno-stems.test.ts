@@ -55,7 +55,7 @@ test("24 stem outputs persist with their fixed model and distinct local identiti
   assert.equal(job.outputAssets.length, 24);
   assert.equal(new Set(job.outputAssets.map((asset) => asset.id)).size, 24);
   assert.equal(new Set(job.outputAssets.map((asset) => asset.role)).size, 24);
-  assert.equal(job.outputAssets.find((asset) => asset.role === "suno_stem_guitar_alternative")?.origin.kind, "generated");
+  assert.equal(job.outputAssets.find((asset) => asset.role === "stem_guitar_alternative")?.origin.kind, "generated");
   assert.equal((await listAudioAssets(h.directory, h.session.id, job.id)).length, 24);
   assert.deepEqual((await loadAudioJob(h.directory, h.session.id, job.id)).expectedOutputs, stemManifest(24));
   assert.equal(h.calls.submissions, 1);
@@ -69,7 +69,7 @@ test("a failed stem sibling remains a terminal partial outcome with downloadable
   assert.deepEqual(ready.failedOutputKeys, [stemIds[23]]);
   const selected = await downloadAudioOutput(h.context, ready.id, stemIds[12]!);
   assert.equal(selected.status, "partial");
-  assert.equal(selected.outputAssets[0]!.role, "suno_stem_vocals_alternative");
+  assert.equal(selected.outputAssets[0]!.role, "stem_vocals_alternative");
   const inspections = h.calls.inspections;
   await resumeAudioJob(h.context, selected.id);
   assert.equal(h.calls.inspections, inspections);

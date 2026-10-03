@@ -1,6 +1,7 @@
 @layer theme, base, components, utilities;
 @import "./tokens.css";
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "./components/focus.css";
 @import "./components/controls.css";
 @import "./components/disclosures.css";
 @import "./components/auth.css";
@@ -150,8 +151,7 @@ main {
 }
 
 .session-row[data-switching] {
-  border-color: rgba(255, 165, 0, 0.52);
-  background: rgba(255, 165, 0, 0.08);
+  @apply border-border-hover bg-pane-raised;
 }
 
 .session-entry[data-selected] > .session-row {
@@ -544,8 +544,6 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
 
 .message-action:focus-visible {
   @apply bg-focus-soft;
-  outline: 2px solid var(--color-focus);
-  outline-offset: 2px;
 }
 
 .message-action[data-copy-state="copying"] {
@@ -584,8 +582,8 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
 
 .timeline-item.user.queued-follow-up .timeline-content {
   color: var(--color-muted);
-  background: rgba(255, 165, 0, 0.08);
-  border: 1px dashed rgba(255, 165, 0, 0.55);
+  @apply bg-surface-subtle;
+  border: 1px dashed var(--color-border-hover);
 }
 
 .timeline-label {
@@ -622,8 +620,6 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
 
 .timeline-attachment-open:hover,
 .timeline-attachment-open:focus-visible {
-  background: var(--color-surface-hover);
-  outline: 0;
   text-decoration: underline;
 }
 
@@ -649,8 +645,7 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
 }
 
 .attachment-image-preview:focus-visible {
-  outline: 0;
-  box-shadow: inset 0 0 0 2px var(--color-border-hover);
+  filter: brightness(1.15);
 }
 
 .attachment-preview-image {
@@ -678,7 +673,7 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
 .attachment-audio-toggle[data-playing="true"] .audio-play-icon { display: none; }
 .attachment-audio-toggle[data-playing="true"] .audio-pause-icon { display: block; }
 .attachment-audio-toggle:hover { color: var(--color-accent); }
-.attachment-audio-toggle:focus-visible { outline: 0; background: var(--color-surface-hover); }
+.attachment-audio-toggle:focus-visible { background: var(--color-surface-hover); }
 .attachment-audio-toggle[aria-busy="true"] { color: var(--color-muted); }
 
 input.attachment-audio-seek {
@@ -686,7 +681,6 @@ input.attachment-audio-seek {
   appearance: none;
   -webkit-appearance: none;
   @apply m-0 h-control-compact min-w-0 cursor-pointer border-0 bg-transparent p-0;
-  outline: 0;
   border-radius: 0;
 }
 
@@ -727,7 +721,7 @@ input.attachment-audio-seek {
   @apply py-0 text-label text-text;
 }
 .timeline-attachment-chip[data-media-kind] .timeline-attachment-open:hover,
-.timeline-attachment-chip[data-media-kind] .timeline-attachment-open:focus-visible { background: transparent; color: var(--color-text); }
+.timeline-attachment-chip[data-media-kind] .timeline-attachment-open:focus-visible { color: var(--color-text); }
 
 .attachment-media-unavailable {
   @apply block px-2 py-3 text-small;
@@ -832,11 +826,6 @@ input.attachment-audio-seek {
   text-underline-offset: 2px;
 }
 
-.markdown-body a:focus-visible {
-  outline: 2px solid var(--color-focus);
-  outline-offset: 1px;
-}
-
 .timeline-item.user .markdown-body a {
   color: inherit;
 }
@@ -931,7 +920,8 @@ details.timeline-item > summary:hover {
   background: rgba(255, 255, 255, 0.05);
 }
 
-.timeline-activity-group {
+.timeline-activity-group,
+#timeline > .timeline-activity-step {
   @apply mb-2 max-w-full;
 }
 
@@ -1067,7 +1057,7 @@ details.timeline-item.reasoning > summary {
 }
 
 .timeline-activity-detail-content {
-  @apply whitespace-pre-wrap text-label text-muted font-code;
+  @apply m-0 whitespace-pre-wrap text-label text-muted font-code;
   overflow-wrap: anywhere;
   line-height: 1.45;
 }
@@ -1129,13 +1119,11 @@ details.timeline-item.reasoning > summary {
 }
 
 .inline-help:hover {
-  @apply border-accent text-text;
-  outline: none;
+  @apply border-border-hover text-text;
 }
 
 .inline-help:focus-visible {
-  @apply border-focus text-text;
-  outline: none;
+  @apply bg-surface-hover text-text;
 }
 
 .inline-help:hover::after,
@@ -1187,13 +1175,12 @@ details.timeline-item.reasoning > summary {
 }
 
 .network-proxy-option input:checked + .network-proxy-option-label {
-  @apply bg-accent-soft text-accent;
-  border-color: rgba(255, 159, 26, 0.45);
+  @apply border-border bg-pane-raised text-text;
 }
 
 .network-proxy-option input:focus-visible + .network-proxy-option-label {
-  outline: 1px solid var(--color-focus);
-  outline-offset: 1px;
+  @apply bg-surface-hover text-text underline;
+  text-underline-offset: 3px;
 }
 
 .network-proxy-option input:disabled + .network-proxy-option-label {
@@ -1278,11 +1265,6 @@ details.timeline-item.reasoning > summary {
   background: rgba(120, 185, 232, 0.06);
 }
 
-.web-search-source-list a:focus-visible {
-  outline: 2px solid var(--color-focus);
-  outline-offset: 1px;
-}
-
 .web-search-source-title {
   @apply min-w-0 overflow-hidden text-ellipsis whitespace-nowrap;
 }
@@ -1321,8 +1303,7 @@ details.timeline-item > .timeline-content {
 }
 
 .confirm-card {
-  @apply mb-[14px] max-w-full rounded-panel bg-accent-soft p-3;
-  border: 1px solid rgba(255, 165, 0, 0.55);
+  @apply mb-[14px] max-w-full rounded-panel border-0 bg-pane p-3;
 }
 
 .confirm-title {
@@ -1364,21 +1345,23 @@ details.timeline-item > .timeline-content {
   @apply m-0 max-w-[360px] rounded-panel border border-dashed border-border bg-pane px-3 py-[10px] text-quiet;
 }
 
-.live-context-summary {
-  @apply m-0 flex w-full min-w-0 items-baseline gap-2 border-0 bg-field px-[10px] pb-0 pt-[5px] text-left text-small;
+.composer-shortcuts {
+  @apply flex min-w-0 items-center gap-1 overflow-x-auto bg-field px-1 pt-1;
   border-radius: 9px 9px 0 0;
+}
+.composer-shortcut {
+  @apply m-0 min-h-6 shrink-0 whitespace-nowrap rounded-control border-0 bg-transparent px-1.5 py-1 text-left text-small text-muted;
   line-height: 16px;
 }
-
-.live-context-summary[hidden] { @apply hidden; }
+.composer-shortcuts[hidden], .composer-shortcut[hidden] { @apply hidden; }
+.composer-shortcut:hover, .composer-shortcut:focus-visible { @apply bg-composer-control text-text; }
+.live-context-summary {
+  @apply flex min-w-0 flex-1 items-baseline gap-2;
+}
 .live-context-summary .context-caption { @apply shrink-0 text-quiet; }
 .live-context-summary .context-title { @apply m-0 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap; }
-.live-context-summary .context-location { @apply ml-auto text-muted; }
+.live-context-summary .context-location { @apply ml-auto min-w-0 overflow-hidden text-ellipsis text-muted; }
 .live-context-summary .context-location:empty { @apply hidden; }
-.live-context-summary:focus-visible {
-  outline: 0;
-  @apply bg-composer-control;
-}
 #editScopeReadOnlyButton {
   @apply mt-2 h-control-compact px-[10px] py-0 text-small;
 }
@@ -1387,18 +1370,15 @@ details.timeline-item > .timeline-content {
 }
 
 .action-preview {
-  @apply my-3 rounded-panel border border-border bg-pane p-3;
+  @apply my-3 min-w-0;
 }
 .action-preview h3, .action-preview h4 { @apply text-label; margin: 0 0 6px; }
 .action-preview p { margin: 4px 0 8px; overflow-wrap: anywhere; }
-.midi-preview-sides { @apply grid gap-3; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.midi-preview-side svg { @apply block w-full rounded-control border border-border bg-canvas; }
-.midi-preview-grid { stroke: var(--color-border); stroke-width: 1; }
-.midi-preview-note { fill: var(--color-accent); }
-.midi-preview-side[data-side="before"] .midi-preview-note { fill: var(--color-muted); }
+.midi-preview-switch { @apply flex flex-wrap gap-1 mb-2; }
+.midi-preview-switch button { @apply min-h-0 border-transparent bg-transparent px-2 py-1 text-small text-muted; }
 .preview-coordinate, .preview-limits { @apply text-small text-muted; }
 .parameter-preview-values { font-variant-numeric: tabular-nums; }
-@media (max-width: 680px) { .midi-preview-sides { grid-template-columns: 1fr; } }
+.action-preview p[hidden] { display: none; }
 
 .status {
   @apply max-h-[70px] min-h-0 overflow-auto overscroll-contain whitespace-pre-wrap px-[18px] py-1 text-muted;
@@ -1422,20 +1402,15 @@ details.timeline-item > .timeline-content {
 }
 
 .composer-surface {
-  --composer-border: var(--color-border);
   @apply grid min-w-0 bg-field;
   grid-template-columns: minmax(0, 1fr);
-  border: 1px solid var(--composer-border);
+  border: 1px solid var(--color-border);
   border-radius: 9px;
 }
 
-.composer-surface:focus-within {
-  --composer-border: var(--color-focus);
-}
-
 .composer.drop-target {
-  box-shadow: inset 0 0 0 2px var(--color-accent);
-  background: #36332e;
+  box-shadow: inset 0 0 0 2px var(--color-focus);
+  @apply bg-surface-hover-soft;
 }
 
 .pending-attachments {
@@ -1479,9 +1454,12 @@ details.timeline-item > .timeline-content {
 
 .attachment-chip-label:hover,
 .attachment-chip-label:focus-visible {
-  @apply bg-surface-hover;
-  outline: 0;
   text-decoration: underline;
+}
+
+.attachment-chip:not([data-media-kind]):has(> .attachment-chip-label:is(:hover, :focus-visible)),
+.timeline-attachment-chip:not([data-media-kind]):has(> .timeline-attachment-open:is(:hover, :focus-visible)) {
+  @apply bg-surface-hover;
 }
 
 .attachment-viewer {
@@ -1538,8 +1516,7 @@ details.timeline-item > .timeline-content {
 
 .attachment-viewer button:hover:not(:disabled),
 .attachment-viewer button:focus-visible {
-  @apply border-border-hover bg-surface-hover;
-  outline: 0;
+  @apply bg-surface-hover;
 }
 
 .attachment-viewer-open-status {
@@ -1571,7 +1548,7 @@ details.timeline-item > .timeline-content {
   border-radius: 9px 9px 0 0;
 }
 
-.composer-surface:has(.live-context-summary:not([hidden])) > textarea {
+.composer-surface:has(.composer-shortcuts:not([hidden])) > textarea {
   border-radius: 0;
 }
 
@@ -1582,9 +1559,6 @@ details.timeline-item > .timeline-content {
   border: 0;
   border-radius: 0 0 9px 9px;
 }
-
-/* The composer's joined context/input/toolbar border is its focus frame. */
-.composer-surface > textarea:focus-visible { outline: none; }
 
 .composer-surface > textarea:focus {
   box-shadow: none;
@@ -1776,14 +1750,9 @@ details.timeline-item > .timeline-content {
   @apply bg-accent-soft;
 }
 
-.tab-panel:focus {
-  outline: 0;
-}
-
 .inspector-pane:has(.tab-panel:focus-visible) .tab-bar button.active,
 .tab-bar button:focus-visible {
-  outline: 0;
-  @apply border-focus;
+  @apply bg-surface-hover;
 }
 
 .inspector-pane {
@@ -1805,7 +1774,8 @@ details.timeline-item > .timeline-content {
   letter-spacing: 0;
 }
 
-.inspector-scope-switch button[aria-pressed="true"] {
+.inspector-scope-switch button[aria-pressed="true"],
+.midi-preview-switch button[aria-pressed="true"] {
   @apply border-border bg-pane-raised text-text;
 }
 
@@ -1833,8 +1803,13 @@ details.timeline-item > .timeline-content {
 
 .tab-bar button[hidden] { @apply hidden; }
 
+.session-tab-settings {
+  @apply m-0 grid min-w-0 gap-2 border-0 p-0;
+}
+
 .tab-panel {
   @apply min-h-0 overflow-y-scroll overscroll-contain;
+  scroll-padding-top: var(--inspector-padding);
   scroll-padding-bottom: calc(var(--spacing-control) + var(--spacing-6));
 }
 
@@ -1875,7 +1850,7 @@ details.timeline-item > .timeline-content {
 }
 
 .inspector-scope-header {
-  @apply relative flex items-center gap-2;
+  @apply relative flex min-h-control items-center gap-2;
 }
 
 .inspector-heading-action {
@@ -1902,7 +1877,6 @@ details.timeline-item > .timeline-content {
 }
 .extension-navigation > button { @apply min-w-0 h-control-compact whitespace-nowrap border-transparent bg-transparent px-2 py-0 text-label text-muted; }
 .extension-navigation > button[aria-selected="true"] { @apply border-border bg-pane-raised text-text; }
-.extension-navigation > button:focus-visible { outline: 2px solid var(--color-border-hover); outline-offset: -2px; }
 .extension-navigation > .extension-source-tab { @apply border-l-border; }
 .connections-manager { @apply grid min-w-0 gap-3; }
 .plugin-mcp-sources, .plugin-mcp-section { @apply grid min-w-0 gap-3; }
@@ -1913,9 +1887,8 @@ details.timeline-item > .timeline-content {
 .skill-plugin-source { @apply grid min-w-0 gap-2; }
 .skill-plugin-source + .skill-plugin-source { @apply mt-2 border-t border-t-divider pt-3; }
 
-.session-tools, .tool-catalog, .tool-sources {
-  @apply grid min-w-0 gap-3;
-}
+.session-tools { @apply grid min-w-0 gap-4; }
+.tool-catalog, .tool-sources { @apply grid min-w-0 gap-3; }
 
 .session-tools > .field-hint { @apply m-0; }
 .tool-catalog:empty { @apply hidden; }
@@ -1981,49 +1954,37 @@ details.timeline-item > .timeline-content {
 .plugin-app-results { @apply max-h-64 shrink-0 overflow-auto; }
 .plugin-result-card { @apply mt-3 min-w-0 rounded-panel border border-divider bg-field p-3; }
 .plugin-app-results .plugin-result-card { @apply mt-0; }
+.plugin-result-import-actions { @apply min-w-0; }
 .plugin-result-title { @apply m-0 text-label font-medium; }
 .plugin-result-summary { @apply my-2 max-h-24 overflow-auto whitespace-pre-wrap text-label text-muted; overflow-wrap: anywhere; }
 .plugin-result-controls { @apply m-0 grid min-w-0 gap-2 border-0 p-0; }
 .plugin-result-controls > button { @apply justify-self-start; }
-.plugin-result-import > summary { @apply cursor-pointer py-2 text-label; }
-.plugin-result-import-form { @apply grid min-w-0 gap-2; }
-.plugin-result-field { @apply grid min-w-0 gap-1 text-label; }
-.plugin-result-field > input[type="number"] { max-width: 8rem; }
-.plugin-result-import-form > .field-hint, .plugin-result-import-status { @apply m-0 text-small text-muted; }
+.plugin-result-import-status { @apply m-0 text-small text-muted; }
 .plugin-result-apply { @apply justify-self-end; }
 .artifact-controls { @apply m-0 grid min-w-0 gap-3 border-0 p-0; }
-.artifact-page-controls, .artifact-actions { @apply flex flex-wrap gap-2; }
+.artifact-page-controls, .artifact-actions { @apply flex flex-wrap items-center gap-2; }
 .artifact-choices { @apply grid gap-2; }
-.artifact-version-group { @apply grid min-w-0 gap-1; }
-.artifact-version-group > strong { @apply text-label; overflow-wrap: anywhere; }
-.artifact-choice { @apply flex min-w-0 items-center gap-2 text-label; }
-.artifact-choice input[type="checkbox"] { @apply m-0 size-[14px] shrink-0 p-0; accent-color: var(--color-accent); }
-.artifact-choice span { min-width: 0; overflow-wrap: anywhere; }
-.artifact-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 12px; }
-.artifact-card { @apply grid min-w-0 content-start gap-2 rounded-panel border border-divider bg-field p-3; }
-.artifact-card h3, .artifact-card p { @apply m-0; }
+.artifact-item { @apply min-w-0 rounded-panel border border-divider bg-field; }
+.artifact-card { @apply grid min-w-0 content-start gap-2 px-3 pb-3; }
+.artifact-card p { @apply m-0; }
 .artifact-details { @apply min-w-0 text-label; }
 .artifact-details pre { @apply max-h-40 overflow-auto whitespace-pre-wrap text-small text-muted; overflow-wrap: anywhere; }
-.artifact-card-heading { @apply flex min-w-0 items-start justify-between gap-2; }
-.artifact-card-heading h3 { @apply min-w-0 text-label font-medium; overflow-wrap: anywhere; }
-.artifact-remove { @apply size-6 shrink-0 border-0 bg-transparent p-0 text-heading text-muted; }
-.artifact-selection-count { @apply m-0; }
-.artifact-midi-chart { @apply m-0 grid min-w-0 gap-x-2 gap-y-1; grid-template-columns: 22px minmax(0, 1fr); grid-template-rows: 140px 18px auto; }
-.artifact-midi-preview { @apply block h-full w-full rounded-control bg-canvas; grid-column: 2; grid-row: 1; }
-.artifact-midi-pitches { grid-column: 1; grid-row: 1; }
-.artifact-midi-beats { grid-column: 2; grid-row: 2; }
-.artifact-midi-pitches, .artifact-midi-beats { @apply relative text-small text-muted; font-variant-numeric: tabular-nums; }
-.artifact-midi-pitches span, .artifact-midi-beats span { @apply absolute whitespace-nowrap; }
-.artifact-midi-pitches span { right: 0; transform: translateY(-50%); }
-.artifact-midi-grid { stroke: var(--color-divider); stroke-width: 1; }
-.artifact-midi-note { fill: var(--color-text); opacity: .9; }
-.artifact-midi-unused { fill: var(--color-surface-hover); }
-.artifact-midi-scale { @apply text-small text-muted; grid-column: 1 / -1; }
-#artifactsButton { @apply whitespace-nowrap; }
+.artifact-midi-preview-section { @apply grid min-w-0 gap-2; }
+.artifact-midi-preview-section[hidden] { @apply hidden; }
+.piano-roll-chart { @apply m-0 grid min-w-0 gap-y-1; grid-template-columns: 38px minmax(0, 1fr); grid-template-rows: var(--piano-roll-height, 144px) 18px auto; }
+.piano-roll-canvas { @apply block h-full w-full bg-canvas; grid-column: 2; grid-row: 1; }
+.piano-roll-keyboard { @apply relative overflow-hidden; grid-column: 1; grid-row: 1; }
+.piano-roll-key { @apply absolute inset-x-0 flex items-center justify-end bg-muted pr-1 text-compact text-field; border-bottom: 1px solid var(--color-quiet); }
+.piano-roll-key.accidental { @apply bg-field; width: 62%; border: 1px solid var(--color-canvas); }
+.piano-roll-beats { @apply relative text-small text-muted; grid-column: 2; grid-row: 2; font-variant-numeric: tabular-nums; }
+.piano-roll-beats span { @apply absolute whitespace-nowrap; }
+.piano-roll-row { fill: var(--color-canvas); }
+.piano-roll-row.accidental { fill: var(--color-field); }
+.piano-roll-grid { stroke: var(--color-border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.piano-roll-grid.minor { stroke: var(--color-divider); }
+.piano-roll-note { fill: var(--color-accent); }
+.piano-roll-scale { @apply text-small text-muted; grid-column: 1 / -1; }
 .plugin-result-load { @apply justify-self-start; }
-.plugin-result-mapping { @apply grid min-w-0 gap-3; }
-.plugin-result-mapping select { width: 100%; min-width: 0; }
-.plugin-result-mapping .field-hint { @apply m-0 text-small text-muted; }
 .plugin-result-preview { @apply m-0 grid gap-1 pl-4 text-small text-muted; overflow-wrap: anywhere; }
 .app-confirmation-details { @apply max-h-96 overflow-auto text-label; }
 .app-confirmation-details h3 { @apply my-2 text-label font-medium; }
@@ -2035,10 +1996,6 @@ details.timeline-item > .timeline-content {
 .plugin-parameter-optional { @apply flex shrink-0 items-center gap-1 whitespace-nowrap text-small text-muted; }
 .plugin-parameter-field input[type="checkbox"] { @apply m-0 size-[14px] shrink-0 p-0; accent-color: var(--color-accent); }
 .plugin-parameter-field input[type="range"] { accent-color: var(--color-accent); }
-.plugin-parameter-field input:is([type="checkbox"], [type="range"]):focus-visible {
-  outline: 2px solid var(--color-focus);
-  outline-offset: 2px;
-}
 .plugin-parameter-field textarea { @apply w-full; resize: vertical; }
 .plugin-parameter-field select { @apply w-full min-w-0; }
 .plugin-parameter-numeric { display: grid; grid-template-columns: minmax(0, 1fr) minmax(4rem, 5rem); @apply items-center gap-3; }
@@ -2050,9 +2007,9 @@ details.timeline-item > .timeline-content {
 .settings-scope > .inspector-scope-header {
   @apply mb-4;
 }
+.settings-scope > .inspector-scope-header + .field-hint { @apply mt-0; }
 
 .session-tools > .inspector-scope-header { @apply mb-0; }
-.midi-continuation > .inspector-scope-header { @apply mb-0; }
 #midiContinuationContent, .midi-continuation-setup { @apply grid min-w-0 gap-3; }
 .midi-continuation h3, .midi-continuation p { @apply m-0; }
 .midi-continuation-field { @apply grid min-w-0 gap-1 text-label; }
@@ -2152,10 +2109,10 @@ details.timeline-item > .timeline-content {
 .audio-output-meta { @apply text-small text-quiet; font-variant-numeric: tabular-nums; }
 
 .plugin-manager [hidden] { @apply hidden; }
-.plugin-manager.drop-target { outline: 2px dashed var(--color-accent); outline-offset: -2px; }
+.plugin-manager.drop-target { outline: 2px dashed var(--color-focus); outline-offset: -2px; }
 
 .plugin-section-heading {
-  @apply flex min-w-0 items-center justify-between gap-2;
+  @apply flex min-h-control-compact min-w-0 items-center justify-between gap-2;
 }
 
 .plugin-section-heading .field-label-row {
@@ -2187,7 +2144,7 @@ details.timeline-item > .timeline-content {
 }
 
 .plugin-drop-zone.drop-target {
-  @apply border-accent bg-accent-soft text-muted;
+  @apply border-border-hover bg-surface-hover-soft text-muted;
 }
 
 .plugin-drop-zone strong {
@@ -2295,10 +2252,9 @@ details.timeline-item > .timeline-content {
 .mcp-oauth-fields > .field-hint { @apply m-0; }
 .plugin-connection-editor textarea { @apply min-h-[68px] font-code; }
 .plugin-clear-secret > input { @apply m-0 size-[14px] flex-none p-0; accent-color: var(--color-accent); }
-.plugin-clear-secret > input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 
 .plugin-artifact-permission[aria-pressed="true"] {
-  @apply border-accent-soft bg-accent-soft text-text;
+  @apply border-border bg-pane-raised text-text;
 }
 
 .plugin-card-actions {
@@ -2426,11 +2382,6 @@ label {
   color: #9fd4f7;
   background: rgba(120, 185, 232, 0.12);
   border-color: rgba(120, 185, 232, 0.58);
-}
-
-.subscription-auth-open-link:focus-visible {
-  outline: 1px solid var(--color-focus);
-  outline-offset: 2px;
 }
 
 .subscription-auth-device-error {
@@ -2572,8 +2523,7 @@ label {
 }
 
 .settings-switch > input:focus-visible + .settings-switch-track {
-  outline: 2px solid var(--color-focus);
-  outline-offset: 2px;
+  filter: brightness(1.35);
 }
 
 .settings-switch > input:disabled + .settings-switch-track {
@@ -2620,11 +2570,6 @@ label {
 
 .citation-source-list a:hover {
   background: rgba(120, 185, 232, 0.12);
-}
-
-.citation-source-list a:focus-visible {
-  outline: 2px solid var(--color-focus);
-  outline-offset: 1px;
 }
 
 .citation-source-list a::before {
@@ -2932,7 +2877,7 @@ label {
 }
 
 .skill-drop-zone.drop-target {
-  @apply border-accent bg-accent-soft text-text;
+  @apply border-border-hover bg-surface-hover-soft text-text;
 }
 
 .skill-drop-zone strong {
@@ -3004,13 +2949,7 @@ label {
   @apply mt-2 flex justify-end;
 }
 
-.creative-brief-button {
-  flex-shrink: 0;
-  padding: 0 6px;
-  white-space: nowrap;
-}
-
-.creative-brief-button:is([data-state="draft"], [data-state="suggestion"])::after {
+#briefShortcut:is([data-state="draft"], [data-state="suggestion"])::after {
   content: "";
   display: inline-block;
   width: 4px;
@@ -3174,9 +3113,7 @@ label {
 @media (max-width: 560px) { .audio-parameter-grid { grid-template-columns: minmax(0, 1fr); } }
 .audio-parameter-optional { @apply shrink-0 whitespace-nowrap; }
 .audio-parameter-field input[type="checkbox"] { @apply m-0 size-[14px] shrink-0 p-0; }
-.audio-parameter-field input:is([type="checkbox"], [type="range"]):focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 
-.pending-attachments-heading { @apply block w-full text-small text-muted; }
 .attachment-selection-label { @apply block text-small text-muted; grid-column: 1 / -1; }
 .attachment-audio-actions { @apply flex flex-wrap items-center gap-1; }
 .attachment-audio-select, .attachment-reuse { @apply shrink-0 border-0 bg-transparent px-2 py-1 text-small text-muted; }
@@ -3192,3 +3129,79 @@ label {
 .attachment-selection-fields .attachment-selection-loop-label { @apply flex-row items-center gap-2 self-center; }
 .attachment-selection-loop-label input { width: auto; }
 .attachment-selection-note { @apply m-0 text-small text-muted; }
+
+
+.midi-import-dialog { @apply overflow-hidden rounded-panel border border-border bg-pane p-0 text-text; width: min(640px, calc(100% - 32px)); max-height: calc(100% - 32px); }
+.midi-import-dialog[open] { @apply flex flex-col; }
+.midi-import-dialog::backdrop { background: rgb(0 0 0 / .5); }
+.midi-import-header { @apply flex shrink-0 items-center justify-between gap-3 border-b border-divider px-4 py-3; }
+.midi-import-header h2 { @apply m-0 text-heading font-semibold; }
+.midi-import-form { @apply flex min-h-0 flex-col overflow-hidden; }
+.midi-import-body { @apply min-h-0 overflow-auto; }
+.midi-import-fields { @apply m-0 grid min-w-0 gap-3 border-0 p-4; }
+.midi-import-fields > p { @apply m-0; }
+.midi-import-source { @apply text-label font-medium; overflow-wrap: anywhere; }
+.midi-import-placement { @apply grid gap-3; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+.midi-import-field { @apply grid min-w-0 gap-1 text-label; }
+.midi-import-field > input { max-width: 10rem; }
+.midi-import-mapping { @apply grid min-w-0 gap-3; }
+.midi-import-part { @apply grid min-w-0 gap-2 border-t border-divider pt-3; grid-template-columns: minmax(0, 1fr) minmax(120px, 1fr); }
+.midi-import-part-label { @apply col-span-2 flex min-w-0 items-center gap-2 text-label; overflow-wrap: anywhere; }
+.midi-import-part-label > input { @apply m-0 size-[14px] shrink-0; }
+.midi-import-part select, .midi-import-track-name { @apply min-w-0 w-full; }
+.midi-import-summary { @apply m-0 text-label; }
+.midi-import-footer { @apply flex shrink-0 flex-wrap items-center justify-end gap-3 border-t border-divider px-4 py-3; }
+.midi-import-status { @apply m-0 grow; flex-basis: 200px; overflow-wrap: anywhere; }
+.midi-import-dialog [hidden] { display: none !important; }
+
+.artifact-open { @apply flex w-full min-w-0 items-center gap-2 border-0 bg-transparent p-3 text-left text-label; overflow-wrap: anywhere; }
+.artifact-open::before { content: "▸"; @apply shrink-0 text-muted; }
+.artifact-open[aria-expanded="true"]::before { content: "▾"; }
+.artifact-open:hover { @apply bg-surface-subtle; }
+.artifact-preview-part { @apply grid min-w-0 gap-1 text-small text-muted; }
+.artifact-preview-part select { @apply min-w-0 w-full; }
+.artifact-item [hidden] { display: none !important; }
+
+.artifact-version-toolbar { @apply grid min-w-0 items-end gap-2 px-3 pb-2; grid-template-columns: minmax(0, 1fr) auto; }
+.artifact-version-field { @apply grid min-w-0 gap-1 text-small text-muted; }
+.artifact-version-select { @apply w-full min-w-0; }
+.artifact-version-source { @apply col-span-2 m-0 text-small; }
+.artifact-version-status { @apply m-0 px-3 pb-3; }
+.artifact-diff-content { @apply mt-2 grid min-w-0 gap-2; }
+.artifact-diff-overview { @apply text-label font-medium; }
+.artifact-diff-part { @apply grid min-w-0 gap-2; }
+.artifact-diff-part-summary { @apply text-small text-muted; }
+.artifact-diff-legend { @apply flex flex-wrap gap-x-3 gap-y-1 text-small text-muted; }
+.artifact-diff-legend span { @apply inline-flex items-center gap-1; }
+.artifact-diff-legend span::before { content: ""; width: 12px; height: 5px; }
+.artifact-diff-legend .before::before { border: 1px dashed var(--color-muted); }
+.artifact-diff-legend .after::before { background: var(--color-accent); }
+.piano-roll-note.before { fill: transparent; stroke: var(--color-muted); stroke-width: 1; stroke-dasharray: 3 2; vector-effect: non-scaling-stroke; }
+.piano-roll-note.after { fill: var(--color-accent); opacity: .85; }
+
+.artifact-diff-baseline { @apply my-2; }
+
+.plugin-result-file { @apply grid min-w-0 gap-2; }
+
+@layer components {
+.midi-piano-roll { @apply grid min-w-0 gap-2; }
+.piano-roll-controls { @apply flex flex-wrap items-center gap-1; }
+.piano-roll-controls button { @apply min-h-0 px-2 py-1 text-small; }
+.piano-roll-span { @apply min-w-12 text-center text-small text-muted; }
+.piano-roll-focus { margin-left: auto; }
+input.piano-roll-position { @apply m-0 h-4 w-full min-w-0 border-0 bg-transparent p-0; appearance: none; cursor: grab; }
+input.piano-roll-position:active { cursor: grabbing; }
+.piano-roll-position::-webkit-slider-runnable-track { height: 8px; border-radius: 3px; background: var(--color-field); }
+.piano-roll-position::-moz-range-track { height: 8px; border-radius: 3px; background: var(--color-field); }
+.piano-roll-position::-webkit-slider-thumb { appearance: none; width: max(18px, var(--piano-roll-thumb-width)); height: 8px; border: 0; border-radius: 3px; background: var(--color-muted); }
+.piano-roll-position::-moz-range-thumb { width: max(18px, var(--piano-roll-thumb-width)); height: 8px; border: 0; border-radius: 3px; background: var(--color-muted); }
+.piano-roll-position:focus-visible::-webkit-slider-thumb { background: var(--color-text); }
+.piano-roll-position:focus-visible::-moz-range-thumb { background: var(--color-text); }
+input.piano-roll-position[hidden] { display: none; }
+
+/* Rich MIDI output uses the existing tool-result body. */
+.chat-midi-preview .piano-roll-chart { grid-template-rows: 144px 18px auto; }
+.chat-artifact-part { @apply flex items-center gap-2 mb-2 text-small text-muted; }
+.chat-artifact-part select { @apply min-w-0 flex-1; }
+.timeline-activity-detail [hidden] { display: none; }
+}

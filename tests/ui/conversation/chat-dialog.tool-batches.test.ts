@@ -21,69 +21,33 @@ function toolEvent(
   };
 }
 
-test("one tool step starts in a collapsed activity group", async () => {
+test("one tool step opens its result with one disclosure and closes it again", async () => {
   const state = stateFixture();
   state.events = [
-    toolEvent(
-      "event-tool-1",
-      "tool_call",
-      "inspect_song_info",
-      "Inspect the current Song",
-    ),
-    toolEvent(
-      "event-tool-2",
-      "tool_result",
-      "inspect_song_info",
-      "Song observed",
-    ),
+    toolEvent("event-tool-1", "tool_call", "inspect_song_info", "Inspect the current Song"),
+    toolEvent("event-tool-2", "tool_result", "inspect_song_info", "Song observed"),
   ];
-
   const harness = await createDialogHarness(state);
   try {
-    const group = harness.document.querySelector<HTMLDetailsElement>(
-      "#timeline > .timeline-activity-group",
-    );
-    assert.ok(group);
-    assert.equal(group.open, false);
-    assert.equal(
-      group.querySelector(":scope > summary .timeline-activity-title")?.textContent,
-      "Inspect song info",
-    );
-    assert.equal(
-      group.querySelector(":scope > summary .timeline-activity-excerpt")?.textContent,
-      "Song observed",
-    );
-    const status = group.querySelector<HTMLElement>(
-      ":scope > summary .activity-state",
-    );
-    assert.equal(status?.dataset.status, "complete");
-    assert.equal(status?.textContent, "Completed");
-    assert.match(
-      group.querySelector(":scope > summary")?.getAttribute("aria-label") ?? "",
-      /1 activity step in history/,
-    );
-    harness.click(".timeline-activity-group > summary");
-    const step = group.querySelector<HTMLDetailsElement>(
-      '[data-activity-step-id="event-tool-1"]',
-    );
+    const step = harness.document.querySelector<HTMLDetailsElement>('[data-activity-step-id="event-tool-1"]');
     assert.ok(step);
-    assert.equal(
-      harness.document.querySelector("#timeline > .timeline-item.tool_call"),
-      null,
-    );
-    assert.equal(
-      harness.document.querySelector("#timeline > .timeline-item.tool_result"),
-      null,
-    );
-    assert.equal(
-      harness.document.querySelector("#timeline > .timeline-activity-step"),
-      null,
-    );
-    assert.doesNotMatch(step.textContent ?? "", /tool call/i);
+    assert.equal(step.open, false);
+    const summary = step.querySelector<HTMLElement>(":scope > summary")!;
+    assert.equal(summary.querySelector(".timeline-activity-title")?.textContent, "Inspect song info");
+    assert.equal(summary.querySelector(".timeline-activity-excerpt")?.textContent, "Song observed");
+    assert.equal(summary.querySelector(".activity-state")?.textContent, "Completed");
+    assert.match(summary.getAttribute("aria-label") ?? "", /^Completed: Inspect song info: Song observed$/);
+    summary.click();
+    const result = harness.document.querySelector('[data-event-id="event-tool-2"]');
+    assert.ok(result);
+    for (let details = result.closest("details"); details; details = details.parentElement?.closest("details") ?? null) {
+      assert.equal(details.open, true, "One disclosure should expose the result without another closed disclosure");
+    }
+    assert.match(result.textContent ?? "", /Song observed/);
+    summary.click();
+    assert.equal(step.open, false);
     assert.deepEqual(harness.errors, []);
-  } finally {
-    harness.close();
-  }
+  } finally { harness.close(); }
 });
 
 test("audio tool activity uses the shared status language", async () => {
@@ -106,7 +70,7 @@ test("audio tool activity uses the shared status language", async () => {
   const harness = await createDialogHarness(state);
   try {
     const group = harness.document.querySelector<HTMLElement>(
-      "#timeline > .timeline-activity-group",
+      '[data-activity-step-id="event-tool-1"]',
     );
     assert.equal(
       group?.querySelector(":scope > summary .activity-state")?.textContent,
@@ -118,7 +82,7 @@ test("audio tool activity uses the shared status language", async () => {
   }
 });
 
-test("one unsuccessful tool step opens its group and detail without a legacy card", async () => {
+test("one unsuccessful tool step opens its detail and preserves a user close", async () => {
   const state = stateFixture();
   state.events = [
     toolEvent(
@@ -137,13 +101,9 @@ test("one unsuccessful tool step opens its group and detail without a legacy car
 
   const harness = await createDialogHarness(state);
   try {
-    const group = harness.document.querySelector<HTMLDetailsElement>(
-      "#timeline > .timeline-activity-group",
-    );
-    const step = group?.querySelector<HTMLDetailsElement>(
+    const step = harness.document.querySelector<HTMLDetailsElement>(
       '[data-activity-step-id="event-tool-1"]',
     );
-    assert.equal(group?.open, true);
     assert.equal(step?.dataset.status, "stopped");
     assert.equal(step?.open, true);
     assert.match(step?.textContent ?? "", /invalid arguments/);
@@ -151,13 +111,17 @@ test("one unsuccessful tool step opens its group and detail without a legacy car
       harness.document.querySelector("#timeline > .timeline-item.tool_result"),
       null,
     );
+    harness.click('[data-activity-step-id="event-tool-1"] > summary');
+    assert.equal(step?.open, false);
+    harness.click('[data-activity-step-id="event-tool-1"] > summary');
+    assert.equal(step?.open, true);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
   }
 });
 
-test("activity keeps one collapsed group while a second tool step arrives", async () => {
+test("a collapsed single step grows into a collapsed group without moving composer focus", async () => {
   const state = stateFixture();
   state.events = [
     toolEvent("event-tool-1", "tool_call", "inspect_track", "Inspect Bass"),
@@ -174,12 +138,12 @@ test("activity keeps one collapsed group while a second tool step arrives", asyn
     assert.ok(sendId);
 
     const initialGroup = harness.document.querySelector<HTMLDetailsElement>(
-      "#timeline > .timeline-activity-group",
+      '[data-activity-step-id="event-tool-1"]',
     );
     const initialSummary = initialGroup?.querySelector<HTMLElement>(
       ":scope > summary",
     );
-    assert.equal(initialGroup?.dataset.activityGroupId, "event-tool-1");
+    assert.equal(initialGroup?.dataset.activityStepId, "event-tool-1");
     assert.equal(initialGroup?.open, false);
     assert.ok(initialSummary);
     assert.equal(
@@ -187,7 +151,8 @@ test("activity keeps one collapsed group while a second tool step arrives", asyn
         ?.textContent,
       "Bass observed",
     );
-    initialSummary.focus();
+    const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt")!;
+    prompt.focus();
 
     harness.emitServerEvent({
       type: "session_event",
@@ -208,7 +173,7 @@ test("activity keeps one collapsed group while a second tool step arrives", asyn
     assert.equal(group?.open, false);
     assert.equal(
       harness.document.activeElement,
-      group?.querySelector(":scope > summary"),
+      prompt,
     );
     assert.equal(
       harness.document.querySelectorAll("#timeline > .timeline-activity-group").length,
@@ -221,11 +186,11 @@ test("activity keeps one collapsed group while a second tool step arrives", asyn
     );
 
     harness.click(".timeline-activity-group > summary");
-    assert.equal(
-      group?.querySelectorAll(":scope > .timeline-activity-group-items > .timeline-activity-step")
-        .length,
-      2,
-    );
+    const retainedStep = group?.querySelector<HTMLDetailsElement>('[data-activity-step-id="event-tool-1"]');
+    assert.equal(retainedStep, initialGroup);
+    retainedStep!.querySelector<HTMLElement>(":scope > summary")!.click();
+    assert.equal(retainedStep!.open, true);
+    assert.match(retainedStep!.textContent ?? "", /Bass observed/);
 
     harness.emitServerEvent({
       type: "session_event",
@@ -256,7 +221,7 @@ test("activity keeps one collapsed group while a second tool step arrives", asyn
   }
 });
 
-test("each consecutive tool run stays in one group with the latest step in its summary", async () => {
+test("multi-step runs retain their group while a separate single run opens directly", async () => {
   const state = stateFixture();
   state.events = [
     {
@@ -284,7 +249,7 @@ test("each consecutive tool run stays in one group with the latest step in its s
     const groups = harness.document.querySelectorAll<HTMLDetailsElement>(
       "#timeline > details.timeline-activity-group",
     );
-    assert.equal(groups.length, 2);
+    assert.equal(groups.length, 1);
     assert.equal(groups[0]?.open, false);
     assert.equal(
       groups[0]?.querySelector(
@@ -325,7 +290,11 @@ test("each consecutive tool run stays in one group with the latest step in its s
       )].map((item) => item.dataset.eventId),
       ["event-user", "event-assistant"],
     );
-    const standaloneGroup = groups[1];
+    const standaloneGroup = harness.document.querySelector<HTMLDetailsElement>('[data-activity-step-id="event-tool-5"]');
+    assert.equal(standaloneGroup?.open, false);
+    standaloneGroup?.querySelector<HTMLElement>(":scope > summary")!.click();
+    assert.equal(standaloneGroup?.open, true);
+    assert.match(standaloneGroup?.querySelector('[data-event-id="event-tool-6"]')?.textContent ?? "", /Song observed/);
     assert.equal(
       standaloneGroup?.querySelector(
         ":scope > summary .timeline-activity-title",
@@ -533,13 +502,9 @@ test("a live terminal failure opens a pending step once and preserves a later us
     const initialStep = harness.document.querySelector<HTMLDetailsElement>(
       '[data-activity-step-id="event-tool-1"]',
     );
-    const initialGroup = harness.document.querySelector<HTMLDetailsElement>(
-      ".timeline-activity-group",
-    );
-    assert.equal(initialGroup?.open, false);
     assert.match(
-      initialGroup?.querySelector(":scope > summary")?.getAttribute("aria-label") ?? "",
-      /^In progress: .*1 activity step in history$/,
+      initialStep?.querySelector(":scope > summary")?.getAttribute("aria-label") ?? "",
+      /^In progress: Inspect track: Inspect Bass$/,
     );
     assert.equal(initialStep?.dataset.status, "pending");
     assert.equal(initialStep?.open, false);
@@ -564,12 +529,7 @@ test("a live terminal failure opens a pending step once and preserves a later us
     );
     assert.equal(renderedStep?.dataset.status, "stopped");
     assert.equal(renderedStep?.open, true);
-    assert.equal(
-      harness.document.querySelector<HTMLDetailsElement>(
-        ".timeline-activity-group",
-      )?.open,
-      true,
-    );
+    assert.equal(renderedStep, initialStep);
     assert.equal(harness.document.activeElement, prompt);
     harness.click('[data-activity-step-id="event-tool-1"] > summary');
     assert.equal(renderedStep?.open, false);
@@ -694,7 +654,6 @@ test("a focused history step stays visible when its activity group grows", async
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
 
-    harness.click(".timeline-activity-group > summary");
     const step = harness.document.querySelector<HTMLDetailsElement>(
       '[data-activity-step-id="event-tool-1"]',
     );
@@ -751,14 +710,14 @@ test("a growing activity group does not hide an expanded history step", async ()
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
 
-    harness.click(".timeline-activity-group > summary");
     const focusedEvent = harness.document.querySelector<HTMLDetailsElement>(
       '[data-activity-step-id="event-tool-1"]',
     );
     const focusedSummary = focusedEvent?.querySelector<HTMLElement>("summary");
     assert.ok(focusedEvent);
     assert.ok(focusedSummary);
-    focusedEvent.open = true;
+    focusedSummary.click();
+    assert.equal(focusedEvent.open, true);
     focusedSummary.focus();
 
     harness.emitServerEvent({
