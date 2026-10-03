@@ -70,7 +70,8 @@
         }
 
         function openPlugin(plugin, server, saved) {
-          openEditor({ kind: "plugin", saved, pluginId: plugin?.id || saved.pluginId,
+          const oauth = saved ? saved.oauth : server?.oauth;
+          openEditor({ kind: "plugin", saved, oauth: oauth ? { ...oauth } : undefined, pluginId: plugin?.id || saved.pluginId,
             serverId: server?.id || saved.configuration.serverId,
             pluginDigest: server ? plugin.sha256 : saved.configuration.pluginDigest });
         }
@@ -357,7 +358,10 @@
           choice.append(new Option(t("Manual headers / no authentication"), "manual"), new Option(t("OAuth · browser sign-in"), "oauth"));
           choice.value = current.oauth ? "oauth" : "manual";
           choice.addEventListener("change", () => {
-            if (choice.value === "oauth") current.oauth = {}; else delete current.oauth;
+            if (choice.value === "oauth") {
+              const defaults = current.kind === "plugin" ? draftPluginServer(current).server?.oauth : undefined;
+              current.oauth = { ...defaults };
+            } else delete current.oauth;
             render(true);
           });
           label.append(choice);

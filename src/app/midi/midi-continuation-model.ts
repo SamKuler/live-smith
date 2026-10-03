@@ -22,12 +22,12 @@ export async function generateMidiContinuationWithModel(input: {
   onEvent(event: AgentLoopTraceEvent): Promise<void>;
   onProgress(message: string): Promise<void>;
 }): Promise<MidiArtifact> {
-  if (!input.runtimeProfile.capabilities.tools) throw new Error("The selected model must support tool calls to save MIDI candidates.");
+  if (!input.runtimeProfile.capabilities.tools) throw new Error("The selected model must support tool calls to save MIDI artifacts.");
   let artifact: MidiArtifact | undefined;
   let saveFailure: unknown;
   const save: Toolset = {
     id: "live-smith.midi-authoring",
-    tools: () => [{ type: "function", function: { name: "save_midi_artifact", description: `Save one multitrack MIDI continuation of exactly ${input.buffer.segmentBeats} beats. All note times are relative to the new section. This creates a Session candidate without changing Live.`, parameters: midiArtifactAuthoringSchema } }],
+    tools: () => [{ type: "function", function: { name: "save_midi_artifact", description: `Save one multitrack MIDI continuation of exactly ${input.buffer.segmentBeats} beats. All note times are relative to the new section. This creates a Session artifact without changing Live.`, parameters: midiArtifactAuthoringSchema } }],
     async callTool(call) {
       if (artifact) return { content: JSON.stringify({ artifacts: [{ kind: "midi", artifactRef: artifact.id, label: artifact.label }] }), stop: true };
       let bytes: Uint8Array, label: string;
@@ -50,7 +50,7 @@ export async function generateMidiContinuationWithModel(input: {
         durationBeats: artifact.durationBeats, trackCount: artifact.trackCount, noteCount: artifact.noteCount }] }), stop: true };
       } catch (error) {
         throwIfAborted(input.signal); saveFailure = error;
-        return { content: "The MIDI candidate could not be saved against the current source.", failed: true, stop: true };
+        return { content: "The MIDI artifact could not be saved against the current source.", failed: true, stop: true };
       }
     },
   };
@@ -60,7 +60,7 @@ export async function generateMidiContinuationWithModel(input: {
     `Generate the next ${input.buffer.segmentBeats}-beat multitrack MIDI section, number ${input.buffer.nextSequence + 1}.`,
     `The observed Live MIDI context is saved as artifactRef ${input.buffer.sourceArtifactRef}. Inspect its parts and notes before composing.`,
     parent ? `The immediately preceding generated section is artifactRef ${parent}. Continue after it while retaining the original Live context.` : "Continue immediately after the observed Live source material.",
-    "Use list_session_artifacts and inspect_midi_artifact to read the references, then save exactly one candidate with save_midi_artifact. Preserve distinct instrumental voices. Start new note times at beat 0 and keep every note inside the requested duration.",
+    "Use list_session_artifacts and inspect_midi_artifact to read the references, then save exactly one artifact with save_midi_artifact. Preserve distinct instrumental voices. Start new note times at beat 0 and keep every note inside the requested duration.",
     input.buffer.prompt,
   ].filter(Boolean).join("\n");
   await runAgentLoop({
@@ -72,13 +72,13 @@ export async function generateMidiContinuationWithModel(input: {
       runtimeProfile: input.runtimeProfile, ...(input.creativeBrief ? { creativeBrief: input.creativeBrief } : {}), history: [], agentMessages: messages, tools: [...registry.tools()], editScopes: [],
       signal: input.signal, onDelta: () => {},
     }),
-    observe: async () => { throw new Error("Live observations are not admitted in MIDI candidate generation."); },
-    confirmActions: async () => { throw new Error("Live actions are not admitted in MIDI candidate generation."); },
-    executeActions: async () => { throw new Error("Live actions are not admitted in MIDI candidate generation."); },
+    observe: async () => { throw new Error("Live observations are not admitted in MIDI artifact generation."); },
+    confirmActions: async () => { throw new Error("Live actions are not admitted in MIDI artifact generation."); },
+    executeActions: async () => { throw new Error("Live actions are not admitted in MIDI artifact generation."); },
     onEvent: input.onEvent, onProgress: input.onProgress,
   });
   throwIfAborted(input.signal);
   if (saveFailure) throw saveFailure;
-  if (!artifact) throw new Error("The model did not save a MIDI candidate. Existing buffer entries are unchanged.");
+  if (!artifact) throw new Error("The model did not save a MIDI artifact. Existing buffer entries are unchanged.");
   return artifact;
 }

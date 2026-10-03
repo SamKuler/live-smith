@@ -34,7 +34,7 @@ async function pluginConditioningSource(input: {
   if (!previous) return input.buffer.sourceArtifactRef;
   const source = await readMidiArtifact(input.storageDirectory, input.buffer.sessionId, input.buffer.sourceArtifactRef, input.signal);
   const parent = await readMidiArtifact(input.storageDirectory, input.buffer.sessionId, previous, input.signal);
-  // Track order and names are not stable voice identities across generated candidates.
+  // Track order and names are not stable voice identities across generated artifacts.
   // Keep both files' parts independent instead of combining unrelated voices by index.
   const tracks = [
     ...source.parsed.parts.map((part) => ({ name: part.sourceTrackName ?? `Original part ${part.sourceTrackIndex + 1}`,
@@ -66,8 +66,8 @@ export async function generateMidiContinuationWithPlugin(input: {
   const result = await input.tools.callTool({ id: `midi-section-${input.buffer.nextSequence}`, name: generator.toolName, arguments: JSON.stringify(args) });
   await input.onEvent({ kind: "tool_result", name: generator.toolName, content: result.content });
   throwIfAborted(input.signal);
-  if (result.failed || result.outcomeUnknown) throw new Error("The MIDI generator did not return a confirmed candidate. Existing buffer entries were retained.");
+  if (result.failed || result.outcomeUnknown) throw new Error("The MIDI generator did not return a confirmed artifact. Existing buffer entries were retained.");
   const created = input.tools.midiArtifacts().filter((artifact) => !previous.has(artifact.id));
-  if (created.length !== 1) throw new Error("The MIDI generator must return exactly one saved candidate per section.");
+  if (created.length !== 1) throw new Error("The MIDI generator must return exactly one saved artifact per section.");
   return created[0]!;
 }

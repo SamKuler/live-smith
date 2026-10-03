@@ -7,6 +7,7 @@ import type { InstalledPluginPackage } from "../storage/plugins.js";
 import { openPluginArchive, type OpenPluginArchive } from "./archive.js";
 import type { PluginManifest, PluginSourceFormat } from "./contracts.js";
 import { pluginMcpConfigFromArchive, PluginMcpConfigError } from "./mcp/config.js";
+import type { McpOAuthConfiguration } from "./mcp/oauth-contract.js";
 import { mcpCredentialFields, type McpCredentialField } from "./mcp/credentials.js";
 import { emptyPluginConfig, pluginConfigView, type PluginConfigView, type StoredPluginConfig } from "./user-config.js";
 
@@ -27,6 +28,7 @@ export interface PluginMcpServerView {
   cwd?: string;
   envNames?: string[];
   credentialFields: McpCredentialField[];
+  oauth?: McpOAuthConfiguration;
 }
 
 export interface InstalledPluginView {
@@ -118,6 +120,7 @@ function pluginView(
           envNames: Object.keys(server.env).sort(),
         } : {}),
         credentialFields: mcpCredentialFields(server),
+        ...(server.type === "streamable-http" && server.oauth ? { oauth: { ...server.oauth } } : {}),
       }));
       if (config.issues.some((issue) => issue.code === "invalid_server")) issues.push("invalid_mcp_server");
       if (config.issues.some((issue) => issue.code === "unsupported_transport")) issues.push("unsupported_mcp_transport");

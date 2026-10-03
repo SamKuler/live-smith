@@ -1991,35 +1991,35 @@ details.timeline-item > .timeline-content {
 .plugin-result-field > input[type="number"] { max-width: 8rem; }
 .plugin-result-import-form > .field-hint, .plugin-result-import-status { @apply m-0 text-small text-muted; }
 .plugin-result-apply { @apply justify-self-end; }
-.candidate-controls { @apply m-0 grid min-w-0 gap-3 border-0 p-0; }
-.candidate-page-controls, .candidate-actions { @apply flex flex-wrap gap-2; }
-.candidate-choices { @apply grid gap-2; }
-.candidate-version-group { @apply grid min-w-0 gap-1; }
-.candidate-version-group > strong { @apply text-label; overflow-wrap: anywhere; }
-.candidate-choice { @apply flex min-w-0 items-center gap-2 text-label; }
-.candidate-choice input[type="checkbox"] { @apply m-0 size-[14px] shrink-0 p-0; accent-color: var(--color-accent); }
-.candidate-choice span { min-width: 0; overflow-wrap: anywhere; }
-.candidate-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 12px; }
-.candidate-card { @apply grid min-w-0 content-start gap-2 rounded-panel border border-divider bg-field p-3; }
-.candidate-card h3, .candidate-card p { @apply m-0; }
-.candidate-details { @apply min-w-0 text-label; }
-.candidate-details pre { @apply max-h-40 overflow-auto whitespace-pre-wrap text-small text-muted; overflow-wrap: anywhere; }
-.candidate-card-heading { @apply flex min-w-0 items-start justify-between gap-2; }
-.candidate-card-heading h3 { @apply min-w-0 text-label font-medium; overflow-wrap: anywhere; }
-.candidate-remove { @apply size-6 shrink-0 border-0 bg-transparent p-0 text-heading text-muted; }
-.candidate-selection-count { @apply m-0; }
-.candidate-midi-chart { @apply m-0 grid min-w-0 gap-x-2 gap-y-1; grid-template-columns: 22px minmax(0, 1fr); grid-template-rows: 140px 18px auto; }
-.candidate-midi-preview { @apply block h-full w-full rounded-control bg-canvas; grid-column: 2; grid-row: 1; }
-.candidate-midi-pitches { grid-column: 1; grid-row: 1; }
-.candidate-midi-beats { grid-column: 2; grid-row: 2; }
-.candidate-midi-pitches, .candidate-midi-beats { @apply relative text-small text-muted; font-variant-numeric: tabular-nums; }
-.candidate-midi-pitches span, .candidate-midi-beats span { @apply absolute whitespace-nowrap; }
-.candidate-midi-pitches span { right: 0; transform: translateY(-50%); }
-.candidate-midi-grid { stroke: var(--color-divider); stroke-width: 1; }
-.candidate-midi-note { fill: var(--color-text); opacity: .9; }
-.candidate-midi-unused { fill: var(--color-surface-hover); }
-.candidate-midi-scale { @apply text-small text-muted; grid-column: 1 / -1; }
-#candidatesButton { @apply whitespace-nowrap; }
+.artifact-controls { @apply m-0 grid min-w-0 gap-3 border-0 p-0; }
+.artifact-page-controls, .artifact-actions { @apply flex flex-wrap gap-2; }
+.artifact-choices { @apply grid gap-2; }
+.artifact-version-group { @apply grid min-w-0 gap-1; }
+.artifact-version-group > strong { @apply text-label; overflow-wrap: anywhere; }
+.artifact-choice { @apply flex min-w-0 items-center gap-2 text-label; }
+.artifact-choice input[type="checkbox"] { @apply m-0 size-[14px] shrink-0 p-0; accent-color: var(--color-accent); }
+.artifact-choice span { min-width: 0; overflow-wrap: anywhere; }
+.artifact-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 12px; }
+.artifact-card { @apply grid min-w-0 content-start gap-2 rounded-panel border border-divider bg-field p-3; }
+.artifact-card h3, .artifact-card p { @apply m-0; }
+.artifact-details { @apply min-w-0 text-label; }
+.artifact-details pre { @apply max-h-40 overflow-auto whitespace-pre-wrap text-small text-muted; overflow-wrap: anywhere; }
+.artifact-card-heading { @apply flex min-w-0 items-start justify-between gap-2; }
+.artifact-card-heading h3 { @apply min-w-0 text-label font-medium; overflow-wrap: anywhere; }
+.artifact-remove { @apply size-6 shrink-0 border-0 bg-transparent p-0 text-heading text-muted; }
+.artifact-selection-count { @apply m-0; }
+.artifact-midi-chart { @apply m-0 grid min-w-0 gap-x-2 gap-y-1; grid-template-columns: 22px minmax(0, 1fr); grid-template-rows: 140px 18px auto; }
+.artifact-midi-preview { @apply block h-full w-full rounded-control bg-canvas; grid-column: 2; grid-row: 1; }
+.artifact-midi-pitches { grid-column: 1; grid-row: 1; }
+.artifact-midi-beats { grid-column: 2; grid-row: 2; }
+.artifact-midi-pitches, .artifact-midi-beats { @apply relative text-small text-muted; font-variant-numeric: tabular-nums; }
+.artifact-midi-pitches span, .artifact-midi-beats span { @apply absolute whitespace-nowrap; }
+.artifact-midi-pitches span { right: 0; transform: translateY(-50%); }
+.artifact-midi-grid { stroke: var(--color-divider); stroke-width: 1; }
+.artifact-midi-note { fill: var(--color-text); opacity: .9; }
+.artifact-midi-unused { fill: var(--color-surface-hover); }
+.artifact-midi-scale { @apply text-small text-muted; grid-column: 1 / -1; }
+#artifactsButton { @apply whitespace-nowrap; }
 .plugin-result-load { @apply justify-self-start; }
 .plugin-result-mapping { @apply grid min-w-0 gap-3; }
 .plugin-result-mapping select { width: 100%; min-width: 0; }
@@ -2977,8 +2977,8 @@ label {
   @apply min-h-0 content-start text-muted;
 }
 
-.context-settings > .settings-scope {
-  @apply mt-3 border-t border-t-divider pt-3;
+.context-settings > :is(.settings-scope, .context):not([hidden]) ~ :is(.settings-scope, .context):not([hidden]) {
+  @apply mt-4 border-t border-t-divider pt-4;
 }
 
 .custom-instructions-settings > .inspector-scope-header {

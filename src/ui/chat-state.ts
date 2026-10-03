@@ -187,6 +187,7 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
         ...(server.cwd === undefined ? {} : { cwd: server.cwd }),
         ...(server.envNames === undefined ? {} : { envNames: [...server.envNames] }),
         credentialFields: server.credentialFields.map(({ name, required }) => ({ name, required })),
+        ...(server.oauth ? { oauth: { ...server.oauth } } : {}),
       })),
       unsupportedComponents: [...plugin.unsupportedComponents],
       issues: [...plugin.issues],

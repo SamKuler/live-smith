@@ -1,7 +1,7 @@
 import { isCreativeBrief } from "../../../agent/creative-brief.js";
 import { isAttachmentProvenance } from "../../../attachments/provenance.js";
 import type { AgentActionPreview, MidiActionPreview, MidiPreviewNote } from "../../../agent/action-preview.js";
-import { isCandidateRef, isCandidateSelection } from "../../../agent/candidate-contracts.js";
+import { isArtifactRef, isArtifactSelection } from "../../../agent/artifact-contracts.js";
 import { isEditScopes as isWireEditScopes } from "../../../agent/edit-scopes.js";
 import type { ConversationScope, ModelCitation, ModelContextUsage, ModelHostedWebSearch } from "../../../model/contracts.js";
 import type { AvailableSkillSummary } from "../../../skills/builtins.js";
@@ -322,8 +322,8 @@ export function isWireSessionEvent(value: unknown, attachmentPolicy = "current")
       "error",
     ], value.kind) ||
     typeof value.content !== "string" ||
-    (value.kind === "candidate" ? !isCandidateSelection(value.candidateSelection) : value.candidateSelection !== undefined) ||
-    (value.parentCandidate !== undefined && ((value.kind !== "user" && value.kind !== "tool_call") || !isCandidateRef(value.parentCandidate))) ||
+    (value.kind === "candidate" ? !isArtifactSelection(value.candidateSelection) : value.candidateSelection !== undefined) ||
+    (value.parentCandidate !== undefined && ((value.kind !== "user" && value.kind !== "tool_call") || !isArtifactRef(value.parentCandidate))) ||
     (value.requestEventId !== undefined && (value.kind !== "tool_call" || !isWireStorageId(value.requestEventId))) ||
     (value.name !== undefined && typeof value.name !== "string") ||
     (value.attachments !== undefined && (

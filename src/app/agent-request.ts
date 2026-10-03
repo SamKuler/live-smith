@@ -1,8 +1,8 @@
 import { createMidiArtifactAuthoringToolset, createSessionMidiArtifactToolset } from "./midi/midi-artifact-tools.js";
 import { creativeBriefProposalTool, proposeCreativeBrief } from "./context/creative-brief.js";
 import { ModelInputTooLargeError } from "../model/connection-error.js";
-import { candidateSourceInstructions, pendingCandidateParentFromEvents, type CandidateRef } from "../agent/candidate-contracts.js";
-import { assertSessionCandidate } from "./session/session-candidates.js";
+import { artifactSourceInstructions, pendingArtifactParentFromEvents, type ArtifactRef } from "../agent/artifact-contracts.js";
+import { assertSessionArtifact } from "./session/session-artifacts.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { uiMessage, type UiMessage } from "../i18n/ui-message.js";
 
@@ -222,9 +222,9 @@ export async function handleAgentRequest(
       storageDirectory,
       session.id,
     );
-    const parentCandidate = pendingCandidateParentFromEvents(priorEvents);
-    if (parentCandidate) await assertSessionCandidate({ storageDirectory, sessionId: session.id, projectKey,
-      candidate: parentCandidate, signal: callbacks.signal });
+    const parentCandidate = pendingArtifactParentFromEvents(priorEvents);
+    if (parentCandidate) await assertSessionArtifact({ storageDirectory, sessionId: session.id, projectKey,
+      artifact: parentCandidate, signal: callbacks.signal });
     const skillContext = callbacks.skillContextSnapshot ??
       await resolveSkillContext({
         storageDirectory,
@@ -292,7 +292,7 @@ export async function handleAgentRequest(
       documentTextCharacters,
       history,
       initialRecoveryState: activeRecoveryLedgerFromEvents(priorEvents),
-      recoveryContext: [recoveryContextFromEvents(priorEvents), candidateSourceInstructions(parentCandidate)].filter(Boolean).join("\n\n"),
+      recoveryContext: [recoveryContextFromEvents(priorEvents), artifactSourceInstructions(parentCandidate)].filter(Boolean).join("\n\n"),
       skillContext,
       userEvent,
       priorEventIds: priorEvents.map((event) => event.id),
@@ -1331,7 +1331,7 @@ async function appendAgentLoopTraceEvent(
   sessionId: string,
   event: AgentLoopTraceEvent,
   appendEvent: typeof appendSessionEvent = appendSessionEvent,
-  parentCandidate?: CandidateRef,
+  parentCandidate?: ArtifactRef,
   requestEventId?: string,
 ): Promise<SessionEvent> {
   if ("name" in event) {

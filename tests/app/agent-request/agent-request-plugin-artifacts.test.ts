@@ -11,8 +11,8 @@ import type { DirectApiProfile } from "../../../src/model/profile.js";
 import { saveMidiArtifact } from "../../../src/storage/midi-artifacts.js";
 import { createSession } from "../../../src/storage/sessions.js";
 import { appendSessionEvent, loadSessionEvents } from "../../../src/storage/events.js";
-import { pendingCandidateParentFromEvents } from "../../../src/agent/candidate-contracts.js";
-import { selectSessionCandidate } from "../../../src/app/session/session-candidates.js";
+import { pendingArtifactParentFromEvents } from "../../../src/agent/artifact-contracts.js";
+import { selectSessionArtifact } from "../../../src/app/session/session-artifacts.js";
 import { SteeringChannel } from "../../../src/app/chat/steering.js";
 import { handleAgentRequest } from "../../../src/app/agent-request.js";
 import { runtimeProfileForSavedProfile } from "../../../src/app/model/model-request.js";
@@ -33,12 +33,12 @@ function midiFile(): Uint8Array {
 test("candidate parent binds to durable initial user across failed admission, Steer and the next queued-style request", async (t) => {
   const directory = await fs.mkdtemp("/private/tmp/live-smith-candidate-request-");
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const session = await createSession(directory, { title: "Candidates", projectKey: "project", scope: { kind: "selection", identity: "set", label: "Set" } });
+  const session = await createSession(directory, { title: "Artifacts", projectKey: "project", scope: { kind: "selection", identity: "set", label: "Set" } });
   const signal = new AbortController().signal;
   const save = (label: string) => saveMidiArtifact(directory, session.id, { connectionId: "generator", serverId: "midi", toolName: "make", label, bytes: midiFile(), signal });
   const a = { kind: "midi" as const, id: (await save("A")).id };
   const b = { kind: "midi" as const, id: (await save("B")).id };
-  const select = (action: "prefer" | "continue", candidate: typeof a) => selectSessionCandidate({ storageDirectory: directory, sessionId: session.id, projectKey: "project", signal, selection: { action, candidate } });
+  const select = (action: "prefer" | "continue", candidate: typeof a) => selectSessionArtifact({ storageDirectory: directory, sessionId: session.id, projectKey: "project", signal, selection: { action, candidate } });
   await select("continue", a); await select("prefer", b);
   const context = { application: { song: { handle: { id: 1n }, tempo: 120, tracks: [], returnTracks: [], scenes: [], cuePoints: [] } },
     environment: { storageDirectory: directory, tempDirectory: directory } } as never;
@@ -51,7 +51,7 @@ test("candidate parent binds to durable initial user across failed admission, St
       async onSessionEvent(event) {
         if (event.kind === "user" && !event.steeringReceipt && admitted++ === 0) {
           await select("continue", b);
-          steeringCompletion = steering.submit("candidate-steer", "Keep the rhythm");
+          steeringCompletion = steering.submit("artifact-steer", "Keep the rhythm");
         }
       }, confirmActions: async () => false, withActionExecutionLock: (operation) => operation() },
     async (request) => {
@@ -62,7 +62,7 @@ test("candidate parent binds to durable initial user across failed admission, St
       return { content: "Done", toolCalls: [] };
     }, appendUser);
   await assert.rejects(run(async () => { throw new Error("User write failed before commit"); }), /User write failed/);
-  assert.deepEqual(pendingCandidateParentFromEvents(await loadSessionEvents(directory, session.id)), a);
+  assert.deepEqual(pendingArtifactParentFromEvents(await loadSessionEvents(directory, session.id)), a);
   await run(); await steeringCompletion;
   let events = await loadSessionEvents(directory, session.id);
   const user = events.find((event) => event.kind === "user" && !event.steeringReceipt)!;
@@ -71,16 +71,16 @@ test("candidate parent binds to durable initial user across failed admission, St
   for (const call of events.filter((event) => event.kind === "tool_call")) {
     assert.deepEqual(call.parentCandidate, a); assert.equal(call.requestEventId, user.id);
   }
-  assert.deepEqual(pendingCandidateParentFromEvents(events), b);
+  assert.deepEqual(pendingArtifactParentFromEvents(events), b);
   await run();
   events = await loadSessionEvents(directory, session.id);
   assert.deepEqual(events.filter((event) => event.kind === "user" && !event.steeringReceipt).at(-1)!.parentCandidate, b);
-  assert.equal(pendingCandidateParentFromEvents(events), undefined);
+  assert.equal(pendingArtifactParentFromEvents(events), undefined);
   await select("continue", a);
   await assert.rejects(run(async (...args) => {
     await appendSessionEvent(...args); throw new Error("User receipt reply lost after commit");
   }), /User receipt reply lost/);
-  assert.equal(pendingCandidateParentFromEvents(await loadSessionEvents(directory, session.id)), undefined,
+  assert.equal(pendingArtifactParentFromEvents(await loadSessionEvents(directory, session.id)), undefined,
     "a committed user receipt consumes the parent even when its caller loses the reply");
 });
 

@@ -91,7 +91,7 @@ function createView(deps: Dependencies) {
     stop.textContent = t(operation.stopping ? "Stopping…" : "Stop");
     importRegion.disabled = locked || dirty || view?.stale === true;
     setupHint.textContent = conflict() ? t("The saved setup changed. Use saved setup before editing again.") : dirty
-      ? t("Save this setup or use saved values before filling or importing. Saving starts a new buffer; saved candidates remain in this Session.")
+      ? t("Save this setup or use saved values before filling or importing. Saving starts a new buffer; saved artifacts remain in this Session.")
       : generator.value === "model" && !modelReady() ? t("Choose a saved model with tool support, or an enabled MIDI generator.")
       : t("Fill generates ordered future sections. Refill manually after importing; no automatic playback is scheduled.");
     root.setAttribute("aria-busy", String(Boolean(pending)));

@@ -147,7 +147,7 @@
         "configure_midi_continuation",
         "fill_midi_continuation",
         "import_midi_continuation",
-        "select_candidate",
+        "select_artifact",
         "compact_session",
         "resume_audio_job",
         "download_audio_output",
@@ -7488,12 +7488,12 @@
           if (!response.ok) throw new Error(result.error || t("MIDI import preview failed."));
           return result;
         },
-        readSessionCandidates: async (input) => {
-          const response = await fetch(bridgeUrl("/session-candidates"), {
+        readSessionArtifacts: async (input) => {
+          const response = await fetch(bridgeUrl("/session-artifacts"), {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
           });
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error || t("Candidate comparison is unavailable."));
+          if (!response.ok) throw new Error(result.error || t("Artifact comparison is unavailable."));
           return result;
         },
         requestPluginApp: async (operation, input, signal) => {

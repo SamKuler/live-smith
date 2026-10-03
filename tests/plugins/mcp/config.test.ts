@@ -134,3 +134,16 @@ test("archive MCP discovery reads the exact declared component without affecting
   }));
   assert.deepEqual(pluginMcpConfigFromArchive(archive)?.servers.map(({ id }) => id), ["local"]);
 });
+
+test("packaged remote OAuth retains public client defaults across supported Plugin formats", () => {
+  for (const sourceFormat of ["agent-plugins-1.0", "codex", "claude"] as const) {
+    const parsed = parsePluginMcpConfig(bytes({ $schema: PORTABLE_MCP_SCHEMA, mcpServers: {
+      dynamic: { type: "streamable-http", url: "https://example.test/mcp", oauth: {} },
+      registered: { type: "streamable-http", url: "https://example.test/mcp", oauth: { clientId: "fixture-client", callbackPort: 49321 } },
+      unsupported: { type: "streamable-http", url: "https://example.test/mcp", oauth: { clientSecret: "not-supported" } },
+      conflict: { type: "streamable-http", url: "https://example.test/mcp", oauth: {}, headers: { Authorization: "Bearer ${TOKEN}" } },
+    } }), { sourceFormat });
+    assert.deepEqual(parsed.servers.map((server) => server.type === "streamable-http" && server.oauth), [{}, { clientId: "fixture-client", callbackPort: 49321 }]);
+    assert.deepEqual(parsed.issues.map((issue) => issue.serverId), ["unsupported", "conflict"]);
+  }
+});

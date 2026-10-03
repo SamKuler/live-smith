@@ -28,7 +28,7 @@ async function requireActiveSession(input: Runtime): Promise<void> {
   throwIfAborted(input.signal);
 }
 
-/** Configuration replaces only the buffer record; previously saved candidates remain available. */
+/** Configuration replaces only the buffer record; previously saved artifacts remain available. */
 export async function configureMidiContinuation(input: Runtime & {
   expectedBufferId: string | null; sourceClips: MidiContinuationClipRef[]; segmentBeats: number;
   capacity: number; generator: MidiContinuationGenerator; prompt: string;
@@ -109,7 +109,7 @@ export async function fillMidiContinuation(input: Runtime & {
   } catch (error) {
     await appendSessionEvent(input.storageDirectory, input.sessionId, { kind: "tool_result", name: "fill_midi_continuation",
       content: JSON.stringify({ status: input.signal.aborted ? "cancelled" : "failed", bufferId: buffer.id,
-        message: "Existing saved MIDI candidates were retained." }) }).catch(() => {});
+        message: "Existing saved MIDI artifacts were retained." }) }).catch(() => {});
     throw error;
   }
 }

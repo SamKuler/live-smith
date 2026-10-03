@@ -17,7 +17,7 @@ function pluginPackage(): InstalledPluginPackage {
       $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
       mcpServers: {
         local: { type: "stdio", command: "./bin/converter" },
-        remote: { type: "streamable-http", url: "https://api.example.com/private/path?token=hidden" },
+        remote: { type: "streamable-http", url: "https://api.example.com/private/path?token=hidden", oauth: { clientId: "fixture-client", callbackPort: 49321 } },
         legacy: { type: "sse", url: "https://legacy.example.com/sse" },
       },
     })),
@@ -51,7 +51,7 @@ test("Plugin wire view exposes capabilities and approval without private runtime
       { id: "local", type: "stdio", approved: false, artifactInputApproved: false,
         artifactOutputApproved: false, target: "./bin/converter", args: [], envNames: [], credentialFields: [] },
       { id: "remote", type: "streamable-http", approved: true, artifactInputApproved: false,
-        artifactOutputApproved: false, target: "https://api.example.com", credentialFields: [] },
+        artifactOutputApproved: false, target: "https://api.example.com", credentialFields: [], oauth: { clientId: "fixture-client", callbackPort: 49321 } },
     ],
     unsupportedComponents: [],
     issues: ["invalid_skill", "unsupported_mcp_transport"],

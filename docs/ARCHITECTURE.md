@@ -848,7 +848,7 @@ are retained only in the source artifact and never materialize Set mutations.
 `app/midi/` owns observed Clip context, generation, and ordered buffer commands.
 The shared `agent/midi-continuation-contracts.ts` DTO is consumed by command
 parsing, storage and browser validation. The Session's private MIDI directory
-owns one atomic `continuation.json` record; immutable source/candidate SMFs use
+owns one atomic `continuation.json` record; immutable source/output SMFs use
 the existing artifact store and quotas. The Session send fence serializes setup,
 Fill and import. Stop and Session admission use the existing command lifecycle.
 
@@ -881,7 +881,7 @@ the next slot. Remote MCP endpoints cannot use this local file contract.
 
 Fill records explicit tool-call/result events, never synthetic chat user events.
 Per-section calls bind `parentCandidate` to the actual preceding artifact and
-`requestEventId` to the Fill event, leaving the next-chat candidate selection
+`requestEventId` to the Fill event, leaving the next-chat artifact selection
 intact. Each completed slot is saved before generating another. Failure or Stop
 preserves completed slots and immutable artifacts. Source checks around byte
 persistence cannot make external Live edits atomic; publication and import
@@ -894,7 +894,7 @@ boundary; cancellation does not consume it. Explicit placement updates the ancho
 for subsequent suggested positions. There is no playback clock, launch scheduler
 or automatic replenishment; Fill/Refill and Use next are user actions.
 
-### Saved candidate comparison and lineage
+### Saved artifact comparison and lineage
 
 Ordinary chat registers `app/midi/midi-artifact-tools.ts` alongside the existing
 artifact list/inspect tools whenever private storage is available. Plugin discovery
@@ -904,7 +904,7 @@ tracks use the same authoring parser and SMF writer as continuation generation.
 Saving needs no Live write scope; import retains its separate approval boundary.
 The selected request parent fixes the revision source for model and Plugin saves.
 Host-owned source/conditioning snapshots remain readable by artifact tools but
-are excluded from candidate comparison. Each future section is an independent
+are excluded from artifact comparison. Each future section is an independent
 version group, while explicit revisions of a section preserve its existing group.
 
 MIDI metadata stores a version group, monotonic number and optional parent ID.
@@ -920,16 +920,17 @@ Resource-only tickets bind the media kind and expire independently of the bridge
 control token. Attaching uses the existing upload admission and pending-attachment
 flow, including during an active model request.
 
-`app/session/session-candidates.ts` projects Session-owned MIDI artifacts and
+`app/session/session-artifacts.ts` projects Session-owned MIDI artifacts and
 local audio result assets into paginated comparison views. It creates no media
-copies or candidate database. Audio bytes stay behind the existing authenticated
+copies or artifact database. Audio bytes stay behind the existing authenticated
 asset route; MIDI previews contain at most 256 notes and bounded source-part
 summaries. `inspect_midi_artifact` in the host artifact toolset reads one exact
 source part with a 256-note page and `nextOffset`, allowing subsequent chat turns
 to inspect the saved material without first importing it into Live.
 
-The `candidate` Session event records an explicit `prefer` or `continue` selection
-using a typed `{ kind, id }` reference. A null reference clears that selection.
+The persisted `candidate`, `candidateSelection`, and `parentCandidate` names
+remain compatible with existing Session histories. The `candidate` event records
+an explicit `prefer` or `continue` selection using a typed `{ kind, id }` reference. A null reference clears that selection.
 Preferences and pending continuation survive compaction and reload because they
 are reconstructed from durable events. Only a successfully persisted initial
 chat `user` event consumes pending continuation and stores its `parentCandidate`.
@@ -940,10 +941,10 @@ the initial message commit therefore leaves the source available for retry.
 
 Generation provenance references the original tool-call and result events and
 their public arguments. Owned artifact or audio-job IDs correlate the result;
-overlapping same-name calls keep their provenance unknown. Candidate views never
+overlapping same-name calls keep their provenance unknown. Artifact views never
 read current Connection credentials or pretend missing historical arguments are
 known. Shortened parameter previews retain the original event reference. A
-preferred candidate does not authorize generation or mutation: Continue prepares
+preferred artifact does not authorize generation or mutation: Continue prepares
 a composer draft, MIDI import uses the ordinary mapped import path, and audio
 import uses the existing chat action/preflight path. Read-only comparison and
 playback remain available during generation; selection commands share the Session
@@ -1096,6 +1097,13 @@ system-browser interaction; runtime discovery and tool calls may only read and
 refresh an existing account. Missing authorization becomes a per-Connection
 `authorization_required` issue without disrupting healthy sources. `/state`
 projects local account status and generation without network access.
+
+`plugins/mcp/config.ts` validates packaged remote `oauth` declarations against
+`mcp/oauth-contract.ts`. The Plugin view carries public defaults into new
+Connection drafts; saved Connections remain the runtime authentication owner.
+A declared OAuth server requires a named Connection and cannot enter anonymous
+discovery. Public client ID and callback port are supported across package
+formats; unknown OAuth fields and manual Authorization headers are rejected.
 
 `app/plugins/mcp-oauth-owner.ts` is the canonical owner resolver for interactive
 login, silent token use, and status. The private fingerprint binds the Connection,

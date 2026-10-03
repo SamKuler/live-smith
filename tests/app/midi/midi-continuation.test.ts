@@ -6,7 +6,7 @@ import { generateMidiContinuationWithModel } from "../../../src/app/midi/midi-co
 import { readMidiContinuation, saveMidiArtifact, readMidiArtifact, listMidiArtifacts } from "../../../src/storage/midi-artifacts.js";
 import { loadSessionEvents } from "../../../src/storage/events.js";
 import { createSessionMidiArtifactToolset } from "../../../src/app/midi/midi-artifact-tools.js";
-import { candidateGenerationsFromEvents, listSessionCandidates } from "../../../src/app/session/session-candidates.js";
+import { artifactGenerationsFromEvents, listSessionArtifacts } from "../../../src/app/session/session-artifacts.js";
 import { captureMidiContinuationContext } from "../../../src/app/midi/midi-continuation-context.js";
 import { continuationHarness } from "./support/continuation-harness.js";
 
@@ -35,12 +35,12 @@ test("Fill creates ordered sections, consumes only the applied head and refills 
   assert.equal(refilled.insertBeat + refilled.queue[0]!.sequence * refilled.segmentBeats, 24);
   const events = await loadSessionEvents(h.directory, h.session.id);
   assert.equal(events.some((event) => event.kind === "user"), false, "Fill must not consume an unrelated next-chat source");
-  const generations = candidateGenerationsFromEvents(events);
+  const generations = artifactGenerationsFromEvents(events);
   assert.equal(generations.get(`midi:${refilled.queue[1]!.artifactRef}`)?.parent?.id, first.queue[1]!.artifactRef);
   assert.equal((await readMidiArtifact(h.directory, h.session.id, first.queue[0]!.artifactRef)).artifact.generationKind, "continuation");
-  const candidates = await listSessionCandidates(h);
+  const candidates = await listSessionArtifacts(h);
   assert.equal(candidates.total, 3, "internal conditioning snapshots are not generated candidates");
-  for (const candidate of candidates.candidates) {
+  for (const candidate of candidates.artifacts) {
     assert.equal(candidate.version!.number, 1, "future sections start independent revision groups");
     assert.equal(candidate.version!.groupId, candidate.ref.id);
   }

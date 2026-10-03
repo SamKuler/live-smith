@@ -3,10 +3,10 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
-import { pendingCandidateParentFromEvents, preferredCandidateFromEvents } from "../../../src/agent/candidate-contracts.js";
+import { pendingArtifactParentFromEvents, preferredArtifactFromEvents } from "../../../src/agent/artifact-contracts.js";
 import { handleAgentRequest, type AgentModelTurnRequester } from "../../../src/app/agent-request.js";
 import { runtimeProfileForSavedProfile } from "../../../src/app/model/model-request.js";
-import { listSessionCandidates, selectSessionCandidate } from "../../../src/app/session/session-candidates.js";
+import { listSessionArtifacts, selectSessionArtifact } from "../../../src/app/session/session-artifacts.js";
 import type { DirectApiProfile } from "../../../src/model/profile.js";
 import { createHostAbortController } from "../../../src/runtime/host.js";
 import { loadSessionEvents, type SessionEvent } from "../../../src/storage/events.js";
@@ -74,12 +74,12 @@ test("ordinary chat authors multitrack MIDI in an empty read-only Session and in
   const saved = await readMidiArtifact(h.directory, h.session.id, ref);
   assert.deepEqual(saved.artifact.source, { kind: "model", profileId: "profile", model: "model" });
   assert.equal(saved.artifact.toolName, "save_midi_artifact");
-  assert.equal(saved.parsed.durationBeats, 8, "the saved candidate keeps its trailing silence");
+  assert.equal(saved.parsed.durationBeats, 8, "the saved artifact keeps its trailing silence");
   assert.deepEqual(saved.parsed.parts.map((part) => part.notes), authored().tracks.map((track) => track.notes));
-  const candidates = await listSessionCandidates(h.input);
+  const candidates = await listSessionArtifacts(h.input);
   assert.equal(candidates.total, 1);
-  assert.equal(candidates.candidates[0]!.generation?.toolName, "save_midi_artifact");
-  assert.deepEqual(JSON.parse(candidates.candidates[0]!.generation!.parameters), authored());
+  assert.equal(candidates.artifacts[0]!.generation?.toolName, "save_midi_artifact");
+  assert.deepEqual(JSON.parse(candidates.artifacts[0]!.generation!.parameters), authored());
   h.assertLiveUnchanged();
 });
 
@@ -90,7 +90,7 @@ test("an admitted chat revision stays bound to v1 when preferred and next-chat s
   const before = await readMidiArtifact(h.directory, h.session.id, original.id);
   const a = { kind: "midi" as const, id: original.id };
   const b = { kind: "midi" as const, id: alternative.id };
-  await selectSessionCandidate({ ...h.input, selection: { action: "continue", candidate: a } });
+  await selectSessionArtifact({ ...h.input, selection: { action: "continue", candidate: a } });
   let turn = 0;
   let ref = "";
   await h.run(async (request) => {
@@ -99,8 +99,8 @@ test("an admitted chat revision stays bound to v1 when preferred and next-chat s
     return done();
   }, async (event) => {
     if (event.kind === "user" && !event.steeringReceipt) {
-      await selectSessionCandidate({ ...h.input, selection: { action: "prefer", candidate: b } });
-      await selectSessionCandidate({ ...h.input, selection: { action: "continue", candidate: b } });
+      await selectSessionArtifact({ ...h.input, selection: { action: "prefer", candidate: b } });
+      await selectSessionArtifact({ ...h.input, selection: { action: "continue", candidate: b } });
     }
   });
   assert.equal(turn, 2);
@@ -113,9 +113,9 @@ test("an admitted chat revision stays bound to v1 when preferred and next-chat s
   assert.deepEqual(user.parentCandidate, a);
   assert.deepEqual(savedCall.parentCandidate, a);
   assert.equal(savedCall.requestEventId, user.id);
-  assert.deepEqual(pendingCandidateParentFromEvents(events), b);
-  assert.deepEqual(preferredCandidateFromEvents(events), b);
-  const candidate = (await listSessionCandidates(h.input)).candidates.find((entry) => entry.ref.id === ref)!;
+  assert.deepEqual(pendingArtifactParentFromEvents(events), b);
+  assert.deepEqual(preferredArtifactFromEvents(events), b);
+  const candidate = (await listSessionArtifacts(h.input)).artifacts.find((entry) => entry.ref.id === ref)!;
   assert.deepEqual(candidate.parent, a);
   assert.equal(candidate.generation?.requestEventId, user.id);
   h.assertLiveUnchanged();
@@ -148,7 +148,7 @@ test("invalid authored MIDI returns tool failures without saving candidates or c
   const after = await readMidiArtifact(h.directory, h.session.id, existing.id);
   assert.deepEqual(after.artifact, before.artifact);
   assert.deepEqual(after.bytes, before.bytes);
-  assert.equal((await listSessionCandidates(h.input)).total, 1);
+  assert.equal((await listSessionArtifacts(h.input)).total, 1);
   h.assertLiveUnchanged();
 });
 

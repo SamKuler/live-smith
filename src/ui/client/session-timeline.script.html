@@ -31,7 +31,7 @@
         month: "short",
       });
       const inspectorGroups = {
-        session: ["context", "skills", "tools", "candidates"],
+        session: ["context", "skills", "tools", "artifacts"],
         settings: ["agent", "extensions", "app"],
       };
       const inspectorTabs = Object.values(inspectorGroups).flat();
@@ -2973,7 +2973,7 @@
       }
 
       function eventLabel(event) {
-        if (event.kind === "candidate") return t("Candidate selection");
+        if (event.kind === "candidate") return t("Artifact selection");
         if (event.kind === "user") return t("You");
         if (event.kind === "assistant") return "Live Smith";
         if (event.kind === "reasoning") return t("Thinking");

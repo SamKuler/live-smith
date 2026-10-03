@@ -6,7 +6,7 @@ import { isSafeStorageId } from "../../storage/id.js";
 import { midiArtifactVersion, saveMidiArtifact, inspectMidiArtifacts, readMidiArtifact, midiArtifactPartSummaries, type MidiArtifact } from "../../storage/midi-artifacts.js";
 import { midiArtifactAuthoringSchema, parseMidiArtifactAuthoringArguments } from "./midi-artifact-authoring.js";
 
-/** Saves model-authored candidates independently of Live mutation. */
+/** Saves model-authored artifacts independently of Live mutation. */
 export function createMidiArtifactAuthoringToolset(input: {
   storageDirectory: string;
   sessionId: string;
@@ -18,7 +18,7 @@ export function createMidiArtifactAuthoringToolset(input: {
     id: "live-smith.midi-authoring",
     tools: () => [{ type: "function", function: {
       name: "save_midi_artifact",
-      description: "Save a multitrack MIDI candidate in this Session without changing Live. Supply named tracks, MIDI channels and note timing in quarter-note beats relative to the file start. durationBeats includes trailing silence. To revise a saved candidate, pass its artifactRef as revisionOf; the next-chat source selected by the user is applied automatically. Every revision creates a new immutable version. Use list_session_artifacts and inspect_midi_artifact to read source notes. The user can compare, export, attach or import saved versions.",
+      description: "Save a multitrack MIDI artifact in this Session without changing Live. Supply named tracks, MIDI channels and note timing in quarter-note beats relative to the file start. durationBeats includes trailing silence. To revise a saved artifact, pass its artifactRef as revisionOf; the next-chat source selected by the user is applied automatically. Every revision creates a new immutable version. Use list_session_artifacts and inspect_midi_artifact to read source notes. The user can compare, export, attach or import saved versions.",
       parameters: { ...midiArtifactAuthoringSchema,
         required: [...midiArtifactAuthoringSchema.required, "durationBeats"],
         properties: { ...midiArtifactAuthoringSchema.properties,
@@ -31,7 +31,7 @@ export function createMidiArtifactAuthoringToolset(input: {
       let bytes: Uint8Array, label: string, revisionOf: string | undefined;
       try {
         const value: unknown = JSON.parse(call.arguments);
-        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Provide a MIDI candidate object.");
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Provide a MIDI artifact object.");
         const args = value as Record<string, unknown>;
         if (Object.keys(args).some((key) => !["label", "tracks", "durationBeats", "revisionOf"].includes(key)) ||
             typeof args.durationBeats !== "number" ||
@@ -41,12 +41,12 @@ export function createMidiArtifactAuthoringToolset(input: {
         }
         revisionOf = input.revisionOf ?? args.revisionOf as string | undefined;
         const parsed = parseMidiArtifactAuthoringArguments({ label: args.label, tracks: args.tracks });
-        if (!parsed.tracks.some((track) => track.notes.length)) throw new Error("A saved MIDI candidate must contain at least one note.");
+        if (!parsed.tracks.some((track) => track.notes.length)) throw new Error("A saved MIDI artifact must contain at least one note.");
         label = parsed.label;
         bytes = writeStandardMidi({ tracks: parsed.tracks, durationBeats: args.durationBeats, signal: input.signal });
       } catch (error) {
         throwIfAborted(input.signal);
-        return { content: error instanceof Error ? error.message : "Invalid MIDI candidate.", failed: true, invalidArguments: true };
+        return { content: error instanceof Error ? error.message : "Invalid MIDI artifact.", failed: true, invalidArguments: true };
       }
       try {
         const artifact = await saveMidiArtifact(input.storageDirectory, input.sessionId, {
@@ -57,7 +57,7 @@ export function createMidiArtifactAuthoringToolset(input: {
         return { content: JSON.stringify({ artifacts: [midiArtifactView(artifact)] }) };
       } catch {
         throwIfAborted(input.signal);
-        return { content: "MIDI candidate storage could not be confirmed. Check this Session's saved artifacts before retrying.", failed: true, stop: true };
+        return { content: "MIDI artifact storage could not be confirmed. Check this Session's saved artifacts before retrying.", failed: true, stop: true };
       }
     },
   };

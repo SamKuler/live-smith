@@ -3,7 +3,7 @@ import test, { type TestContext } from "node:test";
 import { URL } from "node:url";
 import { runAgentFlow, type AgentFlowDependencies } from "../../../src/app/agent-flow.js";
 import type { MidiContinuationView } from "../../../src/agent/midi-continuation-contracts.js";
-import { pendingCandidateParentFromEvents } from "../../../src/agent/candidate-contracts.js";
+import { pendingArtifactParentFromEvents } from "../../../src/agent/artifact-contracts.js";
 import { loadSessionEvents } from "../../../src/storage/events.js";
 import { readMidiArtifact, readMidiContinuation } from "../../../src/storage/midi-artifacts.js";
 import { saveSavedProfile } from "../../../src/storage/settings.js";
@@ -56,11 +56,11 @@ test("real command flow loads sources, configures, generates and refills after a
   await withFlow(t, async ({ url, h }) => {
     let current = await configure(url); const sessionId = current.activeSessionId; const bufferId = current.midiContinuation!.buffer!.id;
     const source = current.midiContinuation!.buffer!.sourceArtifactRef;
-    await state(await command(url, { kind: "select_candidate", sessionId, selection: { action: "continue", candidate: { kind: "midi", id: source } } }));
+    await state(await command(url, { kind: "select_artifact", sessionId, selection: { action: "continue", candidate: { kind: "midi", id: source } } }));
     current = await state(await command(url, { kind: "fill_midi_continuation", sessionId, bufferId }));
     const buffer = current.midiContinuation!.buffer!;
     assert.equal(buffer.queue.length, 2); assert.equal(modelCalls, 2); assert.equal(current.midiContinuation!.stale, false);
-    assert.equal(pendingCandidateParentFromEvents(await loadSessionEvents(h.directory, sessionId))?.id, source);
+    assert.equal(pendingArtifactParentFromEvents(await loadSessionEvents(h.directory, sessionId))?.id, source);
     await state(await command(url, { kind: "fill_midi_continuation", sessionId, bufferId })); assert.equal(modelCalls, 2);
     const head = buffer.queue[0]!;
     const parsed = await readMidiArtifact(h.directory, sessionId, head.artifactRef);

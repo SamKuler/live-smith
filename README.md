@@ -61,26 +61,26 @@ and leaves the Set's tempo and meter unchanged. Import follows the Session's
 Edit Scope and approval mode, without requiring a model request. An interrupted
 import preserves recovery information and must be inspected before retrying.
 
-**Session → Candidates** (also available from the composer's **Candidates** button) collects this Session's downloaded audio and saved
-MIDI results. Choose up to four candidates to compare audio playback, MIDI note
+**Session → Artifacts** (also available from the composer's **Artifacts** button) collects this Session's downloaded audio and saved
+MIDI results. Choose up to four artifacts to compare audio playback, MIDI note
 previews, source parts and recorded generation parameters. Mark a preferred
-candidate explicitly; that selection survives reopening the Session. A missing
+artifact explicitly; that selection survives reopening the Session. A missing
 historical tool call leaves its parameters unavailable. MIDI previews share the
 same pitch and beat scales across selected versions. Changing the comparison or
 refreshing it preserves audio position and MIDI import drafts. **Back to chat**
-pauses candidate audio and returns to the composer.
+pauses artifact audio and returns to the composer.
 
 **Continue in chat** (or **Create next version** for MIDI) selects a source for the next chat request and adds a draft
 to the composer. Add the desired changes and send it through the usual model and
 tool permissions. The source is consumed when that initial user message is saved;
 Steer and manual tool calls do not consume it. The resulting tool calls retain
-their parent candidate even if a later preferred choice changes. Clearing the
-next-request source leaves the original files intact. MIDI candidates use the
+their parent artifact even if a later preferred choice changes. Clearing the
+next-request source leaves the original files intact. MIDI artifacts use the
 same mapped import preview; audio import is prepared in chat and uses the existing
-scoped audio action and approval preview. Candidate comparison does not audition
+scoped audio action and approval preview. Artifact comparison does not audition
 Live instruments or roll back applied changes.
 
-Ask the current model to save a MIDI candidate to generate a file without changing
+Ask the current model to save a MIDI artifact to generate a file without changing
 Live; no external MIDI generator is required. MIDI revisions are grouped as
 **v1, v2, …**. Creating a revision preserves every
 previous file, including when starting from an older version. **Attach to message**
@@ -98,7 +98,7 @@ vacant slots; each section uses the original context and its preceding section.
 The current model uses the Session's saved creative brief. **Import next section** offers the
 usual part-to-track import preview. Only a successful import advances the buffer;
 cancelling the preview leaves it intact. **Fill buffer** continues from the last saved
-section, and **Stop** retains completed candidates.
+section, and **Stop** retains completed artifacts.
 
 Source notes, Clip markers/loops and Live tempo are checked again before generation
 and import. Changed sources or generator configuration require a new setup. The
@@ -107,7 +107,7 @@ sections are explicit actions. Source capture exports nominal MIDI notes with
 marker cropping and bounded loop expansion; instrument sound, probability and
 velocity randomization are not rendered. The context is limited to 16 source Clips
 and 4096 expanded notes. Each future section starts its own version group; revising
-one of its saved candidates does not replace a queued section. Local tool conditioning retains original and previous
+one of its saved artifacts does not replace a queued section. Local tool conditioning retains original and previous
 parts as separate SMF tracks within the existing 32-track/4096-note file limits.
 
 Choose **Settings → App → Interface language** to use **English**, **简体中文**, or follow the
@@ -513,6 +513,11 @@ individual arguments. Local commands run without a shell. Only HTTPS and
 loopback HTTP endpoints are supported; legacy SSE is not supported.
 
 Remote MCP connections offer **Manual headers** or **OAuth** authentication.
+Plugin servers can declare `oauth: {}` for discovery-based registration, or
+`oauth: { "clientId": "…", "callbackPort": 49321 }` for a registered public
+client. New connections inherit these defaults and use the packaged MCP URL;
+saved authentication choices take precedence. Unsupported OAuth fields are
+reported as invalid server configuration.
 Save an OAuth connection, then select **Sign in** to authorize it in the system
 browser. Live Smith uses browser PKCE and the server's discovery metadata. Servers
 with dynamic client registration choose a local callback port automatically;

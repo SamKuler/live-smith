@@ -289,9 +289,10 @@ export function createPluginValidators({ isPluginConfigView, isPluginParameterPa
       (value.userConfig !== undefined && !isPluginConfigView(value.userConfig)) ||
       !isWireArray(value.mcpServers) || value.mcpServers.length > 32 ||
       !value.mcpServers.every((server) => isWireRecord(server) &&
-        hasOnlyWireKeys(server, ["id", "type", "approved", "artifactInputApproved", "artifactOutputApproved", "target", "args", "cwd", "envNames", "credentialFields"]) &&
+        hasOnlyWireKeys(server, ["id", "type", "approved", "artifactInputApproved", "artifactOutputApproved", "target", "args", "cwd", "envNames", "credentialFields", "oauth"]) &&
         typeof server.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(server.id) &&
         includes(["stdio", "streamable-http"], server.type) &&
+        (server.oauth === undefined || server.type === "streamable-http" && isMcpOAuthConfiguration(server.oauth)) &&
         typeof server.approved === "boolean" &&
         typeof server.artifactInputApproved === "boolean" &&
         typeof server.artifactOutputApproved === "boolean" &&

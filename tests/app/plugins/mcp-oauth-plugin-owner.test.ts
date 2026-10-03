@@ -23,10 +23,15 @@ test("named package OAuth replaces anonymous discovery and unrelated Plugin pref
         style: { type: "string", title: "Style", description: "Creative style", default: "ambient" },
         tenant: { type: "string", title: "Workspace", description: "Resource workspace", default: "first" },
       } } } })),
-    "mcp.json": strToU8(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { remote: { type: "streamable-http", url: server.origin + "/mcp?root=${PLUGIN_ROOT}&data=${PLUGIN_DATA}", headers: { "X-Tenant": "${user_config.tenant}" } } } })),
+    "mcp.json": strToU8(JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json", mcpServers: { remote: { type: "streamable-http", url: server.origin + "/mcp?root=${PLUGIN_ROOT}&data=${PLUGIN_DATA}", oauth: {}, headers: { "X-Tenant": "${user_config.tenant}" } } } })),
   }));
   await setPluginEnabled(directory, plugin.id, true);
   await setPluginMcpServerApproved(directory, plugin.id, "remote", true);
+  const unboundSession = await createSession(directory, { title: "Unbound", projectKey: "project", scope: { kind: "track", identity: "track", label: "Bass" } });
+  const unbound = await createRequestPluginTools({ storageDirectory: directory, sessionId: unboundSession.id, signal: new AbortController().signal });
+  assert.equal(server.requests.length, 0, "a declared OAuth server must not be discovered anonymously");
+  assert.ok(unbound.issues.some((issue) => issue.serverId === "remote" && issue.code === "invalid_configuration"));
+  await unbound.close();
   await saveGlobalSettings(directory, { integrationConnections: { action: "upsert", expectedRevision: "0", connection: {
     id: "plugin-account", name: "Plugin account", enabled: true, pluginId: plugin.id,
     configuration: { serverId: "remote", pluginDigest: plugin.sha256 }, oauth: {},

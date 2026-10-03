@@ -200,6 +200,7 @@ export async function createRequestPluginTools(input: {
               .filter((connection) => connection.enabled && connection.pluginId === metadata.id &&
                 connection.configuration.pluginDigest === runtime.plugin.sha256) ?? [];
             const unboundIds = config?.servers.filter((server) =>
+              !(server.type === "streamable-http" && server.oauth) &&
               !(server.type === "streamable-http" && settings.integrationConnections?.connections.some((connection) => connection.pluginId === metadata.id &&
                 connection.configuration?.serverId === server.id && connection.configuration.pluginDigest === runtime.plugin.sha256)) &&
               !mcpCredentialFields(server).some((field) => field.required)).map((server) => server.id) ?? [];
@@ -215,7 +216,8 @@ export async function createRequestPluginTools(input: {
             }
             const selectedIds = new Set(selections.flatMap((selection) => selection.serverIds));
             for (const server of config?.servers ?? []) {
-              if (!selectedIds.has(server.id) && mcpCredentialFields(server).some((field) => field.required)) {
+              if (!selectedIds.has(server.id) && (server.type === "streamable-http" && server.oauth ||
+                  mcpCredentialFields(server).some((field) => field.required))) {
                 issues.push({ pluginId: metadata.id, serverId: server.id,
                   code: "invalid_configuration", message: "MCP server requires an enabled named connection." });
               }

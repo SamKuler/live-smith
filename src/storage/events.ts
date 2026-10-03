@@ -24,7 +24,7 @@ import { isModelCitation, MAX_MODEL_CITATION_COUNT } from "../model/citations.js
 import type { ModelCitation, ModelHostedWebSearch } from "../model/contracts.js";
 import { isModelHostedWebSearch } from "../model/web-search.js";
 import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
-import { isCandidateRef, isCandidateSelection, type CandidateRef, type CandidateSelection } from "../agent/candidate-contracts.js";
+import { isArtifactRef, isArtifactSelection, type ArtifactRef, type ArtifactSelection } from "../agent/artifact-contracts.js";
 
 export const MAX_USER_EVENT_ATTACHMENT_COUNT =
   MAX_PENDING_ATTACHMENT_COUNT;
@@ -81,8 +81,8 @@ export interface SessionEventInput {
   citations?: ModelCitation[];
   webSearch?: ModelHostedWebSearch;
   steeringReceipt?: SessionSteeringReceipt;
-  candidateSelection?: CandidateSelection;
-  parentCandidate?: CandidateRef;
+  candidateSelection?: ArtifactSelection;
+  parentCandidate?: ArtifactRef;
   requestEventId?: string;
 }
 
@@ -300,8 +300,8 @@ function isSessionEvent(
     typeof record.createdAt === "string" &&
     isSessionEventKind(record.kind) &&
     typeof record.content === "string" &&
-    (record.kind === "candidate" ? isCandidateSelection(record.candidateSelection) : record.candidateSelection === undefined) &&
-    (record.parentCandidate === undefined || (record.kind === "user" || record.kind === "tool_call") && isCandidateRef(record.parentCandidate)) &&
+    (record.kind === "candidate" ? isArtifactSelection(record.candidateSelection) : record.candidateSelection === undefined) &&
+    (record.parentCandidate === undefined || (record.kind === "user" || record.kind === "tool_call") && isArtifactRef(record.parentCandidate)) &&
     (record.requestEventId === undefined || record.kind === "tool_call" && isSafeStorageId(record.requestEventId)) &&
     (record.name === undefined || typeof record.name === "string") &&
     (record.recovery === undefined || (

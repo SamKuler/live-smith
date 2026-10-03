@@ -89,7 +89,7 @@
                   </div>
                 </div>
                 <button id="creativeBriefButton" class="creative-brief-button composer-control" type="button" aria-label="Creative brief" aria-controls="creativeBriefSection" data-i18n-aria-label="Creative brief" data-i18n="Brief">Brief</button>
-                <button id="candidatesButton" class="composer-control" type="button" aria-controls="candidatesPanel" aria-label="Compare saved candidates" title="Compare saved candidates" onclick="LiveSmithUI.openInspector('candidates')" data-i18n-aria-label="Compare saved candidates" data-i18n-title="Compare saved candidates" data-i18n="Candidates">Candidates</button>
+                <button id="artifactsButton" class="composer-control" type="button" aria-controls="artifactsPanel" aria-label="Compare saved artifacts" title="Compare saved artifacts" onclick="LiveSmithUI.openInspector('artifacts')" data-i18n-aria-label="Compare saved artifacts" data-i18n-title="Compare saved artifacts" data-i18n="Artifacts">Artifacts</button>
                 <label class="approval-mode-label" title="Manual requests approval for every Apply request." data-i18n-title="Manual requests approval for every Apply request.">
                   <span class="approval-mode-copy visually-hidden" data-i18n="Apply">Apply</span>
                   <select id="approvalMode" name="approvalMode" class="approval-mode-select composer-select composer-control" aria-label="Apply approval mode" onchange="LiveSmithUI.saveApprovalMode()" data-i18n-aria-label="Apply approval mode">
@@ -149,7 +149,7 @@
             <button id="contextTab" type="button" role="tab" aria-selected="false" aria-controls="contextPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('context')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Context">Context</button>
             <button id="skillsTab" type="button" role="tab" aria-selected="false" aria-controls="skillsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('skills')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Skills">Skills</button>
             <button id="toolsTab" type="button" role="tab" aria-selected="false" aria-controls="toolsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('tools')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Tools">Tools</button>
-            <button id="candidatesTab" type="button" role="tab" aria-selected="false" aria-controls="candidatesPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('candidates')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Candidates">Candidates</button>
+            <button id="artifactsTab" type="button" role="tab" aria-selected="false" aria-controls="artifactsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('artifacts')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" hidden data-i18n="Artifacts">Artifacts</button>
             <button id="agentTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="agentPanel" tabindex="0" onclick="LiveSmithUI.openInspector('agent')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="Agent">Agent</button>
             <button id="extensionsTab" type="button" role="tab" aria-selected="false" aria-controls="extensionsPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('extensions')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="Extensions">Extensions</button>
             <button id="appTab" type="button" role="tab" aria-selected="false" aria-controls="appPanel" tabindex="-1" onclick="LiveSmithUI.openInspector('app')" onkeydown="LiveSmithUI.handleInspectorTabKeydown(event)" data-i18n="App">App</button>
@@ -782,11 +782,11 @@
               </section>
             </div>
           </div>
-          <div id="candidatesPanel" class="tab-panel" role="tabpanel" aria-labelledby="candidatesTab" tabindex="0" hidden>
+          <div id="artifactsPanel" class="tab-panel" role="tabpanel" aria-labelledby="artifactsTab" tabindex="0" hidden>
             <div class="settings">
-              <section id="sessionCandidates" class="settings-scope" aria-labelledby="candidateHeading">
-                <div class="inspector-scope-header"><h2 id="candidateHeading" data-i18n="Candidates">Candidates</h2><button id="closeCandidatesButton" type="button" class="secondary inspector-heading-action" onclick="LiveSmithUI.returnToChat()" data-i18n="Back to chat">Back to chat</button></div>
-                <section id="candidateComparison" aria-label="Candidate comparison" data-i18n-aria-label="Candidate comparison"></section>
+              <section id="sessionArtifacts" class="settings-scope" aria-labelledby="artifactHeading">
+                <div class="inspector-scope-header"><h2 id="artifactHeading" data-i18n="Artifacts">Artifacts</h2><button id="closeArtifactsButton" type="button" class="secondary inspector-heading-action" onclick="LiveSmithUI.returnToChat()" data-i18n="Back to chat">Back to chat</button></div>
+                <section id="artifactComparison" aria-label="Artifact comparison" data-i18n-aria-label="Artifact comparison"></section>
               </section>
             </div>
           </div>

@@ -371,7 +371,7 @@ export interface ChatBridge {
 
 interface ChatBridgeOptions {
   readMidiArtifact?(sessionId: string, artifactRef: string, signal: AbortSignal): Promise<{ bytes: Uint8Array; fileName: string }>;
-  readSessionCandidates?(input: { sessionId: string; offset: number }, signal: AbortSignal): Promise<unknown>;
+  readSessionArtifacts?(input: { sessionId: string; offset: number }, signal: AbortSignal): Promise<unknown>;
   prepareMidiImport?(input: { sessionId: string; artifactRef: string }, signal: AbortSignal): Promise<unknown>;
   readAttachment?(sessionId: string, attachmentId: string, signal: AbortSignal): Promise<{
     attachment: SessionAttachmentRef; bytes: Uint8Array;
@@ -1591,7 +1591,7 @@ export async function createChatBridge(
         "/session-model-capabilities",
         "/session-tools",
         "/midi-import-preview",
-        "/session-candidates",
+        "/session-artifacts",
         "/confirm",
         "/send",
         "/steer",
@@ -2042,16 +2042,16 @@ export async function createChatBridge(
         return;
       }
 
-      if (request.method === "POST" && url.pathname === "/session-candidates") {
-        if (!options.readSessionCandidates) { request.resume(); response.writeHead(404).end("Not found"); return; }
-        assertExactQueryParameters(url, ["token"], "Session candidates");
+      if (request.method === "POST" && url.pathname === "/session-artifacts") {
+        if (!options.readSessionArtifacts) { request.resume(); response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token"], "Session artifacts");
         const input = await readRequestBody(request) as Record<string, unknown>;
         if (!input || typeof input !== "object" || Array.isArray(input) ||
             Object.keys(input).some((key) => !["sessionId", "offset"].includes(key)) || !isSafeStorageId(input.sessionId) ||
             input.offset !== undefined && (!Number.isInteger(input.offset) || (input.offset as number) < 0 || (input.offset as number) > 1024)) {
-          throw new ChatBridgeRequestValidationError("Choose a Session candidate page.");
+          throw new ChatBridgeRequestValidationError("Choose a Session artifact page.");
         }
-        sendJson(response, await options.readSessionCandidates({ sessionId: input.sessionId, offset: input.offset as number ?? 0 }, beginReadOnlyBuild(response, handlerTerminal)));
+        sendJson(response, await options.readSessionArtifacts({ sessionId: input.sessionId, offset: input.offset as number ?? 0 }, beginReadOnlyBuild(response, handlerTerminal)));
         return;
       }
 
@@ -2718,7 +2718,7 @@ export async function createChatBridge(
       if (pluginBodyMayBeUnread) request.resume();
       if (
         request.method === "POST" &&
-        ["/command", "/session-model-capabilities", "/session-tools", "/midi-import-preview", "/session-candidates", "/confirm", "/send", "/steer", "/stop",
+        ["/command", "/session-model-capabilities", "/session-tools", "/midi-import-preview", "/session-artifacts", "/confirm", "/send", "/steer", "/stop",
           "/plugin-apps/open", "/plugin-apps/call", "/plugin-apps/resource", "/plugin-apps/close", "/plugin-apps/resources", "/plugin-apps/resource-templates"].includes(
           requestPath,
         )
@@ -3346,7 +3346,7 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "import_midi_artifact" ||
     input.kind === "load_midi_continuation" || input.kind === "configure_midi_continuation" ||
     input.kind === "fill_midi_continuation" || input.kind === "import_midi_continuation" ||
-    input.kind === "select_candidate" ||
+    input.kind === "select_artifact" ||
     input.kind === "set_session_skills";
 }
 

@@ -338,7 +338,7 @@
             return completed && known;
           },
         });
-        const candidateComparison = factories.createCandidateComparison({
+        const artifactComparison = factories.createArtifactComparison({
           transfer: async (kind, input) => {
             const completed = await bridgeClient.runCommand(kind, input, { cancellable: true });
             if (completed && kind === "attach_midi_artifact" && getState().activeSessionId === input.sessionId) {
@@ -346,10 +346,10 @@
             }
             return completed;
           },
-          getState, read: bridgeClient.readSessionCandidates,
+          getState, read: bridgeClient.readSessionArtifacts,
           select: async (input) => {
             let known = false;
-            const completed = await bridgeClient.runCommand("select_candidate", input, { onOutcome: (outcome) => { known = outcome.known; } });
+            const completed = await bridgeClient.runCommand("select_artifact", input, { onOutcome: (outcome) => { known = outcome.known; } });
             return completed && known;
           },
           useInChat: useResultInChat, resultActions: pluginResults,
@@ -428,7 +428,7 @@
           resolveConfirm: bridgeClient.resolveConfirm,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
-          onInspectorTabChange: (tab) => candidateComparison.setVisible(tab === "candidates"),
+          onInspectorTabChange: (tab) => artifactComparison.setVisible(tab === "artifacts"),
         });
 
         const toolsInspector = factories.createToolsInspector({
@@ -981,7 +981,7 @@
           const inspector = document.getElementById("inspectorPane");
           const focusWasInside = !open && inspector.contains(document.activeElement);
           inspector.hidden = !open;
-          candidateComparison.setVisible(open && !document.getElementById("candidatesPanel").hidden);
+          artifactComparison.setVisible(open && !document.getElementById("artifactsPanel").hidden);
           const settingsButton = document.getElementById("settingsButton");
           settingsButton.setAttribute("aria-expanded", String(open));
           settingsButton.setAttribute(
@@ -1361,7 +1361,7 @@
           skillManager.render();
           pluginManager.render();
           pluginApps.sync();
-          candidateComparison.render();
+          artifactComparison.render();
           audioParameters.sync();
           toolsInspector.render();
           midiContinuation.render();
@@ -1777,7 +1777,7 @@
           pluginApps.setBusy(operationBusy);
           audioParameters.setBusy(operationBusy);
           pluginResults.setBusy(operationBusy);
-          candidateComparison.setBusy(operationBusy);
+          artifactComparison.setBusy(operationBusy);
           midiContinuation.setOperation({ busy: operationBusy, commandKind, canStop: commandCanStop, stopping: commandStopInProgress });
 
           if (

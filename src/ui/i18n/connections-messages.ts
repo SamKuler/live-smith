@@ -10,6 +10,7 @@ export const connectionsMessages: Readonly<Record<string, string>> = {
   "Sign-in required": "需要登录",
   "Signing in…": "正在登录…",
   "A registered public client needs a callback port from 1024 to 65535.": "已注册的公共客户端需要 1024 至 65535 之间的回调端口。",
+  "Add a connection to sign in with the Plugin’s OAuth settings.": "添加连接后，即可使用插件提供的 OAuth 配置登录。",
   "Anonymous access until a named connection is configured.": "配置命名连接前使用匿名访问。",
   "Waiting for MCP sign-in in the browser…": "正在等待浏览器中的 MCP 登录…",
   "Signing out of MCP…": "正在退出 MCP 登录…",

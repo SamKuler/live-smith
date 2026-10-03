@@ -3,6 +3,8 @@ import { validateHeaderValue } from "node:http";
 import { URL } from "node:url";
 import { TextDecoder } from "node:util";
 
+import { isMcpOAuthConfiguration, hasAuthorizationHeader, type McpOAuthConfiguration } from "./oauth-contract.js";
+
 import type { OpenPluginArchive } from "../archive.js";
 import type { PluginSourceFormat } from "../contracts.js";
 import { isMcpCredentialFieldName, MAX_MCP_CREDENTIAL_FIELDS, mcpCredentialFields } from "./credentials.js";
@@ -18,7 +20,7 @@ const serverIdPattern = /^[A-Za-z0-9_-]{1,64}$/u;
 const headerNamePattern = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
 const portableTopLevelKeys = new Set(["$schema", "mcpServers"]);
 const portableStdioKeys = new Set(["type", "command", "args", "env", "cwd"]);
-const portableRemoteKeys = new Set(["type", "url", "headers"]);
+const portableRemoteKeys = new Set(["type", "url", "headers", "oauth"]);
 
 export interface PluginMcpConfigIssue {
   code: "invalid_server" | "unsupported_transport";
@@ -40,6 +42,7 @@ export interface PluginMcpRemoteServer {
   type: "streamable-http";
   url: string;
   headers: Readonly<Record<string, string>>;
+  oauth?: McpOAuthConfiguration;
 }
 
 export type PluginMcpServer = PluginMcpStdioServer | PluginMcpRemoteServer;
@@ -184,7 +187,10 @@ function parseServer(serverId: string, value: unknown, portable: boolean): Plugi
     ? "stdio"
     : declaredType === "http" && !portable ? "streamable-http" : declaredType;
   if (type === "sse" || type === "ws") return undefined;
-  if (type === "stdio") return parseStdioServer(serverId, value, portable);
+  if (type === "stdio") {
+    if (value.oauth !== undefined) throw new Error("Host OAuth is supported only for Streamable HTTP servers.");
+    return parseStdioServer(serverId, value, portable);
+  }
   if (type === "streamable-http") return parseRemoteServer(serverId, value, portable);
   throw new Error("Server transport is invalid.");
 }
@@ -220,7 +226,14 @@ function parseRemoteServer(
   if (!/\$\{user_config\.[A-Za-z_][A-Za-z0-9_]*\}/u.test(url)) validateRemoteUrl(url);
   const headers = value.headers === undefined ? {} : stringMap(value.headers, "MCP headers", false);
   validateHeaders(headers);
-  return { id, type: "streamable-http", url, headers };
+  if (value.oauth !== undefined && !isMcpOAuthConfiguration(value.oauth)) {
+    throw new Error("MCP OAuth supports an optional public client ID with a fixed callback port; other OAuth fields are unsupported.");
+  }
+  if (value.oauth !== undefined && hasAuthorizationHeader(headers)) {
+    throw new Error("MCP OAuth cannot be combined with an Authorization header.");
+  }
+  return { id, type: "streamable-http", url, headers,
+    ...(value.oauth === undefined ? {} : { oauth: { ...value.oauth } }) };
 }
 
 function portableCommand(value: string): boolean {

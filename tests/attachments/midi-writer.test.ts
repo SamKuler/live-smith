@@ -76,7 +76,7 @@ test("writer bounds match artifact admission and invalid numeric note values fai
   assert.throws(() => writeStandardMidi({ durationBeats: 1, tracks: [track([], 1, "字".repeat(1366))] }), /4096 bytes/);
 });
 
-test("all-rest tracks remain valid SMF while saved candidate admission rejects an empty composition", () => {
+test("all-rest tracks remain valid SMF while saved artifact admission rejects an empty composition", () => {
   const bytes = writeStandardMidi({ durationBeats: 4, tracks: [track([], 2, "Rest")] });
   assert.equal(parseStandardMidi(bytes).tracks[0]!.durationBeats, 4);
   assert.throws(() => parseMidiArtifact(bytes), /supported bounded Standard MIDI/);
