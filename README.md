@@ -518,8 +518,11 @@ Plugin servers can declare `oauth: {}` for discovery-based registration, or
 client. New connections inherit these defaults and use the packaged MCP URL;
 saved authentication choices take precedence. Unsupported OAuth fields are
 reported as invalid server configuration.
-Save an OAuth connection, then select **Sign in** to authorize it in the system
-browser. Live Smith uses browser PKCE and the server's discovery metadata. Servers
+New Plugin connections receive a unique default name. For an enabled, approved
+OAuth server, **Connect and sign in** saves the connection and opens the system
+browser. A cancelled or failed login keeps the connection for **Sign in** to
+retry. Packaged client defaults remain editable under **Advanced sign-in
+settings**. Other OAuth connections use **Save**, then **Sign in**. Live Smith uses browser PKCE and the server's discovery metadata. Servers
 with dynamic client registration choose a local callback port automatically;
 a later sign-in reuses that registration and port. If a server requires an
 existing public client, enter its client ID and registered callback port. Its

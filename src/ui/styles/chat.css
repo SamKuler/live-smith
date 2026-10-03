@@ -2287,6 +2287,12 @@ details.timeline-item > .timeline-content {
 .mcp-secret-row > label { @apply grid gap-1 text-small text-muted; }
 .mcp-secret-row > .plugin-clear-secret { @apply flex items-center gap-1; grid-column: 1 / -1; }
 .mcp-secret-row > button { @apply h-control-compact justify-self-end px-2 py-0 text-small; grid-column: 1 / -1; }
+.mcp-oauth-settings { @apply min-w-0 text-label text-muted; }
+.mcp-oauth-settings > summary { @apply cursor-pointer; }
+.mcp-oauth-fields { @apply mt-3 grid min-w-0 grid-cols-1 gap-3; overflow-wrap: anywhere; }
+.mcp-oauth-fields > label { @apply grid min-w-0 gap-1; }
+.mcp-oauth-fields input { @apply w-full min-w-0; }
+.mcp-oauth-fields > .field-hint { @apply m-0; }
 .plugin-connection-editor textarea { @apply min-h-[68px] font-code; }
 .plugin-clear-secret > input { @apply m-0 size-[14px] flex-none p-0; accent-color: var(--color-accent); }
 .plugin-clear-secret > input:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }

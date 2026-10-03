@@ -7,6 +7,7 @@ export const connectionsMessages: Readonly<Record<string, string>> = {
   "Registered callback port (optional)": "已注册的回调端口（可选）",
   "Leave both fields blank for automatic client registration. A registered public client needs a fixed port and redirect URI http://127.0.0.1:PORT/mcp/oauth/callback.": "两个字段留空即可自动注册客户端。已注册的公共客户端需要固定端口，回调地址为 http://127.0.0.1:PORT/mcp/oauth/callback。",
   "Save this connection before signing in.": "请先保存此连接，再登录。",
+  "Signed in": "已登录",
   "Sign-in required": "需要登录",
   "Signing in…": "正在登录…",
   "A registered public client needs a callback port from 1024 to 65535.": "已注册的公共客户端需要 1024 至 65535 之间的回调端口。",
@@ -21,6 +22,9 @@ export const connectionsMessages: Readonly<Record<string, string>> = {
   "MCP client registration was rejected. Configure a registered public client ID and its callback port.": "MCP 客户端注册被拒绝。请填写已注册的公共客户端 ID 及其回调端口。",
 
   "Tool descriptions load automatically when this Session is idle. Connection status below reflects saved settings.": "此会话空闲时会自动加载工具说明。下方连接状态来自已保存的设置。",
+  "Connect and sign in": "连接并登录",
+  "Advanced sign-in settings": "高级登录设置",
+  "Connect saves this account and opens your browser for sign-in.": "连接后将打开浏览器进行登录。",
   "Save": "保存",
   "Extension settings": "扩展设置",
   "Add an audio service account to use its tools.": "添加音频服务账号以使用其工具。",

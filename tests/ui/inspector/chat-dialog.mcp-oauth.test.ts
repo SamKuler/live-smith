@@ -48,12 +48,8 @@ test("OAuth cannot start from an unsaved connection draft or save a public clien
   assert.equal(commandCalls(harness).some((entry) => (entry.body as { kind: string }).kind === "start_mcp_oauth"), false);
 });
 
-test("Plugin OAuth defaults need no server URL entry and saved authentication choices take precedence", async (t) => {
-  const value = stateFixture();
-  value.plugins = [{ id: "workspace", sha256: "a".repeat(64), sourceFormat: "claude", enabled: true,
-    skillCount: 0, unsupportedComponents: [], issues: [], mcpServers: [{ id: "remote", type: "streamable-http",
-      target: "https://example.test", approved: true, artifactInputApproved: false, artifactOutputApproved: false,
-      credentialFields: [], oauth: { clientId: "workspace-client", callbackPort: 49321 } }] }];
+test("Plugin OAuth connects with declared defaults in one save and preserves saved authentication choices", async (t) => {
+  const value = pluginState();
   const h = await createDialogHarness(value);
   t.after(() => h.close());
   h.click(".plugin-add-connection");
@@ -64,15 +60,15 @@ test("Plugin OAuth defaults need no server URL entry and saved authentication ch
   h.select('[name="mcpAuthentication"]', "manual");
   h.select('[name="mcpAuthentication"]', "oauth");
   assert.equal(h.document.querySelector<HTMLInputElement>('[name="mcpOAuthClientId"]')!.value, "workspace-client");
-  h.input('[name="connectionName"]', "My workspace");
+  assert.equal(h.document.querySelector<HTMLInputElement>('[name="connectionName"]')!.value, "workspace");
+  assert.equal(h.document.querySelector(".plugin-connection-editor .editor-save")!.textContent, "Connect and sign in");
   h.click(".plugin-connection-editor .editor-save");
   await h.settle();
-  const saved = (commandCalls(h).at(-1)!.body as any).integrationConnections.connection;
+  const commands = commandCalls(h);
+  const saved = (commands[0]!.body as any).integrationConnections.connection;
+  assert.equal(commands.length, 2);
   assert.deepEqual(saved.oauth, { clientId: "workspace-client", callbackPort: 49321 });
   assert.deepEqual(saved.configuration, { serverId: "remote", pluginDigest: "a".repeat(64) });
-  h.click(".plugin-manage-connections");
-  h.click(".mcp-oauth-sign-in");
-  await h.settle();
   assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "start_mcp_oauth", connectionId: saved.id });
   assert.equal(h.document.querySelector(".mcp-oauth-state")!.textContent, "Signed in");
   h.select('[name="mcpAuthentication"]', "manual");
@@ -82,3 +78,54 @@ test("Plugin OAuth defaults need no server URL entry and saved authentication ch
   assert.equal(h.document.querySelector<HTMLSelectElement>('[name="mcpAuthentication"]')!.value, "manual");
   assert.deepEqual(h.errors, []);
 });
+
+function pluginState() {
+  const value = stateFixture();
+  value.plugins = [{ id: "workspace", sha256: "a".repeat(64), sourceFormat: "claude", enabled: true,
+    skillCount: 0, unsupportedComponents: [], issues: [], mcpServers: [{ id: "remote", type: "streamable-http",
+      target: "https://example.test", approved: true, artifactInputApproved: false, artifactOutputApproved: false,
+      credentialFields: [], oauth: { clientId: "workspace-client", callbackPort: 49321 } }] }];
+  return value;
+}
+
+
+test("failed sign-in keeps the saved account for retry without another connection write", async (t) => {
+  const value = pluginState();
+  value.integrationConnections = { revision: "1", connections: [{ id: "existing", name: "WORKSPACE", enabled: true,
+    mcp: { type: "streamable-http", url: "https://other.test/mcp" }, configuredSecrets: [],
+    artifactInputApproved: false, artifactOutputApproved: false }] };
+  const h = await createDialogHarness(value);
+  t.after(() => h.close());
+  h.click(".plugin-add-connection");
+  assert.equal(h.document.querySelector<HTMLInputElement>('[name="connectionName"]')!.value, "workspace 2");
+  h.holdNextCommandResponse();
+  h.click(".plugin-connection-editor .editor-save");
+  await h.settle();
+  assert.equal(commandCalls(h).length, 1, "sign-in waits until the save is confirmed");
+  h.failNextCommand("Sign-in was cancelled.");
+  h.releaseHeldCommandResponse();
+  await h.settle();
+  assert.equal(commandCalls(h).length, 2);
+  assert.match(h.document.querySelector(".plugin-connection-feedback")!.textContent!, /cancelled/u);
+  assert.equal(h.document.querySelector<HTMLInputElement>('[name="connectionName"]')!.value, "workspace 2");
+  h.click(".mcp-oauth-sign-in");
+  await h.settle();
+  assert.equal(commandCalls(h).filter((entry) => (entry.body as any).kind === "save_global_settings").length, 1);
+  assert.equal(h.document.querySelector(".mcp-oauth-state")!.textContent, "Signed in");
+  assert.deepEqual(h.errors, []);
+});
+
+for (const outcome of ["failed", "unknown"] as const) {
+  test(`${outcome} connection save must not start OAuth`, async (t) => {
+    const h = await createDialogHarness(pluginState());
+    t.after(() => h.close());
+    h.click(".plugin-add-connection");
+    h.failNextCommand("Settings were not confirmed.", "integrationConnections", outcome === "unknown" ? { commandOutcome: outcome } : {});
+    h.click(".plugin-connection-editor .editor-save");
+    await h.settle();
+    assert.equal(commandCalls(h).length, 1);
+    assert.equal((commandCalls(h)[0]!.body as any).kind, "save_global_settings");
+    assert.ok(h.document.querySelector('[name="connectionName"]'));
+    assert.deepEqual(h.errors, []);
+  });
+}
