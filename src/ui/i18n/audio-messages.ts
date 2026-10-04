@@ -10,8 +10,6 @@ export const audioMessages = {
   "Running audio tool…": "正在运行音频工具…",
   "Audio tool completed.": "音频工具已完成。",
   "The audio tool reported a failure. Review its result and saved audio jobs before retrying.": "音频工具返回失败，请检查结果和已保存音频任务后再决定是否重试。",
-  "Run the catalog query in Inspect music service to load this connection's model IDs.": "在“查看音乐服务”中运行模型目录查询，载入此连接的模型 ID。",
-  "Inspect a Persona ID from your Suno account first; confirmed results appear as suggestions.": "先查询你在 Suno 账户中的 Persona ID，已确认的结果会显示在建议列表中。",
 
   "Uploaded · online": "已上传 · 在线",
   "Uploaded audio": "已上传音频",

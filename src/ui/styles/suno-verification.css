@@ -26,5 +26,5 @@
   button:hover { @apply bg-surface-hover; }
   button.secondary { @apply border-border bg-pane text-muted; }
   button:disabled { @apply cursor-default opacity-60; }
-  button:focus-visible { @apply bg-surface-hover underline; text-underline-offset: 3px; }
+  button:focus-visible { @apply bg-surface-hover; }
 }

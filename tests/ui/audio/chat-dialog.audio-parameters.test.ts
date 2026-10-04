@@ -136,3 +136,67 @@ test("the composed dialog accepts owner-projected suggestions with 160-codepoint
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
+
+test("audio field help comes only from its declared schema while suggestions remain available", async () => {
+  const state = panelState();
+  const tools = state.sessionToolCatalog!.groups.flatMap((group) => group.tools);
+  const lyricTool = tools.find((tool) => tool.name === "builtin_suno_write_lyrics")!;
+  lyricTool.audioPanel!.suggestions = { models: [{ id: "lyric-model", label: "Lyric model" }] };
+  const h = await createDialogHarness(state);
+  try {
+    h.click("#sessionInspectorScope"); h.click("#toolsTab");
+    h.click('.tool-group[data-connection-id="suno-studio"] > summary');
+    for (const name of ["builtin_suno_write_lyrics", "builtin_suno_cover_music", "builtin_suno_remaster_music", "builtin_suno_retrieve_music"]) {
+      const tool = tools.find((entry) => entry.name === name)!;
+      const entry = `[data-tool-key$=":${name}"]`;
+      h.click(entry + " > summary"); h.click(entry + " .audio-open-panel");
+      const fields = tool.audioPanel!.schema.properties as Record<string, { description?: string; items?: { description: string } }>;
+      for (const key of ["modelId", "clipId"].filter((key) => fields[key])) {
+        const descriptions = [...h.document.querySelectorAll(`[data-parameter-path="${key}"] > .field-hint`)];
+        assert.deepEqual(descriptions.map((node) => node.textContent), [fields[key]!.description]);
+      }
+      if (name === "builtin_suno_retrieve_music") {
+        h.click(".audio-parameter-dialog .audio-parameter-items + button");
+        assert.deepEqual([...h.document.querySelectorAll('[data-parameter-path="clipIds.0"] > .field-hint')]
+          .map((node) => node.textContent), [fields.clipIds!.items!.description]);
+      }
+      if (name === "builtin_suno_write_lyrics") {
+        const control = h.document.querySelector<HTMLInputElement>('[name="modelId"]')!;
+        const list = h.document.getElementById(control.getAttribute("list")!)!;
+        assert.deepEqual([...list.querySelectorAll("option")].map((option) => option.value), ["lyric-model"]);
+        h.click('[aria-label="Include Lyrics model"]'); h.input('[name="modelId"]', "lyric-model");
+      }
+      h.click(".audio-parameter-header button");
+    }
+    assert.deepEqual(commandCalls(h), []);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("Persona help is declared by each connection and is not expanded by the shared renderer", async () => {
+  const state = panelState();
+  const platform = audioParameterGroups({ services: [{ id: "platform-studio", name: "Platform Studio",
+    provider: "suno-platform", pluginId: "live-smith.suno-platform" }], hasJobs: false, identity: () => "platform-owner" })
+    .find((group) => group.connectionId === "platform-studio")!;
+  state.sessionToolCatalog!.groups.push({ ...platform,
+    tools: platform.tools.map((tool) => ({ ...tool, description: tool.description.slice(0, 512) })) });
+  const h = await createDialogHarness(state);
+  try {
+    h.click("#sessionInspectorScope"); h.click("#toolsTab");
+    for (const id of ["suno-studio", "platform-studio"]) {
+      const group = state.sessionToolCatalog!.groups.find((entry) => entry.connectionId === id)!;
+      const tool = group.tools.find((entry) => entry.name.endsWith("generate_music"))!;
+      const schema = tool.audioPanel!.schema as { oneOf: { properties: { options?: { properties: { personaId: { description: string } } } } }[] };
+      const customIndex = schema.oneOf.findIndex((branch) => branch.properties.options);
+      h.click(`.tool-group[data-connection-id="${id}"] > summary`);
+      const entry = `[data-tool-key$=":${tool.name}"]`;
+      h.click(entry + " > summary"); h.click(entry + " .audio-open-panel");
+      h.select('.audio-parameter-dialog [data-variant=""]', String(customIndex));
+      assert.deepEqual([...h.document.querySelectorAll('[data-parameter-path=".variant.options.personaId"] > .field-hint')]
+        .map((node) => node.textContent), [schema.oneOf[customIndex]!.properties.options!.properties.personaId.description]);
+      h.click(".audio-parameter-header button");
+    }
+    assert.deepEqual(commandCalls(h), []);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});

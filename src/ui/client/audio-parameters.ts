@@ -113,7 +113,6 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
   let active: { dialog: HTMLDialogElement; owner: string; focus: Element | null } | undefined;
   const drafts = new Map<string, Draft>();
   let offeredSuggestions: AudioParameterSuggestions = {};
-  let toolName = "";
   function suggestions(path: string): Array<[string, string]> {
     const jobs = (deps.getState().audioJobs ?? []).filter(record);
     if (path.endsWith("jobId")) return jobs.filter((job) => job.resumable === true && typeof job.id === "string").map((job) => [String(job.id), String(job.title ?? job.id)]);
@@ -225,9 +224,6 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
           for (const [value, text] of values) { const option = node("option"); option.value = value; option.label = text; list.append(option); }
           control.setAttribute("list", list.id); contents.append(list);
         }
-        if (path.endsWith("modelId")) row.append(node("p", "field-hint", t(toolName.endsWith("write_lyrics") ? "Run Inspect lyric models to load this connection's lyrics model IDs." : "Run the catalog query in Inspect music service to load this connection's model IDs.")));
-        if (path.endsWith("personaId")) row.append(node("p", "field-hint", t("Inspect a Persona ID from your Suno account first; confirmed results appear as suggestions.")));
-        if (/(?:^|\.)(?:clipId|clipIds(?:\.\d+)?)$/u.test(path)) row.append(node("p", "field-hint", t("Choose a clip ID from this connection's library or saved jobs.")));
       }
       contents.append(control);
       checks.push(() => { const okay = !draft.included || valid(schema, valueOf(schema, draft)); control.setCustomValidity(okay ? "" : t("Check the value for {name}.", { name: title })); return okay; });
@@ -249,7 +245,7 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
       const form = node("form", "audio-parameter-form"); form.noValidate = true; dialog.append(form);
       if (!isAudioParameterPanel(tool.audioPanel)) form.append(node("p", "error", t("This tool's parameters cannot be edited here.")));
       else {
-        const panel = tool.audioPanel; offeredSuggestions = panel.suggestions ?? {}; toolName = panel.toolName; const key = JSON.stringify([panel.toolName, panel.signature, panel.connectionId, panel.schema]);
+        const panel = tool.audioPanel; offeredSuggestions = panel.suggestions ?? {}; const key = JSON.stringify([panel.toolName, panel.signature, panel.connectionId, panel.schema]);
         if (!drafts.has(key)) drafts.set(key, initial(panel.schema)); const draft = drafts.get(key)!;
         const checks: (() => boolean)[] = []; const fields = render(panel.schema, draft, "Parameters", "", true, checks); fields.classList.add("audio-parameter-root"); form.append(fields);
         form.append(node("p", "field-hint", t("Running uses the current connection's allowance. Results appear in this Session's audio area or tool history.")));

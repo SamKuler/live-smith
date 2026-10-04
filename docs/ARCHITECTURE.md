@@ -1803,7 +1803,8 @@ audio but the chat model cannot, the host validates and retains the attachment
 without adding its bytes to the model request.
 
 `plugins/builtins/parameter-panel.ts` derives per-connection manual forms from
-the same tool schemas and parsers used by model calls. Catalog signatures bind
+the same tool schemas and parsers used by model calls. Schema descriptions supply
+field help; owner-scoped data supplies suggestions. Catalog signatures bind
 the schema and saved connection identity. `run_audio_tool` rederives that
 signature under admission authorization, validates the complete arguments, and
 uses the existing request audio runtime without invoking a chat model. It holds

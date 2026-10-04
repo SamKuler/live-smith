@@ -45,7 +45,6 @@ button:hover {
 }
 
 button:focus-visible {
-  @apply bg-result-action-hover underline;
-  text-underline-offset: 3px;
+  @apply bg-result-action-hover;
 }
 }

@@ -9,8 +9,8 @@ import { isSafeStorageId } from "../storage/id.js";
 
 const clipPattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 const clipSchema = { type: "string", title: "Source clip ID", description: "Choose an observed clip from this connection’s library or saved results.", pattern: clipPattern };
-const personaSchema = { type: "string", title: "Persona ID", description: "An existing Persona ID from this account. Use the Persona query to inspect it.", pattern: clipPattern };
-const retrievalClipSchema = { type: "string", minLength: 36, maxLength: 36, pattern: clipPattern.replaceAll("a-fA-F", "a-f") };
+const personaSchema = { type: "string", title: "Persona ID", description: "An existing Persona ID from this account.", pattern: clipPattern };
+const retrievalClipSchema = { type: "string", description: clipSchema.description, minLength: 36, maxLength: 36, pattern: clipPattern.replaceAll("a-fA-F", "a-f") };
 export const musicOptionsSchema = {
   type: "object", additionalProperties: false,
   properties: {

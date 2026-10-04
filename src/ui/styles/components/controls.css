@@ -57,13 +57,7 @@
 
   button:focus-visible,
   summary:focus-visible {
-    @apply bg-surface-hover underline;
-    text-underline-offset: 3px;
-  }
-
-  button[aria-label]:focus-visible,
-  .icon-button:focus-visible {
-    text-decoration: none;
+    @apply bg-surface-hover;
   }
 
   a:focus-visible {
