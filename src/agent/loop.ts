@@ -1326,6 +1326,7 @@ async function executeToolCall(
 
     throw new Error(`Unsupported model tool call: ${toolCall.name}`);
   } catch (error) {
+    // An established Apply owns its terminal activity; model diagnostics remain separate.
     if (operationId && !applyResultRecorded &&
       !(error instanceof AgentPartialCompletionError) &&
       !(error instanceof AgentApplyResultReportingError)) {
@@ -1343,7 +1344,7 @@ async function executeToolCall(
       if (operationId && !applyResultRecorded) await recordApplyResult(scopeDenial.message, options.signal?.aborted ? "cancelled" : "failed");
       throwIfAborted(options.signal);
       const content = `${scopeDenial.message}\nNo Live changes from this plan were applied.`;
-      await emitTraceEvent(options, {
+      if (!applyResultRecorded) await emitTraceEvent(options, {
         kind: "tool_result",
         name: toolCall.name,
         content,
@@ -1520,7 +1521,7 @@ async function executeToolCall(
         `Live Smith could not verify current Live state for this action plan: ${error.message}`,
         "This is a Live-state preflight failure, not evidence that the JSON arguments are invalid or that the payload is too large. Inspect the relevant Live object and repair its target or state assumptions. Do not split or simplify the requested work solely because of this error.",
       ].join("\n");
-      await emitTraceEvent(options, { kind: "error", content });
+      if (!applyResultRecorded) await emitTraceEvent(options, { kind: "error", content });
       return {
         toolContent: content,
         userMessage: content,
@@ -1536,7 +1537,7 @@ async function executeToolCall(
       `Tool call "${toolCall.name}" failed: ${message}`,
       "The failure category is unknown. Preserve completed actions, inspect relevant Live state when possible, and retry only a repair supported by evidence.",
     ].join("\n");
-    await emitTraceEvent(options, { kind: "error", content });
+    if (!applyResultRecorded) await emitTraceEvent(options, { kind: "error", content });
     return {
       toolContent: content,
       userMessage: content,

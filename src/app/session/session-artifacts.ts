@@ -52,9 +52,22 @@ const record = (value: unknown): value is Record<string, unknown> => Boolean(val
 
 /** Correlation comes from owned output IDs and the original persisted call, never current settings. */
 export function artifactGenerationsFromEvents(events: readonly SessionEvent[]): Map<string, { generation: ArtifactGeneration; parent?: ArtifactRef; startedAt: string; endedAt: string }> {
-  const calls = new Map<string, { event: SessionEvent; ambiguous: boolean }[]>();
+  type PendingCall = { event: SessionEvent; ambiguous: boolean };
+  const calls = new Map<string, PendingCall[]>();
+  const enclosingCallIds = new Set(events.flatMap((event) => event.kind === "tool_call" && event.requestEventId ? [event.requestEventId] : []));
+  const retainCalls = (keep: (entry: PendingCall) => boolean) => {
+    for (const [name, entries] of calls) {
+      const active = entries.filter(keep);
+      if (active.length) calls.set(name, active);
+      else calls.delete(name);
+    }
+  };
   const generations = new Map<string, { generation: ArtifactGeneration; parent?: ArtifactRef; startedAt: string; endedAt: string }>();
   for (const event of events) {
+    // Initial requests are serialized; steering keeps the current request open.
+    if (event.kind === "user" && !event.steeringReceipt) calls.clear();
+    // Errors end leaf calls; enclosing workflows still own their terminal result.
+    if (event.kind === "error") retainCalls((entry) => entry.ambiguous || enclosingCallIds.has(entry.event.id));
     if (event.kind === "tool_call" && event.name) {
       const pending = calls.get(event.name) ?? [];
       for (const entry of pending) entry.ambiguous = true;
@@ -66,6 +79,8 @@ export function artifactGenerationsFromEvents(events: readonly SessionEvent[]): 
     if (!pending?.length) calls.delete(event.name);
     if (!paired || paired.ambiguous) continue;
     const call = paired.event;
+    // An enclosing result closes unfinished child calls even on failure or Stop.
+    retainCalls((entry) => entry.event.requestEventId !== call.id);
     let result: unknown;
     try { result = JSON.parse(event.content); } catch { continue; }
     if (!record(result) || result.isError === true || result.status === "failed") continue;

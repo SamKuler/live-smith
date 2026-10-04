@@ -3,6 +3,8 @@ import test from "node:test";
 import { runAgentLoop, AgentPartialCompletionError, type AgentLoopTraceEvent, type AgentLoopOptions } from "../../src/agent/loop.js";
 import type { AgentActionPreview } from "../../src/agent/action-preview.js";
 import { createHostAbortController } from "../../src/runtime/host.js";
+import { EditScopeDeniedError } from "../../src/agent/edit-scopes.js";
+import { modelMessageText } from "../model/support/model-message-test-helpers.js";
 
 const preview: AgentActionPreview = { kind: "parameter-value", actionIndex: 0, status: "proposed", targetLabel: "Tempo", parameterName: "Tempo", before: 120, after: 125, minimum: 20, maximum: 999 };
 async function run(overrides: Partial<AgentLoopOptions> = {}) {
@@ -61,6 +63,44 @@ test("stop while confirmation is open records cancellation before propagating ab
   assert.equal(results.length, 1);
   assert.equal(results[0]?.applyOperation?.status, "cancelled");
 });
+
+for (const failure of ["scope-before-proposal", "scope-after-approval", "target-drift", "confirmation-error"] as const) {
+  test(`${failure} records one terminal event and preserves the model tool result`, async () => {
+    let turn = 0;
+    let modelResult = "";
+    const { events } = await run({
+      askModel: async ({ messages }) => {
+        if (++turn === 1) return { content: null, toolCalls: [{ id: "apply-failure", name: "apply_live_actions",
+          arguments: JSON.stringify({ message: "Tempo", actions: [{ type: "set_tempo", tempo: 125 }] }) }] };
+        modelResult = modelMessageText(messages.at(-1));
+        return { content: "The changes were not applied.", toolCalls: [] };
+      },
+      preflightActions: async () => {
+        if (failure === "scope-before-proposal") throw new EditScopeDeniedError(["structure"]);
+        return async () => {
+          if (failure === "scope-after-approval") throw new EditScopeDeniedError(["structure"]);
+          if (failure === "target-drift") throw new Error("Changed target");
+        };
+      },
+      confirmActions: async () => {
+        if (failure === "confirmation-error") throw new Error("Confirmation unavailable");
+        return true;
+      },
+      executeActions: async () => assert.fail("A rejected plan must not execute"),
+    });
+    const terminal = events.filter((event) => ["apply_result", "tool_result", "error"].includes(event.kind));
+    assert.equal(terminal.length, 1);
+    if (failure === "scope-before-proposal") {
+      assert.equal(terminal[0]!.kind, "tool_result");
+      assert.equal(events.some((event) => event.kind === "apply_requested"), false);
+    } else {
+      assert.equal(terminal[0]!.kind, "apply_result");
+      assert.equal(terminal[0]!.kind === "apply_result" && terminal[0]!.applyOperation?.status, "failed");
+    }
+    assert.match(modelResult, failure.startsWith("scope-") ? /No Live changes from this plan were applied/
+      : failure === "target-drift" ? /Changed target/ : /Confirmation unavailable/);
+  });
+}
 
 test("registered external tools forward saved artifact references without inspecting result prose", async () => {
   const artifacts = [{ kind: "midi" as const, id: "midi-saved" }];

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { execPath } from "node:process";
 import { audioStorageHarness as rawAudioStorageHarness, generationJobCases, waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
 import { midiBytes, noteTrack, sequentialNotes } from "../../attachments/support/midi-test-helpers.js";
 import { savePluginAudioArtifact } from "../../../src/storage/audio-artifacts.js";
@@ -15,6 +16,14 @@ import { isMidiPartPreview, isSessionArtifactDetail, isSessionArtifacts } from "
 import { artifactKey, pendingArtifactParentFromEvents, isArtifactSelection } from "../../../src/agent/artifact-contracts.js";
 import { createSessionArtifactToolset } from "../../../src/app/session/session-artifact-tools.js";
 import { parseCommandInput } from "../../../src/app/chat/chat-bridge-http.js";
+import { runAgentLoop } from "../../../src/agent/loop.js";
+import { createHostAbortController } from "../../../src/runtime/host.js";
+import { fillMidiContinuation } from "../../../src/app/midi/midi-continuation.js";
+import { generateMidiContinuationWithModel } from "../../../src/app/midi/midi-continuation-model.js";
+import { continuationHarness } from "../midi/support/continuation-harness.js";
+import { saveGlobalSettings } from "../../../src/storage/settings.js";
+import { createRequestPluginTools } from "../../../src/app/plugins/request-plugin-tools.js";
+import { runPluginParameterTool } from "../../../src/app/plugins/plugin-parameter-tool.js";
 
 async function audioStorageHarness(...args: Parameters<typeof rawAudioStorageHarness>) {
   const h = await rawAudioStorageHarness(...args);
@@ -98,6 +107,166 @@ test("overlapping same-name calls keep provenance unknown instead of guessing", 
     event("rb", "tool_result", '{"artifacts":[{"kind":"midi","artifactRef":"midi-b"}]}')];
   assert.equal(artifactGenerationsFromEvents(events).size, 0);
 });
+
+test("a stopped chat tool cannot hide provenance from later successful requests", async (t) => {
+  const h = await audioStorageHarness(t);
+  const run = async (stop: boolean, label: string) => {
+    const controller = createHostAbortController();
+    await appendSessionEvent(h.storage, h.session.id, { kind: "user", content: label });
+    let turns = 0;
+    await runAgentLoop({ signal: controller.signal, maxConsecutiveFailures: 3,
+      askModel: async () => ++turns === 1
+        ? { content: null, toolCalls: [{ id: "make", name: "make_midi", arguments: JSON.stringify({ label }) }] }
+        : { content: "Saved.", toolCalls: [] },
+      externalTools: { names: ["make_midi"], execute: async () => {
+        if (stop) { controller.abort(new Error("Stopped")); throw controller.signal.reason; }
+        const artifact = await saveMidiArtifact(h.storage, h.session.id, { connectionId: "generator", serverId: "midi",
+          toolName: "make_midi", label, bytes: midiBytes({ tracks: [noteTrack()] }), signal: controller.signal });
+        return { content: JSON.stringify({ artifacts: [{ kind: "midi", artifactRef: artifact.id }] }) };
+      } },
+      observe: async () => assert.fail("No Live observation expected"), confirmActions: async () => false,
+      executeActions: async () => assert.fail("No Live mutation expected"),
+      onEvent: async (event) => { await appendSessionEvent(h.storage, h.session.id, event); },
+    });
+  };
+  await assert.rejects(run(true, "Stopped generation"), /Stopped/);
+  const stopped = await loadSessionEvents(h.storage, h.session.id);
+  assert.deepEqual(stopped.map((event) => event.kind), ["user", "tool_call"]);
+  await run(false, "First retry");
+  await run(false, "Next generation");
+  const catalog = await listSessionArtifacts({ storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal });
+  assert.equal(catalog.artifacts.length, 2);
+  for (const artifact of catalog.artifacts) {
+    assert.equal(artifact.generation?.toolName, "make_midi");
+    assert.deepEqual(JSON.parse(artifact.generation!.parameters), { label: artifact.label });
+    assert.notEqual(artifact.generation!.callEventId, stopped[1]!.id);
+  }
+});
+
+test("steering preserves an in-flight tool's provenance", () => {
+  const events: SessionEvent[] = [
+    { id: "request", kind: "user", content: "Generate", createdAt: "2026-10-03T00:00:00Z" },
+    { id: "call", kind: "tool_call", name: "make", content: '{"seed":1}', createdAt: "2026-10-03T00:00:01Z" },
+    { id: "steer", kind: "user", content: "Keep the rhythm", createdAt: "2026-10-03T00:00:02Z",
+      steeringReceipt: { sendId: "send", id: "steer", sha256: "0".repeat(64) } },
+    { id: "result", kind: "tool_result", name: "make", content: '{"artifacts":[{"kind":"midi","artifactRef":"midi-a"}]}', createdAt: "2026-10-03T00:00:03Z" },
+  ];
+  assert.equal(artifactGenerationsFromEvents(events).get("midi:midi-a")?.generation.callEventId, "call");
+});
+
+test("a stopped chat error permits the same Plugin tool to recover provenance from a manual panel call", async (t) => {
+  const h = await audioStorageHarness(t);
+  const serverPath = path.join(h.storage, "midi-server.mjs");
+  const tool = { name: "make_midi", inputSchema: { type: "object", properties: { style: { type: "string" }, destination: { type: "string" } }, required: ["style", "destination"] },
+    _meta: { "io.github.samkuler/live-smith-artifacts": { version: 1, inputs: [], outputs: [{ argument: "destination", kind: "midi", label: "Manual take" }] } } };
+  await fs.writeFile(serverPath, `
+    import fs from "node:fs/promises";
+    import readline from "node:readline";
+    const send = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n");
+    readline.createInterface({ input: process.stdin }).on("line", async (line) => {
+      const request = JSON.parse(line);
+      if (request.method === "server/discover") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "legacy" } }) + "\\n");
+      else if (request.method === "initialize") send(request.id, { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "midi", version: "1" } });
+      else if (request.method === "tools/list") send(request.id, { tools: [${JSON.stringify(tool)}] });
+      else if (request.method === "tools/call") {
+        await fs.writeFile(request.params.arguments.destination, new Uint8Array(${JSON.stringify([...midiBytes({ tracks: [noteTrack()] })])}));
+        send(request.id, { content: [{ type: "text", text: "Saved" }] });
+      }
+    });
+  `);
+  await saveGlobalSettings(h.storage, { integrationConnections: { action: "upsert", expectedRevision: "0", connection: {
+    id: "midi-generator", name: "MIDI generator", enabled: true, mcp: { type: "stdio", command: execPath, args: [serverPath] },
+    secrets: {}, artifactInputApproved: false, artifactOutputApproved: true,
+  } } });
+  const authorize = async <T>(_signal: AbortSignal, operation: () => Promise<T>): Promise<T> => operation();
+  const discovery = await createRequestPluginTools({ storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal, withAuthorization: authorize });
+  const panel = discovery.catalogTools()[0]!.panel!;
+  await discovery.close();
+  const controller = createHostAbortController();
+  await appendSessionEvent(h.storage, h.session.id, { kind: "user", content: "Generate MIDI" });
+  await assert.rejects(runAgentLoop({ signal: controller.signal, maxConsecutiveFailures: 3,
+    askModel: async () => ({ content: null, toolCalls: [{ id: "make", name: panel.toolName, arguments: '{"style":"chat"}' }] }),
+    externalTools: { names: [panel.toolName], execute: async () => { controller.abort(new Error("Stopped")); throw controller.signal.reason; } },
+    observe: async () => assert.fail("No Live observation expected"), confirmActions: async () => false,
+    executeActions: async () => assert.fail("No Live mutation expected"),
+    onEvent: async (event) => { await appendSessionEvent(h.storage, h.session.id, event); },
+  }), /Stopped/);
+  await appendSessionEvent(h.storage, h.session.id, { kind: "error", content: "Stopped" });
+  assert.deepEqual(await runPluginParameterTool({ storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal,
+    toolName: panel.toolName, signature: panel.signature, arguments: { style: "manual" }, withPluginAuthorization: authorize }), { failed: false });
+  const events = await loadSessionEvents(h.storage, h.session.id);
+  assert.deepEqual(events.map((event) => event.kind), ["user", "tool_call", "error", "tool_call", "tool_result"]);
+  const catalog = await listSessionArtifacts({ storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal });
+  assert.equal(catalog.artifacts[0]?.generation?.callEventId, events[3]!.id);
+  assert.deepEqual(JSON.parse(catalog.artifacts[0]!.generation!.parameters), { style: "manual" });
+});
+
+test("Fill retains its enclosing lifecycle across recoverable model errors and cancelled inner calls", async (t) => {
+  const h = await continuationHarness(t);
+  const cancelled = createHostAbortController();
+  const fill = (stop: boolean) => {
+    const signal = stop ? cancelled.signal : h.signal;
+    return fillMidiContinuation({ ...h, signal, bufferId: h.buffer.id,
+      validateGenerator: async () => {}, onProgress: async () => {},
+      generate: (buffer, onEvent) => {
+        let turns = 0;
+        return generateMidiContinuationWithModel({
+        storageDirectory: h.directory, buffer, signal, runtimeProfile: h.runtime, onEvent, onProgress: async () => {},
+        readTools: createSessionArtifactToolset({ storageDirectory: h.directory, sessionId: h.session.id, signal }),
+        beforeCommit: () => {}, beforeSave: async () => {
+          if (stop) { cancelled.abort(new Error("Stopped Fill")); throw cancelled.signal.reason; }
+        },
+        requestTurn: async () => ++turns === 1
+          ? { content: null, toolCalls: Array.from({ length: 9 }, (_, index) => ({ id: `excess-${index}`, name: "save_midi_artifact", arguments: "{}" })) }
+          : ({ content: null, toolCalls: [{ id: "save", name: "save_midi_artifact", arguments: JSON.stringify({
+          label: `Section ${buffer.nextSequence + 1}`, tracks: [{ name: "Bass", channel: 1,
+            notes: [{ pitch: 48, startTime: 0, duration: 4, velocity: 90 }] }],
+        }) }] }),
+        });
+      },
+    });
+  };
+  await assert.rejects(fill(true), /Stopped Fill/);
+  const stopped = await loadSessionEvents(h.directory, h.session.id);
+  assert.deepEqual(stopped.map((event) => [event.kind, event.name]), [
+    ["tool_call", "fill_midi_continuation"], ["error", undefined],
+    ["tool_call", "save_midi_artifact"], ["tool_result", "fill_midi_continuation"],
+  ]);
+  const filled = await fill(false);
+  const events = await loadSessionEvents(h.directory, h.session.id);
+  assert.equal(events.some((event) => event.kind === "user"), false);
+  const request = events.filter((event) => event.kind === "tool_call" && event.name === "fill_midi_continuation").at(-1)!;
+  const generations = artifactGenerationsFromEvents(events);
+  for (const [index, section] of filled.queue.entries()) {
+    const generation = generations.get(`midi:${section.artifactRef}`);
+    assert.equal(generation?.generation.requestEventId, request.id);
+    assert.equal(generation?.parent?.id, index ? filled.queue[index - 1]!.artifactRef : h.buffer.sourceArtifactRef);
+  }
+});
+
+test("an unscoped error cannot disambiguate overlapping same-name calls", () => {
+  const event = (id: string, kind: SessionEvent["kind"], content: string): SessionEvent => ({ id, kind, name: "make", content, createdAt: "2026-10-03T00:00:00Z" });
+  const events = [event("a", "tool_call", '{"seed":1}'), event("b", "tool_call", '{"seed":2}'),
+    { id: "error", kind: "error" as const, content: "A tool failed", createdAt: "2026-10-03T00:00:00Z" },
+    event("later", "tool_call", '{"seed":3}'),
+    event("ra", "tool_result", '{"artifacts":[{"kind":"midi","artifactRef":"midi-a"}]}'),
+    event("rb", "tool_result", '{"artifacts":[{"kind":"midi","artifactRef":"midi-b"}]}'),
+    event("rc", "tool_result", '{"artifacts":[{"kind":"midi","artifactRef":"midi-c"}]}')];
+  assert.equal(artifactGenerationsFromEvents(events).size, 0);
+});
+
+for (const content of ['{"status":"failed"}', "The tool did not return a confirmed result."]) {
+  test(`an enclosing terminal result closes unfinished child calls: ${content}`, () => {
+    const event = (id: string, kind: SessionEvent["kind"], name: string, content: string, requestEventId?: string): SessionEvent => ({
+      id, kind, name, content, createdAt: "2026-10-03T00:00:00Z", ...(requestEventId ? { requestEventId } : {}),
+    });
+    const events = [event("parent-a", "tool_call", "workflow", "{}"), event("child-a", "tool_call", "make", "{}", "parent-a"),
+      event("ended-a", "tool_result", "workflow", content), event("parent-b", "tool_call", "workflow", "{}"),
+      event("child-b", "tool_call", "make", "{}", "parent-b"),
+      event("result-b", "tool_result", "make", '{"artifacts":[{"kind":"midi","artifactRef":"midi-b"}]}')];
+    assert.equal(artifactGenerationsFromEvents(events).get("midi:midi-b")?.generation.callEventId, "child-b");
+  });
+}
 
 test("saved MIDI inspection pages exact notes without provider calls and rejects foreign parts", async (t) => {
   const h = await audioStorageHarness(t);

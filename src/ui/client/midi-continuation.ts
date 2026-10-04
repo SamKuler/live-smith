@@ -83,11 +83,14 @@ function createView(deps: Dependencies) {
   };
   function syncControls() {
     const view = getView(); const buffer = view?.buffer; const locked = operation.busy || Boolean(pending);
+    const savingSetup = pending === "configure_midi_continuation";
+    for (const control of [length, capacity, generator, prompt, ...sourceList.querySelectorAll("input")]) control.disabled = savingSetup;
+    for (const fields of parameters.querySelectorAll("fieldset")) fields.disabled = savingSetup;
     load.disabled = locked;
     const canSave = validSetup() && (!buffer || dirty || view?.stale === true);
     save.disabled = locked || !canSave; save.hidden = generator.value !== "model";
     for (const submit of parameters.querySelectorAll<HTMLButtonElement>('button[type="submit"]')) submit.disabled = locked || !canSave;
-    reset.disabled = !view; reset.hidden = !dirty && !conflict();
+    reset.disabled = savingSetup || !view; reset.hidden = !dirty && !conflict();
     fill.disabled = locked || dirty || !buffer || view?.stale === true || buffer.queue.length >= buffer.capacity;
     const stoppable = continuationCommands.has(operation.commandKind ?? "");
     stop.hidden = !stoppable; stop.disabled = !operation.canStop || operation.stopping;

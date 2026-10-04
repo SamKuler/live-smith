@@ -74,7 +74,8 @@ test("a scope denial after only no-ops does not create unfinished Live work", as
   assert.equal(result.message, "No changes were needed or permitted.");
   assert.equal(events.find((event) => event.kind === "apply_result")?.applyOperation?.status, "failed");
   assert.equal(events.some((event) => event.kind === "apply_result" && event.recovery?.active), false);
-  assert.ok(events.some((event) => event.kind === "tool_result" && /edit scope/.test(event.content)));
+  assert.ok(events.some((event) => event.kind === "apply_result" && /edit scope/.test(event.content)));
+  assert.equal(events.filter((event) => ["apply_result", "tool_result", "error"].includes(event.kind)).length, 1);
 });
 
 test("runAgentLoop observes Live state before applying parameter actions", async () => {

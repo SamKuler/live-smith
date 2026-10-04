@@ -29,9 +29,9 @@ without changing the draft or choosing a task mode.
 The message box starts at one line, grows with its content, and scrolls within a
 bounded height for long drafts so conversation history remains visible.
 
-The Inspector separates **Session** views (**Context**, **Skills**, **Tools**) from
-global **Settings** (**Agent**, **Extensions**, **App**). Context shows the bound
-Live object, context usage, and the next message's attachments. Skills selects
+The Inspector separates **Session** views (**Context**, **Artifacts**, **Skills**, **Tools**)
+from global **Settings** (**Agent**, **Extensions**, **App**). Context contains the
+creative brief, bound Live object, context usage, and the next message's attachments. Skills selects
 workflow instructions for the current Session. Tools automatically loads its
 directory when the dialog opens and refreshes it when the Session or tool sources
 change. Discovery waits for foreground work to finish and leaves the composer

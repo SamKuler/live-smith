@@ -30,4 +30,3 @@ export function parseMidiArtifactAuthoringArguments(value: unknown): { label: st
   }
   return value as unknown as { label: string; tracks: MidiWriteTrack[] };
 }
-

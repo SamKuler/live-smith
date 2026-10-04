@@ -1028,7 +1028,9 @@ the initial message commit therefore leaves the source available for retry.
 
 Generation provenance references the original tool-call and result events and
 their public arguments. Owned artifact or audio-job IDs correlate the result;
-overlapping same-name calls keep their provenance unknown. Artifact views never
+initial requests and terminal events bound unmatched calls. Nested calls retain
+their enclosing owner, and steering remains within the active request.
+Overlapping same-name calls keep their provenance unknown. Artifact views never
 read current Connection credentials or pretend missing historical arguments are
 known. Shortened parameter previews retain the original event reference. A
 source selection does not authorize generation or mutation: Continue prepares

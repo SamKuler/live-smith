@@ -257,11 +257,9 @@ Tool descriptions are collapsed separately from their controls. Tools with an
 MCP App offer the custom interface first and keep **Standard parameter form**
 as an expandable alternative. Completed results share the same host actions:
 **Use in chat** appends a reference to the composer without sending it, and
-saved MIDI exposes **Insert into Live** with an existing MIDI track name and a
-one-based Arrangement start beat. Import does not require a model connection.
-The host observes and validates the destination, checks Session Edit Scope,
-applies the saved approval policy, and revalidates in the Live mutation queue.
-Uncertain or partial writes leave a recovery record and are not retried.
+saved MIDI exposes **Add to Live** through the shared import dialog described in
+the [README](../README.md). Import does not require a model connection and uses
+the ordinary Session Edit Scope, approval, and recovery boundaries.
 
 #### Persistent Plugin configuration
 

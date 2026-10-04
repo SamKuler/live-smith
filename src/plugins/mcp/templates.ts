@@ -22,4 +22,3 @@ export function expandPluginMcpTemplate(
       throw new Error(`MCP credential ${name} is not configured.`);
     });
 }
-

@@ -197,7 +197,10 @@ test("revocation during confirmation blocks the previously approved plan", async
   });
   assert.deepEqual(h.mutations, []);
   assert.equal(h.confirmations, 1);
-  assert.ok((await h.events()).some((event) => event.kind === "tool_result" && /edit scope/i.test(event.content)));
+  const results = (await h.events()).filter((event) => event.kind === "apply_result" || event.kind === "tool_result");
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.applyOperation?.status, "failed");
+  assert.match(results[0]!.content, /edit scope/i);
 });
 
 test("queued execution rechecks saved permissions after taking the mutation lock", async (t) => {
@@ -214,7 +217,10 @@ test("queued execution rechecks saved permissions after taking the mutation lock
   assert.deepEqual(h.mutations, []);
   const events = await h.events();
   assert.equal(events.some((event) => event.recovery?.active), false);
-  assert.ok(events.some((event) => event.kind === "tool_result" && /edit scope/i.test(event.content)));
+  const results = events.filter((event) => event.kind === "apply_result" || event.kind === "tool_result");
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.applyOperation?.status, "failed");
+  assert.match(results[0]!.content, /edit scope/i);
 });
 
 test("revocation after an action stops the next write and preserves partial recovery", async (t) => {

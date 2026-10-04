@@ -120,6 +120,80 @@ test("Plugin schema fields edit saved parameters without exposing conditioning f
   } finally { h.close(); }
 });
 
+for (const plugin of [false, true]) test(`${plugin ? "Plugin" : "model"} continuation setup locks every editor only while its save is pending`, async () => {
+  const s = await setup({ initialCount: 0, plugin }); const { h } = s; let held = false;
+  const field = () => h.document.querySelector<HTMLTextAreaElement>(plugin
+    ? ".midi-continuation-parameters textarea" : ".midi-continuation-prompt")!;
+  try {
+    h.input(plugin ? `#${field().id}` : ".midi-continuation-prompt", "Submitted direction");
+    if (plugin) h.click('[aria-label="Include Density"]');
+    h.holdNextCommand(); held = true; button(h, "Save continuation setup").click();
+    await waitForCondition(() => midiCommands(h).length === 1, "Expected pending setup save");
+    const editors = h.document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
+      ".midi-continuation-setup input, .midi-continuation-setup select, .midi-continuation-setup textarea");
+    for (const editor of editors) assert.equal(editor.matches(":disabled"), true, `Saving must lock ${editor.id || editor.className || editor.type}`);
+    const source = h.document.querySelector<HTMLInputElement>('[aria-label="Piano · Theme"]')!;
+    source.click(); assert.equal(source.checked, true);
+    button(h, "Use saved setup").click();
+    if (plugin) button(h, "Reset parameters").click();
+    assert.equal(field().value, "Submitted direction");
+    h.releaseHeldCommand(); held = false; await settleCommand(h);
+    assert.equal(field().matches(":disabled"), false);
+    assert.equal(field().value, "Submitted direction");
+    assert.equal(h.document.querySelector<HTMLInputElement>('[aria-label="Piano · Theme"]')!.matches(":disabled"), false);
+    if (plugin) {
+      const density = h.document.querySelector<HTMLInputElement>('.midi-continuation-parameters input[type="number"]')!;
+      assert.equal(density.matches(":disabled"), true, "an omitted parameter must remain disabled after saving");
+      h.click('[aria-label="Include Density"]'); assert.equal(density.matches(":disabled"), false);
+    }
+    h.input(plugin ? `#${field().id}` : ".midi-continuation-prompt", "Next draft");
+    assert.equal(button(h, "Save continuation setup").disabled, false);
+    assert.equal(midiCommands(h).length, 1); assert.deepEqual(h.errors, []);
+  } finally { if (held) { h.releaseHeldCommand(); await settleCommand(h); } h.close(); }
+});
+
+for (const plugin of [false, true]) test(`${plugin ? "Plugin" : "model"} continuation drafts remain editable and survive a pending Fill`, async () => {
+  const s = await setup({ initialCount: 0, plugin }); const { h } = s; let held = false;
+  try {
+    h.holdNextCommand(); held = true; button(h, "Fill buffer").click();
+    await waitForCondition(() => midiCommands(h).length === 1, "Expected pending Fill");
+    const field = h.document.querySelector<HTMLTextAreaElement>(plugin
+      ? ".midi-continuation-parameters textarea" : ".midi-continuation-prompt")!;
+    assert.equal(field.matches(":disabled"), false);
+    const source = h.document.querySelector<HTMLInputElement>('[aria-label="Bass · Bass line"]')!;
+    assert.equal(source.matches(":disabled"), false); source.click(); assert.equal(source.checked, false);
+    h.input(".midi-continuation-length", "12");
+    h.input(plugin ? `#${field.id}` : ".midi-continuation-prompt", "Direction for the next buffer");
+    assert.equal(button(h, "Use saved setup").disabled, false);
+    assert.equal(button(h, "Save continuation setup").disabled, true);
+    h.releaseHeldCommand(); held = false; await settleCommand(h);
+    assert.equal(field.value, "Direction for the next buffer");
+    assert.equal(h.document.querySelector<HTMLInputElement>(".midi-continuation-length")!.value, "12");
+    assert.equal(h.document.querySelector<HTMLInputElement>('[aria-label="Bass · Bass line"]')!.checked, false);
+    button(h, "Save continuation setup").click(); await settleCommand(h);
+    const command = midiCommands(h)[1]!.body as any;
+    assert.equal(command.segmentBeats, 12);
+    assert.deepEqual(command.sourceClips, [{ trackId: "2", clipId: "20" }]);
+    assert.equal(plugin ? command.generator.arguments.style : command.prompt, "Direction for the next buffer");
+    assert.deepEqual(h.errors, []);
+  } finally { if (held) { h.releaseHeldCommand(); await settleCommand(h); } h.close(); }
+});
+
+test("failed continuation setup saves unlock the retained draft for retry", async () => {
+  const s = await setup({ initialCount: 0 }); const { h } = s;
+  try {
+    h.input(".midi-continuation-prompt", "Retry this direction");
+    h.failNextCommand("The setup could not be saved", undefined, { commandOutcome: "unknown", status: 500,
+      state: { ...cloneState(s.state), midiContinuation: cloneState(s.view) } });
+    button(h, "Save continuation setup").click(); await settleCommand(h);
+    const field = h.document.querySelector<HTMLTextAreaElement>(".midi-continuation-prompt")!;
+    assert.equal(field.matches(":disabled"), false); assert.equal(field.value, "Retry this direction");
+    assert.equal(button(h, "Save continuation setup").disabled, false);
+    button(h, "Use saved setup").click(); assert.equal(field.value, "Keep the rhythm");
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
 test("preview and cancelled import retain the head; only a new server queue advances the next section", async () => {
   const s = await setup({ initialCount: 2 }); const { h } = s;
   try {
