@@ -1519,7 +1519,9 @@ test("Google answers every truncated function call before continuing", async () 
   const contents = googleRequest.contents as Array<Record<string, unknown>>;
   assert.deepEqual(contents.slice(-2), [{
     role: "model",
-    parts: replayParts,
+    parts: replayParts.map(part => part === partialCallPart
+      ? { ...part, functionCall: { ...partialCallPart.functionCall, args: {} } }
+      : part),
   }, {
     role: "user",
     parts: [{
@@ -1539,6 +1541,7 @@ test("Google answers every truncated function call before continuing", async () 
       },
     }],
   }]);
+  assert.deepEqual((first.providerState as { parts: unknown[] }).parts, replayParts);
 });
 
 test("Google rejects malformed non-null stream error envelopes", async () => {
@@ -1891,4 +1894,291 @@ test("Google rejects unverified explicit reasoning modes before HTTP", async () 
     );
   }
   assert.equal(requests, 0);
+});
+
+for (const keyword of ["oneOf", "anyOf", "allOf"] as const) {
+  test(`Google envelopes root ${keyword} tool schemas and decodes canonical arguments`, async () => {
+    const target = request();
+    const parameters = { type: "object", properties: { value: { type: "string" } }, required: ["value"],
+      [keyword]: keyword === "allOf"
+        ? [{ properties: { value: { minLength: 1 } } }, { properties: { value: { maxLength: 10 } } }]
+        : [{ properties: { value: { const: "first" } } }, { properties: { value: { const: "second" } } }] };
+    target.tools = [{ type: "function", function: { name: "composed_tool", description: "A composed tool", parameters } }];
+    let captured: any;
+    const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (_url, init) => {
+      captured = JSON.parse(String(init?.body));
+      return streamResponse([{ response: { candidates: [{ content: { role: "model", parts: [{
+        functionCall: { id: "wrapped-call", name: "composed_tool", args: { input: { value: "first" } } }, thoughtSignature: "opaque-signature",
+      }] }, finishReason: "STOP" }] } }]);
+    } });
+    const turn = await protocol.createToolTurn(target, credential);
+    assert.deepEqual(captured.request.tools[0].functionDeclarations[0].parametersJsonSchema, {
+      type: "object", properties: { input: parameters }, required: ["input"], additionalProperties: false,
+    });
+    assert.deepEqual(turn.toolCalls, [{ id: "wrapped-call", name: "composed_tool", arguments: '{"value":"first"}' }]);
+    assert.deepEqual(target.tools.filter(tool => tool.type === "function")[0]!.function.parameters, parameters);
+    target.agentMessages = [{ role: "assistant", content: turn.content, toolCalls: turn.toolCalls, providerState: turn.providerState },
+      { role: "tool", toolCallId: "wrapped-call", content: "completed" }];
+    await protocol.createToolTurn(target, credential);
+    assert.deepEqual(captured.request.contents.at(-2).parts, [{
+      functionCall: { id: "wrapped-call", name: "composed_tool", args: { input: { value: "first" } } }, thoughtSignature: "opaque-signature",
+    }]);
+    assert.equal(captured.request.contents.at(-1).parts[0].functionResponse.name, "composed_tool");
+    const assistant = target.agentMessages[0];
+    assert.ok(assistant?.role === "assistant");
+    delete assistant.providerState;
+    await protocol.createToolTurn(target, credential);
+    assert.deepEqual(captured.request.contents.at(-2).parts[0].functionCall.args, { input: { value: "first" } });
+  });
+}
+
+test("Google adapts the actual Suno schemas without changing their constraints or executor arguments", async () => {
+  const { createBuiltInAudioToolsets } = await import("../../../src/plugins/builtins/audio-toolsets.js");
+  const toolsets = createBuiltInAudioToolsets({ services: [{ id: "suno-test", name: "Music", provider: "suno", pluginId: "live-smith.suno-website" }],
+    includeModelAudioInput: false, execute: async () => { throw new Error("No audio operation should run in a protocol test"); } });
+  const target = request(); target.tools = toolsets.flatMap(toolset => toolset.tools());
+  const before = JSON.parse(JSON.stringify(target.tools)) as typeof target.tools;
+  const args = { connectionId: "suno-test", prompt: "Future bass and garage", instrumental: true };
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    for (const declaration of body.request.tools[0].functionDeclarations) {
+      const original = before.filter(tool => tool.type === "function").find(tool => tool.function.name === declaration.name)!.function.parameters;
+      assert.equal(["oneOf", "anyOf", "allOf"].some(key => Object.hasOwn(declaration.parametersJsonSchema, key)), false);
+      assert.deepEqual(declaration.parametersJsonSchema.properties?.input ?? declaration.parametersJsonSchema, original);
+    }
+    return streamResponse([{ response: { candidates: [{ content: { role: "model", parts: [{ functionCall: {
+      name: "builtin_suno_generate_music", args: { input: args },
+    } }] }, finishReason: "STOP" }] } }]);
+  } });
+  const turn = await protocol.createToolTurn(target, credential);
+  assert.deepEqual(JSON.parse(turn.toolCalls[0]!.arguments), args);
+  assert.deepEqual(target.tools, before);
+});
+
+for (const args of [{}, { input: null }, { input: [] }, { input: {}, unexpected: true }]) {
+  test(`Google rejects malformed wrapped tool arguments: ${JSON.stringify(args)}`, async () => {
+    const target = request();
+    target.tools = [{ type: "function", function: { name: "inspect", description: "Inspect", parameters: { type: "object", oneOf: [{ required: ["value"] }] } } }];
+    const protocol = createGoogleAntigravityProtocol({ fetchImpl: async () => streamResponse([{ response: { candidates: [{
+      content: { role: "model", parts: [{ functionCall: { name: "inspect", args } }] }, finishReason: "STOP",
+    }] } }]) });
+    await assert.rejects(protocol.createToolTurn(target, credential), /invalid tool argument envelope/i);
+  });
+}
+
+test("Google schema envelopes preserve local references, nested resource scopes and literal data", async () => {
+  const target = request();
+  const parameters = {
+    type: "object", oneOf: [{ required: ["value"] }],
+    $defs: { value: { type: "string" } },
+    properties: {
+      value: { $ref: "#/$defs/value" },
+      recursive: { $ref: "#" },
+      emptyRoot: { $ref: "" },
+      literal: { const: { $ref: "#/do-not-change-literal-data" } },
+      nested: { $id: "https://schemas.example.test/nested", properties: { child: { $ref: "#/properties/value" } } },
+    },
+  };
+  target.tools = [{ type: "function", function: { name: "inspect", description: "Inspect", parameters } }];
+  let wire: any;
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (_url, init) => {
+    wire = JSON.parse(String(init?.body)).request.tools[0].functionDeclarations[0].parametersJsonSchema;
+    return streamResponse([{ response: { candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }] } }]);
+  } });
+  await protocol.createToolTurn(target, credential);
+  assert.equal(wire.properties.input.properties.value.$ref, "#/properties/input/$defs/value");
+  assert.equal(wire.properties.input.properties.recursive.$ref, "#/properties/input");
+  assert.equal(wire.properties.input.properties.emptyRoot.$ref, "#/properties/input");
+  assert.deepEqual(wire.properties.input.properties.literal, parameters.properties.literal);
+  assert.deepEqual(wire.properties.input.properties.nested, parameters.properties.nested);
+  assert.equal(parameters.properties.value.$ref, "#/$defs/value");
+});
+
+test("Google retains a truncated enveloped call for continuation without admitting its incomplete arguments", async () => {
+  const target = request();
+  target.tools = [{ type: "function", function: { name: "inspect", description: "Inspect", parameters: { type: "object", oneOf: [{ required: ["value"] }] } } }];
+  const partial = { functionCall: { name: "inspect", args: {} }, thoughtSignature: "partial-wrapper-signature" };
+  let count = 0;
+  let continuation: any;
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (_url, init) => {
+    if (++count === 1) return streamResponse([{ response: { candidates: [{
+      content: { role: "model", parts: [partial] }, finishReason: "MAX_TOKENS",
+    }] } }]);
+    continuation = JSON.parse(String(init?.body));
+    return streamResponse([{ response: { candidates: [{
+      content: { role: "model", parts: [{ text: "Done" }] }, finishReason: "STOP",
+    }] } }]);
+  } });
+  const turn = await protocol.createToolTurn(target, credential);
+  assert.deepEqual(turn.toolCalls, []);
+  assert.deepEqual(turn.continuation, { reason: "output_limit" });
+  target.agentMessages = [{ role: "assistant", content: turn.content, toolCalls: [], providerState: turn.providerState }];
+  await protocol.createToolTurn(target, credential);
+  assert.deepEqual(continuation.request.contents.at(-2).parts, [partial]);
+  assert.match(continuation.request.contents.at(-1).parts[0].functionResponse.response.error, /not executed.*truncated/);
+});
+
+for (const wrapped of [false, true]) {
+  test(`Google omits empty stream text chunks from ${wrapped ? "enveloped" : "ordinary"} tool replay`, async () => {
+    const target = request();
+    if (wrapped) target.tools = [{ type: "function", function: { name: "inspect", description: "Inspect", parameters: { type: "object", oneOf: [{ required: ["value"] }] } } }];
+    const call = { functionCall: { id: "stream-call", name: "inspect", args: wrapped ? { input: { value: "first" } } : { value: "first" } } };
+    let count = 0;
+    let replay: any;
+    const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (_url, init) => {
+      if (++count === 1) return streamResponse([
+        { response: { candidates: [{ content: { role: "model", parts: [{ text: "" }] } }] } },
+        { response: { candidates: [{ content: { role: "model", parts: [call] } }] } },
+        { response: { candidates: [{ content: { role: "model", parts: [{ text: "" }] }, finishReason: "STOP" }] } },
+      ]);
+      replay = JSON.parse(String(init?.body));
+      return streamResponse([{ response: { candidates: [{ content: { role: "model", parts: [{ text: "Done" }] }, finishReason: "STOP" }] } }]);
+    } });
+    const turn = await protocol.createToolTurn(target, credential);
+    assert.deepEqual((turn.providerState as { parts: unknown[] }).parts, [call]);
+    target.agentMessages = [{ role: "assistant", content: turn.content, toolCalls: turn.toolCalls, providerState: turn.providerState },
+      { role: "tool", toolCallId: turn.toolCalls[0]!.id, content: "Inspection complete" }];
+    await protocol.createToolTurn(target, credential);
+    assert.deepEqual(replay.request.contents.at(-2).parts, [call]);
+    assert.equal(replay.request.contents.at(-1).parts[0].functionResponse.id, "stream-call");
+  });
+}
+
+test("Google retains empty text parts carrying signatures or other provider metadata", async () => {
+  const parts = [{ text: "", thoughtSignature: "opaque-signed-empty" }, { text: "", thought: true }, { text: " ", thought: false }, { text: "Done" }];
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async () => streamResponse([{ response: { candidates: [{
+    content: { role: "model", parts }, finishReason: "STOP",
+  }] } }]) });
+  const turn = await protocol.createToolTurn(request(), credential);
+  assert.deepEqual((turn.providerState as { parts: unknown[] }).parts, parts);
+  assert.equal(turn.content, " Done");
+});
+
+for (const providerIds of [false, true]) {
+  test(`Google replays omitted empty arguments with ${providerIds ? "provider" : "internal"} call IDs`, async () => {
+    const parts = [
+      { thought: true, text: "Inspect both targets.", thoughtSignature: "reasoning-signature" },
+      ...[0, 1].map(index => ({
+        functionCall: { name: "inspect", ...(providerIds ? { id: `provider-${index}` } : {}) },
+        ...(index === 0 ? { thoughtSignature: "call-signature" } : {}),
+      })),
+    ];
+    const captured: Array<{ request: { contents: unknown[] } }> = [];
+    const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (_url, init) => {
+      captured.push(JSON.parse(String(init?.body)));
+      return streamResponse([{ response: { candidates: [{
+        content: { role: "model", parts: captured.length === 1 ? parts : [{ text: "Done" }] },
+        finishReason: "STOP",
+      }] } }]);
+    } });
+    const target = request();
+    const turn = await protocol.createToolTurn(target, credential);
+    assert.deepEqual(turn.toolCalls.map(call => call.arguments), ["{}", "{}"]);
+    const providerStateBefore = JSON.stringify(turn.providerState);
+    target.agentMessages = [
+      { role: "assistant", content: turn.content, toolCalls: turn.toolCalls, providerState: turn.providerState },
+      ...turn.toolCalls.map((call, index) => ({ role: "tool" as const, toolCallId: call.id, content: `Target ${index}` })),
+    ];
+    const completed = await protocol.createToolTurn(target, credential);
+    assert.equal(completed.content, "Done");
+    assert.deepEqual(captured[1]!.request.contents.slice(-2), [{
+      role: "model",
+      parts: [parts[0], ...[0, 1].map(index => ({
+        functionCall: { name: "inspect", ...(providerIds ? { id: `provider-${index}` } : {}), args: {} },
+        ...(index === 0 ? { thoughtSignature: "call-signature" } : {}),
+      }))],
+    }, {
+      role: "user",
+      parts: [0, 1].map(index => ({ functionResponse: {
+        name: "inspect", ...(providerIds ? { id: `provider-${index}` } : {}), response: { result: `Target ${index}` },
+      } })),
+    }]);
+    assert.equal(JSON.stringify(turn.providerState), providerStateBefore);
+  });
+}
+
+for (const finishReason of ["STOP", "MAX_TOKENS"]) {
+  test(`Google reassembles streamed signed thinking before ${finishReason} replay`, async () => {
+    const fragments = ["Inspect ", "the Live set", " and tempo. 🎵"];
+    const signature = "complete-thinking-signature";
+    const calls = [
+      { functionCall: { name: "inspect", id: "first" } },
+      { functionCall: { name: "inspect", id: "second" } },
+    ];
+    const captured: Array<{ request: { contents: Array<{ role: string; parts: unknown[] }> } }> = [];
+    const updates: unknown[] = [];
+    const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (_url, init) => {
+      captured.push(JSON.parse(String(init?.body)));
+      if (captured.length > 1) return streamResponse([{ response: { candidates: [{
+        content: { role: "model", parts: [{ text: "Done" }] }, finishReason: "STOP",
+      }] } }]);
+      return streamResponse([
+        ...fragments.map(text => ({ response: { candidates: [{ content: {
+          role: "model", parts: [{ thought: true, text }],
+        } }] } })),
+        { response: { candidates: [{ content: { role: "model", parts: [
+          { thought: true, text: "", thoughtSignature: signature }, ...calls,
+        ] }, finishReason }] } },
+      ]);
+    } });
+    const target = request();
+    target.onReasoning = update => { updates.push(update); };
+    const first = await protocol.createToolTurn(target, credential);
+    assert.equal(first.reasoning?.content, fragments.join(""));
+    assert.deepEqual(updates, [
+      { type: "start" }, ...fragments.map(delta => ({ type: "delta", delta })),
+    ]);
+    assert.equal(first.toolCalls.length, finishReason === "STOP" ? 2 : 0);
+    const originalState = JSON.stringify(first.providerState);
+    target.agentMessages = [
+      { role: "assistant", content: first.content, toolCalls: first.toolCalls, providerState: first.providerState },
+      ...first.toolCalls.map(call => ({ role: "tool" as const, toolCallId: call.id, content: "Inspected" })),
+    ];
+    await protocol.createToolTurn(target, credential);
+    assert.deepEqual(captured[1]!.request.contents.at(-2)?.parts, [
+      { thought: true, text: fragments.join(""), thoughtSignature: signature },
+      ...calls.map(part => ({ functionCall: { ...part.functionCall, args: {} } })),
+    ]);
+    assert.equal(captured[1]!.request.contents.at(-1)?.parts.length, 2);
+    assert.equal(JSON.stringify(first.providerState), originalState);
+  });
+}
+
+test("Google thought assembly preserves independent signatures and content boundaries", async () => {
+  const raw = [
+    { thought: true, text: "First " },
+    { thought: true, text: "block.", thoughtSignature: "signature-1" },
+    { thought: true, text: "Second block." },
+    { thought: true, text: "", thoughtSignature: "signature-2" },
+    { thought: true, text: "Unsigned summary." },
+    { text: "", thoughtSignature: "ordinary-signature" },
+    { thought: true, text: "More summary." },
+    { functionCall: { name: "inspect", args: {}, id: "call-1" }, thoughtSignature: "function-signature" },
+    { thought: true, text: "Trailing summary." },
+    { text: "Text boundary." },
+    { thought: true, text: "", thoughtSignature: "standalone-signature" },
+    { thought: true, text: "Opaque metadata.", providerMetadata: { value: 1 } },
+    { thought: true, text: "", thoughtSignature: "metadata-boundary-signature" },
+  ];
+  const expected = [
+    { thought: true, text: "First block.", thoughtSignature: "signature-1" },
+    { thought: true, text: "Second block.", thoughtSignature: "signature-2" },
+    ...raw.slice(4),
+  ];
+  const bodies: Array<{ request: { contents: Array<{ parts: unknown[] }> } }> = [];
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return streamResponse([{ response: { candidates: [{
+      content: { role: "model", parts: bodies.length === 1 ? raw : [{ text: "Done" }] }, finishReason: "STOP",
+    }] } }]);
+  } });
+  const target = request();
+  const first = await protocol.createToolTurn(target, credential);
+  target.agentMessages = [
+    { role: "assistant", content: first.content, toolCalls: first.toolCalls, providerState: first.providerState },
+    { role: "tool", toolCallId: first.toolCalls[0]!.id, content: "Inspected" },
+  ];
+  await protocol.createToolTurn(target, credential);
+  assert.deepEqual(bodies[1]!.request.contents.at(-2)?.parts, expected);
+  assert.deepEqual((first.providerState as { parts: unknown[] }).parts, raw);
 });

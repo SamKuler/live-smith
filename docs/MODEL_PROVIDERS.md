@@ -324,7 +324,26 @@ citations, usage, or conflicting terminals fail explicitly instead of being
 discarded or coerced. Provider-supplied
 function-call IDs are replayed on both call and result; a Live Smith ID
 synthesized for an ID-less call remains internal and is omitted from both
-Google wire parts.
+Google wire parts. Omitted function-call arguments serialize as an explicit
+empty object on replay, including unexecuted output-limit calls. The original
+provider state and all call IDs and signatures remain unchanged. Pure empty
+text chunks are omitted from replay; empty parts
+carrying thought signatures or other provider metadata remain intact.
+Consecutive streamed thought-text fragments ending in a thought signature
+serialize as one complete signed thinking block. Each signature closes its
+block; ordinary text, function calls and other provider metadata preserve their
+boundaries. This assembly changes only the outbound copy, leaving visible
+reasoning deltas and the original provider state intact.
+
+Antigravity function schemas with a root `oneOf`, `anyOf` or `allOf` use an
+object envelope with one required `input` property. The original schema and
+its constraints remain inside that property; document-local `$ref` pointers
+move with it. Explicit nested schema resource IDs retain their own reference
+base. This encoding applies across the account's model catalog. The adapter
+unwraps valid returned arguments before tool admission, so Plugin and Live
+executors continue to consume their canonical arguments. Signed provider parts
+retain the exact wire envelope on replay. Incomplete output-limit calls remain
+unexecuted and are retained for continuation without decoding partial envelopes.
 
 #### Catalogs and send admission
 

@@ -16,7 +16,6 @@ import {
 import {
   requireModelContextUsage,
   type ModelInputPart,
-  type ModelToolCall,
   type ModelTurn,
 } from "../contracts.js";
 import { normalizeModelCitations } from "../citations.js";
@@ -255,10 +254,7 @@ function buildGoogleRequest(
     .map((tool) => ({
       name: tool.function.name,
       description: tool.function.description,
-      parametersJsonSchema: tool.function.parameters ?? {
-        type: "object",
-        properties: {},
-      },
+      parametersJsonSchema: googleToolParameters(tool.function.parameters),
     }));
   return {
     project: projectId,
@@ -280,6 +276,54 @@ function buildGoogleRequest(
         : {}),
     },
   };
+}
+
+function needsGoogleArgumentEnvelope(parameters: Record<string, unknown> | undefined): boolean {
+  return parameters !== undefined &&
+    ["oneOf", "anyOf", "allOf"].some(keyword => Object.hasOwn(parameters, keyword));
+}
+
+function googleToolUsesEnvelope(request: TransportRequest, name: string): boolean {
+  const tool = request.tools.find(tool => tool.type === "function" && tool.function.name === name);
+  return tool?.type === "function" && needsGoogleArgumentEnvelope(tool.function.parameters);
+}
+
+function googleToolParameters(parameters: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!needsGoogleArgumentEnvelope(parameters)) return parameters ?? { type: "object", properties: {} };
+  const input = cloneJsonValue(parameters!);
+  rebaseGoogleEnvelopeReferences(input);
+  return { type: "object", properties: { input }, required: ["input"], additionalProperties: false };
+}
+
+/** Relocate document-local references only in schema positions, preserving literal values. */
+function rebaseGoogleEnvelopeReferences(schema: Record<string, unknown>): void {
+  // An explicit resource ID keeps its own reference base when nested.
+  if (typeof schema.$id === "string" && schema.$id.length > 0) return;
+  if (typeof schema.$ref === "string") {
+    if (schema.$ref === "" || schema.$ref === "#") schema.$ref = "#/properties/input";
+    else if (schema.$ref.startsWith("#/")) schema.$ref = "#/properties/input/" + schema.$ref.slice(2);
+  }
+  for (const key of ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"]) {
+    const children = schema[key];
+    if (isRecord(children)) for (const child of Object.values(children)) {
+      if (isRecord(child)) rebaseGoogleEnvelopeReferences(child);
+    }
+  }
+  for (const key of ["allOf", "anyOf", "oneOf", "prefixItems", "items", "additionalItems", "contains",
+    "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "propertyNames", "not", "if", "then", "else"]) {
+    const value = schema[key];
+    for (const child of Array.isArray(value) ? value : [value]) {
+      if (isRecord(child)) rebaseGoogleEnvelopeReferences(child);
+    }
+  }
+}
+
+function googleToolArguments(request: TransportRequest, call: GoogleFunctionCall): Record<string, unknown> {
+  if (!googleToolUsesEnvelope(request, call.name)) return call.args;
+  if (Object.keys(call.args).length !== 1 || !isRecord(call.args.input)) {
+    throw new Error("Google Antigravity returned an invalid tool argument envelope.");
+  }
+  return call.args.input;
 }
 
 function googleAntigravityRequestId(request: TransportRequest): string {
@@ -325,20 +369,25 @@ function googleContents(request: TransportRequest): GoogleContent[] {
           state.kind === "google-antigravity" &&
           Array.isArray(state.parts) &&
           state.parts.every(isRecord)
-        ? cloneJsonValue(state.parts as GooglePart[])
+        ? googleReplayParts(state.parts as GooglePart[])
         : [
             ...(message.content ? [{ text: message.content }] : []),
             ...message.toolCalls.map((call) => ({
               functionCall: {
                 id: call.id,
                 name: call.name,
-                args: parseArguments(call.arguments),
+                args: googleToolUsesEnvelope(request, call.name)
+                  ? { input: parseArguments(call.arguments) }
+                  : parseArguments(call.arguments),
               },
             })),
           ];
-      const providerCalls = parts.flatMap((part) =>
-        isRecord(part.functionCall) ? [part.functionCall] : []
-      );
+      const providerCalls = parts.flatMap((part) => {
+        if (!isRecord(part.functionCall)) return [];
+        // Responses may omit empty arguments; replay requires the explicit object.
+        if (part.functionCall.args === undefined) part.functionCall.args = {};
+        return [part.functionCall];
+      });
       for (const [index, call] of message.toolCalls.entries()) {
         const providerId = providerCalls[index]?.id;
         toolCorrelations.set(call.id, {
@@ -391,6 +440,34 @@ function googleContents(request: TransportRequest): GoogleContent[] {
     }
   }
   return contents;
+}
+
+function googleReplayParts(streamParts: readonly GooglePart[]): GooglePart[] {
+  const parts: GooglePart[] = [];
+  let thoughtStart = 0;
+  for (const part of cloneJsonValue(streamParts)) {
+    const thoughtText = part.thought === true &&
+      (part.text === undefined || typeof part.text === "string") &&
+      Object.keys(part).every(key =>
+        key === "thought" || key === "text" || key === "thoughtSignature"
+      );
+    if (thoughtText && part.thoughtSignature === undefined) {
+      parts.push(part);
+      continue;
+    }
+    // A streamed thinking block ends with its signature, sometimes on empty text.
+    // Other signed parts and intervening content retain their original boundaries.
+    if (thoughtText && typeof part.thoughtSignature === "string" &&
+      part.thoughtSignature.length > 0 && thoughtStart < parts.length) {
+      const text = parts.slice(thoughtStart).map(fragment => fragment.text ?? "").join("") +
+        (part.text ?? "");
+      parts.splice(thoughtStart, parts.length - thoughtStart, { ...part, text });
+    } else {
+      parts.push(part);
+    }
+    thoughtStart = parts.length;
+  }
+  return parts;
 }
 
 function appendGoogleContent(
@@ -454,7 +531,7 @@ async function readGoogleTurn(
   const reportReasoning = createModelReasoningStreamReporter(
     request.onReasoning,
   );
-  const toolCalls: ModelToolCall[] = [];
+  const toolCalls: Array<GoogleFunctionCall & { id: string }> = [];
   const replayParts: GooglePart[] = [];
   const citationCandidates: Array<{ url: string; title?: string }> = [];
   let totalTokens: number | undefined;
@@ -516,7 +593,10 @@ async function readGoogleTurn(
     }
     const parts = Array.isArray(content?.parts) ? content.parts : [];
     for (const part of parts) {
-      replayParts.push(cloneJsonValue(part));
+      // Pure empty text chunks carry no replay content; metadata-bearing parts stay intact.
+      if (part.text !== "" || Object.keys(part).length !== 1) {
+        replayParts.push(cloneJsonValue(part));
+      }
       if (part.text !== undefined && typeof part.text !== "string") {
         throw new Error("Google Antigravity returned invalid text content.");
       }
@@ -546,7 +626,7 @@ async function readGoogleTurn(
         toolCalls.push({
           id,
           name: call.name,
-          arguments: JSON.stringify(call.args),
+          args: call.args,
         });
       }
     }
@@ -593,7 +673,11 @@ async function readGoogleTurn(
   const contextWindow = request.runtimeProfile.capabilities.contextWindowTokens;
   return {
     content: content || null,
-    toolCalls: outputLimited ? [] : toolCalls,
+    toolCalls: outputLimited ? [] : toolCalls.map(call => ({
+      id: call.id,
+      name: call.name,
+      arguments: JSON.stringify(googleToolArguments(request, call)),
+    })),
     ...(reasoning ? { reasoning } : {}),
     ...(citations.length ? { citations } : {}),
     ...(totalTokens !== undefined && contextWindow !== undefined
