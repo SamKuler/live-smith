@@ -49,7 +49,7 @@ import { HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND } from "../model/tools.js";
 import { EDIT_SCOPES, EDIT_SCOPE_LABELS } from "../agent/edit-scopes.js";
 import { MAX_RECOVERY_ACTION_DIGESTS } from "../agent/recovery-contract.js";
 import { MAX_SESSION_TITLE_CODE_POINTS } from "../storage/sessions.js";
-import { MAX_MIDI_PREVIEW_NOTES, MAX_PARAMETER_PREVIEW_VALUE_ITEMS } from "../agent/action-preview.js";
+import { MAX_PARAMETER_PREVIEW_VALUE_ITEMS } from "../agent/action-preview.js";
 import { SEPARATION_STEMS, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
   MAX_AUDIO_SESSION_JOBS, MAX_AUDIO_JOB_OUTPUTS, MAX_AUDIO_JOB_TITLE_CHARACTERS,
   AUDIO_OUTPUT_LABELS } from "../audio-services/contracts.js";
@@ -236,7 +236,6 @@ function injectSessionContract(script: string): string {
     .replaceAll("__MAX_AUDIO_ASSET_DURATION_SECONDS__", String(MAX_AUDIO_ASSET_DURATION_SECONDS))
     .replaceAll("__MAX_AUDIO_SESSION_JOBS__", String(MAX_AUDIO_SESSION_JOBS))
     .replaceAll("__MAX_AUDIO_JOB_OUTPUTS__", String(MAX_AUDIO_JOB_OUTPUTS))
-    .replaceAll("__MAX_MIDI_PREVIEW_NOTES__", String(MAX_MIDI_PREVIEW_NOTES))
     .replaceAll("__MAX_PARAMETER_PREVIEW_VALUE_ITEMS__", String(MAX_PARAMETER_PREVIEW_VALUE_ITEMS))
     .replaceAll(
       "__MAX_SESSION_TITLE_CODE_POINTS__",

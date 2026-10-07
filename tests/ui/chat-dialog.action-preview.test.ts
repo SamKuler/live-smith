@@ -137,7 +137,36 @@ test("MIDI confirmation switches an accessible shared piano roll between the obs
   assert.deepEqual(harness.errors, []);
 });
 
-test("a bounded MIDI preview reports full counts and omissions without inventing omitted notes", async (t) => {
+for (const count of [604, 4096]) {
+  test(`all ${count} proposed notes remain reachable through the real preview controls`, async (t) => {
+    const harness = await pendingSend(t);
+    const preview = midiPreview();
+    preview.range.end = count / 4;
+    preview.after = {
+      notes: Array.from({ length: count }, (_, index) => ({ pitch: index === count - 1 ? 96 : 60, startTime: index / 4, duration: 0.125 })),
+      totalNoteCount: count, omittedNoteCount: 0,
+    };
+    harness.emitServerEvent(confirmation(harness, { previews: [preview] }));
+    await harness.settle();
+    const svg = element(harness, ".action-preview svg");
+    assert.equal(element<HTMLElement>(harness, ".preview-limits").hidden, true);
+    assert.equal(svg.querySelectorAll(".piano-roll-note").length, 64);
+    assert.equal(svg.querySelector('[data-pitch="96"]'), null);
+    element<HTMLInputElement>(harness, ".piano-roll-position").dispatchEvent(new harness.window.KeyboardEvent("keydown", { key: "End", bubbles: true }));
+    assert.ok(svg.querySelector('[data-pitch="96"]'), "The last note remains visible when scrolling to the end");
+    harness.click('.midi-preview-switch [data-side="before"]');
+    harness.click('.midi-preview-switch [data-side="after"]');
+    assert.ok(svg.querySelector('[data-pitch="96"]'), "Switching comparison sides preserves the viewport");
+    harness.click(".action-preview .piano-roll-full");
+    assert.equal(svg.querySelectorAll(".piano-roll-note").length, count);
+    harness.click(".action-preview .piano-roll-focus");
+    assert.equal(svg.querySelectorAll(".piano-roll-note").length, 64);
+    assert.deepEqual(harness.errors, []);
+    assert.deepEqual(jsonCalls(harness, "/confirm"), []);
+  });
+}
+
+test("an older truncated MIDI preview still reports its missing notes honestly", async (t) => {
   const harness = await pendingSend(t);
   const preview = midiPreview();
   preview.range.end = 64;
@@ -445,13 +474,6 @@ const malformedPreviews: Array<[string, () => unknown]> = [
   ["fractional note counts", () => {
     const preview = midiPreview();
     return [{ ...preview, before: { ...preview.before, totalNoteCount: 2.5, omittedNoteCount: 0.5 } }];
-  }],
-  ["more than 256 notes on one side", () => {
-    const preview = midiPreview();
-    return [{ ...preview, before: {
-      notes: Array.from({ length: 257 }, (_, index) => ({ pitch: 60, startTime: index / 64, duration: 0.125 })),
-      totalNoteCount: 257, omittedNoteCount: 0,
-    } }];
   }],
   ["multiple previews", () => [midiPreview(), parameterPreview()]],
   ["an empty previews array", () => []],

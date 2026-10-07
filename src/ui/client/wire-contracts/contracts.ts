@@ -11,7 +11,6 @@ declare const __MAX_DISCOVERED_MODEL_CONTEXT_WINDOW_TOKENS__: number;
 declare const __MAX_SESSION_TITLE_CODE_POINTS__: number;
 declare const __MAX_RECOVERY_ACTION_DIGESTS__: number;
 declare const __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__: typeof BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS;
-declare const __MAX_MIDI_PREVIEW_NOTES__: number;
 declare const __MAX_PARAMETER_PREVIEW_VALUE_ITEMS__: number;
 declare const __MAX_IMAGE_ATTACHMENT_BYTES__: number;
 declare const __MAX_MIDI_ATTACHMENT_BYTES__: number;
@@ -67,7 +66,6 @@ export const audioServiceCapabilities = Object.fromEntries(
 );
 export const usesImportedSession = (descriptor: AudioDescriptor | undefined) =>
   descriptor?.authentication === "suno-session";
-export const maximumMidiPreviewNotes = __MAX_MIDI_PREVIEW_NOTES__;
 export const maximumParameterPreviewValueItems = __MAX_PARAMETER_PREVIEW_VALUE_ITEMS__;
 
 export const WIRE_MAX_IMAGE_ATTACHMENT_BYTES = __MAX_IMAGE_ATTACHMENT_BYTES__;

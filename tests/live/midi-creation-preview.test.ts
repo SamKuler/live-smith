@@ -58,14 +58,16 @@ for (const session of [false, true]) {
   });
 }
 
-test("creation preview omission preserves the full fingerprint, including non-displayed source notes", async () => {
+test("creation previews retain all source and proposed notes with their full fingerprint", async () => {
   const fixture = midiPreviewFixture(Array.from({ length: 300 }, () => ({ pitch: 36, startTime: 0, duration: 1 })));
   const action = arrangementAction({ startBeat: 32, durationBeats: 8, name: "Phrase", notes: Array.from({ length: 300 }, () => ({ pitch: 60, startTime: 1, duration: 1, velocity: 90 })) });
   const target = { track: fixture.track };
   const observed = await captureLiveActionPreflightObservation(fixture.context, action, target);
   assert.equal(observed.preview?.kind, "midi-notes");
-  assert.deepEqual([observed.preview.before.totalNoteCount, observed.preview.before.notes.length, observed.preview.before.omittedNoteCount], [300, 256, 44]);
-  assert.deepEqual([observed.preview.after.totalNoteCount, observed.preview.after.notes.length, observed.preview.after.omittedNoteCount], [300, 256, 44]);
+  assert.deepEqual(observed.preview.before.notes, fixture.notes);
+  assert.deepEqual(observed.preview.after.notes, action.notes);
+  assert.deepEqual([observed.preview.before.totalNoteCount, observed.preview.before.omittedNoteCount], [300, 0]);
+  assert.deepEqual([observed.preview.after.totalNoteCount, observed.preview.after.omittedNoteCount], [300, 0]);
   const hidden = await captureLiveActionPreflightObservation(fixture.context, action, target, undefined, false);
   assert.equal(hidden.preview, undefined);
   assert.equal(hidden.fingerprint, observed.fingerprint);

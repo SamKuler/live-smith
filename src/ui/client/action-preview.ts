@@ -22,9 +22,11 @@ export function createActionPreview() {
     let refreshMidi: (() => void) | undefined;
     if (preview.kind === "midi-notes") {
       let selected: "before" | "after" = "after";
-      const notes = [...preview.before.notes, ...preview.after.notes];
-      const pitches = notes.map((note) => note.pitch);
-      const pitchRange = { low: pitches.length ? Math.min(...pitches) : 60, high: pitches.length ? Math.max(...pitches) : 71 };
+      let low = 127, high = 0;
+      for (const side of [preview.before, preview.after]) for (const note of side.notes) {
+        low = Math.min(low, note.pitch); high = Math.max(high, note.pitch);
+      }
+      const pitchRange = low > high ? { low: 60, high: 71 } : { low, high };
       card.append(node("p", () => t("Clip beats {start}–{end}", {
         start: number(preview.range.start + 1), end: number(preview.range.end + 1),
       }), "preview-coordinate"));
@@ -48,14 +50,15 @@ export function createActionPreview() {
       const limits = node("p", undefined, "preview-limits");
       limits.setAttribute("role", "status");
       const empty = node("p", () => t("No notes."));
-      const noteText = (note: MidiPreviewNote) => t("Pitch {pitch} · beat {beat} · length {length}", {
-        pitch: String(note.pitch), beat: number(note.startTime + 1), length: number(note.duration),
-      }) + (note.velocity === undefined ? t(" · velocity unreported") : t(" · velocity {velocity}", { velocity: number(note.velocity) })) +
+      const noteText = (note: MidiPreviewNote, format: (value: number) => string) => t("Pitch {pitch} · beat {beat} · length {length}", {
+        pitch: String(note.pitch), beat: format(note.startTime + 1), length: format(note.duration),
+      }) + (note.velocity === undefined ? t(" · velocity unreported") : t(" · velocity {velocity}", { velocity: format(note.velocity) })) +
         (note.muted ? t(" · muted") : "");
       refreshMidi = () => {
         const side: MidiActionPreview["before"] = preview[selected];
+        const format = new Intl.NumberFormat(document.documentElement.lang || undefined, { maximumSignificantDigits: 8 }).format;
         for (const button of buttons) button.setAttribute("aria-pressed", String(button.dataset.side === selected));
-        pianoRoll.update({ notes: side.notes.map((note) => ({ ...note, description: noteText(note) })), durationBeats: preview.range.end, pitchRange });
+        pianoRoll.update({ notes: side.notes.map((note) => ({ ...note, description: noteText(note, format) })), durationBeats: preview.range.end, pitchRange });
         limits.hidden = side.omittedNoteCount === 0;
         limits.textContent = side.omittedNoteCount ? t("{omitted} notes omitted; showing {shown} of {total}.", {
           omitted: number(side.omittedNoteCount), shown: number(side.notes.length), total: number(side.totalNoteCount),

@@ -51,17 +51,21 @@ test("segment previews include preserved notes and match execution including no-
   assert.deepEqual(fixture.notes[1], original[1]);
 });
 
-test("bounded previews declare all omitted notes while the fingerprint still covers them", async () => {
-  const fixture = midiPreviewFixture(Array.from({ length: 300 }, () => ({ pitch: 60, startTime: 0, duration: 1 })));
+for (const noteCount of [604, 8192]) {
+test(`MIDI transforms preview all ${noteCount} notes and retain complete drift detection`, async () => {
+  const fixture = midiPreviewFixture(Array.from({ length: noteCount }, () => ({ pitch: 60, startTime: 0, duration: 1 })));
   const action: AgentAction = { type: "transpose_midi_notes", startBeat: 32, clipName: "Phrase", semitones: 1 };
   const before = await captureLiveActionPreflightObservation(fixture.context, action, { track: fixture.track });
   assert.equal(before.preview?.kind, "midi-notes");
-  assert.equal(before.preview.before.totalNoteCount, 300);
-  assert.equal(before.preview.before.notes.length, 256);
-  assert.equal(before.preview.before.omittedNoteCount, 44);
-  fixture.notes[299]!.pitch = 70;
+  assert.deepEqual(before.preview.before.notes, fixture.notes);
+  assert.equal(before.preview.before.totalNoteCount, noteCount);
+  assert.equal(before.preview.before.omittedNoteCount, 0);
+  assert.deepEqual(before.preview.after.notes, fixture.notes.map(note => ({ ...note, pitch: 61 })));
+  assert.equal(before.preview.after.omittedNoteCount, 0);
+  fixture.notes[noteCount - 1]!.pitch = 70;
   assert.notEqual(await captureLiveActionPreflightSnapshot(fixture.context, action, { track: fixture.track }), before.fingerprint);
 });
+}
 
 test("unsupported or invalid predictions omit previews without rejecting valid preflight", async () => {
   const fixture = midiPreviewFixture([{ pitch: 127, startTime: 0, duration: 1 }]);

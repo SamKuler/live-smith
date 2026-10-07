@@ -1,4 +1,3 @@
-export const MAX_MIDI_PREVIEW_NOTES = 256;
 /** Matches the existing Live observer's default parameter value-item page. */
 export const MAX_PARAMETER_PREVIEW_VALUE_ITEMS = 12;
 
@@ -68,7 +67,7 @@ function isMidiPreviewNote(note: unknown): note is MidiPreviewNote {
 
 function isMidiPreviewSide(side: unknown, range: { start: number; end: number }): side is MidiActionPreview["before"] {
   return isRecord(side) && hasOnlyKeys(side, ["notes", "totalNoteCount", "omittedNoteCount"]) &&
-    Array.isArray(side.notes) && side.notes.length <= MAX_MIDI_PREVIEW_NOTES && side.notes.every(isMidiPreviewNote) &&
+    Array.isArray(side.notes) && side.notes.every(isMidiPreviewNote) &&
     side.notes.every((note) => note.startTime >= range.start && note.startTime < range.end &&
       note.startTime + note.duration <= range.end + 1e-7) &&
     isSafeInteger(side.totalNoteCount) && side.totalNoteCount >= side.notes.length &&

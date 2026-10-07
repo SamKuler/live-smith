@@ -1,6 +1,6 @@
-import { artifactKey, artifactVersion, pendingArtifactParentFromEvents, primaryArtifactsFromEvents, type ArtifactRef, type ArtifactSelection, type ArtifactVersion, type ArtifactVersionSummary } from "../../agent/artifact-contracts.js";
+import { MAX_MIDI_ARTIFACT_OVERVIEW_NOTES, artifactKey, artifactVersion, pendingArtifactParentFromEvents, primaryArtifactsFromEvents, type ArtifactRef, type ArtifactSelection, type ArtifactVersion, type ArtifactVersionSummary } from "../../agent/artifact-contracts.js";
 import { audioOutputDescriptor } from "../../audio-services/audio-output.js";
-import { MAX_MIDI_PREVIEW_NOTES, type MidiPreviewNote } from "../../agent/action-preview.js";
+import type { MidiPreviewNote } from "../../agent/action-preview.js";
 import { readAudioSessionState } from "../../storage/audio-assets.js";
 import { listPluginAudioArtifacts, readSessionAudioArtifact } from "../../storage/audio-artifacts.js";
 import { appendSessionEvent, loadSessionEvents, type SessionEvent } from "../../storage/events.js";
@@ -221,7 +221,7 @@ export async function readSessionArtifactCatalog(input: SessionInput & { include
   return { artifacts, unavailableCount: listing.unavailableCount, ...(continuation ? { continuation } : {}) };
 }
 
-async function hydrateMidiArtifact(input: SessionInput, artifact: SessionArtifact, maximumNotes = MAX_MIDI_PREVIEW_NOTES): Promise<SessionArtifact> {
+async function hydrateMidiArtifact(input: SessionInput, artifact: SessionArtifact, maximumNotes = MAX_MIDI_ARTIFACT_OVERVIEW_NOTES): Promise<SessionArtifact> {
   const { parsed } = await readMidiArtifact(input.storageDirectory, input.sessionId, artifact.ref.id, input.signal);
   return { ...artifact, midi: { durationBeats: parsed.durationBeats, noteCount: parsed.notes.length,
     parts: midiArtifactPartSummaries(parsed), notes: parsed.parts.flatMap((part) => part.notes.map((note) => ({ ...note, partId: part.id })))

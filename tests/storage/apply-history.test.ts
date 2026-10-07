@@ -31,6 +31,24 @@ test("memory event snapshots remain independent of caller mutations", async () =
   assert.deepEqual((await loadSessionEvents(undefined, "session-history-clone"))[0]?.applyOperation?.previews, [makePreview()]);
 });
 
+for (const shown of [604, 256]) {
+  test(`${shown === 604 ? "complete" : "older truncated"} large MIDI previews survive disk reload`, async (t) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-midi-preview-history-"));
+    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    const preview = makePreview();
+    preview.after = {
+      notes: Array.from({ length: shown }, (_, index) => ({ pitch: 48 + index % 24, startTime: index / 604 * 3, duration: 0.125, velocity: 96 })),
+      totalNoteCount: 604, omittedNoteCount: 604 - shown,
+    };
+    await appendSessionEvent(directory, "session-history", {
+      kind: "apply_requested", content: "Proposed notes",
+      applyOperation: { id: "apply-full-preview", status: "proposed", previews: [preview] },
+    });
+    const saved = await loadSessionEvents(directory, "session-history");
+    assert.deepEqual(saved[0]?.applyOperation?.previews, [preview]);
+  });
+}
+
 test("storage rejects invalid outcome claims and malformed previews", async () => {
   const invalid = [
     { kind: "apply_result", applyOperation: { id: "apply-1", status: ["applied"] } },

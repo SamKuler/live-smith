@@ -506,7 +506,12 @@ reusable MIDI Clip. Ambiguous overlap effects and non-reusable Session replaceme
 omit previews. Unsupported observations and multi-action plans omit the
 preview and retain the complete existing action summaries.
 
-The `confirm_request` projection carries bounded proposed facts under its
+MIDI action previews retain all validated notes from both snapshots. The piano
+roll renders notes intersecting the visible time range, and its full view can
+show the complete score. Older saved previews retain their omission counts;
+missing historical notes cannot be reconstructed from a later Live state.
+
+The `confirm_request` projection carries proposed facts under its
 existing send, Session, model-turn epoch, confirmation ID and generation. Replays
 must preserve both the action summaries and preview data. The client validates
 the optional union before admitting a confirmation, and the dedicated

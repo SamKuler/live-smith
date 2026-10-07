@@ -1,6 +1,9 @@
 import { MAX_AUDIO_JOB_OUTPUTS } from "../audio-services/contracts.js";
 import type { SessionEvent } from "../storage/events.js";
 
+/** Artifact lists carry an overview; opening an artifact reads its complete notes. */
+export const MAX_MIDI_ARTIFACT_OVERVIEW_NOTES = 256;
+
 export interface ArtifactRef { kind: "midi" | "audio"; id: string }
 export type ArtifactPluginSource =
   | { pluginId: string; connectionId?: never }

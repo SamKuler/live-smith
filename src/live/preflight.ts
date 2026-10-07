@@ -16,7 +16,6 @@ import {
 
 import type { AgentAction } from "../agent/actions.js";
 import {
-  MAX_MIDI_PREVIEW_NOTES,
   MAX_PARAMETER_PREVIEW_VALUE_ITEMS,
   type AgentActionPreview,
   type MidiActionPreview,
@@ -1070,8 +1069,7 @@ function midiNotesPreview(
 }
 
 function midiPreviewSide(notes: readonly NoteDescription[]): MidiActionPreview["before"] {
-  const displayed = notes.slice(0, MAX_MIDI_PREVIEW_NOTES).map(midiNoteIdentity);
-  return { notes: displayed, totalNoteCount: notes.length, omittedNoteCount: notes.length - displayed.length };
+  return { notes: notes.map(midiNoteIdentity), totalNoteCount: notes.length, omittedNoteCount: 0 };
 }
 
 function midiNoteFitsPreview(note: NoteDescription, clipDuration: number): boolean {
