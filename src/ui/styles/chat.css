@@ -1380,6 +1380,22 @@ details.timeline-item > .timeline-content {
 .parameter-preview-values { font-variant-numeric: tabular-nums; }
 .action-preview p[hidden] { display: none; }
 
+.bridge-status {
+  @apply flex min-w-0 items-start;
+}
+
+.bridge-status .status {
+  @apply min-w-0 flex-1;
+}
+
+#bridgeRetryButton {
+  @apply mr-[18px] my-1 flex-none;
+}
+
+#bridgeRetryButton[hidden] {
+  @apply hidden;
+}
+
 .status {
   @apply max-h-[70px] min-h-0 overflow-auto overscroll-contain whitespace-pre-wrap px-[18px] py-1 text-muted;
   line-height: 1.35;

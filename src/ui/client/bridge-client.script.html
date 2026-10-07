@@ -123,6 +123,7 @@
       const activityProjectionRevisionsBySession = new Map();
       const sendAttemptsBySession = new Map();
       const retiredSendsBySession = new Map();
+      const pendingPeerSendSessions = new Set();
       const queuedFollowUpsBySession = new Map();
       const pausedFollowUpSessions = new Set();
       const failedSendRecoveriesBySession = new Map();
@@ -236,6 +237,7 @@
       let retainedCanceledFollowUpCount = 0;
       let activeCommandAttempt = null;
       let commandActivityRevision = "0";
+      let pendingPeerCommand = null;
       let sessionModelCapabilityLoad = null;
       let nextComposerDraftRevision = 1;
       const sseReconciliationTimeoutMs = 5000;
@@ -2569,6 +2571,7 @@
           customInstructionsDirty: hasCustomInstructionsChanges(),
           uiLanguageSaving: languagePreference.saving,
           interfaceModeSaving: interfaceModePreference.saving,
+          bridgeRecoveryCanRetry: Boolean(eventStreamConnected && eventStreamStateRefresh?.failed),
         };
         if (
           renderedOperationState &&
@@ -2674,8 +2677,21 @@
             compareDecimalRevisions(payload.bridgeStateRevision, commandActivityRevision) <= 0) return;
         commandActivityRevision = payload.bridgeStateRevision;
         const current = activeCommandAttempt;
-        if (current && !current.remote) return;
         const command = payload.command;
+        if (current && !current.remote) {
+          pendingPeerCommand = command && command.id !== current.id
+            ? { command, confirmation: !command.stopping &&
+                pendingPeerCommand?.command?.id === command.id &&
+                pendingPeerCommand.command.sessionId === command.sessionId
+                ? pendingPeerCommand.confirmation : null }
+            : !command && pendingPeerCommand ? { command: null, confirmation: null } : null;
+          return;
+        }
+        applyCommandActivity(command);
+      }
+
+      function applyCommandActivity(command) {
+        const current = activeCommandAttempt;
         if (!command) {
           if (current?.remote) {
             finishRetainedCommand(current);
@@ -2699,6 +2715,37 @@
         } else current.stopRequested = command.stopping;
         if (command.stopping) activeCommandAttempt.confirmation?.controller.abort();
         syncOperationState();
+      }
+
+      function receiveCommandConfirmation(payload) {
+        const deferred = pendingPeerCommand?.command?.id === payload.commandId
+          ? pendingPeerCommand : null;
+        const attempt = deferred?.command ?? activeCommandAttempt;
+        if (!hasOnlyWireKeys(payload, ["type", "commandId", "sessionId", "id", "kind", "message", "groups", "previews", "operationId"]) ||
+            !attempt || attempt.stopRequested || attempt.stopping || attempt.id !== payload.commandId || attempt.sessionId !== payload.sessionId ||
+            (!deferred && !attempt.remote && activeSessionId() !== payload.sessionId) || !isWireCorrelationId(payload.id) || payload.kind !== "apply" ||
+            typeof payload.message !== "string" || !payload.message || !isWireActionDiffGroups(payload.groups) ||
+            !isWireActionPreviews(payload.previews, payload.kind, payload.groups) ||
+            (payload.operationId !== undefined && !isWireStorageId(payload.operationId)) || attempt.confirmation?.id === payload.id) return;
+        if (deferred) {
+          deferred.confirmation = payload;
+          return;
+        }
+        attempt.confirmation?.controller.abort();
+        const controller = new window.AbortController();
+        attempt.confirmation = { id: payload.id, controller };
+        void (async () => {
+          const apply = await confirmAction({ title: window.LiveSmithI18n.message("Confirm action"),
+            message: payload.message, groups: payload.groups, previews: payload.previews,
+            acceptLabel: window.LiveSmithI18n.message("Apply"), signal: controller.signal });
+          if (controller.signal.aborted || activeCommandAttempt !== attempt) return;
+          try {
+            await postBridge("/confirm", { id: payload.id, apply: apply && !attempt.stopRequested && (attempt.remote || activeSessionId() === payload.sessionId) });
+          } catch (error) {
+            showStatus(error.message || String(error), true);
+            await stopActiveCommand();
+          }
+        })();
       }
 
       async function runCommand(kind, extra, options) {
@@ -2983,6 +3030,13 @@
           attempt.confirmation?.controller.abort();
           if (activeCommandAttempt === attempt) activeCommandAttempt = null;
           commandInProgress = null;
+          if (pendingPeerCommand) {
+            const pending = pendingPeerCommand;
+            pendingPeerCommand = null;
+            if (pending.command) applyCommandActivity(pending.command);
+            else refreshGlobalState(commandActivityRevision);
+            if (pending.confirmation) receiveCommandConfirmation(pending.confirmation);
+          }
           syncOperationState();
           startQueuedFollowUpsForIdleSessions();
         }
@@ -3957,14 +4011,44 @@
               !isWireCorrelationId(activity.sendId) ||
               !state.sessions.some((session) => session.id === activity.sessionId) ||
               sendAttemptsBySession.has(activity.sessionId)) continue;
-          const attempt = createSendAttempt({ id: activity.sendId, sessionId: activity.sessionId, restored: true });
-          attempt.progress = activity.message;
-          sendAttemptsBySession.set(activity.sessionId, attempt);
-          webSearchEventIdsAtSendStartBySession.set(activity.sessionId, new Set(
-            state.activeSessionId === activity.sessionId
-              ? state.events.filter((event) => event.kind === "web_search").map((event) => event.id) : [],
-          ));
+          restoreSendAttempt(activity, state);
         }
+      }
+
+      function restoreSendAttempt(activity, state = getState()) {
+        const attempt = createSendAttempt({ id: activity.sendId, sessionId: activity.sessionId, restored: true });
+        attempt.progress = activity.message;
+        sendAttemptsBySession.set(activity.sessionId, attempt);
+        webSearchEventIdsAtSendStartBySession.set(activity.sessionId, new Set(
+          state.activeSessionId === activity.sessionId
+            ? state.events.filter((event) => event.kind === "web_search").map((event) => event.id) : [],
+        ));
+        return attempt;
+      }
+
+      function adoptSendActivity(payload) {
+        if (!hasOnlyWireKeys(payload, ["type", "sendId", "sessionId", "activity", "bridgeStateRevision"]) ||
+            !isWireCorrelationId(payload.sendId) || !isWireStorageId(payload.sessionId)) return;
+        const activity = stateChangeActivity(payload, true);
+        if (!activity || !["running", "waiting_confirmation"].includes(activity.status) ||
+            !getState().sessions.some(session => session.id === payload.sessionId)) return;
+        const retired = retiredSendsBySession.get(payload.sessionId);
+        if (retired?.id === payload.sendId) return;
+        const received = receiveStateChangeRevision(payload);
+        if (!received || projectionRevisionIsCovered(activityProjectionRevisionsBySession, payload.sessionId, received) ||
+            compareDecimalRevisions(received.revision, retired?.revision || "0") <= 0) return;
+        let attempt = sendAttemptsBySession.get(payload.sessionId);
+        if (attempt && attempt.id !== payload.sendId) {
+          if (!attempt.restored || attempt.awaitingStopTerminal) {
+            // Reconcile the local outcome first, then replay the peer's latest draft and approval.
+            pendingPeerSendSessions.add(payload.sessionId);
+            return;
+          }
+          settleSendAttempt(attempt, { promoteQueued: false });
+          attempt = null;
+        }
+        attempt ??= restoreSendAttempt({ ...activity, sendId: payload.sendId, sessionId: payload.sessionId });
+        if (applySendActivity(attempt, activity, received)) syncSendPresentation(payload.sessionId);
       }
 
       async function startSend({
@@ -4936,6 +5020,13 @@
         pendingConfirmationsBySession.delete(attempt.sessionId);
         clearConfirmationResolution(attempt.sessionId);
         sendAttemptsBySession.delete(attempt.sessionId);
+        if (pendingPeerSendSessions.delete(attempt.sessionId) && eventSource) {
+          const source = eventSource;
+          eventSource = null;
+          source.close();
+          markEventStreamDisconnected();
+          startEventStream();
+        }
         const promoted = promoteQueued && startNextQueuedFollowUp(attempt.sessionId);
         if (!promoted) syncSendPresentation(attempt.sessionId);
         else syncActiveSessionUi();
@@ -6472,12 +6563,50 @@
         })().catch(markFailed);
       }
 
+      function cancelEventStreamRecovery(refresh) {
+        window.clearTimeout(refresh.retryTimer);
+        refresh.retryTimer = null;
+        const request = refresh.request;
+        refresh.request = null;
+        if (request) {
+          window.clearTimeout(request.timeout);
+          request.controller.abort();
+        }
+      }
+
+      function invalidateEventStreamRecovery() {
+        eventStreamConnected = false;
+        if (eventStreamStateRefresh) {
+          cancelEventStreamRecovery(eventStreamStateRefresh);
+          eventStreamStateRefresh.generation += 1;
+          eventStreamStateRefresh.failed = false;
+          eventStreamStateRefresh.retryCount = 0;
+        } else {
+          eventStreamStateRefresh = {
+            failed: false, generation: 1, request: null, retryTimer: null, retryCount: 0,
+          };
+        }
+      }
+
+      function markEventStreamDisconnected() {
+        invalidateEventStreamRecovery();
+        syncOperationState();
+        presentStatus({
+          isError: true,
+          message: t("Lost connection to Live Smith bridge."),
+          source: "event-stream",
+        });
+        activeCommandAttempt?.resolveSseUnavailable();
+      }
+
       function refreshAfterEventStreamReconnect() {
         const refresh = eventStreamStateRefresh;
-        if (!refresh || refresh.inFlight || !eventStreamConnected) return;
-        refresh.inFlight = true;
-        refresh.failed = false;
+        if (!refresh || refresh.request || refresh.retryTimer !== null || refresh.failed || !eventStreamConnected) return;
+        const request = { controller: new window.AbortController(), timeout: null };
         const generation = refresh.generation;
+        refresh.request = request;
+        const isCurrent = () => eventStreamStateRefresh === refresh &&
+          refresh.request === request && refresh.generation === generation && eventStreamConnected;
         const sessionId = activeSessionId();
         const causalAttempt = {
           kind: "event_stream_refresh",
@@ -6485,68 +6614,85 @@
           ownedActiveSessionContentId: sessionId,
           causalStateSnapshot: captureCausalState(),
         };
-        let authoritativeState = null;
-        const retryLatestGeneration = () => {
-          if (
-            refresh.generation === generation ||
-            !eventStreamConnected
-          ) return false;
-          refresh.inFlight = false;
-          refreshAfterEventStreamReconnect();
-          return true;
-        };
-        const markFailed = () => {
-          if (eventStreamStateRefresh !== refresh) return;
-          if (retryLatestGeneration()) return;
-          refresh.inFlight = false;
-          refresh.failed = true;
+        const fail = (retryable) => {
+          if (!isCurrent()) return;
+          cancelEventStreamRecovery(refresh);
+          if (retryable && refresh.retryCount < 3) {
+            const delay = 500 * 2 ** refresh.retryCount++;
+            refresh.retryTimer = window.setTimeout(() => {
+              refresh.retryTimer = null;
+              refreshAfterEventStreamReconnect();
+            }, delay);
+          } else {
+            refresh.failed = true;
+            presentStatus({ source: "event-stream", isError: true,
+              message: t("Live Smith reconnected, but current state could not be confirmed. Retry connection.") });
+          }
           syncOperationState();
-          showStatus(
-            window.LiveSmithI18n.message("Live Smith reconnected, but current state could not be confirmed. Close and reopen Live Smith before sending."),
-            true,
-          );
         };
-        void refreshState(causalAttempt, "event_stream_refresh", {
-          onAppliedState: (state) => {
-            authoritativeState = state;
-          },
-        }).then(
-          (reconciled) => {
-            if (eventStreamStateRefresh !== refresh) return;
-            if (reconciled !== true) {
-              markFailed();
-              return;
-            }
-            if (retryLatestGeneration()) return;
-            eventStreamStateRefresh = null;
-            syncOperationState();
-            const state = getState();
-            settleCompletedSendAttemptsFromState(authoritativeState);
-            const visibleAttempt = activeSendAttempt();
-            if (visibleAttempt) {
-              setAttemptStatus(
-                visibleAttempt,
-                visibleAttempt.progress,
-                visibleAttempt.progressIsError,
-              );
-            } else if (retainedCanceledFollowUpCount) {
-              showStatus(state.status || "");
-            } else {
-              const activity = (state.sessionActivities || []).find(
-                (entry) => entry.sessionId === activeSessionId(),
-              );
-              if (activity?.status === "failed") showStatus(activity.message, true);
-            }
-            resumeQueuedFollowUpsAfterStateRefresh();
-          },
-          markFailed,
-        );
+        syncOperationState();
+        request.timeout = window.setTimeout(() => fail(true), 15_000);
+        void (async () => {
+          const response = await fetch(bridgeUrl("/state"), { signal: request.controller.signal });
+          if (!isCurrent()) return;
+          if (!response.ok) {
+            fail(response.status === 408 || response.status === 429 || response.status >= 500);
+            return;
+          }
+          const authoritativeState = await response.json();
+          // A response from a previous connection or timed-out request must never
+          // apply state, settle sends, or release queued work in this generation.
+          if (!isCurrent()) return;
+          if (!isWireChatBridgeState(authoritativeState) ||
+              !applyCommandState("event_stream_refresh", authoritativeState, causalAttempt)) {
+            fail(false);
+            return;
+          }
+          cancelEventStreamRecovery(refresh);
+          eventStreamStateRefresh = null;
+          presentStatus({ source: "event-stream" });
+          syncOperationState();
+          const state = getState();
+          settleCompletedSendAttemptsFromState(authoritativeState);
+          const visibleAttempt = activeSendAttempt();
+          if (visibleAttempt) {
+            setAttemptStatus(visibleAttempt, visibleAttempt.progress, visibleAttempt.progressIsError);
+          } else if (retainedCanceledFollowUpCount) {
+            showStatus(state.status || "");
+          } else {
+            const activity = (state.sessionActivities || []).find(entry => entry.sessionId === activeSessionId());
+            if (activity?.status === "failed") showStatus(activity.message, true);
+          }
+          resumeQueuedFollowUpsAfterStateRefresh();
+        })().catch(error => fail(!(error instanceof SyntaxError)));
       }
+
+      function retryEventStreamRefresh() {
+        const refresh = eventStreamStateRefresh;
+        if (!eventStreamConnected || !refresh?.failed) return;
+        refresh.failed = false;
+        refresh.retryCount = 0;
+        presentStatus({ source: "event-stream", message: t("Restoring the Live Smith connection…") });
+        refreshAfterEventStreamReconnect();
+      }
+
+      window.addEventListener("pagehide", () => {
+        if (!eventSource) return;
+        const source = eventSource;
+        eventSource = null;
+        source.close();
+        invalidateEventStreamRecovery();
+      });
+      window.addEventListener("pageshow", (event) => {
+        if (event.persisted) startEventStream();
+      });
 
       function startEventStream() {
         if (eventSource) return;
-        eventSource = new EventSource(bridgeUrl("/events"));
-        eventSource.onopen = () => {
+        const source = new EventSource(bridgeUrl("/events"));
+        eventSource = source;
+        source.onopen = () => {
+          if (eventSource !== source) return;
           eventStreamConnected = true;
           refreshAfterEventStreamReconnect();
           const statusWasPresented = presentStatus({ source: "event-stream" });
@@ -6559,7 +6705,8 @@
             retainedCanceledFollowUpCount = 0;
           }
         };
-        eventSource.onmessage = (message) => {
+        source.onmessage = (message) => {
+          if (eventSource !== source) return;
           let payload;
           try {
             payload = JSON.parse(message.data);
@@ -6567,37 +6714,20 @@
             return;
           }
           if (!isWireRecord(payload) || typeof payload.type !== "string") return;
+          if (payload.type === "send_activity") { adoptSendActivity(payload); return; }
           if (payload.type === "command_activity") { adoptCommandActivity(payload); return; }
           if (payload.type === "command_confirm_resolved") {
+            if (!hasOnlyWireKeys(payload, ["type", "commandId", "sessionId", "id"])) return;
+            const deferred = pendingPeerCommand;
+            if (deferred?.command?.id === payload.commandId && deferred.command.sessionId === payload.sessionId &&
+                deferred.confirmation?.id === payload.id) deferred.confirmation = null;
             const attempt = activeCommandAttempt;
-            if (hasOnlyWireKeys(payload, ["type", "commandId", "sessionId", "id"]) &&
-                attempt?.id === payload.commandId && attempt.sessionId === payload.sessionId &&
+            if (attempt?.id === payload.commandId && attempt.sessionId === payload.sessionId &&
                 attempt.confirmation?.id === payload.id) attempt.confirmation.controller.abort();
             return;
           }
           if (payload.type === "command_confirm_request") {
-            const attempt = activeCommandAttempt;
-            if (!hasOnlyWireKeys(payload, ["type", "commandId", "sessionId", "id", "kind", "message", "groups", "previews", "operationId"]) ||
-                !attempt || attempt.stopRequested || attempt.id !== payload.commandId || attempt.sessionId !== payload.sessionId ||
-                (!attempt.remote && activeSessionId() !== payload.sessionId) || !isWireCorrelationId(payload.id) || payload.kind !== "apply" ||
-                typeof payload.message !== "string" || !payload.message || !isWireActionDiffGroups(payload.groups) ||
-                !isWireActionPreviews(payload.previews, payload.kind, payload.groups) ||
-                (payload.operationId !== undefined && !isWireStorageId(payload.operationId)) || attempt.confirmation?.id === payload.id) return;
-            attempt.confirmation?.controller.abort();
-            const controller = new window.AbortController();
-            attempt.confirmation = { id: payload.id, controller };
-            void (async () => {
-              const apply = await confirmAction({ title: window.LiveSmithI18n.message("Confirm action"),
-                message: payload.message, groups: payload.groups, previews: payload.previews,
-                acceptLabel: window.LiveSmithI18n.message("Apply"), signal: controller.signal });
-              if (controller.signal.aborted || activeCommandAttempt !== attempt) return;
-              try {
-                await postBridge("/confirm", { id: payload.id, apply: apply && !attempt.stopRequested && (attempt.remote || activeSessionId() === payload.sessionId) });
-              } catch (error) {
-                showStatus(error.message || String(error), true);
-                await stopActiveCommand();
-              }
-            })();
+            receiveCommandConfirmation(payload);
             return;
           }
           if (payload.type === "session_state_invalidated") {
@@ -7561,25 +7691,8 @@
             }
           }
         };
-        eventSource.onerror = () => {
-          eventStreamConnected = false;
-          if (eventStreamStateRefresh) {
-            eventStreamStateRefresh.generation += 1;
-            eventStreamStateRefresh.failed = false;
-          } else {
-            eventStreamStateRefresh = {
-              failed: false,
-              generation: 1,
-              inFlight: false,
-            };
-          }
-          syncOperationState();
-          presentStatus({
-            isError: true,
-            message: window.LiveSmithI18n.message("Lost connection to Live Smith bridge."),
-            source: "event-stream",
-          });
-          activeCommandAttempt?.resolveSseUnavailable();
+        source.onerror = () => {
+          if (eventSource === source) markEventStreamDisconnected();
         };
       }
 
@@ -7670,6 +7783,7 @@
         },
         showStatus,
         startEventStream,
+        retryEventStreamRefresh,
         createAppId: () => createCorrelationId("plugin-app"),
         prepareMidiImport: async (input, signal) => {
           const response = await fetch(bridgeUrl("/midi-import-preview"), {

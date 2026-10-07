@@ -1324,9 +1324,9 @@ test("stop fences late stream publications without hiding durable Session events
     assert.equal(confirmationAfterStop, false);
     assert.deepEqual(
       payloads.map((payload) => payload.type),
-      ["session_event", "error"],
+      ["send_activity", "session_event", "error"],
     );
-    assert.deepEqual(payloads[0]?.activity, {
+    assert.deepEqual(payloads[1]?.activity, {
       status: "stopped",
       message: "Stopped",
     });
@@ -1871,7 +1871,7 @@ test("closing the chat bridge aborts an active send with an event stream connect
   await bridge.close();
   assert.equal(sendSignal?.aborted, true);
   assert.equal((await send).status, 500);
-  assert.equal(await events.text(), "\n");
+  assert.match(await events.text(), /"type":"send_activity"/u);
 });
 
 test("closing waits for an active handler to reach its terminal state", async () => {
@@ -3270,7 +3270,7 @@ test("different-Session attachment failures stay on their initiating HTTP respon
       body: JSON.stringify({ prompt: "probe", sessionId: "session-success" }),
     });
     assert.equal(send.status, 200);
-    const firstPayload = await readNextSsePayload(events);
+    const firstPayload = await readNextSsePayload(events, ["send_activity"]);
     assert.equal(firstPayload.type, "progress");
     assert.equal(firstPayload.sessionId, "session-success");
     assert.equal(firstPayload.message, "correlated probe");

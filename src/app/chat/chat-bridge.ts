@@ -1,3 +1,4 @@
+import { createSseClient } from "./sse-client.js";
 import type { ChatCommandActivity } from "../../ui/chat-state.js";
 import { isInterfaceMode, type InterfaceMode } from "../../model/interface-mode.js";
 import { Buffer } from "node:buffer";
@@ -402,11 +403,6 @@ interface ChatBridgeOptions {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<ChatDialogState>;
-  /** Test-only seam for exercising a slow SSE socket without patching Node globals. */
-  writeSseFrame?(
-    response: ServerResponse,
-    payload: SsePayload,
-  ): boolean;
   renderHtml(state: ChatBridgeState, bridge: { baseUrl: string; token: string }): string;
   handleCommand(
     input: ChatBridgeCommandInput,
@@ -520,6 +516,7 @@ interface PendingSendAdmission {
 
 type StateChangeSsePayloadBase =
   | { type: "command_activity"; command: ChatCommandActivity | null }
+  | { type: "send_activity"; sendId: string; sessionId: string; activity: StateChangeActivity }
   | {
       type: "steer_accepted";
       sendId: string;
@@ -727,8 +724,7 @@ export async function createChatBridge(
   let appSandbox: Promise<PluginAppSandbox> | undefined;
   const appSandboxRegistrations = new Map<string, { dispose(): void }>();
   const mediaDownloads = new Map<string, { kind: "audio" | "midi"; sessionId: string; assetId: string; expiresAt: number }>();
-  const clients = new Set<ServerResponse>();
-  const backpressuredClients = new Set<ServerResponse>();
+  const clients = new Set<ReturnType<typeof createSseClient>>();
   const pendingConfirmations = new Map<string, PendingConfirmation>();
   let pendingCommandConfirmation: PendingCommandConfirmation | undefined;
   const pendingRequestBodies = new Set<IncomingMessage>();
@@ -831,23 +827,9 @@ export async function createChatBridge(
   };
 
   const broadcast = (payload: SsePayload) => {
-    if (closing) return;
-    for (const client of backpressuredClients) {
-      backpressuredClients.delete(client);
-      client.destroy();
-    }
-    for (const client of clients) {
-      if (client.writableEnded || client.destroyed) {
-        clients.delete(client);
-      } else if (!writeSse(client, payload, options.writeSseFrame)) {
-        clients.delete(client);
-        backpressuredClients.add(client);
-        void waitForSseDrain(client).then((drained) => {
-          if (!backpressuredClients.delete(client) || !drained || closing) return;
-          clients.add(client);
-        });
-      }
-    }
+    if (closing || clients.size === 0) return;
+    const frame = `data: ${JSON.stringify(payload)}\n\n`;
+    for (const client of clients) client.send(frame);
   };
 
   const nextStateRevision = (): string =>
@@ -1832,12 +1814,8 @@ export async function createChatBridge(
           Connection: "keep-alive",
           "Content-Type": "text/event-stream",
         });
-        if (!response.write("\n")) {
-          backpressuredClients.add(response);
-          const drained = await waitForSseDrain(response);
-          backpressuredClients.delete(response);
-          if (!drained) return;
-        }
+        const client = createSseClient(response, () => clients.delete(client));
+        clients.add(client);
         const replayPayloads: SsePayload[] = [];
         const replay = (payload: SsePayload): void => {
           replayPayloads.push(payload);
@@ -1872,6 +1850,9 @@ export async function createChatBridge(
         }
         for (const activeSend of activeSendsById.values()) {
           if (activeSend.stopRequested) continue;
+          const activity = sessionActivities.get(activeSend.sessionId)!;
+          replay({ type: "send_activity", sendId: activeSend.sendId, sessionId: activeSend.sessionId,
+            activity: stateChangeActivity(activity), bridgeStateRevision: nextStateRevision() });
           replay(modelTurnStatePayload(activeSend));
         }
         for (const [id, pending] of pendingConfirmations) {
@@ -1902,19 +1883,9 @@ export async function createChatBridge(
           const { id, commandId, sessionId, request: confirmation } = pendingCommandConfirmation;
           replay({ type: "command_confirm_request", id, commandId, sessionId, ...confirmation });
         }
-        for (const payload of replayPayloads) {
-          if (writeSse(response, payload, options.writeSseFrame)) continue;
-          if (response.writableEnded || response.destroyed) return;
-          backpressuredClients.add(response);
-          const drained = await waitForSseDrain(response);
-          backpressuredClients.delete(response);
-          if (!drained) return;
-        }
-        clients.add(response);
-        request.on("close", () => {
-          clients.delete(response);
-          backpressuredClients.delete(response);
-        });
+        // Replay is one initial write, so large retained state can drain before
+        // later live publications enter the bounded pending queue.
+        client.send("\n" + replayPayloads.map(payload => `data: ${JSON.stringify(payload)}\n\n`).join(""));
         return;
       }
 
@@ -2531,11 +2502,13 @@ export async function createChatBridge(
         sendAdmission = undefined;
         activeSendsById.set(sendId, activeSend);
         activeSendsBySession.set(input.sessionId, activeSend);
-        updateActivity(input.sessionId, "running", {
+        const activity = updateActivity(input.sessionId, "running", {
           sendId,
           message: "Starting agent loop",
           unread: false,
         });
+        broadcastStateChange({ type: "send_activity", sendId, sessionId: input.sessionId,
+          activity: stateChangeActivity(activity) });
         let sendOutcomeError: unknown;
         try {
           const stream = createStream(activeSend, (event) => {
@@ -3304,12 +3277,8 @@ export async function createChatBridge(
       mediaDownloads.clear();
       const mutationTerminals = [...inFlightMutationHandlers];
       const pendingReads = [...readOnlyBuilds.entries()];
-      const connectedClients = new Set([
-        ...clients,
-        ...backpressuredClients,
-      ]);
+      const connectedClients = [...clients];
       clients.clear();
-      backpressuredClients.clear();
       sendStopTombstones.clear();
       retainedCommandIds.clear();
       for (const request of pendingRequestBodies) request.destroy();
@@ -3329,7 +3298,7 @@ export async function createChatBridge(
         read.controller.abort(new Error("Live Smith window closed."));
       }
       for (const [response] of pendingReads) response.destroy();
-      for (const client of connectedClients) client.end();
+      for (const client of connectedClients) client.close();
 
       closePromise = (async () => {
         await Promise.allSettled([options.closePluginApps?.(), appSandbox?.then((sandbox) => sandbox.close())]);
@@ -3348,40 +3317,6 @@ export async function createChatBridge(
       return closePromise;
     },
   };
-}
-
-function writeSse(
-  response: ServerResponse,
-  payload: SsePayload,
-  writeFrame?: (response: ServerResponse, payload: SsePayload) => boolean,
-): boolean {
-  if (response.writableEnded || response.destroyed) return false;
-  if ((writeFrame ?? defaultWriteSseFrame)(response, payload)) return true;
-  return false;
-}
-
-function defaultWriteSseFrame(
-  response: ServerResponse,
-  payload: SsePayload,
-): boolean {
-  return response.write(`data: ${JSON.stringify(payload)}\n\n`);
-}
-
-function waitForSseDrain(response: ServerResponse): Promise<boolean> {
-  if (response.writableEnded || response.destroyed) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    const settle = (drained: boolean) => {
-      response.off("drain", onDrain);
-      response.off("close", onClose);
-      response.off("error", onClose);
-      resolve(drained);
-    };
-    const onDrain = () => settle(true);
-    const onClose = () => settle(false);
-    response.once("drain", onDrain);
-    response.once("close", onClose);
-    response.once("error", onClose);
-  });
 }
 
 function bridgeBaseUrl(server: ReturnType<typeof createServer>): string {

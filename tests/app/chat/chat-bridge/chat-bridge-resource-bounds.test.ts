@@ -92,45 +92,6 @@ test("JSON conflict exits drain request bodies before returning", async () => {
   }
 });
 
-test("an SSE client is disconnected when another frame arrives before drain", async () => {
-  const state = {} as ChatDialogState;
-  let forcedBackpressure = false;
-  const bridge = await createChatBridge({
-    buildState: async () => state,
-    renderHtml: () => "<html></html>",
-    handleCommand: async () => state,
-    handleSend: async () => undefined,
-    writeSseFrame: () => {
-      forcedBackpressure = true;
-      return false;
-    },
-  });
-  const chatUrl = new URL(bridge.url);
-  const token = chatUrl.searchParams.get("token")!;
-  const events = await fetch(
-    `${chatUrl.origin}/events?token=${encodeURIComponent(token)}`,
-  );
-  assert.ok(events.body);
-  const reader = events.body.getReader();
-  await reader.read();
-  try {
-    bridge.publishSessionStateInvalidation("session-1");
-    bridge.publishSessionStateInvalidation("session-1");
-    const terminal = await Promise.race([
-      reader.read().then(
-        ({ done }) => done ? "closed" : "data",
-        () => "closed",
-      ),
-      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 500)),
-    ]);
-    assert.equal(forcedBackpressure, true);
-    assert.equal(terminal, "closed");
-  } finally {
-    await reader.cancel().catch(() => undefined);
-    await bridge.close();
-  }
-});
-
 test("Session invalidation refreshes use one bounded state query", async () => {
   const state = {} as ChatDialogState;
   const refreshed: string[] = [];

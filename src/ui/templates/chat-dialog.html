@@ -67,7 +67,10 @@
               <div id="audioJobs"></div>
             </section>
           </details>
-          <div id="status" class="status" role="status" aria-live="polite" aria-atomic="true"></div>
+          <div class="bridge-status">
+            <div id="status" class="status" role="status" aria-live="polite" aria-atomic="true"></div>
+            <button id="bridgeRetryButton" class="secondary" type="button" onclick="LiveSmithUI.retryBridgeConnection()" hidden data-i18n="Retry connection">Retry connection</button>
+          </div>
           <div class="composer">
             <div id="pendingAttachments" class="pending-attachments" role="list" aria-label="Pending file attachments" aria-busy="false" hidden data-i18n-aria-label="Pending file attachments"></div>
             <div id="composerAutocomplete" class="composer-autocomplete floating-surface" role="listbox" aria-label="Composer suggestions" hidden data-i18n-aria-label="Composer suggestions"></div>

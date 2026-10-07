@@ -1708,7 +1708,9 @@
           customInstructionsDirty,
           uiLanguageSaving,
           interfaceModeSaving,
+          bridgeRecoveryCanRetry,
         }) {
+          document.getElementById("bridgeRetryButton").hidden = !bridgeRecoveryCanRetry;
           composerOperationState = {
             attachmentInProgress,
             commandCanStop,
@@ -1925,6 +1927,7 @@
           openInspectorSection,
           refreshOAuthAccount: profileEditor.refreshOAuthAccount,
           requestClose,
+          retryBridgeConnection: bridgeClient.retryEventStreamRefresh,
           runCommand: bridgeClient.runCommand,
           saveApprovalMode: profileEditor.saveApprovalMode,
           saveContextUsageVisibility: bridgeClient.saveContextUsageVisibility,

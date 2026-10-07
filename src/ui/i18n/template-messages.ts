@@ -57,6 +57,7 @@ export const templateMessages: Record<string, string> = {
 
   "MIDI part preview is unavailable.": "MIDI 声部预览暂时不可用。",
   "Loading MIDI part…": "正在读取 MIDI 声部…",
+  "Retry connection": "重试连接",
   "Retry preview": "重试预览",
   "Saved artifacts": "已保存产物",
   "Preview part": "预览声部",

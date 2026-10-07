@@ -172,6 +172,11 @@ an idle browser runtime; finish or Stop its work first when it is busy. Switchin
 Live Sets prevents the old runtime from applying further edits. Drafts and queued
 follow-ups belong to the page and are lost when its tab closes.
 
+After a connection interruption, Live Smith refreshes the current state before
+accepting new work. Temporary failures retry automatically; if recovery still
+fails, use **Retry connection** beside the status message. Recovery preserves
+unsent drafts and does not resend prompts or commands.
+
 > [!NOTE]
 > Live Smith is beta software. See the [development guide](docs/DEVELOPMENT.md#prerequisites)
 > for supported Live versions and installation from source.

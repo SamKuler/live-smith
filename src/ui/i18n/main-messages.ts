@@ -526,6 +526,7 @@ export const mainMessages: Record<string, string> = {
   "Live Smith settings or Skills changed in another window, but current state could not be refreshed. Close and reopen Live Smith before sending.": "Live Smith 设置或技能在另一窗口中发生更改，但无法刷新当前状态。请关闭并重新打开 Live Smith 后再发送。",
   "The Session model changed, but its capabilities could not be refreshed. Close and reopen Live Smith before sending.": "会话模型已更改，但无法刷新其能力。请关闭并重新打开 Live Smith 后再发送。",
   "This Session changed in another Live Smith window, but its current state could not be refreshed. Close and reopen Live Smith before sending.": "此会话在另一 Live Smith 窗口中发生更改，但无法刷新当前状态。请关闭并重新打开 Live Smith 后再发送。",
-  "Live Smith reconnected, but current state could not be confirmed. Close and reopen Live Smith before sending.": "Live Smith 已重新连接，但无法确认当前状态。请关闭并重新打开 Live Smith 后再发送。",
+  "Restoring the Live Smith connection…": "正在恢复 Live Smith 连接…",
+  "Live Smith reconnected, but current state could not be confirmed. Retry connection.": "Live Smith 已重新连接，但无法确认当前状态。请重试连接。",
   "Lost connection to Live Smith bridge.": "与 Live Smith 桥接的连接已断开。"
 };

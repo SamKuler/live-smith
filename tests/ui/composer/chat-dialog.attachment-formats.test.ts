@@ -338,6 +338,9 @@ test("conversion owns the upload busy state and cancellation releases decoding r
       assert.equal(harness.document.querySelector<HTMLButtonElement>("#newSessionButton")?.disabled, true);
       assert.equal(harness.document.querySelector("#pendingAttachments")?.getAttribute("aria-busy"), "true");
       harness.window.dispatchEvent(new harness.window.Event("pagehide"));
+      await harness.settle();
+      harness.window.dispatchEvent(new harness.window.PageTransitionEvent("pageshow", { persisted: true }));
+      harness.emitServerEventOpen();
       await harness.settleAttachmentOperation();
       assert.equal(uploads(harness).length, 0);
       assert.equal(harness.document.querySelector<HTMLButtonElement>("#sendButton")?.disabled, false);

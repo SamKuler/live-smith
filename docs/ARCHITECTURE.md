@@ -2778,12 +2778,32 @@ reconnect replays. The sequence is neither persisted nor compared across runtime
 and is not a storage freshness clock: an async snapshot can finish after a newer
 patch. Mutable patches are skipped only when the current full-state cut already
 covers them. Confirmation state is processed by its exact ID and generation.
-If an SSE socket falls behind, the bridge permits the accepted frame to drain
-but closes the client before a second frame can accumulate. EventSource
-reconnection alone is not treated as recovery: the client blocks new work and
-loads one authoritative full state before reopening Send. That state also
-settles a completed active Send whose HTTP and terminal SSE deliveries were both
-lost.
+The bridge publishes revisioned `send_activity` ownership at admission and
+before each active Send's reconnect replay. Pages adopt only known Sessions
+and newer, non-retired owners; transient model output cannot establish Send
+ownership. A competing local Send retains its own outcome and draft recovery
+before reconnecting to the admitted peer. Peer command activity and pending
+approval remain deferred while a local command outcome is pending; terminal
+or replacement activity invalidates the deferred approval.
+
+Each SSE connection has one ordered writer for initial replay and live publications.
+A write that reaches Node's high-water mark is already accepted; the writer waits
+for `drain` and queues subsequent frames. Pending work is limited to 4 MiB and
+4096 frames per client, with a 15-second drain deadline. Overflow or a stalled
+socket retires only that client. One large accepted snapshot or initial replay
+can drain without being treated as a failed connection. Closing a connection
+releases its queue, timer and listeners.
+
+EventSource reconnection alone is not treated as recovery: the client blocks new
+work until one authoritative full state is validated for the current connection.
+Disconnect, timeout and page disposal cancel the old read; its late response
+cannot apply state, settle Sends or release queued work. A recovery read has a
+15-second deadline. Transport errors and HTTP 408, 429 and 5xx responses receive
+up to three retries after 500, 1000 and 2000 milliseconds. Invalid state and other
+HTTP failures remain blocked. After recovery fails, **Retry connection** starts a
+new read sequence without resubmitting commands or prompts. Page restoration
+opens a fresh stream and reconciles state. A recovered snapshot also settles
+completed Sends whose HTTP and terminal SSE deliveries were both lost.
 Durable steering correlation is represented in both incremental and full-state
 Session-event projections, so either one can reconcile an unresolved steer. The
 client runs every authoritative HTTP/SSE state through one complete wire
