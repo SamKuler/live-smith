@@ -136,7 +136,7 @@ test("Mureka Plugin lyric tools keep text results out of audio jobs and persist 
     },
   };
   let authorizationRuns = 0;
-  const tools = await createRequestAudioTools({
+  const tools = await createRequestAudioTools({ assertLiveSetCurrent: () => {}, ...{
     context: {} as never,
     storageDirectory: directory,
     sessionId: session.id,
@@ -160,7 +160,7 @@ test("Mureka Plugin lyric tools keep text results out of audio jobs and persist 
         return { title: "Afterlight", lyrics: "[Verse]\nCity lights" };
       } } },
     },
-  });
+  } });
   const execute = (localName: string, args: unknown) => tools.execute({
     id: localName,
     name: builtInAudioToolName(murekaPlugin, localName),

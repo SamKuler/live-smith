@@ -1,3 +1,4 @@
+import { agentRequestContext } from "./support/agent-context.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
@@ -271,7 +272,7 @@ async function requestHarness(t: TestContext, inputs: Partial<RuntimeProfile["ca
     overrides: Partial<Parameters<typeof handleAgentRequest>[7]> = {},
     appendUserEvent = appendSessionEvent,
   ) => handleAgentRequest(
-    { application: { song: { tempo: 120 } }, environment: { storageDirectory: directory, tempDirectory: directory } } as never,
+    agentRequestContext({ application: { song: { tempo: 120 } }, environment: { storageDirectory: directory, tempDirectory: directory } } as never),
     directory, { presentation: liveContextPresentationFixture("Lead"), summary: "Lead", target: {}, scope: session.scope },
     "Inspect the Lead", runtime, "project", session.id,
     { signal: new AbortController().signal, attachmentIds: [], steering, steeringSendId: "send-attachments",

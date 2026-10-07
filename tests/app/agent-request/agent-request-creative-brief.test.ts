@@ -1,3 +1,4 @@
+import { agentRequestContext } from "./support/agent-context.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -21,7 +22,7 @@ test("a model proposal persists only as tool activity; all later turns retain th
     defaultModel: "gpt-5.4", models: [{ model: "gpt-5.4", parameters: { maxOutputTokens: 4096, reasoning: { mode: "default" } }, advanced: {} }],
   });
   let calls = 0;
-  await handleAgentRequest({ environment: { storageDirectory: directory } } as never, directory,
+  await handleAgentRequest(agentRequestContext({ environment: { storageDirectory: directory } } as never), directory,
     { presentation: liveContextPresentationFixture("Bass"), summary: "Bass: tempo 123, meter 7/8", target: {}, scope },
     "Suggest a brief for an extended bridge", runtime, "set", session.id,
     { signal: new AbortController().signal, onDelta: () => {}, onProgress: () => {}, onSessionEvent: () => {}, confirmActions: async () => { throw new Error("No Live writes expected"); } },

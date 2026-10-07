@@ -26,11 +26,11 @@ test("manual audio uses the canonical connection parser and saves ordinary jobs 
   const input = await panelInput(h, "generate_music");
   let authorized = 0;
   const assets: string[] = [];
-  const result = await runAudioParameterTool({ ...input,
+  const result = await runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...input,
     withGenerationAuthorization: async (signal, operation) => { authorized++; return authorize(signal, operation); },
     onAssets: (values) => { assets.push(...values.map((asset) => asset.id)); },
     arguments: { connectionId: h.connection.id, prompt: "Piano", instrumental: true },
-  });
+  } });
   assert.deepEqual(result, { failed: false });
   assert.equal(authorized, 1);
   assert.deepEqual(h.calls, ["submit"]);
@@ -42,7 +42,7 @@ test("manual audio uses the canonical connection parser and saves ordinary jobs 
   assert.deepEqual(events.map((event) => event.kind), ["tool_call", "tool_result"]);
   assert.equal(JSON.parse(events[1]!.content).id, jobs[0]!.id);
   const list = await panelInput(h, "list_audio_jobs");
-  assert.deepEqual(await runAudioParameterTool({ ...list, arguments: {} }), { failed: false });
+  assert.deepEqual(await runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...list, arguments: {} } }), { failed: false });
   assert.equal(h.calls.length, 1);
 });
 
@@ -51,10 +51,10 @@ test("audio admission rejects stale connection signatures, wrong owners, unknown
   const input = await panelInput(h, "generate_music");
   const args = { connectionId: h.connection.id, prompt: "Piano", instrumental: true };
   for (const invalid of [{ ...args, connectionId: "other" }, { ...args, surprise: true }, { ...args, instrumental: "yes" }]) {
-    await assert.rejects(runAudioParameterTool({ ...input, arguments: invalid }), /Invalid audio parameters/);
+    await assert.rejects(runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...input, arguments: invalid } }), /Invalid audio parameters/);
   }
   await h.change({ apiKey: "replacement-audio-key" });
-  await assert.rejects(runAudioParameterTool({ ...input, arguments: args }), /changed/);
+  await assert.rejects(runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...input, arguments: args } }), /changed/);
   assert.deepEqual(h.calls, []);
   assert.deepEqual(await loadSessionEvents(h.storage, h.session.id), []);
   const separation = await audioRecoveryHarness(t, "lalal");
@@ -71,11 +71,11 @@ test("manual audio unknown paid submission remains one saved unknown job without
   const h = await audioRecoveryHarness(t, "elevenlabs");
   const input = await panelInput(h, "generate_music");
   let submissions = 0;
-  await assert.rejects(runAudioParameterTool({ ...input,
+  await assert.rejects(runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...input,
     processing: { generationAdapter: { provider: "elevenlabs", submit: async () => {
       submissions++; throw new Error("Response lost after submission.");
     } } }, arguments: { connectionId: h.connection.id, prompt: "Piano", instrumental: true },
-  }), ChatBridgeCommandOutcomeUnknownError);
+  } }), ChatBridgeCommandOutcomeUnknownError);
   assert.equal(submissions, 1);
   const jobs = await listAudioJobs(h.storage, h.session.id);
   assert.equal(jobs.length, 1);

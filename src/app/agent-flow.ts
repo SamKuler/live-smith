@@ -1,3 +1,5 @@
+import { createLiveSetGuard } from "../live/set-identity.js";
+import type { InterfaceMode } from "../model/interface-mode.js";
 import { Buffer } from "node:buffer";
 import { readMidiArtifactFile } from "./midi/artifact-file.js";
 
@@ -284,7 +286,7 @@ export interface AgentFlowDependencies extends DialogModelStateDependencies {
   updateSessionInTransaction?: typeof updateSessionInTransaction;
   renderHtml?(
     state: ChatBridgeState,
-    bridge: { baseUrl: string; token: string },
+    bridge: { baseUrl: string; token: string; hostMode?: InterfaceMode },
   ): string;
   /** Shared by every dialog opened from one extension activation. */
   liveMutationQueue?: LiveMutationQueue;
@@ -303,11 +305,31 @@ export interface AgentFlowDependencies extends DialogModelStateDependencies {
   beforeSessionEditScopesCommit?(): Promise<void> | void;
 }
 
+export interface AgentRuntime {
+  readonly url: string;
+  readonly busy: boolean;
+  reopen(): Promise<void>;
+  close(): Promise<void>;
+}
+
 export async function runAgentFlow(
   context: Api,
   interaction: LiveInteractionContext,
   dependencies: AgentFlowDependencies = {},
 ): Promise<void> {
+  const runtime = await createAgentRuntime(context, interaction, dependencies);
+  try { await context.ui.showModalDialog(runtime.url, 1040, 720); }
+  finally { await runtime.close(); }
+}
+
+export async function createAgentRuntime(
+  context: Api,
+  interaction: LiveInteractionContext,
+  dependencies: AgentFlowDependencies = {},
+  hostMode: InterfaceMode = "modal",
+): Promise<AgentRuntime> {
+  const assertLiveSetCurrent = createLiveSetGuard(context);
+  const projectKey = projectKeyForContext(context);
   let status: UiMessage | undefined;
   let openSettingsOnLoad = false;
   let activeSessionId: string | undefined;
@@ -322,6 +344,7 @@ export async function runAgentFlow(
   const storageDirectory = context.environment.storageDirectory === undefined
     ? undefined
     : await canonicalStorageDirectory(context.environment.storageDirectory);
+  assertLiveSetCurrent();
   const providerFetch = providerFetchForStorage(storageDirectory);
   const sunoSessions = new SunoSessionManager(storageDirectory,
     dependencies.verifySunoSession ?? createSunoSessionVerifier(providerFetch));
@@ -330,7 +353,6 @@ export async function runAgentFlow(
   const attachmentOpener = createAttachmentOpener({
     ...(context.environment?.tempDirectory === undefined ? {} : { temporaryDirectory: context.environment.tempDirectory }),
   });
-  const projectKey = projectKeyForContext(context);
   const liveMutationQueue = dependencies.liveMutationQueue ?? new LiveMutationQueue();
   const selectionInteractionsBySessionId = new Map<
     string,
@@ -467,6 +489,7 @@ export async function runAgentFlow(
   const resolveSessionInteraction = (
     session: { id: string; scope: LiveInteractionContext["scope"] },
   ): LiveInteractionContext | undefined => {
+    if (projectKeyForContext(context) !== projectKey) return undefined;
     const remembered = selectionInteractionsBySessionId.get(session.id);
     if (remembered?.selectionContext) {
       const refreshed = remembered.selectionContext.refresh(context);
@@ -482,6 +505,7 @@ export async function runAgentFlow(
   };
 
   const resolveContinueInteraction = (): LiveInteractionContext | undefined => {
+    if (projectKeyForContext(context) !== projectKey) return undefined;
     if (interaction.selectionContext) {
       const refreshed = interaction.selectionContext.refresh(context);
       return refreshed &&
@@ -1435,6 +1459,8 @@ export async function runAgentFlow(
                 ? { showContextUsage: commandInput.showContextUsage }
                 : "sessionTabs" in commandInput
                 ? { sessionTabs: commandInput.sessionTabs }
+                : "interfaceMode" in commandInput
+                ? { interfaceMode: commandInput.interfaceMode }
                 : "uiLanguage" in commandInput
                 ? { uiLanguage: commandInput.uiLanguage }
                 : "integrationConnections" in commandInput
@@ -1467,7 +1493,9 @@ export async function runAgentFlow(
               customInstructionsRevision: settings.customInstructionsRevision,
               networkProxy: settings.networkProxy,
               networkProxyRevision: settings.networkProxyRevision,
+              interfaceMode: settings.interfaceMode,
               uiLanguage: settings.uiLanguage,
+              interfaceModeRevision: settings.interfaceModeRevision,
               uiLanguageRevision: settings.uiLanguageRevision,
               sessionTabs: settings.sessionTabs,
               sessionTabsRevision: settings.sessionTabsRevision,
@@ -1496,7 +1524,9 @@ export async function runAgentFlow(
                 customInstructionsRevision: settings.customInstructionsRevision,
                 networkProxy: settings.networkProxy,
                 networkProxyRevision: settings.networkProxyRevision,
+                interfaceMode: settings.interfaceMode,
                 uiLanguage: settings.uiLanguage,
+                interfaceModeRevision: settings.interfaceModeRevision,
                 uiLanguageRevision: settings.uiLanguageRevision,
                 sessionTabs: settings.sessionTabs,
                 sessionTabsRevision: settings.sessionTabsRevision,
@@ -1669,6 +1699,7 @@ export async function runAgentFlow(
         const session = (await listSessions(storageDirectory, projectKey)).find((entry) =>
           entry.id === commandInput.sessionId && !entry.archivedAt);
         if (!session) throw new ChatBridgeResourceNotFoundError("That Session is not available in this Live Set.");
+        assertLiveSetCurrent();
         const sessionInteraction = resolveSessionInteraction(session);
         if (!sessionInteraction) throw new ChatBridgeResourceNotFoundError("The Live object for this Session is no longer available.");
         try {
@@ -1679,6 +1710,7 @@ export async function runAgentFlow(
           const applied = await importMidiArtifact({
             ...commandInput, kind: "import_midi_artifact", ...continuation, context, storageDirectory, projectKey, interaction: sessionInteraction,
             signal, mutationQueue: liveMutationQueue,
+            assertLiveSetCurrent,
             confirm: (plan, guard, operationId) => decidePlanApproval(storageDirectory, session.id, plan, async () => {
               if (!commandContext.requestConfirmation) throw new Error("MIDI import confirmation is unavailable.");
               return commandContext.requestConfirmation({ kind: "apply", operationId, message: plan.message,
@@ -1704,6 +1736,7 @@ export async function runAgentFlow(
         const session = (await listSessions(storageDirectory, projectKey)).find((entry) =>
           entry.id === commandInput.sessionId && !entry.archivedAt);
         if (!session) throw new ChatBridgeResourceNotFoundError("That Session is not available in this Live Set.");
+        assertLiveSetCurrent();
         const sessionInteraction = resolveSessionInteraction(session);
         if (!sessionInteraction) throw new ChatBridgeResourceNotFoundError("The Live object for this Session is no longer available.");
         let observations = manualAudioObservations.get(session.id);
@@ -1711,7 +1744,7 @@ export async function runAgentFlow(
         try {
           await commandContext.progress(uiMessage("Running audio tool…"));
           const result = await runAudioParameterTool({
-            ...commandInput, context, storageDirectory, signal, target: sessionInteraction.target,
+            ...commandInput, context, assertLiveSetCurrent, storageDirectory, signal, target: sessionInteraction.target,
             observedMusicClips: observations,
             onProgress: (message) => commandContext.progress(message),
             onAssets: () => { notifySessionStateChanged(session.id); },
@@ -2077,6 +2110,7 @@ export async function runAgentFlow(
               "That Session is not available in this Live Set.",
             );
           }
+          assertLiveSetCurrent();
           const sessionInteraction = resolveSessionInteraction(session);
           if (!sessionInteraction) {
             throw new ChatBridgeResourceNotFoundError(
@@ -2951,6 +2985,7 @@ export async function runAgentFlow(
     steering: SteeringChannel,
     sendContext: ChatBridgeSendContext,
   ) => {
+    assertLiveSetCurrent();
     const prompt = sendInput.prompt;
     if (!prompt.trim()) {
       throw new Error("Prompt is empty.");
@@ -2994,6 +3029,7 @@ export async function runAgentFlow(
           sendFailureKind = "session_unavailable";
           throw new Error("That Session is not available in this Live Set.");
         }
+        assertLiveSetCurrent();
         const sessionInteraction = resolveSessionInteraction(session);
         if (!sessionInteraction) {
           sendFailureKind = "session_unavailable";
@@ -3012,6 +3048,7 @@ export async function runAgentFlow(
         let requestFailed = false;
         let requestError: unknown;
         try {
+          assertLiveSetCurrent();
           await handleAgentRequest(
             context,
             storageDirectory,
@@ -3055,7 +3092,7 @@ export async function runAgentFlow(
                 notifySessionStateChanged(session.id);
               },
               withActionExecutionLock: (operation) =>
-                liveMutationQueue.run(signal, operation),
+                liveMutationQueue.run(signal, () => { assertLiveSetCurrent(); return operation(); }),
               confirmActions: (plan, guard, operationId) => decidePlanApproval(
                 storageDirectory,
                 session.id,
@@ -3178,6 +3215,25 @@ export async function runAgentFlow(
   const pendingSessionStateInvalidations = new Set<string>();
   let pendingGlobalStateInvalidation = false;
   let pendingProfileSettingsChange: ProfileSettingsChange | undefined;
+  let closePromise: Promise<void> | undefined;
+  const close = (): Promise<void> => closePromise ??= (async () => {
+    const bridgeClosed = bridge?.close();
+    attachmentOpener.close();
+    unsubscribeApprovalModes?.();
+    unsubscribeEditScopes?.();
+    unsubscribeModelSelections?.();
+    unsubscribeGlobalSettings?.();
+    unsubscribeProfileSettings?.();
+    unsubscribeSessionState?.();
+    unsubscribeGlobalState?.();
+    releaseSessionClaims(storageDirectory, modalSessionOwner);
+    await modelState.stopBrowserLaunches();
+    try {
+      await bridgeClosed;
+    } finally {
+      await modelState.close();
+    }
+  })();
   try {
     unsubscribeSessionState = subscribeSessionStateInvalidations(
       storageDirectory,
@@ -3274,7 +3330,7 @@ export async function runAgentFlow(
         signal === undefined ? {} : { signal },
       ),
       buildInvalidatedSessionState,
-      renderHtml,
+      renderHtml: (state, configuration) => renderHtml(state, { ...configuration, hostMode }),
       handleCommand,
       handleSend,
       lookupSteeringReceipt,
@@ -3329,23 +3385,25 @@ export async function runAgentFlow(
         bridge?.publishGlobalSettings(change);
       },
     );
-    await context.ui.showModalDialog(bridge.url, 1040, 720);
-  } finally {
-    attachmentOpener.close();
-    unsubscribeApprovalModes?.();
-    unsubscribeEditScopes?.();
-    unsubscribeModelSelections?.();
-    unsubscribeGlobalSettings?.();
-    unsubscribeProfileSettings?.();
-    unsubscribeSessionState?.();
-    unsubscribeGlobalState?.();
-    releaseSessionClaims(storageDirectory, modalSessionOwner);
-    await modelState.stopBrowserLaunches();
-    try {
-      await bridge?.close();
-    } finally {
-      await modelState.close();
-    }
+    assertLiveSetCurrent();
+    let invocationSessionId = hostMode === "browser" ? (await resolveActiveSession()).id : undefined;
+    assertLiveSetCurrent();
+    return {
+      url: bridge.url,
+      get busy() { return bridge!.busy; },
+      async reopen() {
+        assertLiveSetCurrent();
+        if (closePromise) throw new Error("This Live Smith window has closed.");
+        activeSessionId = invocationSessionId;
+        invocationSessionId = (await resolveActiveSession()).id;
+        assertLiveSetCurrent();
+        bridge!.publishGlobalStateInvalidation();
+      },
+      close,
+    };
+  } catch (error) {
+    await close();
+    throw error;
   }
 }
 

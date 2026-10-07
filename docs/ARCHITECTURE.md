@@ -20,7 +20,9 @@ src/
 
   app/
     agent-flow.ts
-      Coordinates modal state, bridge commands, OAuth readiness, and errors.
+      Owns the Agent runtime, bridge commands, OAuth readiness, and errors.
+    window-hosts.ts
+      Selects the persisted window host and owns one reusable browser runtime.
     agent-request.ts
       Runs one provider-neutral agent request, including attachment/Skill
       context, trace persistence, approval, preflight, and Live execution.
@@ -2763,7 +2765,7 @@ moves only that record.
 ### Bridge publications and authoritative receipts
 
 `agent-flow.ts` produces an unversioned domain state. At the WebView boundary,
-each modal bridge stamps every full `ChatBridgeState` exactly once with its own
+each runtime bridge stamps every full `ChatBridgeState` exactly once with its own
 monotonic decimal publication revision; the matching HTTP and SSE payload share
 that identity. A full state also carries the publication revision captured
 before its asynchronous request work as `bridgeStateCoveredThroughRevision`.
@@ -2772,7 +2774,7 @@ and before building the snapshot; mutation responses retain their request cut.
 That cut, not the later publication identity, says which projection patches the
 snapshot is guaranteed to include. Incremental SSE patches that change the
 client-held projection carry revisions from the same local sequence, including
-reconnect replays. The sequence is neither persisted nor compared across modals
+reconnect replays. The sequence is neither persisted nor compared across runtimes
 and is not a storage freshness clock: an async snapshot can finish after a newer
 patch. Mutable patches are skipped only when the current full-state cut already
 covers them. Confirmation state is processed by its exact ID and generation.
@@ -3083,11 +3085,52 @@ the failure remains fatal so the model can never retry without knowing what
 already changed. Device parameter values outside the freshly observed range are
 rejected rather than silently clamped after confirmation.
 
+### Window host lifetime
+
+`createAgentRuntime` owns an authenticated loopback HTTP/SSE bridge, Session claims,
+subscriptions and provider resources independently of a page. `runAgentFlow` owns
+the modal wrapper and closes that runtime when `showModalDialog` returns.
+`window-hosts.ts` retains one browser runtime per Extension activation and launches
+its exact tokenized URL through the loopback-enabled system browser opener. An
+opening failure retires newly created resources and reports a URL-free host error.
+
+The saved `interfaceMode` preference defaults to `modal` for historical settings;
+its decimal revision orders command responses and peer publications. The document's
+host capability is fixed when created, so changing the preference only affects
+future invocations. Browser documents hide the modal Close control.
+
+Repeated browser invocations with the same Set, object and exact selection reuse
+the runtime and its Session claim owner, and restore its invocation Session even
+if the page selected another Session. A different invocation retires an idle
+runtime; a busy runtime rejects that change until its work finishes or is stopped.
+A subsequent modal invocation owns a separate runtime without cancelling browser
+work. Set changes retire the old browser runtime on the next browser invocation.
+The SDK exposes no Extension deactivation hook; otherwise the retained runtime
+lasts for the Extension process. `close` remains idempotent and owns resource cleanup.
+
+Disconnecting browser HTTP/SSE connections does not cancel admitted sends or pending
+confirmations. Reopening replays authoritative activity, transient model output and
+pending confirmation state. The authenticated `command_activity` SSE projection
+publishes the admitted command ID, optional Session ID and stopping flag, and
+replays its current value before command confirmations. A terminal null clears
+remote command ownership on reconnect. Its independent revision ordering rejects
+stale activity; fresh pages consume the same command confirmation, progress,
+terminal state and Stop protocol as the initiating page.
+Stop and runtime shutdown still cancel work. Page-local
+drafts and queued follow-ups are not durable background jobs. Set identity is captured before asynchronous opening and checked before exposing
+the runtime. It is checked again at send admission, observation, preflight, queued mutation acquisition
+and between executor actions; MIDI import consumes the same runtime guard.
+Managed sample staging checks that authority immediately before importing into
+the project and after recording the completed import. Arrangement-derived audio
+carries an ephemeral authority callback through queued rendering, returned-byte
+validation and provider dispatch. Persisted attachments and audio artifacts are
+independent snapshots and retain their existing upload/resume semantics.
+
 ### Reconciliation and dialog shutdown
 
 Command mutations whose follow-up state cannot be built use the same
 unknown-outcome reconciliation path as uncertain storage commits. Closing the
-dialog aborts active work and
+modal or retiring its runtime aborts active work and
 waits for send and command handlers to finish their terminal cleanup. Read-only
 chat/state connections are destroyed instead, so an unresponsive state build
 cannot prevent the modal flow from returning.

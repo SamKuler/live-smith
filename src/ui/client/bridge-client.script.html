@@ -35,6 +35,8 @@
         isWireSessionEvent,
         isWireEditScopes,
         isWireSessionModelSelection,
+        isWireCommandActivity,
+        isInterfaceMode,
         isUiLanguage,
         isSessionTabs,
         isWireOAuthAuth,
@@ -64,6 +66,7 @@
 
       function connectView(nextView) {
         view = nextView;
+        reconcileRetainedSends(getState());
       }
 
       function requireView() {
@@ -119,6 +122,7 @@
       ]);
       const activityProjectionRevisionsBySession = new Map();
       const sendAttemptsBySession = new Map();
+      const retiredSendsBySession = new Map();
       const queuedFollowUpsBySession = new Map();
       const pausedFollowUpSessions = new Set();
       const failedSendRecoveriesBySession = new Map();
@@ -208,14 +212,11 @@
       )
         ? getState().settings.customInstructionsRevision
         : "0";
-      let confirmedUiLanguage = isUiLanguage(getState().settings?.uiLanguage)
-        ? getState().settings.uiLanguage : "system";
-      let confirmedUiLanguageRevision = isDecimalRevision(getState().settings?.uiLanguageRevision)
-        ? getState().settings.uiLanguageRevision : "0";
+      const languagePreference = createOrderedPreference("uiLanguage", isUiLanguage, "system");
+      const interfaceModePreference = createOrderedPreference("interfaceMode", isInterfaceMode, "modal");
       let confirmedSessionTabs = [...getState().settings.sessionTabs];
       let confirmedSessionTabsRevision = getState().settings.sessionTabsRevision;
       let optimisticSessionTabs = null;
-      let optimisticUiLanguage = null;
       let optimisticDefaultFollowUpBehavior = null;
       let optimisticContextUsageVisibility = null;
       let optimisticNetworkProxy = null;
@@ -234,6 +235,7 @@
       let closeDecisionPending = false;
       let retainedCanceledFollowUpCount = 0;
       let activeCommandAttempt = null;
+      let commandActivityRevision = "0";
       let sessionModelCapabilityLoad = null;
       let nextComposerDraftRevision = 1;
       const sseReconciliationTimeoutMs = 5000;
@@ -1961,8 +1963,8 @@
           confirmedContextUsageVisibilityRevision;
         state.settings.networkProxyRevision = confirmedNetworkProxyRevision;
         state.settings.customInstructionsRevision = confirmedCustomInstructionsRevision;
-        state.settings.uiLanguage = optimisticUiLanguage?.language ?? confirmedUiLanguage;
-        state.settings.uiLanguageRevision = confirmedUiLanguageRevision;
+        languagePreference.writeTo(state);
+        interfaceModePreference.writeTo(state);
         state.settings.sessionTabs = [...(optimisticSessionTabs?.tabs ?? confirmedSessionTabs)];
         state.settings.sessionTabsRevision = confirmedSessionTabsRevision;
         const confirmedConnections = connectionState.snapshot();
@@ -2014,20 +2016,6 @@
         sunoAccountsCoveredThroughRevision = state.bridgeStateCoveredThroughRevision;
       }
 
-      function adoptUiLanguage(language, revision, commandId) {
-        if (!isUiLanguage(language) || !isDecimalRevision(revision) ||
-            compareDecimalRevisions(revision, confirmedUiLanguageRevision) <= 0) return false;
-        confirmedUiLanguage = language;
-        confirmedUiLanguageRevision = revision;
-        const optimistic = optimisticUiLanguage;
-        if (optimistic) {
-          if (commandId === optimistic.commandId) optimistic.committedRevision = revision;
-          else if (compareDecimalRevisions(revision,
-            optimistic.committedRevision ?? optimistic.startedRevision) > 0) optimisticUiLanguage = null;
-        }
-        return true;
-      }
-
       function adoptSessionTabs(tabs, revision, commandId) {
         if (!isSessionTabs(tabs) || !isDecimalRevision(revision) ||
             compareDecimalRevisions(revision, confirmedSessionTabsRevision) <= 0) return false;
@@ -2045,7 +2033,8 @@
       function adoptGlobalSettingsFromState(state) {
         adoptSessionTabs(state?.settings?.sessionTabs, state?.settings?.sessionTabsRevision);
         adoptIntegrationConnections(state.integrationConnections);
-        adoptUiLanguage(state?.settings?.uiLanguage, state?.settings?.uiLanguageRevision);
+        languagePreference.adopt(state?.settings?.uiLanguage, state?.settings?.uiLanguageRevision);
+        interfaceModePreference.adopt(state?.settings?.interfaceMode, state?.settings?.interfaceModeRevision);
         const behavior = state?.settings?.defaultFollowUpBehavior;
         const behaviorRevision =
           state?.settings?.defaultFollowUpBehaviorRevision;
@@ -2166,13 +2155,16 @@
           !isNetworkProxySettings(networkProxy) ||
           !isSessionTabs(payload.sessionTabs) ||
           !isDecimalRevision(payload.sessionTabsRevision) ||
+          !isInterfaceMode(payload.interfaceMode) ||
+          !isDecimalRevision(payload.interfaceModeRevision) ||
           !isUiLanguage(payload.uiLanguage) ||
           !isDecimalRevision(payload.uiLanguageRevision) ||
           !isDecimalRevision(networkProxyRevision)
         ) return false;
         const audioAdopted = adoptIntegrationConnections(payload.integrationConnections);
         const tabsAdopted = adoptSessionTabs(payload.sessionTabs, payload.sessionTabsRevision, payload.commandId);
-        let adopted = adoptUiLanguage(payload.uiLanguage, payload.uiLanguageRevision, payload.commandId) || audioAdopted || tabsAdopted;
+        const modeAdopted = interfaceModePreference.adopt(payload.interfaceMode, payload.interfaceModeRevision, payload.commandId);
+        let adopted = languagePreference.adopt(payload.uiLanguage, payload.uiLanguageRevision, payload.commandId) || audioAdopted || tabsAdopted || modeAdopted;
         if (
           compareDecimalRevisions(
             customInstructionsRevision,
@@ -2575,7 +2567,8 @@
           sendInProgress: Boolean(activeAttempt),
           networkProxyDirty: hasNetworkProxyChanges(),
           customInstructionsDirty: hasCustomInstructionsChanges(),
-          uiLanguageSaving: Boolean(optimisticUiLanguage),
+          uiLanguageSaving: languagePreference.saving,
+          interfaceModeSaving: interfaceModePreference.saving,
         };
         if (
           renderedOperationState &&
@@ -2660,6 +2653,52 @@
           }
         })();
         return attempt.promise;
+      }
+
+      function finishRetainedCommand(attempt, outcome) {
+        if (activeCommandAttempt !== attempt || !attempt.remote) return;
+        const state = outcome?.state ?? outcome?.error?.state;
+        if (isWireChatBridgeState(state)) applyCommandState("retained_command", state, attempt);
+        else refreshGlobalState(commandActivityRevision);
+        attempt.confirmation?.controller.abort();
+        activeCommandAttempt = null;
+        commandInProgress = null;
+        syncOperationState();
+        startQueuedFollowUpsForIdleSessions();
+        if (outcome?.error) showStatus(outcome.error.message, outcome.error.commandOutcome !== "stopped");
+      }
+
+      function adoptCommandActivity(payload) {
+        if (!hasOnlyWireKeys(payload, ["type", "command", "bridgeStateRevision"]) ||
+            !isWireCommandActivity(payload.command) || !isDecimalRevision(payload.bridgeStateRevision) ||
+            compareDecimalRevisions(payload.bridgeStateRevision, commandActivityRevision) <= 0) return;
+        commandActivityRevision = payload.bridgeStateRevision;
+        const current = activeCommandAttempt;
+        if (current && !current.remote) return;
+        const command = payload.command;
+        if (!command) {
+          if (current?.remote) {
+            finishRetainedCommand(current);
+          }
+          return;
+        }
+        if (current?.id !== command.id) {
+          current?.confirmation?.controller.abort();
+          const attempt = {
+            id: command.id, sessionId: command.sessionId, kind: "retained_command", remote: true,
+            causalStateSnapshot: captureCausalState(),
+            cancellable: true, stopRequested: command.stopping, stopRequestInProgress: false,
+            resolveSseOutcome: (outcome) => finishRetainedCommand(attempt, outcome),
+            resolveSseUnavailable: () => {},
+            resolveStopAcknowledged: (terminal) => {
+              if (terminal) finishRetainedCommand(attempt);
+            },
+          };
+          activeCommandAttempt = attempt;
+          commandInProgress = "retained_command";
+        } else current.stopRequested = command.stopping;
+        if (command.stopping) activeCommandAttempt.confirmation?.controller.abort();
+        syncOperationState();
       }
 
       async function runCommand(kind, extra, options) {
@@ -3314,6 +3353,7 @@
         reconcileRuntimeSourceWithState(reconciledState);
         adoptGlobalSettingsFromState(reconciledState);
         setState(reconciledState);
+        reconcileRetainedSends(reconciledState, state);
         requireView().syncModelStateSource(reconciledState.modelStateSource);
         recordFullStateProjectionCoverage(reconciledState);
         refreshUncoveredActiveModelSelection(reconciledState);
@@ -3475,7 +3515,8 @@
       }
 
       function renderDefaultFollowUpBehavior() {
-        renderUiLanguage();
+        languagePreference.render();
+        interfaceModePreference.render();
         const behavior = effectiveDefaultFollowUpBehavior();
         const running = Boolean(activeSendAttempt());
         const control = document.getElementById("defaultFollowUpBehavior");
@@ -3849,6 +3890,83 @@
         });
       }
 
+      function createSendAttempt({
+        id, sessionId, prompt = "", sourceDraft = prompt, queueId = null,
+        queuedFollowUp = false, attachments = [], restored = false,
+      }) {
+        let resolveSendOutcomeSignal;
+        const sendOutcomeSignal = new Promise((resolve) => {
+          resolveSendOutcomeSignal = resolve;
+        });
+        return {
+          id, sessionId, restored,
+          causalStateSnapshot: captureCausalState(),
+          ownedSessionActivityIds: new Set([sessionId]),
+          attachments,
+          ownedPendingAttachmentIds: new Set(attachments.map((attachment) => attachment.id)),
+          ownedActiveContextSessionId: sessionId,
+          modelTurnEpoch: 0,
+          resolvedConfirmationGeneration: 0,
+          payload: { prompt, sessionId },
+          sourceDraft,
+          eventIdsAtStart: activeSessionId() === sessionId
+            ? new Set((getState().events || []).map((event) => event.id)) : null,
+          promptEventPersisted: false,
+          queueId,
+          progress: window.LiveSmithI18n.message("Starting Live Smith…"),
+          progressIsError: false,
+          queuedFollowUp: Boolean(queuedFollowUp),
+          failureHandled: false,
+          sendOutcomePending: !restored,
+          sendOutcomeSignal,
+          resolveSendOutcome: resolveSendOutcomeSignal,
+        };
+      }
+
+      function reconcileRetainedSends(state, snapshot = state) {
+        // Adoption authority comes from this snapshot cut, not the maximum
+        // coverage accumulated while merging other Session projections.
+        const activities = snapshot.sessionActivities || [];
+        for (const attempt of [...sendAttemptsBySession.values()]) {
+          if (!attempt.restored || attempt.awaitingStopTerminal) continue;
+          const activity = activities.find((entry) => entry.sessionId === attempt.sessionId);
+          const replacement = activity && activity.sendId !== attempt.id &&
+            isWireCorrelationId(activity.sendId) &&
+            ["running", "waiting_confirmation"].includes(activity.status);
+          const terminal = activity?.sendId === attempt.id &&
+            ["completed", "failed", "stopped"].includes(activity.status);
+          if ((!replacement && !terminal) ||
+              compareDecimalRevisions(snapshot.bridgeStateCoveredThroughRevision,
+                activityProjectionRevisionsBySession.get(attempt.sessionId) || "0") < 0) continue;
+          const completed = terminal && activity.status === "completed";
+          if (!completed && (queuedFollowUpsBySession.get(attempt.sessionId)?.length || 0)) {
+            pausedFollowUpSessions.add(attempt.sessionId);
+          }
+          settleSendAttempt(attempt, { promoteQueued: completed });
+          if (activeSessionId() === attempt.sessionId) {
+            showStatus(activity.message, activity.status === "failed");
+          }
+        }
+        for (const activity of activities) {
+          const retired = retiredSendsBySession.get(activity.sessionId);
+          const requiredCoverage = maxDecimalRevision(retired?.revision || "0",
+            activityProjectionRevisionsBySession.get(activity.sessionId) || "0");
+          if (activity.sendId === retired?.id ||
+              compareDecimalRevisions(snapshot.bridgeStateCoveredThroughRevision, requiredCoverage) < 0 ||
+              !["running", "waiting_confirmation"].includes(activity.status) ||
+              !isWireCorrelationId(activity.sendId) ||
+              !state.sessions.some((session) => session.id === activity.sessionId) ||
+              sendAttemptsBySession.has(activity.sessionId)) continue;
+          const attempt = createSendAttempt({ id: activity.sendId, sessionId: activity.sessionId, restored: true });
+          attempt.progress = activity.message;
+          sendAttemptsBySession.set(activity.sessionId, attempt);
+          webSearchEventIdsAtSendStartBySession.set(activity.sessionId, new Set(
+            state.activeSessionId === activity.sessionId
+              ? state.events.filter((event) => event.kind === "web_search").map((event) => event.id) : [],
+          ));
+        }
+      }
+
       async function startSend({
         id,
         prompt,
@@ -3874,36 +3992,7 @@
               : [],
           ),
         );
-        const causalStateSnapshot = captureCausalState();
-        let resolveSendOutcomeSignal;
-        const sendOutcomeSignal = new Promise((resolve) => {
-          resolveSendOutcomeSignal = resolve;
-        });
-        const attempt = {
-          id,
-          sessionId,
-          causalStateSnapshot,
-          ownedSessionActivityIds: new Set([sessionId]),
-          attachments,
-          ownedPendingAttachmentIds: new Set(attachments.map((attachment) => attachment.id)),
-          ownedActiveContextSessionId: sessionId,
-          modelTurnEpoch: 0,
-          resolvedConfirmationGeneration: 0,
-          payload,
-          sourceDraft,
-          eventIdsAtStart: visible
-            ? new Set((getState().events || []).map((event) => event.id))
-            : null,
-          promptEventPersisted: false,
-          queueId,
-          progress: window.LiveSmithI18n.message("Starting Live Smith…"),
-          progressIsError: false,
-          queuedFollowUp: Boolean(queuedFollowUp),
-          failureHandled: false,
-          sendOutcomePending: true,
-          sendOutcomeSignal,
-          resolveSendOutcome: resolveSendOutcomeSignal,
-        };
+        const attempt = createSendAttempt({ id, sessionId, prompt, sourceDraft, queueId, queuedFollowUp, attachments });
         sendAttemptsBySession.set(sessionId, attempt);
         if (visible) {
           const promptControl = document.getElementById("prompt");
@@ -4098,36 +4187,49 @@
         }
       }
 
-      function renderUiLanguage() {
-        const control = document.getElementById("uiLanguage");
-        if (!control) return;
-        const value = optimisticUiLanguage?.language ?? confirmedUiLanguage;
-        if (control.value !== value) control.value = value;
-      }
-
-      async function setUiLanguage(language) {
-        if (!isUiLanguage(language) || commandInProgress || optimisticUiLanguage) {
-          renderUiLanguage();
-          return false;
-        }
-        if (language === confirmedUiLanguage) return true;
-        const optimistic = {
-          language, commandId: createCorrelationId("command"),
-          startedRevision: confirmedUiLanguageRevision, committedRevision: null,
+      // Scalar preferences share commit ordering across command responses and SSE.
+      function createOrderedPreference(key, validate, fallback) {
+        const revisionKey = key + "Revision";
+        let confirmed = validate(getState().settings?.[key]) ? getState().settings[key] : fallback;
+        let revision = getState().settings?.[revisionKey] ?? "0";
+        let optimistic = null;
+        const preference = {
+          get saving() { return Boolean(optimistic); },
+          writeTo(state) {
+            state.settings[key] = optimistic?.value ?? confirmed;
+            state.settings[revisionKey] = revision;
+          },
+          render() {
+            const control = document.getElementById(key);
+            if (control) control.value = optimistic?.value ?? confirmed;
+          },
+          adopt(value, nextRevision, commandId) {
+            if (!validate(value) || !isDecimalRevision(nextRevision) || compareDecimalRevisions(nextRevision, revision) <= 0) return false;
+            confirmed = value;
+            revision = nextRevision;
+            if (optimistic) {
+              if (commandId === optimistic.commandId) optimistic.committedRevision = revision;
+              else if (compareDecimalRevisions(revision, optimistic.committedRevision ?? optimistic.startedRevision) > 0) optimistic = null;
+            }
+            return true;
+          },
+          async set(value) {
+            if (!validate(value) || commandInProgress || optimistic) { preference.render(); return false; }
+            if (value === confirmed) return true;
+            const attempt = { value, commandId: createCorrelationId("command"), startedRevision: revision, committedRevision: null };
+            optimistic = attempt;
+            writeEffectiveGlobalSettingsToState();
+            requireView().render({ preserveStatus: true });
+            try {
+              return await runCommand("save_global_settings", { [key]: value }, { commandId: attempt.commandId });
+            } finally {
+              if (optimistic === attempt) optimistic = null;
+              writeEffectiveGlobalSettingsToState();
+              requireView().render({ preserveStatus: true });
+            }
+          },
         };
-        optimisticUiLanguage = optimistic;
-        writeEffectiveGlobalSettingsToState();
-        requireView().render({ preserveStatus: true });
-        let saved = false;
-        try {
-          saved = await runCommand("save_global_settings", { uiLanguage: language }, { commandId: optimistic.commandId });
-          return saved;
-        } finally {
-          if (optimisticUiLanguage === optimistic) optimisticUiLanguage = null;
-          writeEffectiveGlobalSettingsToState();
-          // runCommand owns its outcome presentation, including unknown-commit warnings.
-          requireView().render({ preserveStatus: true });
-        }
+        return preference;
       }
 
       async function saveDefaultFollowUpBehavior() {
@@ -4823,6 +4925,12 @@
         cancelSendRecovery(attempt);
         resolveSendOutcome(attempt);
         attempt.failureHandled = true;
+        // One retired owner per Session rejects late snapshots without retaining
+        // every historical send. New owners must cover this activity boundary.
+        retiredSendsBySession.set(attempt.sessionId, {
+          id: attempt.id,
+          revision: activityProjectionRevisionsBySession.get(attempt.sessionId) || "0",
+        });
         clearTransientResponseForSession(attempt.sessionId);
         webSearchEventIdsAtSendStartBySession.delete(attempt.sessionId);
         pendingConfirmationsBySession.delete(attempt.sessionId);
@@ -5061,7 +5169,7 @@
           cancelUnavailableSessionQueue(attempt, authoritativeState, message);
           return;
         }
-        if (persistence === "not_persisted") {
+        if (persistence === "not_persisted" && !attempt.restored) {
           const refreshStaleState = sendFailureKind === "state_stale" &&
             activeSessionId() === attempt.sessionId &&
             globalStateRefresh === null &&
@@ -6423,6 +6531,11 @@
               );
             } else if (retainedCanceledFollowUpCount) {
               showStatus(state.status || "");
+            } else {
+              const activity = (state.sessionActivities || []).find(
+                (entry) => entry.sessionId === activeSessionId(),
+              );
+              if (activity?.status === "failed") showStatus(activity.message, true);
             }
             resumeQueuedFollowUpsAfterStateRefresh();
           },
@@ -6454,6 +6567,7 @@
             return;
           }
           if (!isWireRecord(payload) || typeof payload.type !== "string") return;
+          if (payload.type === "command_activity") { adoptCommandActivity(payload); return; }
           if (payload.type === "command_confirm_resolved") {
             const attempt = activeCommandAttempt;
             if (hasOnlyWireKeys(payload, ["type", "commandId", "sessionId", "id"]) &&
@@ -6465,7 +6579,7 @@
             const attempt = activeCommandAttempt;
             if (!hasOnlyWireKeys(payload, ["type", "commandId", "sessionId", "id", "kind", "message", "groups", "previews", "operationId"]) ||
                 !attempt || attempt.stopRequested || attempt.id !== payload.commandId || attempt.sessionId !== payload.sessionId ||
-                activeSessionId() !== payload.sessionId || !isWireCorrelationId(payload.id) || payload.kind !== "apply" ||
+                (!attempt.remote && activeSessionId() !== payload.sessionId) || !isWireCorrelationId(payload.id) || payload.kind !== "apply" ||
                 typeof payload.message !== "string" || !payload.message || !isWireActionDiffGroups(payload.groups) ||
                 !isWireActionPreviews(payload.previews, payload.kind, payload.groups) ||
                 (payload.operationId !== undefined && !isWireStorageId(payload.operationId)) || attempt.confirmation?.id === payload.id) return;
@@ -6478,7 +6592,7 @@
                 acceptLabel: window.LiveSmithI18n.message("Apply"), signal: controller.signal });
               if (controller.signal.aborted || activeCommandAttempt !== attempt) return;
               try {
-                await postBridge("/confirm", { id: payload.id, apply: apply && !attempt.stopRequested && activeSessionId() === payload.sessionId });
+                await postBridge("/confirm", { id: payload.id, apply: apply && !attempt.stopRequested && (attempt.remote || activeSessionId() === payload.sessionId) });
               } catch (error) {
                 showStatus(error.message || String(error), true);
                 await stopActiveCommand();
@@ -6617,6 +6731,8 @@
                 "customInstructionsRevision",
                 "networkProxy",
                 "networkProxyRevision",
+                "interfaceMode",
+                "interfaceModeRevision",
                 "uiLanguage",
                 "uiLanguageRevision",
                 "sessionTabs",
@@ -6637,7 +6753,9 @@
               !isDecimalRevision(payload.networkProxyRevision) ||
               !isSessionTabs(payload.sessionTabs) ||
               !isDecimalRevision(payload.sessionTabsRevision) ||
-              !isUiLanguage(payload.uiLanguage) ||
+              !isInterfaceMode(payload.interfaceMode) ||
+          !isDecimalRevision(payload.interfaceModeRevision) ||
+          !isUiLanguage(payload.uiLanguage) ||
               !isDecimalRevision(payload.uiLanguageRevision) ||
               (payload.integrationConnections !== undefined && !isWireIntegrationConnections(payload.integrationConnections)) ||
               !isWireCorrelationId(payload.commandId)
@@ -7530,8 +7648,9 @@
         resolveConfirm,
         renderDefaultFollowUpBehavior,
         renderCustomInstructions,
-        renderUiLanguage,
-        setUiLanguage,
+        renderUiLanguage: languagePreference.render,
+        setUiLanguage: languagePreference.set,
+        setInterfaceMode: interfaceModePreference.set,
         renderNetworkProxySettings,
         runCommand,
         stopActiveCommand,

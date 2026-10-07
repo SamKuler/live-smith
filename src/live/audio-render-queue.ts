@@ -16,6 +16,7 @@ export function consumePreFxAudioQueued<T>(
   endBeat: number,
   signal: AbortSignal | undefined,
   consume: (filePath: string) => Promise<T>,
+  assertContext?: () => void,
 ): Promise<T> {
   const owner = context as object;
   let queue = renderQueues.get(owner);
@@ -26,12 +27,14 @@ export function consumePreFxAudioQueued<T>(
   return queue.run(
     signal,
     async () => {
+      assertContext?.();
       const filePath = await context.resources.renderPreFxAudio(
         track,
         startBeat,
         endBeat,
       );
       throwIfAborted(signal);
+      assertContext?.();
       return consume(filePath);
     },
   );

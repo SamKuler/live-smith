@@ -40,6 +40,7 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
   interaction: LiveInteractionContext;
   signal: AbortSignal;
   mutationQueue: LiveMutationQueue;
+  assertLiveSetCurrent?: () => void;
   validateSource?(plan: AgentPlan, bindings: AgentPlanBindings): void;
   onApplied?(): Promise<void>;
   confirm(plan: AgentPlan, guard: Awaited<ReturnType<typeof preflightAgentPlan>>, operationId: string): Promise<AgentConfirmationDecision>;
@@ -56,12 +57,14 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
     return scopes;
   };
   const refresh = async () => {
+    input.assertLiveSetCurrent?.();
     const version = generation;
     const session = (await listSessions(input.storageDirectory, input.projectKey)).find(
       (entry) => entry.id === input.sessionId && !entry.archivedAt,
     );
     if (!session) throw new Error("That Session is not available in this Live Set.");
     throwIfAborted(input.signal);
+    input.assertLiveSetCurrent?.();
     assertMidiImportTargets(input.context, input.mappings?.flatMap((mapping) => mapping.createTrack ? [] : [mapping]) ?? (input.trackId && input.trackName
       ? [{ trackId: input.trackId, trackName: input.trackName }] : []));
     if (version === generation) scopes = resolveEditScopes(session.editScopes);
@@ -82,6 +85,7 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
       ...(operationId && status ? { applyOperation: { id: operationId, status, ...(previews ? { previews } : {}) } } : {}),
     });
   try {
+    input.assertLiveSetCurrent?.();
     const recovery = activeRecoveryLedgerFromEvents(await loadSessionEvents(input.storageDirectory, input.sessionId));
     if (recovery) {
       throw new ChatBridgeConflictError("This Session has an unfinished Live operation. Inspect and resolve it in chat before importing MIDI.");
@@ -109,6 +113,7 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
     });
     const guard = await preflightAgentPlan(input.context, input.interaction, plan, input.signal,
       undefined, undefined, { refresh, assert: (candidate, bindings) => {
+        input.assertLiveSetCurrent?.();
         input.validateSource?.(candidate, bindings);
         assertEditScopesAllow(requiredEditScopesForPlan(input.context, candidate, bindings), currentScopes());
       } });
@@ -123,9 +128,11 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
     }
     if (decision.source === "automatic") await record("apply_auto_approved", `MIDI import approved by ${decision.mode}.`, "approved");
     const outcome = await input.mutationQueue.run(input.signal, async () => {
+      input.assertLiveSetCurrent?.();
       const bindings = await guard();
       return executeAgentPlanWithProgress(input.context, importPlan, input.interaction.target, input.signal, bindings,
         (index, action) => {
+          input.assertLiveSetCurrent?.();
           input.validateSource?.(importPlan, bindings);
           assertEditScopesAllow(requiredEditScopesForAction(input.context, action, index, bindings), currentScopes());
           mutationStarted = true;

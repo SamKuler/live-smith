@@ -19,7 +19,7 @@ test("granted Plugin audio can register and be listened to within the current re
     modelAudioInput: { canAccept: () => true } };
   const beforeJobs = await listAudioJobs(h.storage, h.session.id);
   assert.deepEqual(beforeJobs, []);
-  const tools = await createRequestAudioTools({ ...options, hasPluginAudioOutputs: true });
+  const tools = await createRequestAudioTools({ assertLiveSetCurrent: () => {}, ...{ ...options, hasPluginAudioOutputs: true } });
   assert.ok(tools.tools.some((tool) => tool.function.name === 'listen_to_audio_asset'));
   const audio = await savePluginAudioArtifact(h.storage, h.session.id, { connectionId: 'renderer', serverId: 'local', toolName: 'render',
     label: 'Rendered take', format: 'wav', bytes: waveBytes(), signal: h.signal });
@@ -30,7 +30,7 @@ test("granted Plugin audio can register and be listened to within the current re
   assert.equal(listen.modelInputPart?.type, 'audio');
   if (listen.modelInputPart?.type === 'audio') assert.deepEqual(listen.modelInputPart.bytes, waveBytes());
   assert.deepEqual(await listAudioJobs(h.storage, h.session.id), beforeJobs);
-  const reopened = await createRequestAudioTools(options);
+  const reopened = await createRequestAudioTools({ assertLiveSetCurrent: () => {}, ...options });
   assert.ok(reopened.tools.some((tool) => tool.function.name === 'listen_to_audio_asset'));
   assert.equal((await reopened.execute({ id: 'later', name: 'listen_to_audio_asset', arguments: JSON.stringify({ assetRef: audio.id }) })).failed, undefined);
 });

@@ -1,3 +1,4 @@
+import { agentRequestContext } from "./support/agent-context.js";
 import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
@@ -325,7 +326,7 @@ test("handleAgentRequest snapshots persistent and one-turn Skill guidance withou
   let modelCalls = 0;
 
   await handleAgentRequest(
-    { environment: { storageDirectory: directory } } as never,
+    agentRequestContext({ environment: { storageDirectory: directory } } as never),
     directory,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -409,7 +410,7 @@ test("handleAgentRequest adds hosted Web Search only for an opted-in Profile", a
   const publishedEvents: SessionEvent[] = [];
 
   await handleAgentRequest(
-    { environment: { storageDirectory: directory } } as never,
+    agentRequestContext({ environment: { storageDirectory: directory } } as never),
     directory,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -515,7 +516,7 @@ test("handleAgentRequest automatically continues an output-limited model turn", 
   const reasoningUpdates: unknown[] = [];
 
   const result = await handleAgentRequest(
-    { environment: { storageDirectory: directory } } as never,
+    agentRequestContext({ environment: { storageDirectory: directory } } as never),
     directory,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -643,7 +644,7 @@ test("conflicting terminal Web Search payloads with one ID fail without a duplic
 
   await assert.rejects(
     handleAgentRequest(
-      { environment: { storageDirectory: directory } } as never,
+      agentRequestContext({ environment: { storageDirectory: directory } } as never),
       directory,
       {
         presentation: liveContextPresentationFixture("Bass"),
@@ -716,7 +717,7 @@ test("one agent send hides a twenty-first hosted Web Search and preserves the fi
   const updates: ModelHostedWebSearch[] = [];
 
   await handleAgentRequest(
-      { environment: { storageDirectory: directory } } as never,
+      agentRequestContext({ environment: { storageDirectory: directory } } as never),
       directory,
       {
         presentation: liveContextPresentationFixture("Bass"),
@@ -814,7 +815,7 @@ test("later agent turns receive only the remaining defensive Web Search allowanc
   let turn = 0;
 
   await handleAgentRequest(
-    { environment: { storageDirectory: directory } } as never,
+    agentRequestContext({ environment: { storageDirectory: directory } } as never),
     directory,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -892,7 +893,7 @@ test("completed hosted Web Search persists before a later provider failure", asy
 
   await assert.rejects(
     handleAgentRequest(
-      { environment: { storageDirectory: directory } } as never,
+      agentRequestContext({ environment: { storageDirectory: directory } } as never),
       directory,
       {
         presentation: liveContextPresentationFixture("Bass"),
@@ -962,7 +963,7 @@ test("failed hosted Web Search is durable-first and not a transient update", asy
   const publishedEvents: SessionEvent[] = [];
 
   await handleAgentRequest(
-    { environment: { storageDirectory: directory } } as never,
+    agentRequestContext({ environment: { storageDirectory: directory } } as never),
     directory,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -1036,7 +1037,7 @@ test("completed hosted Web Search remains durable when cancellation arrives", as
 
   await assert.rejects(
     handleAgentRequest(
-      { environment: { storageDirectory: directory } } as never,
+      agentRequestContext({ environment: { storageDirectory: directory } } as never),
       directory,
       {
         presentation: liveContextPresentationFixture("Bass"),
@@ -1111,7 +1112,7 @@ test("unknown hosted Web Search commit reconciles without duplicate append or pu
   let reconciliationLoads = 0;
 
   await handleAgentRequest(
-    { environment: { storageDirectory: directory } } as never,
+    agentRequestContext({ environment: { storageDirectory: directory } } as never),
     directory,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -1199,7 +1200,7 @@ test("unknown hosted Web Search outcome is reconciled before one safe retry", as
   let reconciliationLoads = 0;
 
   await handleAgentRequest(
-    { environment: { storageDirectory: directory } } as never,
+    agentRequestContext({ environment: { storageDirectory: directory } } as never),
     directory,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -1287,7 +1288,7 @@ test("missing selected Skill blocks model and event persistence", async () => {
 
   await assert.rejects(
     handleAgentRequest(
-      { environment: { storageDirectory: directory } } as never,
+      agentRequestContext({ environment: { storageDirectory: directory } } as never),
       directory,
       {
         presentation: liveContextPresentationFixture("Bass"),
@@ -1980,7 +1981,7 @@ test("handleAgentRequest includes persisted apply recovery in the next model req
   let liveContext = "";
 
   const result = await handleAgentRequest(
-    { environment: { storageDirectory: dir } } as never,
+    agentRequestContext({ environment: { storageDirectory: dir } } as never),
     dir,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -2055,7 +2056,7 @@ test("handleAgentRequest sends current and historical images then consumes curre
   } | undefined;
 
   await handleAgentRequest(
-    { environment: { storageDirectory: dir } } as never,
+    agentRequestContext({ environment: { storageDirectory: dir } } as never),
     dir,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -2135,7 +2136,7 @@ test("handleAgentRequest rejects audio without supported evidence before model o
 
   await assert.rejects(
     handleAgentRequest(
-      { environment: { storageDirectory: dir } } as never,
+      agentRequestContext({ environment: { storageDirectory: dir } } as never),
       dir,
       {
         presentation: liveContextPresentationFixture("Bass"),
@@ -2226,7 +2227,7 @@ test("handleAgentRequest skips consumed corrupt metadata while validating curren
   } | undefined;
 
   const result = await handleAgentRequest(
-    { environment: { storageDirectory: dir } } as never,
+    agentRequestContext({ environment: { storageDirectory: dir } } as never),
     dir,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -2305,7 +2306,7 @@ test("handleAgentRequest fails closed for unconsumed corrupt attachment metadata
 
   await assert.rejects(
     handleAgentRequest(
-      { environment: { storageDirectory: dir } } as never,
+      agentRequestContext({ environment: { storageDirectory: dir } } as never),
       dir,
       {
         presentation: liveContextPresentationFixture("Bass"),
@@ -2366,7 +2367,7 @@ test("handleAgentRequest sends compatible PDFs and leaves incompatible PDFs pend
     });
     let modelCalls = 0;
     const request = handleAgentRequest(
-      { environment: { storageDirectory: dir } } as never,
+      agentRequestContext({ environment: { storageDirectory: dir } } as never),
       dir,
       {
         presentation: liveContextPresentationFixture("Bass"),
@@ -2454,7 +2455,7 @@ test("attachment capability and prompt persistence failures leave images pending
 
     await assert.rejects(
       handleAgentRequest(
-        { environment: { storageDirectory: dir } } as never,
+        agentRequestContext({ environment: { storageDirectory: dir } } as never),
         dir,
         {
           presentation: liveContextPresentationFixture("Bass"),
@@ -2526,7 +2527,7 @@ test("provider failure keeps already persisted image refs consumed", async () =>
 
   await assert.rejects(
     handleAgentRequest(
-      { environment: { storageDirectory: dir } } as never,
+      agentRequestContext({ environment: { storageDirectory: dir } } as never),
       dir,
       {
         presentation: liveContextPresentationFixture("Bass"),
@@ -2714,7 +2715,7 @@ test("the first real prompt names an untitled Session", async () => {
   assert.equal(initial.title, "");
 
   await handleAgentRequest(
-    { environment: { storageDirectory: dir } } as never,
+    agentRequestContext({ environment: { storageDirectory: dir } } as never),
     dir,
     interaction,
     "Design a warm bass patch",
@@ -2740,7 +2741,7 @@ test("the first real prompt names an untitled Session", async () => {
     scope: { kind: "track", identity: "track-2", label: "Sub Bass" },
   });
   await handleAgentRequest(
-    { environment: { storageDirectory: dir } } as never,
+    agentRequestContext({ environment: { storageDirectory: dir } } as never),
     dir,
     {
       ...interaction,
@@ -2790,7 +2791,7 @@ test("a failed model request persists and publishes a redacted session error", a
 
   await assert.rejects(
     handleAgentRequest(
-      { environment: { storageDirectory: dir } } as never,
+      agentRequestContext({ environment: { storageDirectory: dir } } as never),
       dir,
       {
         presentation: liveContextPresentationFixture("Lead"),
@@ -2858,7 +2859,7 @@ test("an uncertain user-event commit becomes the bridge's typed unknown-persiste
 
   await assert.rejects(
     handleAgentRequest(
-      { environment: { storageDirectory: dir } } as never,
+      agentRequestContext({ environment: { storageDirectory: dir } } as never),
       dir,
       {
         presentation: liveContextPresentationFixture("Lead"),
@@ -2935,7 +2936,7 @@ test("a partial composite creation failure remains explicitly unfinished", async
   } as never;
 
   const result = await handleAgentRequest(
-      context,
+      agentRequestContext(context),
       dir,
       {
         presentation: liveContextPresentationFixture("Live Set", "other"),
@@ -3081,7 +3082,7 @@ test("a tenth device rejection preserves nine completed actions and repairs in t
   let modelCalls = 0;
 
   const result = await handleAgentRequest(
-    context,
+    agentRequestContext(context),
     dir,
     {
       presentation: liveContextPresentationFixture("Lead"),
@@ -3264,7 +3265,7 @@ test("completed action replay protection persists across sends and clears after 
 
   let firstCalls = 0;
   const firstResult = await handleAgentRequest(
-    context,
+    agentRequestContext(context),
     dir,
     interaction,
     "Build the chain",
@@ -3309,7 +3310,7 @@ test("completed action replay protection persists across sends and clears after 
   let secondCalls = 0;
   const secondInputs: ModelConversationMessage[][] = [];
   const secondResult = await handleAgentRequest(
-    context,
+    agentRequestContext(context),
     dir,
     interaction,
     "Continue only the missing work",
@@ -3371,7 +3372,7 @@ test("completed action replay protection persists across sends and clears after 
 
   let thirdCalls = 0;
   const thirdResult = await handleAgentRequest(
-    context,
+    agentRequestContext(context),
     dir,
     interaction,
     "Add another Auto Filter intentionally",
@@ -3472,7 +3473,7 @@ test("a zero-mutation Apply failure does not poison the next user request", asyn
 
   let firstModelCalls = 0;
   const firstResult = await handleAgentRequest(
-    context,
+    agentRequestContext(context),
     dir,
     interaction,
     "Insert the requested device",
@@ -3515,7 +3516,7 @@ test("a zero-mutation Apply failure does not poison the next user request", asyn
   );
 
   const secondResult = await handleAgentRequest(
-    context,
+    agentRequestContext(context),
     dir,
     interaction,
     "Answer a separate question",
@@ -3613,7 +3614,7 @@ test("a created-track action cannot be repeated after a later rename fails", asy
   let confirmations = 0;
 
   const result = await handleAgentRequest(
-    context,
+    agentRequestContext(context),
     dir,
     {
       presentation: liveContextPresentationFixture("Live Set", "other"),
@@ -3762,7 +3763,7 @@ test("a stopped Live action publishes completed mutations before propagating can
 
   await assert.rejects(
     handleAgentRequest(
-      context,
+      agentRequestContext(context),
       dir,
       {
         presentation: liveContextPresentationFixture("Live Set", "other"),
@@ -3869,7 +3870,7 @@ test("a concurrent Stop cannot turn a host action failure into a successful Appl
 
   await assert.rejects(
     handleAgentRequest(
-      context,
+      agentRequestContext(context),
       dir,
       {
         presentation: liveContextPresentationFixture("Lead"),

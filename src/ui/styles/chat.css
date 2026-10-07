@@ -3205,3 +3205,5 @@ input.piano-roll-position[hidden] { display: none; }
 .chat-artifact-part select { @apply min-w-0 flex-1; }
 .timeline-activity-detail [hidden] { display: none; }
 }
+
+#closeButton[hidden] { display: none; }

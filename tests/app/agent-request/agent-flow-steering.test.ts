@@ -1,3 +1,4 @@
+import { agentRequestContext } from "./support/agent-context.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -61,7 +62,7 @@ test("handleAgentRequest persists steering, discards the interrupted turn, and r
   let assistantResetCount = 0;
 
   const request = handleAgentRequest(
-    { environment: { storageDirectory: directory } } as never,
+    agentRequestContext({ environment: { storageDirectory: directory } } as never),
     directory,
     interaction(),
     "Make the Lead brighter.",
@@ -165,7 +166,7 @@ test("unknown steering commit survives a failed reconciliation read for same-ID 
   let reconciliationReadCount = 0;
 
   const request = handleAgentRequest(
-    { environment: { storageDirectory: directory } } as never,
+    agentRequestContext({ environment: { storageDirectory: directory } } as never),
     directory,
     interaction(),
     "Inspect Lead.",
@@ -280,10 +281,10 @@ test("steering at action index 0 does not create partial recovery without a muta
   };
 
   const result = await handleAgentRequest(
-    {
+    agentRequestContext({
       environment: { storageDirectory: directory },
       application: { song },
-    } as never,
+    } as never),
     directory,
     {
       presentation: liveContextPresentationFixture(session.scope.label, "other"),
@@ -385,10 +386,10 @@ test("steering before action 2 preserves completed mutation recovery", async () 
   };
 
   const result = await handleAgentRequest(
-    {
+    agentRequestContext({
       environment: { storageDirectory: directory },
       application: { song },
-    } as never,
+    } as never),
     directory,
     {
       presentation: liveContextPresentationFixture(session.scope.label, "other"),
@@ -478,7 +479,7 @@ test("handleAgentRequest rejects an unpersisted steering submission", async () =
   let modelCallCount = 0;
 
   const request = handleAgentRequest(
-    { environment: { storageDirectory: directory } } as never,
+    agentRequestContext({ environment: { storageDirectory: directory } } as never),
     directory,
     interaction(),
     "Inspect Lead.",
@@ -543,7 +544,7 @@ test("Stop lets an in-flight steering persistence report its real commit outcome
   let appendCount = 0;
 
   const request = handleAgentRequest(
-    { environment: { storageDirectory: directory } } as never,
+    agentRequestContext({ environment: { storageDirectory: directory } } as never),
     directory,
     interaction(),
     "Inspect Lead.",

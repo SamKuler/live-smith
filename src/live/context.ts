@@ -56,6 +56,8 @@ export interface LiveInteractionContext {
   scope: ConversationScope;
   /** Selection handles are invocation-scoped and are never persisted with a Session. */
   selectionContext?: {
+    /** Exact invocation selection identity, independent of display labels. */
+    identity?: string;
     refresh(context: Api): LiveInteractionContext | undefined;
   };
 }
@@ -222,6 +224,7 @@ export function arrangementSelectionInteractionContext(
     },
     target: makeTarget(track),
     selectionContext: {
+      identity: JSON.stringify([snapshot.selected_lanes.map((handle) => handle.id.toString()), snapshot.time_selection_start, snapshot.time_selection_end]),
       refresh: (currentContext) =>
         arrangementLanesAreCurrent(currentContext, snapshot.selected_lanes)
           ? arrangementSelectionInteractionContext(currentContext, snapshot)
@@ -280,6 +283,7 @@ export function clipSlotSelectionInteractionContext(
     },
     target: makeTarget(track, targetClip ?? undefined),
     selectionContext: {
+      identity: JSON.stringify(snapshot.selected_clip_slots.map((handle) => handle.id.toString())),
       refresh: (currentContext) =>
         clipSlotsAreCurrent(currentContext, snapshot.selected_clip_slots)
           ? clipSlotSelectionInteractionContext(currentContext, snapshot)

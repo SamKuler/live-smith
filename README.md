@@ -162,6 +162,16 @@ system language. The preference is shared across Live Smith windows. Switching
 languages keeps drafts and ongoing work; user messages, model replies, object
 names, and raw provider/SDK output stay in their original language.
 
+Choose **Settings → App → Conversation & Display → Open Live Smith in** to open Live
+Smith in the **Live modal** (default) or your **System browser**. The choice applies
+to the next invocation. The browser lets you keep working in Live; closing its tab
+preserves admitted tasks and pending approvals while the Extension is running.
+Use **Ask Live Smith** on the same object or selection to reopen its Session, or
+use **Stop** to cancel its current task. Asking about a different selection replaces
+an idle browser runtime; finish or Stop its work first when it is busy. Switching
+Live Sets prevents the old runtime from applying further edits. Drafts and queued
+follow-ups belong to the page and are lost when its tab closes.
+
 > [!NOTE]
 > Live Smith is beta software. See the [development guide](docs/DEVELOPMENT.md#prerequisites)
 > for supported Live versions and installation from source.
@@ -703,8 +713,8 @@ Queue and Steer are configured under
 **Settings → App → Conversation & Display**.
 The same section can show or hide the compact context-window indicator in the
 composer.
-Queued follow-ups belong to the open window; Live Smith warns before closing
-with pending work.
+Queued follow-ups belong to the open page. The Live modal warns before closing
+with pending work; browser tabs use their native close control.
 
 ## Privacy
 

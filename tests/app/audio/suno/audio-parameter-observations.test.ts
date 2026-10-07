@@ -31,8 +31,8 @@ test("manual music observations survive separate calls but remain bound to Sessi
   };
   const run = async (suffix: string, args: Record<string, unknown>, observations = observedMusicClips) => {
     const descriptor = await panel(suffix);
-    return runAudioParameterTool({ ...input, observedMusicClips: observations,
-      toolName: descriptor.toolName, signature: descriptor.signature, arguments: args });
+    return runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...input, observedMusicClips: observations,
+      toolName: descriptor.toolName, signature: descriptor.signature, arguments: args } });
   };
   const extend = { connectionId: connection.id, clipId: clipIds[0], startSeconds: 10, prompt: "", instrumental: true };
   assert.deepEqual(await run("extend_music", extend), { failed: true });
@@ -49,8 +49,8 @@ test("manual music observations survive separate calls but remain bound to Sessi
     scope: { kind: "selection", identity: "other-selection", label: "Other audio" } });
   const otherCatalog = await loadAudioParameterGroups(h.directory, otherSession.id);
   const otherPanel = otherCatalog.groups.flatMap((group) => group.tools).find((tool) => tool.name.endsWith("extend_music"))!.audioPanel!;
-  assert.deepEqual(await runAudioParameterTool({ ...input, sessionId: otherSession.id, observedMusicClips: new Map(),
-    toolName: otherPanel.toolName, signature: otherPanel.signature, arguments: extend }), { failed: true }, "another Session cannot reuse the original Session's query history");
+  assert.deepEqual(await runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...input, sessionId: otherSession.id, observedMusicClips: new Map(),
+    toolName: otherPanel.toolName, signature: otherPanel.signature, arguments: extend } }), { failed: true }, "another Session cannot reuse the original Session's query history");
   assert.equal(submitted.length, 0);
   assert.deepEqual(await run("extend_music", extend, new Map()), { failed: false }, "the same Session restores owner-bound observations after restart");
   assert.equal(submitted.length, 1);

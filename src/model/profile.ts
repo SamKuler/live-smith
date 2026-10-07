@@ -1,3 +1,5 @@
+import { type InterfaceMode } from "./interface-mode.js";
+export { isInterfaceMode, type InterfaceMode } from "./interface-mode.js";
 import { validateHeaderValue } from "node:http";
 import { isIP } from "node:net";
 import { URL, URLSearchParams } from "node:url";
@@ -206,6 +208,8 @@ export interface AgentSettings {
   contextUsageVisibilityRevision: ContextUsageVisibilityRevision;
   networkProxy: NetworkProxySettings;
   networkProxyRevision: NetworkProxyRevision;
+  interfaceMode: InterfaceMode;
+  interfaceModeRevision: string;
   uiLanguage: UiLanguage;
   uiLanguageRevision: UiLanguageRevision;
   sessionTabs: SessionShortcutId[];
@@ -257,6 +261,8 @@ export function freshEmptyAgentSettings(): AgentSettings {
     contextUsageVisibilityRevision: "0",
     networkProxy: { mode: "none", url: "" },
     networkProxyRevision: "0",
+    interfaceMode: "modal",
+    interfaceModeRevision: "0",
     uiLanguage: "system",
     uiLanguageRevision: "0",
     sessionTabs: [...defaultSessionTabs],
@@ -1507,5 +1513,17 @@ export function compareSessionTabsRevisions(
 }
 
 export function incrementSessionTabsRevision(revision: SessionTabsRevision): SessionTabsRevision {
+  return incrementCanonicalSettingsRevision(revision);
+}
+
+export function isInterfaceModeRevision(value: unknown): value is string {
+  return isCanonicalSettingsRevision(value);
+}
+
+export function compareInterfaceModeRevisions(left: string, right: string): number {
+  return compareCanonicalSettingsRevisions(left, right);
+}
+
+export function incrementInterfaceModeRevision(revision: string): string {
   return incrementCanonicalSettingsRevision(revision);
 }

@@ -497,6 +497,14 @@
               <section id="followUpSettingsSection" class="settings-section conversation-settings-section" aria-labelledby="followUpSettingsHeading">
                 <h3 id="followUpSettingsHeading" data-i18n="Conversation &amp; Display">Conversation &amp; Display</h3>
                 <div class="field">
+                  <label for="interfaceMode" data-i18n="Open Live Smith in">Open Live Smith in</label>
+                  <select id="interfaceMode" name="interfaceMode" aria-describedby="interfaceModeHint" onchange="LiveSmithUI.setInterfaceMode(this.value)">
+                    <option value="modal" data-i18n="Live modal">Live modal</option>
+                    <option value="browser" data-i18n="System browser">System browser</option>
+                  </select>
+                  <p id="interfaceModeHint" class="hint" data-i18n="Applies next time you open Live Smith. Browser tasks continue when the tab closes.">Applies next time you open Live Smith. Browser tasks continue when the tab closes.</p>
+                </div>
+                <div class="field">
                   <label for="uiLanguage" data-i18n="Interface language">Interface language</label>
                   <select id="uiLanguage" name="uiLanguage" autocomplete="off" aria-label="Interface language" onchange="LiveSmithUI.setUiLanguage(this.value)" data-i18n-aria-label="Interface language">
                     <option value="system" data-i18n="System language">System language</option>

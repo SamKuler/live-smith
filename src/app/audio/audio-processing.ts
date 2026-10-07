@@ -28,6 +28,14 @@ import { audioMessage as m, audioRoleMessage } from "./audio-messages.js";
 export { integrationConnectionFingerprint } from "../plugins/integration-connections.js";
 export { downloadAudioOutput } from "./audio-generation.js";
 
+/** Ephemeral authority attached only to a fresh Live-derived source. */
+export interface AudioProcessingSnapshot {
+  bytes: Uint8Array;
+  label: string;
+  origin: AudioOrigin;
+  assertCurrent?: () => void;
+}
+
 export interface AudioProcessingContext {
   storageDirectory: string | undefined;
   sessionId: string;
@@ -96,7 +104,7 @@ export async function separateAudioStems(
   context: AudioProcessingContext,
   serviceId: string,
   stems: SeparationStem[],
-  source: () => Promise<{ bytes: Uint8Array; label: string; origin: AudioOrigin }>,
+  source: () => Promise<AudioProcessingSnapshot>,
 ): Promise<AudioJob> {
   throwIfAborted(context.signal);
   const { settings, adapter } = await service(context, serviceId);
@@ -137,7 +145,7 @@ export async function resumeAudioJob(context: AudioProcessingContext, jobId: str
 async function ownJob(
   context: AudioProcessingContext, initial: AudioJob, settings: RuntimeIntegrationConnection,
   adapter: AudioServiceAdapter,
-  source?: () => Promise<{ bytes: Uint8Array; label: string; origin: AudioOrigin }>,
+  source?: () => Promise<AudioProcessingSnapshot>,
 ): Promise<AudioJob> {
   let job = initial;
   // Receipt ownership must not depend on the subsequent filesystem commit.
@@ -152,7 +160,8 @@ async function ownJob(
   try {
     if (source) {
       await context.onProgress?.(m("Preparing audio for stem separation"));
-      const snapshot = await source();
+      const { assertCurrent, ...snapshot } = await source();
+      assertCurrent?.();
       throwIfAborted(context.signal);
       const asset = await saveAudioAsset(context.storageDirectory, context.sessionId, {
         jobId: job.id, role: "source", ...snapshot, signal: context.signal,
@@ -162,6 +171,7 @@ async function ownJob(
       await context.onProgress?.(m("Uploading audio for stem separation"));
       await resolveIntegrationConnection(context.storageDirectory, settings.id, job.operation, [settings]);
       throwIfAborted(context.signal);
+      assertCurrent?.();
       const remoteSourceId = await adapter.upload(snapshot.bytes, asset.mediaType, context.signal);
       await update({ remoteSourceId });
       throwIfAborted(context.signal);
@@ -171,6 +181,7 @@ async function ownJob(
         // A lost reply from this point has an unknown paid submission outcome.
         await update({ status: "submitting" });
         throwIfAborted(context.signal);
+        assertCurrent?.();
         submissionStarted = true;
         return adapter.submit(remoteSourceId, job.stems, randomUUID(), context.signal, asset.mediaType);
       };

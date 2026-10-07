@@ -31,11 +31,11 @@ for (const provider of ["sunoapi", "elevenlabs"] as const) {
       : createElevenLabsAudioAdapter(h.connection.apiKey, { fetchImpl });
     // Keep the real submit/inspect mapping and supply a small valid fixture download.
     if (provider === "sunoapi") adapter.download = async () => mp3Bytes();
-    const tools = await createRequestAudioTools({
+    const tools = await createRequestAudioTools({ assertLiveSetCurrent: () => {}, ...{
       context: {} as never, storageDirectory: h.storage, sessionId: h.session.id,
       requestId: "request", attachmentRefs: [], target: {}, signal: h.context.signal,
       onProgress() {}, onAssets() {}, processing: { generationAdapter: adapter },
-    });
+    } });
     const args = { connectionId: h.connection.id, prompt, instrumental: true };
     const toolName = builtInAudioToolName(
       builtInAudioPlugin(h.connection.provider),

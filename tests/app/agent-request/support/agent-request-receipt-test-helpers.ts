@@ -87,7 +87,7 @@ export async function requestReceiptHarness(t: TestContext, scenario: ReceiptSce
     handleSend: async (input, stream, signal) => {
       try {
         await handleAgentRequest(
-          { application: { song: { tempo: 120 } }, environment: { storageDirectory: storage, tempDirectory: storage } } as never,
+          { application: { song: { handle: { id: 1n }, tempo: 120 } }, environment: { storageDirectory: storage, tempDirectory: storage } } as never,
           storage, { summary: "Track", presentation: liveContextPresentationFixture("Track"), target: {}, scope: session.scope },
           input.prompt, runtime, "fixture", session.id,
           {

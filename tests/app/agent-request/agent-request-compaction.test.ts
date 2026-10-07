@@ -1,3 +1,4 @@
+import { agentRequestContext } from "./support/agent-context.js";
 import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -92,7 +93,7 @@ for (const profile of profiles()) {
     const runtime = runtimeProfileForSavedProfile(profile) as RuntimeProfile;
 
     const result = await handleAgentRequest(
-      { environment: { storageDirectory } } as never,
+      agentRequestContext({ environment: { storageDirectory } } as never),
       storageDirectory,
       {
         presentation: liveContextPresentationFixture("Bass"),
@@ -177,7 +178,7 @@ test("a tool turn above the threshold compacts before the next sampling turn", a
   >[0][] = [];
 
   const result = await handleAgentRequest(
-    { environment: { storageDirectory } } as never,
+    agentRequestContext({ environment: { storageDirectory } } as never),
     storageDirectory,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -249,7 +250,7 @@ test("a post-checkpoint tool turn can compact again in the same send", async (t)
   >[0][] = [];
 
   const result = await handleAgentRequest(
-    { environment: { storageDirectory } } as never,
+    agentRequestContext({ environment: { storageDirectory } } as never),
     storageDirectory,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -321,7 +322,7 @@ test("exact provider usage includes only the estimated context added after that 
   >[0][] = [];
 
   const result = await handleAgentRequest(
-    { environment: { storageDirectory } } as never,
+    agentRequestContext({ environment: { storageDirectory } } as never),
     storageDirectory,
     {
       presentation: liveContextPresentationFixture("Bass"),
@@ -383,7 +384,7 @@ test("a failed compaction writes no checkpoint boundary", async (t) => {
 
   await assert.rejects(
     handleAgentRequest(
-      { environment: { storageDirectory } } as never,
+      agentRequestContext({ environment: { storageDirectory } } as never),
       storageDirectory,
       {
         presentation: liveContextPresentationFixture("Bass"),

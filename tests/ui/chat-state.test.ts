@@ -246,6 +246,8 @@ test("serializeChatStateForHtml escapes script-breaking characters", () => {
       approvalMode: "manual",
       defaultFollowUpBehavior: "queue",
       defaultFollowUpBehaviorRevision: "0",
+      interfaceMode: "modal",
+      interfaceModeRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
       customInstructions: "",

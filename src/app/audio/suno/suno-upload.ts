@@ -1,12 +1,12 @@
 import { AudioToolOutcomeUnknownError } from "../../../audio-services/contracts.js";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AudioAsset, AudioJob, AudioOrigin, SunoUploadMutationStage, SunoUploadReceipt } from "../../../audio-services/contracts.js";
+import type { AudioAsset, AudioJob, SunoUploadMutationStage, SunoUploadReceipt } from "../../../audio-services/contracts.js";
 import { AudioSubmissionNotStartedError, MAX_AUDIO_ASSET_DURATION_SECONDS, SUNO_UPLOAD_MUTATIONS } from "../../../audio-services/contracts.js";
 import { createSunoUploadAdapter, type SunoUploadAdapter, type SunoUploadSpec } from "../../../audio-services/suno/suno-upload.js";
 import { readAudioAsset, saveAudioAsset } from "../../../storage/audio-assets.js";
 import { createAudioJob, loadAudioJob, updateAudioJob } from "../../../storage/audio-jobs.js";
 import { throwIfAborted } from "../../../runtime/host.js";
-import type { AudioProcessingContext } from "../audio-processing.js";
+import type { AudioProcessingContext, AudioProcessingSnapshot } from "../audio-processing.js";
 import { acquireAudioJob } from "../audio-job-runtime.js";
 import { integrationConnectionFingerprint, resolveIntegrationConnection, type RuntimeIntegrationConnection } from "../../plugins/integration-connections.js";
 import { persistRotatedSunoSession } from "./suno-session-manager.js";
@@ -21,7 +21,7 @@ const legacyPendingMutation = (stage: SunoUploadReceipt["stage"]) => Object.hasO
 
 export async function uploadSunoMusic(
   context: AudioProcessingContext, connectionId: string, rightsConfirmed: boolean,
-  source: () => Promise<{ bytes: Uint8Array; label: string; origin: AudioOrigin }>,
+  source: () => Promise<AudioProcessingSnapshot>,
   options: SunoUploadOptions = {},
 ): Promise<AudioJob> {
   if (rightsConfirmed !== true) throw new Error("Confirm that you have the rights to upload this audio before continuing.");
@@ -36,7 +36,8 @@ export async function uploadSunoMusic(
   const release = acquireAudioJob(context.storageDirectory, job.id);
   try {
     await context.onProgress?.(m("Preparing audio for upload"));
-    const snapshot = await source();
+    const { assertCurrent, ...snapshot } = await source();
+    assertCurrent?.();
     if (snapshot.origin.kind !== "asset" && snapshot.origin.kind !== "arrangement" && snapshot.origin.kind !== "attachment") throw new Error("Upload requires a validated request attachment, saved Session audio, or an observed Arrangement source.");
     const asset = await saveAudioAsset(context.storageDirectory, context.sessionId, { jobId: job.id, role: "source", ...snapshot, signal: context.signal });
     if (asset.durationSeconds < limits.minimumSeconds || asset.durationSeconds > Math.min(limits.maximumSeconds, MAX_AUDIO_ASSET_DURATION_SECONDS)) {
@@ -45,7 +46,7 @@ export async function uploadSunoMusic(
     const prepared = await updateAudioJob(context.storageDirectory, context.sessionId, job.id, {
       sourceAssetId: asset.id, upload: { sourceSha256: asset.sha256, rightsConfirmed: true, stage: "prepared" },
     });
-    return await ownUpload(context, prepared, settings, adapter, asset, snapshot.bytes);
+    return await ownUpload(context, prepared, settings, adapter, asset, snapshot.bytes, assertCurrent);
   } catch (error) {
     if (error instanceof SunoUploadOutcomeUnknownError) throw error;
     // The workflow owner records every remote-stage failure itself.
@@ -79,7 +80,7 @@ export async function resumeSunoUpload(context: AudioProcessingContext, job: Aud
 }
 
 async function ownUpload(context: AudioProcessingContext, initial: AudioJob, settings: RuntimeIntegrationConnection,
-  adapter: SunoUploadAdapter, asset: AudioAsset, bytes: Uint8Array): Promise<AudioJob> {
+  adapter: SunoUploadAdapter, asset: AudioAsset, bytes: Uint8Array, assertSourceCurrent?: () => void): Promise<AudioJob> {
   let job = initial;
   let receipt = initial.upload!;
   let spec: SunoUploadSpec | undefined;
@@ -103,8 +104,10 @@ async function ownUpload(context: AudioProcessingContext, initial: AudioJob, set
     throwIfAborted(context.signal);
     const confirmed = receipt;
     try {
+      assertSourceCurrent?.();
       await record({ ...confirmed, pendingStage: stage }, { status: "submitting" });
       throwIfAborted(context.signal);
+      assertSourceCurrent?.();
     } catch (error) {
       // This owner has not entered the remote call, so clearing its intent does
       // not replay an uncertain mutation or move the confirmed stage backward.

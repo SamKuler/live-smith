@@ -9,7 +9,7 @@ import type { AgentExternalToolResult } from "../../agent/loop.js";
 import {
   audioJobRemoteSettled, MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS,
   AudioToolOutcomeUnknownError, AudioServiceHttpError,
-  type AudioOrigin, type AudioGenerationRequest,
+  type AudioGenerationRequest,
 } from "../../audio-services/contracts.js";
 import { readArrangementAudio } from "../../live/observer.js";
 import type { LiveTarget } from "../../live/target.js";
@@ -25,7 +25,7 @@ import { throwIfAborted } from "../../runtime/host.js";
 import {
   audioAssetsFromJobs, audioJobResultText, audioJobViews,
   resumeAudioJob, separateAudioStems,
-  type AudioProcessingContext,
+  type AudioProcessingContext, type AudioProcessingSnapshot,
 } from "./audio-processing.js";
 import { integrationConnectionFingerprint, captureIntegrationConnections, resolveIntegrationConnection } from "../plugins/integration-connections.js";
 import { generateAudio, retrieveMusic } from "./audio-generation.js";
@@ -36,6 +36,7 @@ import {
 
 export async function createRequestAudioTools(input: {
   context: ExtensionContext<"1.0.0">;
+  assertLiveSetCurrent(): void;
   storageDirectory: string | undefined;
   sessionId: string;
   requestId: string;
@@ -104,9 +105,7 @@ export async function createRequestAudioTools(input: {
     ...(input.withGenerationAuthorization ? { withGenerationAuthorization: input.withGenerationAuthorization } : {}),
   };
 
-  const snapshot = async (source: AudioProcessingSource): Promise<{
-    bytes: Uint8Array; label: string; origin: AudioOrigin;
-  }> => {
+  const snapshot = async (source: AudioProcessingSource): Promise<AudioProcessingSnapshot> => {
     if (source.kind === "request_audio_attachment") {
       if (source.requestId !== input.requestId) throw new Error("Audio attachment locator is not from the current request.");
       const ref = input.attachmentRefs[source.audioIndex];
@@ -123,13 +122,17 @@ export async function createRequestAudioTools(input: {
       if (asset.sha256 !== expected.sha256) throw new Error("Audio asset changed after it was observed.");
       return { bytes, label: asset.label, origin: { ...("origin" in asset ? asset.origin : {}), kind: "asset", sourceAssetId: asset.id } };
     }
+    input.assertLiveSetCurrent();
     const { kind: _kind, ...locator } = source;
     const tempo = input.context.application.song.tempo;
     const render = await readArrangementAudio(
       input.context, { type: "read_arrangement_audio", ...locator }, input.target,
       input.signal, { maxBytes: MAX_AUDIO_ASSET_BYTES, maxDurationSeconds: MAX_AUDIO_ASSET_DURATION_SECONDS },
+      input.assertLiveSetCurrent,
     );
+    input.assertLiveSetCurrent();
     return {
+      assertCurrent: input.assertLiveSetCurrent,
       bytes: render.bytes, label: "Arrangement audio snapshot",
       origin: { kind: "arrangement", startBeat: source.startBeat, endBeat: source.endBeat, tempo },
     };

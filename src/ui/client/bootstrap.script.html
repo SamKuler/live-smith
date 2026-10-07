@@ -1094,6 +1094,7 @@
         }
 
         async function requestClose() {
+          if (!hostAdapter.canClose) return;
           const operationActive = bridgeClient.isOperationInProgress() ||
             bridgeClient.hasAnySendInProgress();
           const draftDirty = profileEditor.getDraftState().dirty;
@@ -1706,6 +1707,7 @@
           networkProxyDirty,
           customInstructionsDirty,
           uiLanguageSaving,
+          interfaceModeSaving,
         }) {
           composerOperationState = {
             attachmentInProgress,
@@ -1758,6 +1760,8 @@
           const sessionSettingDisabled = Boolean(commandKind) || attachmentInProgress ||
             skillInProgress;
           bridgeClient.setAudioToolsBusy(sessionSettingDisabled, operationBusy);
+          setPropertyIfChanged(document.getElementById("closeButton"), "hidden", !hostAdapter.canClose);
+          setPropertyIfChanged(document.getElementById("interfaceMode"), "disabled", sessionSettingDisabled || interfaceModeSaving);
           setPropertyIfChanged(document.getElementById("uiLanguage"), "disabled",
             sessionSettingDisabled || uiLanguageSaving);
           if (approvalMode.disabled !== sessionSettingDisabled) {
@@ -1927,6 +1931,7 @@
           saveSessionTabs: bridgeClient.saveSessionTabs,
           saveDefaultFollowUpBehavior: bridgeClient.saveDefaultFollowUpBehavior,
           setUiLanguage: bridgeClient.setUiLanguage,
+          setInterfaceMode: bridgeClient.setInterfaceMode,
           saveNetworkProxySettings: bridgeClient.saveNetworkProxySettings,
           saveCustomInstructions: bridgeClient.saveCustomInstructions,
           saveProfile: profileEditor.saveProfile,

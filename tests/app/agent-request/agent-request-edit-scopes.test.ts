@@ -132,6 +132,7 @@ async function setup(t: TestContext, scopes: EditScope[], mode: ApprovalMode = "
   };
   return {
     session, directory, mutations, modelScopes, run,
+    switchSet() { song.handle.id += 1n; },
     get confirmations() { return confirmations; },
     get createdTracks() { return createdTracks; },
     afterCreate(callback: () => Promise<void>) { afterCreate = callback; },
@@ -297,4 +298,20 @@ test("agent request persists one correlated operation across ordinary manual and
     assert.equal(operations.some((operation) => operation.status === "approved"), mode === "everything");
     assert.equal(new Set(operations.map((operation) => operation.id)).size, 1);
   }
+});
+
+
+test("switching Live Sets during confirmation blocks the approved plan", async (t) => {
+  const h = await setup(t, ["structure"], "manual");
+  await h.run(tempoPlan, { confirm: async () => { h.switchSet(); return true; } });
+  assert.deepEqual(h.mutations, []);
+  assert.ok((await h.events()).some(event => /Live Set changed/.test(event.content)));
+});
+
+test("switching Live Sets between actions prevents later actions", async (t) => {
+  const h = await setup(t, ["structure"]);
+  h.afterCreate(async () => h.switchSet());
+  await h.run({ message: "Create and adjust", actions: [{ type: "create_midi_track", name: "New" }, { type: "set_tempo", tempo: 128 }] });
+  assert.equal(h.createdTracks, 1);
+  assert.deepEqual(h.mutations, []);
 });

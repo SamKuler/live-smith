@@ -1,3 +1,4 @@
+import { isInterfaceMode } from "../model/interface-mode.js";
 import {
   LEGACY_AUDIO_SERVICE_ID,
   type AudioServicesSettings,
@@ -13,6 +14,7 @@ import {
   CURRENT_AGENT_SETTINGS_SCHEMA_VERSION,
   isApprovalMode,
   isUiLanguage,
+  isInterfaceModeRevision,
   isUiLanguageRevision,
   isSessionTabsRevision,
   isContextUsageVisibilityRevision,
@@ -310,6 +312,8 @@ function migrateSettingsV9ToV10(value: unknown): AgentSettings {
   return {
     ...validateSettingsV9(value),
     schemaVersion: 10,
+    interfaceMode: "modal",
+    interfaceModeRevision: "0",
     sessionTabs: [...defaultSessionTabs],
     sessionTabsRevision: "0",
   };
@@ -644,11 +648,15 @@ function validateSettingsV10(value: unknown): AgentSettings {
   const record = settingsRecord(value);
   if (settingsSchemaVersion(record) !== 10) throw unsupportedSchemaVersion();
   const {
+    interfaceMode = "modal",
+    interfaceModeRevision = "0",
     integrationConnections,
     sessionTabs = defaultSessionTabs,
     sessionTabsRevision = "0",
     ...settingsV9
   } = record;
+  if (!isInterfaceMode(interfaceMode)) throw new ProfileValidationError("interfaceMode", "Interface mode must be modal or browser.");
+  if (!isInterfaceModeRevision(interfaceModeRevision)) throw new ProfileValidationError("interfaceModeRevision", "Interface mode revision must be a canonical decimal string.");
   if (!isSessionTabs(sessionTabs)) {
     throw new ProfileValidationError("sessionTabs", "Session tabs must contain unique supported tab IDs.");
   }
@@ -659,6 +667,8 @@ function validateSettingsV10(value: unknown): AgentSettings {
   return {
     ...validated,
     schemaVersion: 10,
+    interfaceMode,
+    interfaceModeRevision,
     sessionTabs: sessionShortcutIds.filter((tab) => sessionTabs.includes(tab)),
     sessionTabsRevision,
     ...(integrationConnections === undefined ? {} : {

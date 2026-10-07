@@ -24,6 +24,8 @@ test("schema-v7 settings migrate without changing the existing direct route", ()
     schemaVersion: 10,
     networkProxy: { mode: "none", url: "" },
     networkProxyRevision: "0",
+    interfaceMode: "modal",
+    interfaceModeRevision: "0",
     uiLanguage: "system",
     uiLanguageRevision: "0",
     sessionTabs: ["context", "brief", "artifacts"],
@@ -45,6 +47,8 @@ test("current network proxy settings are strict and normalize proxy origins", ()
   } as const;
   assert.deepEqual(decodeAgentSettings(current), {
     ...current,
+    interfaceMode: "modal",
+    interfaceModeRevision: "0",
     uiLanguage: "system",
     uiLanguageRevision: "0",
     sessionTabs: ["context", "brief", "artifacts"],

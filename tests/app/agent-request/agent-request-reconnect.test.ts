@@ -1,3 +1,4 @@
+import { agentRequestContext } from "./support/agent-context.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -58,7 +59,7 @@ test("agent request rebuilds only the current model turn while reconnecting", {
   let modelCalls = 0;
 
   const result = await handleAgentRequest(
-    { environment: { storageDirectory } } as never,
+    agentRequestContext({ environment: { storageDirectory } } as never),
     storageDirectory,
     {
       presentation: liveContextPresentationFixture("Lead"),
@@ -192,7 +193,7 @@ test("output-limit continuation retries preserve completed transient prefixes", 
     confirmActions: async () => true,
   };
   const result = await handleAgentRequest(
-    { environment: { storageDirectory } } as never,
+    agentRequestContext({ environment: { storageDirectory } } as never),
     storageDirectory,
     interaction(),
     "Continue through reconnect",
@@ -274,7 +275,7 @@ test("steering during reconnect backoff cancels the retry and replans", {
   let assistantResets = 0;
 
   const request = handleAgentRequest(
-    { environment: { storageDirectory } } as never,
+    agentRequestContext({ environment: { storageDirectory } } as never),
     storageDirectory,
     interaction(),
     "Recover and inspect Lead",
@@ -360,7 +361,7 @@ test("agent request exhausts five retries with one cause-preserving durable erro
 
   await assert.rejects(
     handleAgentRequest(
-      { environment: { storageDirectory } } as never,
+      agentRequestContext({ environment: { storageDirectory } } as never),
       storageDirectory,
       interaction(),
       "Keep trying",

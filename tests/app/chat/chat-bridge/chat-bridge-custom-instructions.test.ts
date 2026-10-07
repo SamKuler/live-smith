@@ -30,6 +30,8 @@ test("Custom Instructions reconcile independently from other global settings", a
     customInstructionsRevision: "1",
     networkProxy: { mode: "none", url: "" },
     networkProxyRevision: "0",
+    interfaceMode: "modal",
+    interfaceModeRevision: "0",
     uiLanguage: "system",
     uiLanguageRevision: "0",
     sessionTabs: ["context", "brief", "artifacts"],

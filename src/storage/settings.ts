@@ -1,3 +1,4 @@
+import { isInterfaceMode, type InterfaceMode } from "../model/interface-mode.js";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
@@ -24,6 +25,7 @@ import {
   incrementCustomInstructionsRevision,
   incrementDefaultFollowUpBehaviorRevision,
   incrementNetworkProxyRevision,
+  incrementInterfaceModeRevision,
   incrementUiLanguageRevision,
   incrementSessionTabsRevision,
   isUiLanguage,
@@ -89,6 +91,7 @@ export interface SaveSavedProfileOptions {
 export type GlobalSettingsPatch =
   | {
       sessionTabs?: never;
+      interfaceMode?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
       showContextUsage?: never;
@@ -98,6 +101,7 @@ export type GlobalSettingsPatch =
     }
   | {
       sessionTabs?: never;
+      interfaceMode?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage: boolean;
@@ -107,6 +111,7 @@ export type GlobalSettingsPatch =
     }
   | {
       sessionTabs?: never;
+      interfaceMode?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -116,6 +121,7 @@ export type GlobalSettingsPatch =
     }
   | {
       sessionTabs?: never;
+      interfaceMode?: never;
       uiLanguage: UiLanguage;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -126,6 +132,17 @@ export type GlobalSettingsPatch =
   | {
       sessionTabs?: never;
       uiLanguage?: never;
+      interfaceMode: InterfaceMode;
+      defaultFollowUpBehavior?: never;
+      showContextUsage?: never;
+      networkProxy?: never;
+      integrationConnections?: never;
+      customInstructions?: never;
+    }
+  | {
+      sessionTabs?: never;
+      interfaceMode?: never;
+      uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
       networkProxy?: never;
@@ -134,6 +151,7 @@ export type GlobalSettingsPatch =
     }
   | {
       sessionTabs?: never;
+      interfaceMode?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -143,6 +161,7 @@ export type GlobalSettingsPatch =
     }
   | {
       sessionTabs: SessionShortcutId[];
+      interfaceMode?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -325,6 +344,7 @@ export async function saveGlobalSettings(
     input,
     "showContextUsage",
   );
+  const hasInterfaceMode = Object.prototype.hasOwnProperty.call(input, "interfaceMode");
   const hasUiLanguage = Object.prototype.hasOwnProperty.call(input, "uiLanguage");
   const hasSessionTabs = Object.prototype.hasOwnProperty.call(input, "sessionTabs");
   const hasIntegrationConnections = Object.prototype.hasOwnProperty.call(input, "integrationConnections");
@@ -339,7 +359,7 @@ export async function saveGlobalSettings(
   if (
     Number(hasFollowUpBehavior) +
       Number(hasContextUsage) +
-      Number(hasNetworkProxy) + Number(hasUiLanguage) + Number(hasIntegrationConnections) +
+      Number(hasNetworkProxy) + Number(hasInterfaceMode) + Number(hasUiLanguage) + Number(hasIntegrationConnections) +
       Number(hasCustomInstructions) + Number(hasSessionTabs) !== 1 ||
     Object.keys(input).length !== 1
   ) {
@@ -354,6 +374,7 @@ export async function saveGlobalSettings(
   if (hasContextUsage && typeof input.showContextUsage !== "boolean") {
     throw new Error("Show context usage must be a boolean.");
   }
+  if (hasInterfaceMode && !isInterfaceMode(input.interfaceMode)) throw new Error("Interface mode must be modal or browser.");
   if (hasUiLanguage && !isUiLanguage(input.uiLanguage)) {
     throw new Error("UI language must be system, en, or zh-CN.");
   }
@@ -474,6 +495,8 @@ export async function saveGlobalSettings(
                 settings.contextUsageVisibilityRevision,
               ),
           }
+        : hasInterfaceMode
+        ? { interfaceMode: input.interfaceMode!, interfaceModeRevision: incrementInterfaceModeRevision(settings.interfaceModeRevision) }
         : hasUiLanguage
         ? {
             uiLanguage: input.uiLanguage!,

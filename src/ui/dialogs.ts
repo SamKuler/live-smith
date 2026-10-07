@@ -41,7 +41,7 @@ export function resultUrl(title: string, body: string): string {
 
 export function chatHtml(
   state: ChatBridgeState,
-  bridge: { baseUrl: string; token: string },
+  bridge: { baseUrl: string; token: string; hostMode?: "modal" | "browser" },
 ): string {
   return composeChatDocument(chatDialog, state, bridge, {
     i18n: i18nScript,

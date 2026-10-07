@@ -50,7 +50,7 @@ function stopCommand(bridgeUrl: string, commandId: string): Promise<Response> {
   });
 }
 
-async function readSsePayload(response: Response): Promise<Record<string, unknown>> {
+async function readSsePayload(response: Response, expectedType?: string): Promise<Record<string, unknown>> {
   const reader = response.body?.getReader();
   assert.ok(reader);
   const decoder = new TextDecoder();
@@ -66,7 +66,10 @@ async function readSsePayload(response: Response): Promise<Record<string, unknow
         const data = frame.split("\n")
           .find((line) => line.startsWith("data: "))
           ?.slice("data: ".length);
-        if (data) return JSON.parse(data) as Record<string, unknown>;
+        if (data) {
+          const event = JSON.parse(data) as Record<string, unknown>;
+          if (expectedType === undefined || event.type === expectedType) return event;
+        }
       }
     }
   } finally {
@@ -123,7 +126,7 @@ test("an active command publishes correlated progress while its HTTP response re
   const command = postCommand(bridge.url, commandId);
 
   try {
-    assert.deepEqual(await readSsePayload(events), {
+    assert.deepEqual(await readSsePayload(events, "command_progress"), {
       type: "command_progress",
       commandId,
       message,

@@ -25,7 +25,7 @@ test("a request-scoped attachment upload makes its acknowledged clip available t
     finish: async () => {}, inspect: async () => ({ status: "complete" }),
     initialize: async () => clipIds[1]!,
   };
-  const tools = await createRequestAudioTools({
+  const tools = await createRequestAudioTools({ assertLiveSetCurrent: () => {}, ...{
     context: {} as never, storageDirectory: h.directory, sessionId: h.session.id,
     requestId: "current-request", attachmentRefs: [ref], target: {}, signal: h.controller.signal,
     onProgress() {}, onAssets() {},
@@ -35,7 +35,7 @@ test("a request-scoped attachment upload makes its acknowledged clip available t
         generated.push(request); return { kind: "audio", outputs: [{ role: "music", bytes: waveBytes() }] };
       } },
     },
-  });
+  } });
   const execute = (name: string, argumentsValue: Record<string, unknown>) => tools.execute({
     id: "call", name: `builtin_suno_${name}`, arguments: JSON.stringify({ connectionId: connection.id, ...argumentsValue }),
   });

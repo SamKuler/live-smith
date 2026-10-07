@@ -83,6 +83,8 @@ test("chat bridge reconnect snapshots transient model state before replaying its
       customInstructionsRevision: "0",
       networkProxy: { mode: "none", url: "" },
       networkProxyRevision: "0",
+      interfaceMode: "modal",
+      interfaceModeRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
       sessionTabs: ["context", "brief", "artifacts"],
@@ -780,3 +782,39 @@ async function readSsePayloadsThrough(
     await reader.cancel();
   }
 }
+
+test("disconnecting the send page preserves a draft and pending confirmation until explicit Stop", async () => {
+  const pending = deferred();
+  const stopped = deferred();
+  let cancelled = false;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async () => state,
+    handleSend: async (_input, stream, signal) => {
+      signal.addEventListener('abort', () => { cancelled = true; stopped.resolve(); }, { once: true });
+      await stream.assistantDelta('Detached browser draft');
+      const decision = stream.requestConfirmation({ kind: 'apply', message: 'Apply after returning?', groups: [] });
+      pending.resolve();
+      await decision;
+    },
+  });
+  const chat = new URL(bridge.url);
+  const endpoint = (route: string) => `${chat.origin}${route}?token=${chat.searchParams.get('token')}`;
+  const page = new AbortController();
+  const send = fetch(endpoint('/send'), { method: 'POST', signal: page.signal, headers: sendHeaders('detached-send'), body: JSON.stringify({ prompt: 'work', sessionId: 's1' }) }).catch(() => undefined);
+  try {
+    await pending.promise;
+    page.abort(); await send;
+    assert.equal(cancelled, false);
+    assert.equal(bridge.busy, true);
+    const replay = await readSsePayloadsThrough(await fetch(endpoint('/events')), 'confirm_request');
+    assert.ok(replay.some(payload => payload.type === 'model_turn_state' && JSON.stringify(payload).includes('Detached browser draft')));
+    assert.equal(replay.at(-1)!.sendId, 'detached-send');
+    assert.equal(cancelled, false);
+    const response = await fetch(endpoint('/stop'), { method: 'POST', headers: sendHeaders('detached-send'), body: '{}' });
+    assert.equal(response.status, 200);
+    await stopped.promise;
+    assert.equal(cancelled, true);
+  } finally { page.abort(); await bridge.close(); await send; }
+});

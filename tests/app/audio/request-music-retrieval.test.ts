@@ -13,13 +13,13 @@ import { saveIntegrationConnection } from "../plugins/support/integration-connec
 
 async function toolsFor(h: Awaited<ReturnType<typeof retrievalHarness>>, observed = clipIds.slice(0, 1)) {
   const assets: string[] = [];
-  const tools = await createRequestAudioTools({ context: {} as never, storageDirectory: h.directory,
+  const tools = await createRequestAudioTools({ assertLiveSetCurrent: () => {}, ...{ context: {} as never, storageDirectory: h.directory,
     sessionId: h.session.id, requestId: "request", attachmentRefs: [], target: {}, signal: h.controller.signal,
     onProgress() {}, onAssets(values) { assets.push(...values.map((asset) => asset.id)); },
     processing: { generationAdapter: h.adapter,
       pluginOverrides: { plugin: { inspectMusicService: async () => ({ query: "library", hasMore: false,
         clips: observed.map((id) => ({ id, title: "Fixture song", status: "complete", modelId: "fixture-model", styles: "piano" })) }) } },
-    } });
+    } } });
   const execute = (name: string, args: unknown) => tools.execute({
     id: "call",
     name: ["list_audio_jobs", "resume_audio_job", "listen_to_audio_asset"].includes(name)

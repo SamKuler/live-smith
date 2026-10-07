@@ -1,3 +1,4 @@
+import { createDialogHarness, jsonCalls, stateFixture } from "../../../ui/support/chat-dialog.test-harness.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { URL } from "node:url";
@@ -6,7 +7,7 @@ import type { ChatDialogState } from "../../../../src/ui/chat-state.js";
 import { createChatBridge } from "../../../../src/app/chat/chat-bridge.js";
 
 const state = { status: "Ready" } as ChatDialogState;
-const approval = { kind: "apply" as const, operationId: "apply-midi-import", message: "Create a MIDI clip", groups: [] };
+const approval = { kind: "apply" as const, operationId: "apply-midi-import", message: "Create a MIDI clip", groups: [{ title: "MIDI track", rows: ["Create clip"] }] };
 const endpoint = (url: string, pathname: string) => { const target = new URL(url); target.pathname = pathname; return target; };
 function post(url: string, pathname: string, body: unknown, commandId?: string) {
   return fetch(endpoint(url, pathname), { method: "POST", headers: { "Content-Type": "application/json",
@@ -17,7 +18,7 @@ function deferred() {
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
 }
-async function confirmationEvent(url: string) {
+async function bridgeEvent(url: string, type: string) {
   const response = await fetch(endpoint(url, "/events"));
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
@@ -33,11 +34,13 @@ async function confirmationEvent(url: string) {
         const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
         if (!data) continue;
         const event = JSON.parse(data) as Record<string, unknown>;
-        if (event.type === "command_confirm_request") return event;
+        if (event.type === type) return event;
       }
     }
   } finally { await reader.cancel(); }
 }
+
+const confirmationEvent = (url: string) => bridgeEvent(url, "command_confirm_request");
 
 test("command approval replays the same host request and only its opaque id resolves it", { timeout: 10_000 }, async () => {
   let accepted: boolean | undefined;
@@ -100,3 +103,47 @@ for (const operation of ["stop", "close"] as const) {
     } finally { await bridge.close(); }
   });
 }
+
+
+for (const outcome of ["approve", "stop"] as const) test(`detached command replay restores ownership and ${outcome} reaches terminal idle`, { timeout: 10_000 }, async () => {
+  const reached = deferred();
+  let accepted: boolean | undefined;
+  const bridge = await createChatBridge({ buildState: async () => state, renderHtml: () => "<html></html>",
+    handleSend: async () => {}, handleCommand: async (_input, _signal, context) => {
+      const pending = context.requestConfirmation!(approval); reached.resolve();
+      accepted = await pending; return state;
+    } });
+  const page = new AbortController();
+  const dialog = await createDialogHarness(stateFixture());
+  const command = fetch(endpoint(bridge.url, "/command"), { method: "POST", signal: page.signal,
+    headers: { "Content-Type": "application/json", "X-Live-Smith-Command-Id": "detached-command" },
+    body: JSON.stringify({ kind: "archive_session", sessionId: "session-1" }) }).catch(() => undefined);
+  try {
+    await reached.promise; page.abort(); await command;
+    assert.equal(accepted, undefined);
+    const owner = await bridgeEvent(bridge.url, "command_activity");
+    assert.deepEqual(owner.command, { id: "detached-command", sessionId: "session-1", stopping: false });
+    const confirmation = await confirmationEvent(bridge.url);
+    dialog.emitRawServerEvent(owner); await dialog.settle();
+    assert.equal(dialog.document.querySelector("#sendButton")?.textContent, "Stop");
+    if (outcome === "approve") {
+      dialog.emitRawServerEvent(confirmation);
+      await dialog.settle();
+      assert.equal(dialog.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, false);
+      await dialog.acceptAppConfirmation(); await dialog.settle();
+      await post(bridge.url, "/confirm", jsonCalls(dialog, "/confirm").at(-1)!.body);
+    } else {
+      dialog.click("#sendButton"); await dialog.settle();
+      assert.deepEqual(dialog.commandStopIds, ["detached-command"]);
+      await post(bridge.url, "/stop", {}, dialog.commandStopIds[0]);
+    }
+    for (let index = 0; index < 100 && bridge.busy; index++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(bridge.busy, false);
+    assert.equal(accepted, outcome === "approve");
+    const terminal = await bridgeEvent(bridge.url, "command_activity");
+    assert.equal(terminal.command, null);
+    dialog.emitRawServerEvent(terminal); await dialog.settle();
+    assert.equal(dialog.document.querySelector("#sendButton")?.textContent, "Send");
+    assert.ok(BigInt(terminal.bridgeStateRevision as string) > BigInt(owner.bridgeStateRevision as string));
+  } finally { dialog.close(); page.abort(); await bridge.close(); await command; }
+});

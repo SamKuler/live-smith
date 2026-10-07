@@ -258,6 +258,7 @@ export async function readArrangementAudio(
   target: LiveTarget,
   signal: AbortSignal,
   limits?: { maxBytes: number; maxDurationSeconds: number },
+  assertContext?: () => void,
 ): Promise<RenderedArrangementAudio> {
   const result = await consumeArrangementAudioRender(
     context,
@@ -280,6 +281,7 @@ export async function readArrangementAudio(
         `Could not read rendered audio for Arrangement Clip "${snapshot.clipName}" on track "${snapshot.trackName}". Live's Record File Type must produce supported WAV audio.`,
       );
     },
+    assertContext,
   );
   const { inspection, bytes } = result.value;
   return {
@@ -312,12 +314,14 @@ async function consumeArrangementAudioRender<T>(
   signal: AbortSignal | undefined,
   consume: (filePath: string) => Promise<T>,
   mapError: (snapshot: AudioAnalysisSnapshot, error: unknown) => Error,
+  assertContext?: () => void,
 ): Promise<{
   snapshot: AudioAnalysisSnapshot;
   startTime: number;
   endTime: number;
   value: T;
 }> {
+  assertContext?.();
   const { track, clip } = resolveArrangementAudioTarget(
     context,
     request,
@@ -350,11 +354,14 @@ async function consumeArrangementAudioRender<T>(
       endTime,
       signal,
       consume,
+      assertContext,
     );
   } catch (error) {
     throwIfAborted(signal);
+    assertContext?.();
     throw mapError(snapshot, error);
   }
+  assertContext?.();
   assertAudioAnalysisStateUnchanged(
     context,
     snapshot,

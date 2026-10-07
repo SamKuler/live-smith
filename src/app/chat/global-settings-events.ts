@@ -1,3 +1,4 @@
+import { type InterfaceMode } from "../../model/interface-mode.js";
 import type {
   ContextUsageVisibilityRevision,
   CustomInstructionsRevision,
@@ -23,7 +24,9 @@ export interface GlobalSettingsChange {
   customInstructionsRevision: CustomInstructionsRevision;
   networkProxy: NetworkProxySettings;
   networkProxyRevision: NetworkProxyRevision;
+  interfaceMode: InterfaceMode;
   uiLanguage: UiLanguage;
+  interfaceModeRevision: string;
   uiLanguageRevision: UiLanguageRevision;
   sessionTabs: SessionShortcutId[];
   sessionTabsRevision: SessionTabsRevision;

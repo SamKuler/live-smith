@@ -62,6 +62,7 @@ test("audio service revisions survive stale state reads and unrelated global set
     customInstructions: settings.customInstructions,
     customInstructionsRevision: settings.customInstructionsRevision,
     networkProxy: settings.networkProxy, networkProxyRevision: settings.networkProxyRevision,
+    interfaceMode: settings.interfaceMode, interfaceModeRevision: settings.interfaceModeRevision,
     uiLanguage: settings.uiLanguage, uiLanguageRevision: settings.uiLanguageRevision,
     sessionTabs: settings.sessionTabs, sessionTabsRevision: settings.sessionTabsRevision,
     commandId: "save-audio",

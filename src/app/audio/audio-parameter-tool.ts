@@ -31,7 +31,7 @@ export async function loadAudioParameterGroups(storageDirectory: string | undefi
 }
 
 export async function runAudioParameterTool(input: Pick<AudioRuntimeInput,
-  "context" | "storageDirectory" | "sessionId" | "target" | "signal" | "onProgress" | "onAssets" |
+  "context" | "assertLiveSetCurrent" | "storageDirectory" | "sessionId" | "target" | "signal" | "onProgress" | "onAssets" |
   "withGenerationAuthorization" | "processing" | "observedMusicClips"> & {
   toolName: string;
   signature: string;

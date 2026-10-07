@@ -1,3 +1,4 @@
+import { createLiveSetGuard } from "../live/set-identity.js";
 import { createMidiArtifactAuthoringToolset } from "./midi/midi-artifact-tools.js";
 import { createSessionArtifactToolset } from "./session/session-artifact-tools.js";
 import { creativeBriefProposalTool, proposeCreativeBrief } from "./context/creative-brief.js";
@@ -178,6 +179,7 @@ export async function handleAgentRequest(
   loadEventsForSearchReconciliation: typeof loadSessionEvents = loadSessionEvents,
   waitForReconnectDelay?: ModelReconnectWait,
 ): Promise<string> {
+  const assertLiveSetCurrent = createLiveSetGuard(context);
   const { profile } = runtimeProfile;
   const session = sessionId === undefined
     ? await getOrCreateDefaultSession(
@@ -340,7 +342,7 @@ export async function handleAgentRequest(
       : {}),
   });
   const audioTools: Awaited<ReturnType<typeof createRequestAudioTools>> = await createRequestAudioTools({
-    context, storageDirectory, sessionId: session.id, requestId: prepared.userEvent.id,
+    context, assertLiveSetCurrent, storageDirectory, sessionId: session.id, requestId: prepared.userEvent.id,
     attachmentRefs: requestAudioAttachmentRefs,
     hasPluginAudioOutputs: pluginTools.hasAudioOutputs,
     ...(prepared.userEvent.parentCandidate ? { artifactSource: prepared.userEvent.parentCandidate } : {}),
@@ -826,6 +828,7 @@ export async function handleAgentRequest(
         return turn;
       },
       observe: async (request) => {
+        assertLiveSetCurrent();
         if (request.type === "read_arrangement_audio") {
           if (!supportsArrangementAudioInput) {
             throw new Error(
@@ -846,7 +849,10 @@ export async function handleAgentRequest(
             request,
             interaction.target,
             callbacks.signal,
+            undefined,
+            assertLiveSetCurrent,
           );
+          assertLiveSetCurrent();
           const quotaItem: AttachmentQuotaItem = {
             kind: "audio",
             byteLength: rendered.bytes.byteLength,
@@ -889,11 +895,11 @@ export async function handleAgentRequest(
         preflightAgentPlan(
           context, interaction, plan, callbacks.signal,
           undefined, undefined, {
-            refresh: readEditScopes,
-            assert: (requestedPlan, bindings) => assertEditScopesAllow(
-              requiredEditScopesForPlan(context, requestedPlan, bindings),
-              currentEditScopes(),
-            ),
+            refresh: async () => { assertLiveSetCurrent(); await readEditScopes(); assertLiveSetCurrent(); },
+            assert: (requestedPlan, bindings) => {
+              assertLiveSetCurrent();
+              assertEditScopesAllow(requiredEditScopesForPlan(context, requestedPlan, bindings), currentEditScopes());
+            },
           },
           requestAudioSources,
         ),
@@ -910,6 +916,7 @@ export async function handleAgentRequest(
       executeActions: async (plan, rawBindings, revalidateAfterImport) => {
         let bindings = rawBindings as AgentPlanBindings;
         const assertActionBoundary = (actionIndex: number, action: AgentPlan["actions"][number]) => {
+          assertLiveSetCurrent();
           assertEditScopesAllow(
             requiredEditScopesForAction(context, action, actionIndex, bindings),
             currentEditScopes(),
@@ -931,6 +938,7 @@ export async function handleAgentRequest(
             bindings,
             callbacks.signal,
             () => {
+              assertLiveSetCurrent();
               assertEditScopesAllow(
                 requiredEditScopesForPlan(context, plan, bindings),
                 currentEditScopes(),

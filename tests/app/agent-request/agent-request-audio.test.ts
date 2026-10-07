@@ -1,3 +1,4 @@
+import { agentRequestContext } from "./support/agent-context.js";
 import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
@@ -60,7 +61,7 @@ test("an audio-capable agent renders another track range into the next model tur
 
   try {
     const result = await handleAgentRequest(
-      {
+      agentRequestContext({
         application: { song: { tempo: 130, tracks: [midiTrack, audioTrack] } },
         resources: {
           renderPreFxAudio: async (...args: unknown[]) => {
@@ -68,7 +69,7 @@ test("an audio-capable agent renders another track range into the next model tur
             return renderedPath;
           },
         },
-      } as never,
+      } as never),
       directory,
       {
         presentation: liveContextPresentationFixture("1-MIDI"),
@@ -147,7 +148,7 @@ test("a hidden audio tool call cannot read Live audio for an unsupported protoco
 
   try {
     const result = await handleAgentRequest(
-      {
+      agentRequestContext({
         application: { song: { tracks: [] } },
         resources: {
           renderPreFxAudio: async () => {
@@ -155,7 +156,7 @@ test("a hidden audio tool call cannot read Live audio for an unsupported protoco
             throw new Error("must not render");
           },
         },
-      } as never,
+      } as never),
       directory,
       {
         presentation: liveContextPresentationFixture("Audio"),
@@ -272,7 +273,7 @@ test("request audio is imported and revalidated before every Live action in the 
 
   try {
     const result = await handleAgentRequest(
-      {
+      agentRequestContext({
         environment: { storageDirectory: directory, tempDirectory: directory },
         application: { song },
         resources: {
@@ -285,7 +286,7 @@ test("request audio is imported and revalidated before every Live action in the 
             return "/Live Project/Samples/Imported/reference.wav";
           },
         },
-      } as never,
+      } as never),
       directory,
       {
         presentation: liveContextPresentationFixture("Instrument"),
@@ -358,7 +359,7 @@ test("request audio is imported and revalidated before every Live action in the 
   }
 });
 
-test("post-import target drift records the project copy and blocks every Live action", async () => {
+for (const drift of ["target", "set-during-staging", "set-during-import"] as const) test(`${drift} blocks sample replacement and accounts for completed imports`, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-request-audio-drift-"));
   const session = await createSession(directory, {
     title: "Reject changed target",
@@ -371,6 +372,9 @@ test("post-import target drift records the project copy and blocks every Live ac
   }, { preSavePendingAttachmentRefs: [] });
 
   let replaceCalls = 0;
+  let imports = 0;
+  let executing = false;
+  const songHandle = { id: 11n };
   let modelCalls = 0;
   const simpler = sdkObject<Simpler<"1.0.0">>(Simpler.prototype, {
     handle: { id: 13n },
@@ -398,18 +402,23 @@ test("post-import target drift records the project copy and blocks every Live ac
 
   try {
     const result = await handleAgentRequest(
-      {
-        environment: { storageDirectory: directory, tempDirectory: directory },
+      agentRequestContext({
+        environment: { storageDirectory: directory, get tempDirectory() {
+          if (executing && drift === "set-during-staging") songHandle.id = 99n;
+          return directory;
+        } },
         application: {
-          song: { handle: { id: 11n }, tracks: [track], returnTracks: [] },
+          song: { handle: songHandle, tracks: [track], returnTracks: [] },
         },
         resources: {
           importIntoProject: async () => {
-            track.name = "Changed Instrument";
+            imports += 1;
+            if (drift === "target") track.name = "Changed Instrument";
+            else if (drift === "set-during-import") songHandle.id = 99n;
             return "/Live Project/Secret/reference.wav";
           },
         },
-      } as never,
+      } as never),
       directory,
       {
         presentation: liveContextPresentationFixture("Instrument"),
@@ -427,7 +436,7 @@ test("post-import target drift records the project copy and blocks every Live ac
         onProgress: () => {},
         onSessionEvent: () => {},
         confirmActions: async () => true,
-        withActionExecutionLock: (operation) => operation(),
+        withActionExecutionLock: (operation) => { executing = true; return operation(); },
       },
       async (request) => {
         modelCalls += 1;
@@ -457,12 +466,16 @@ test("post-import target drift records the project copy and blocks every Live ac
       },
     );
 
-    assert.match(result, /unfinished Live work/i);
+    if (drift !== "set-during-staging") assert.match(result, /unfinished Live work/i);
+    assert.equal(imports, drift === "set-during-staging" ? 0 : 1);
     assert.equal(modelCalls, 2);
     assert.equal(replaceCalls, 0);
     const serializedEvents = JSON.stringify(await loadSessionEvents(directory, session.id));
-    assert.match(serializedEvents, /Imported current request audio input 1/);
-    assert.match(serializedEvents, /partially completed/i);
+    if (drift === "set-during-staging") assert.doesNotMatch(serializedEvents, /Imported current request audio input 1/);
+    else {
+      assert.match(serializedEvents, /Imported current request audio input 1/);
+      assert.match(serializedEvents, /partially completed/i);
+    }
     assert.doesNotMatch(
       serializedEvents,
       /live-smith-request-audio-|\/Live Project\/Secret/,

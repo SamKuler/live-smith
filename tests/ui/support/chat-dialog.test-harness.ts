@@ -380,6 +380,8 @@ function stateFixture(): ChatBridgeState {
       approvalMode: "manual",
       defaultFollowUpBehavior: "queue",
       defaultFollowUpBehaviorRevision: "0",
+      interfaceMode: "modal",
+      interfaceModeRevision: "0",
       uiLanguage: "system",
       uiLanguageRevision: "0",
       customInstructions: "",
@@ -938,6 +940,10 @@ async function createDialogHarness(
         serverState.settings.sessionTabs = [...event.sessionTabs];
         serverState.settings.sessionTabsRevision = event.sessionTabsRevision;
       }
+      if ((event.interfaceMode === "modal" || event.interfaceMode === "browser") && typeof event.interfaceModeRevision === "string") {
+        serverState.settings.interfaceMode = event.interfaceMode;
+        serverState.settings.interfaceModeRevision = event.interfaceModeRevision;
+      }
       if (isUiLanguage(event.uiLanguage) &&
           typeof event.uiLanguageRevision === "string") {
         serverState.settings.uiLanguage = event.uiLanguage;
@@ -959,6 +965,8 @@ async function createDialogHarness(
       event.customInstructions ??= serverState.settings.customInstructions;
       event.customInstructionsRevision ??=
         serverState.settings.customInstructionsRevision;
+      if (!Object.hasOwn(event, "interfaceMode")) event.interfaceMode = serverState.settings.interfaceMode;
+      if (!Object.hasOwn(event, "interfaceModeRevision")) event.interfaceModeRevision = serverState.settings.interfaceModeRevision;
       if (!Object.hasOwn(event, "uiLanguage")) event.uiLanguage = serverState.settings.uiLanguage;
       if (!Object.hasOwn(event, "uiLanguageRevision")) event.uiLanguageRevision = serverState.settings.uiLanguageRevision;
     }
@@ -1555,6 +1563,7 @@ async function createDialogHarness(
                 defaultFollowUpBehavior?: "queue" | "steer";
                 showContextUsage?: boolean;
                 sessionTabs?: SessionShortcutId[];
+                interfaceMode?: "modal" | "browser";
                 uiLanguage?: UiLanguage;
                 networkProxy?: NetworkProxySettings;
                 integrationConnections?: import("../../../src/plugins/integration-connections.js").IntegrationConnectionsSettingsPatch;
@@ -1692,6 +1701,9 @@ async function createDialogHarness(
                 } else if (command.sessionTabs) {
                   serverState.settings.sessionTabs = [...command.sessionTabs];
                   serverState.settings.sessionTabsRevision = String(BigInt(serverState.settings.sessionTabsRevision) + 1n);
+                } else if (command.interfaceMode) {
+                  serverState.settings.interfaceMode = command.interfaceMode;
+                  serverState.settings.interfaceModeRevision = String(BigInt(serverState.settings.interfaceModeRevision) + 1n);
                 } else if (command.uiLanguage) {
                   serverState.settings.uiLanguage = command.uiLanguage;
                   serverState.settings.uiLanguageRevision = String(BigInt(serverState.settings.uiLanguageRevision) + 1n);

@@ -1,3 +1,4 @@
+import { agentRequestContext } from "./support/agent-context.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -87,12 +88,12 @@ async function recoveryRequestHarness() {
   const run = (
     appendTraceEvent: typeof appendSessionEvent = appendSessionEvent,
   ) => handleAgentRequest(
-    {
+    agentRequestContext({
       environment: { storageDirectory: directory },
       application: {
         song: { tracks: [], returnTracks: [], mainTrack: undefined },
       },
-    } as never,
+    } as never),
     directory,
     {
       presentation: liveContextPresentationFixture("Lead"),

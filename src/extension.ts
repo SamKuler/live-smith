@@ -1,3 +1,4 @@
+import { createWindowHostController } from "./app/window-hosts.js";
 import {
   initialize,
   type ActivationContext,
@@ -7,7 +8,7 @@ import {
   type Handle,
 } from "@ableton-extensions/sdk";
 
-import { runAgentFlow, showAgentError } from "./app/agent-flow.js";
+import { showAgentError } from "./app/agent-flow.js";
 import { LiveMutationQueue } from "./app/live-mutation-queue.js";
 import {
   arrangementSelectionInteractionContext,
@@ -20,10 +21,10 @@ type Api = ExtensionContext<"1.0.0">;
 
 export function activate(activation: ActivationContext) {
   const context = initialize(activation, "1.0.0");
-  const liveMutationQueue = new LiveMutationQueue();
+  const windowHost = createWindowHostController(context, { liveMutationQueue: new LiveMutationQueue(), openOAuthAuthorizationUrl });
 
   context.commands.registerCommand("live-smith.ask-object", (arg: unknown) => {
-    void askAboutObject(context, arg as Handle, liveMutationQueue).catch((error) =>
+    void askAboutObject(context, arg as Handle, windowHost).catch((error) =>
       showAgentError(context, error),
     );
   });
@@ -34,7 +35,7 @@ export function activate(activation: ActivationContext) {
       void askAboutArrangementSelection(
         context,
         arg as ArrangementSelection,
-        liveMutationQueue,
+        windowHost,
       ).catch(
         (error) => showAgentError(context, error),
       );
@@ -47,7 +48,7 @@ export function activate(activation: ActivationContext) {
       void askAboutClipSlotSelection(
         context,
         arg as ClipSlotSelection,
-        liveMutationQueue,
+        windowHost,
       ).catch(
         (error) => showAgentError(context, error),
       );
@@ -92,35 +93,29 @@ export function activate(activation: ActivationContext) {
 async function askAboutObject(
   context: Api,
   handle: Handle,
-  liveMutationQueue: LiveMutationQueue,
+  windowHost: ReturnType<typeof createWindowHostController>,
 ): Promise<void> {
-  await runAgentFlow(
-    context,
+  await windowHost.open(
     objectInteractionContext(context, handle),
-    { liveMutationQueue, openOAuthAuthorizationUrl },
   );
 }
 
 async function askAboutArrangementSelection(
   context: Api,
   selection: ArrangementSelection,
-  liveMutationQueue: LiveMutationQueue,
+  windowHost: ReturnType<typeof createWindowHostController>,
 ): Promise<void> {
-  await runAgentFlow(
-    context,
+  await windowHost.open(
     arrangementSelectionInteractionContext(context, selection),
-    { liveMutationQueue, openOAuthAuthorizationUrl },
   );
 }
 
 async function askAboutClipSlotSelection(
   context: Api,
   selection: ClipSlotSelection,
-  liveMutationQueue: LiveMutationQueue,
+  windowHost: ReturnType<typeof createWindowHostController>,
 ): Promise<void> {
-  await runAgentFlow(
-    context,
+  await windowHost.open(
     clipSlotSelectionInteractionContext(context, selection),
-    { liveMutationQueue, openOAuthAuthorizationUrl },
   );
 }

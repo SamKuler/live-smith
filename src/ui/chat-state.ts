@@ -412,3 +412,10 @@ export function serializeChatStateForHtml(state: ChatBridgeState): string {
     .replaceAll("\u2028", "\\u2028")
     .replaceAll("\u2029", "\\u2029");
 }
+
+/** An admitted command retained by this bridge after its initiating page closes. */
+export interface ChatCommandActivity {
+  id: string;
+  sessionId: string | null;
+  stopping: boolean;
+}

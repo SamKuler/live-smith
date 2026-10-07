@@ -1,3 +1,4 @@
+import { agentRequestContext } from "./support/agent-context.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
@@ -66,7 +67,7 @@ for (const mode of ["responses", "chat-completions", "messages"] as const) {
         ? createOpenAIChatTransport({ fetchImpl })
         : createAnthropicMessagesTransport({ fetchImpl });
     const send = (prompt: string) => handleAgentRequest(
-      { environment: { storageDirectory: directory } } as never, directory,
+      agentRequestContext({ environment: { storageDirectory: directory } } as never), directory,
       { presentation: liveContextPresentationFixture("Lead"), summary: "Track: Lead", target: {}, scope: { kind: "track", identity: "lead", label: "Lead" } },
       prompt, runtime, "set", session.id,
       { signal: createHostAbortController().signal, onDelta: () => {}, onProgress: () => {}, onSessionEvent: () => {}, confirmActions: async () => true },

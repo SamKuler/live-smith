@@ -1,3 +1,4 @@
+import { isInterfaceMode, type InterfaceMode } from "../../model/interface-mode.js";
 import { isSessionTabs, type SessionShortcutId } from "../../model/session-tabs.js";
 import { MAX_AGENT_PLAN_ACTIONS } from "../../agent/actions.js";
 import { isLiveObjectId } from "../../live/object-id.js";
@@ -176,6 +177,7 @@ export type ChatBridgeCommandInput =
   | {
       kind: "save_global_settings";
       sessionTabs?: never;
+      interfaceMode?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior: DefaultFollowUpBehavior;
       integrationConnections?: never;
@@ -186,6 +188,7 @@ export type ChatBridgeCommandInput =
   | {
       kind: "save_global_settings";
       sessionTabs?: never;
+      interfaceMode?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage: boolean;
@@ -196,6 +199,7 @@ export type ChatBridgeCommandInput =
   | {
       kind: "save_global_settings";
       sessionTabs?: never;
+      interfaceMode?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -206,6 +210,7 @@ export type ChatBridgeCommandInput =
   | {
       kind: "save_global_settings";
       sessionTabs?: never;
+      interfaceMode?: never;
       uiLanguage: UiLanguage;
       integrationConnections?: never;
       defaultFollowUpBehavior?: never;
@@ -216,7 +221,19 @@ export type ChatBridgeCommandInput =
   | {
       kind: "save_global_settings";
       sessionTabs?: never;
+      uiLanguage?: never;
+      interfaceMode: InterfaceMode;
+      integrationConnections?: never;
+      defaultFollowUpBehavior?: never;
+      showContextUsage?: never;
+      networkProxy?: never;
+      customInstructions?: never;
+    }
+  | {
+      kind: "save_global_settings";
+      sessionTabs?: never;
       integrationConnections: IntegrationConnectionsSettingsPatch;
+      interfaceMode?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -227,6 +244,7 @@ export type ChatBridgeCommandInput =
       kind: "save_global_settings";
       sessionTabs?: never;
       customInstructions: string;
+      interfaceMode?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -237,6 +255,7 @@ export type ChatBridgeCommandInput =
       kind: "save_global_settings";
       sessionTabs: SessionShortcutId[];
       customInstructions?: never;
+      interfaceMode?: never;
       uiLanguage?: never;
       defaultFollowUpBehavior?: never;
       showContextUsage?: never;
@@ -1078,7 +1097,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   if (kind === "save_global_settings") {
     assertOnlyInputKeys(
       input,
-      ["kind", "defaultFollowUpBehavior", "showContextUsage", "networkProxy", "uiLanguage", "integrationConnections", "customInstructions", "sessionTabs"],
+      ["kind", "defaultFollowUpBehavior", "showContextUsage", "networkProxy", "interfaceMode", "uiLanguage", "integrationConnections", "customInstructions", "sessionTabs"],
       `${kind} command`,
     );
     const hasFollowUpBehavior = Object.prototype.hasOwnProperty.call(
@@ -1089,6 +1108,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       input,
       "showContextUsage",
     );
+    const hasInterfaceMode = Object.prototype.hasOwnProperty.call(input, "interfaceMode");
     const hasUiLanguage = Object.prototype.hasOwnProperty.call(input, "uiLanguage");
     const hasSessionTabs = Object.prototype.hasOwnProperty.call(input, "sessionTabs");
     const hasAudioService = Object.prototype.hasOwnProperty.call(input, "integrationConnections");
@@ -1101,7 +1121,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       Number(hasFollowUpBehavior) +
         Number(hasContextUsage) +
         Number(hasNetworkProxy) +
-        Number(hasUiLanguage) + Number(hasAudioService) + Number(hasCustomInstructions) + Number(hasSessionTabs) !== 1
+        Number(hasInterfaceMode) + Number(hasUiLanguage) + Number(hasAudioService) + Number(hasCustomInstructions) + Number(hasSessionTabs) !== 1
     ) {
       throw new ChatBridgeRequestValidationError(
         "save_global_settings must contain exactly one setting.",
@@ -1112,6 +1132,10 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
         throw new ChatBridgeRequestValidationError("sessionTabs must contain unique supported tab IDs.");
       }
       return { kind, sessionTabs: input.sessionTabs };
+    }
+    if (hasInterfaceMode) {
+      if (!isInterfaceMode(input.interfaceMode)) throw new ChatBridgeRequestValidationError("interfaceMode must be modal or browser.");
+      return { kind, interfaceMode: input.interfaceMode };
     }
     if (hasUiLanguage) {
       if (!isUiLanguage(input.uiLanguage)) {

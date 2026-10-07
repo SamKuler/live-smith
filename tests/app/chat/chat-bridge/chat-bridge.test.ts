@@ -870,7 +870,7 @@ test("the originating Profile command relies on its correlated state instead of 
   const events = await fetch(endpoint("/events"));
 
   try {
-    const nextPayload = readNextSsePayload(events);
+    const nextPayload = readNextSsePayload(events, ["command_activity"]);
     const response = await fetch(endpoint("/command"), {
       method: "POST",
       headers: {
@@ -1835,7 +1835,8 @@ test("closing the chat bridge aborts an active command", async () => {
   await bridge.close();
   assert.equal(commandSignal?.aborted, true);
   assert.equal((await command).status, 500);
-  assert.equal(await events.text(), "\n");
+  const published = (await events.text()).split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6)));
+  assert.ok(published.every((event) => event.type === "command_activity"));
 });
 
 test("closing the chat bridge aborts an active send with an event stream connected", async () => {
@@ -3817,6 +3818,7 @@ async function readSsePayload(
 
 async function readNextSsePayload(
   response: Response,
+  ignoredTypes: readonly string[] = [],
 ): Promise<Record<string, unknown>> {
   assert.ok(response.body);
   const reader = response.body.getReader();
@@ -3830,7 +3832,10 @@ async function readNextSsePayload(
         const data = block.split("\n")
           .find((line) => line.startsWith("data: "))
           ?.slice("data: ".length);
-        if (data) return JSON.parse(data) as Record<string, unknown>;
+        if (data) {
+          const event = JSON.parse(data) as Record<string, unknown>;
+          if (!ignoredTypes.includes(String(event.type))) return event;
+        }
       }
     }
   } finally {

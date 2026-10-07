@@ -105,9 +105,9 @@ test("one corrupt Suno credential cannot block healthy connections or ordinary c
   const admitted = await captureIntegrationConnections(h.directory);
   assert.deepEqual(admitted.map((entry) => entry.id), ["healthy"]);
   await assert.rejects(resolveIntegrationConnection(h.directory, connection.id, "generate_music"), /Private Suno session storage/);
-  const tools = await createRequestAudioTools({ context: {} as never, storageDirectory: h.directory,
+  const tools = await createRequestAudioTools({ assertLiveSetCurrent: () => {}, ...{ context: {} as never, storageDirectory: h.directory,
     sessionId: h.session.id, requestId: "request", attachmentRefs: [], target: {}, signal: h.controller.signal,
-    onProgress() {}, onAssets() {} });
+    onProgress() {}, onAssets() {} } });
   const music = tools.tools.find((tool) => tool.function.name ===
     builtInAudioToolName(elevenLabsPlugin, "generate_music"))!;
   assert.match(JSON.stringify(music.function.parameters), /healthy/);

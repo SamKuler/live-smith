@@ -1,4 +1,5 @@
       window.LiveSmithHostAdapter = (function createLiveSmithHostAdapter() {
+        const isModal = window.__LIVE_SMITH_BRIDGE__?.hostMode !== "browser";
         const isWebKit = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.live;
         const isWebView2 = window.chrome && window.chrome.webview;
 
@@ -11,7 +12,9 @@
         }
 
         return {
+          canClose: isModal,
           closeWithResult(result) {
+            if (!isModal) return;
             sendMessage({
               method: "close_and_send",
               params: [JSON.stringify(result)],

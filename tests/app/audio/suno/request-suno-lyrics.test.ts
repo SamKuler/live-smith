@@ -31,13 +31,13 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
 test("manual lyric writing records confirmed text in history without creating an audio job", async (t) => {
   const h = await harness(t);
   let calls = 0, leases = 0;
-  assert.deepEqual(await runAudioParameterTool({ ...h.input,
+  assert.deepEqual(await runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...h.input,
     withGenerationAuthorization: async (signal, operation) => { leases++; return authorize(signal, operation); },
     processing: { pluginOverrides: { plugin: { writeLyrics: async (session, request) => {
       calls++; assert.equal(session.sunoSession!.accountId, "user_fixture"); assert.equal(request.selected, "");
       return { status: "completed", lyrics: "A new verse" };
     } } } },
-  }), { failed: false });
+  } }), { failed: false });
   assert.equal(calls, 1);
   assert.equal(leases, 1);
   assert.deepEqual(await listAudioJobs(h.storage, h.session.id), []);
@@ -49,9 +49,9 @@ test("manual lyric writing records confirmed text in history without creating an
 test("manual lyric writing records and reports an unknown outcome without an automatic retry", async (t) => {
   const h = await harness(t);
   let calls = 0;
-  await assert.rejects(runAudioParameterTool({ ...h.input, processing: { pluginOverrides: { plugin: { writeLyrics: async () => {
+  await assert.rejects(runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...h.input, processing: { pluginOverrides: { plugin: { writeLyrics: async () => {
     calls++; throw new SunoLyricsOutcomeUnknownError();
-  } } } } }), ChatBridgeCommandOutcomeUnknownError);
+  } } } } } }), ChatBridgeCommandOutcomeUnknownError);
   assert.equal(calls, 1);
   assert.equal(JSON.parse((await loadSessionEvents(h.storage, h.session.id))[1]!.content).status, "unknown");
   assert.deepEqual(await listAudioJobs(h.storage, h.session.id), []);
@@ -63,7 +63,7 @@ test("lyric model reads keep query provenance without entering the paid generati
   const panel = (await loadAudioParameterGroups(h.storage, h.session.id)).groups
     .flatMap((group) => group.tools).find((tool) => tool.name.endsWith("inspect_lyric_models"))!.audioPanel!;
   let reads = 0;
-  assert.deepEqual(await runAudioParameterTool({ ...h.input,
+  assert.deepEqual(await runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...h.input,
     toolName: panel.toolName, signature: panel.signature, arguments: { connectionId: "website" },
     withGenerationAuthorization: async () => { throw new Error("Read must not enter a paid fence"); },
     processing: { pluginOverrides: { plugin: { inspectLyricModels: async (connection) => {
@@ -71,7 +71,7 @@ test("lyric model reads keep query provenance without entering the paid generati
       assert.equal(connection.sunoSession!.accountId, "user_fixture");
       return { query: "lyric_models", models: [{ id: "lyric-model", name: "Lyric model", supportsThinking: false }] };
     } } } },
-  }), { failed: false });
+  } }), { failed: false });
   assert.equal(reads, 1);
   const result = JSON.parse((await loadSessionEvents(h.storage, h.session.id)).at(-1)!.content);
   assert.equal(result.models[0].id, "lyric-model");
@@ -83,12 +83,12 @@ test("a lyric model read revalidates its connection before publishing private re
   const h = await harness(t);
   const panel = (await loadAudioParameterGroups(h.storage, h.session.id)).groups
     .flatMap((group) => group.tools).find((tool) => tool.name.endsWith("inspect_lyric_models"))!.audioPanel!;
-  assert.deepEqual(await runAudioParameterTool({ ...h.input,
+  assert.deepEqual(await runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...h.input,
     toolName: panel.toolName, signature: panel.signature, arguments: { connectionId: "website" },
     processing: { pluginOverrides: { plugin: { inspectLyricModels: async () => {
       await saveIntegrationConnection(h.storage, "1", { id: "website", name: "Suno", provider: "suno", enabled: false, apiKey: "" });
       return { query: "lyric_models", models: [{ id: "private-model", name: "Private model", supportsThinking: false }] };
     } } } },
-  }), { failed: true });
+  } }), { failed: true });
   assert.doesNotMatch(JSON.stringify(await loadSessionEvents(h.storage, h.session.id)), /private-model/);
 });

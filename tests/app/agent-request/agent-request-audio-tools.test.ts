@@ -1,3 +1,4 @@
+import { agentRequestContext } from "./support/agent-context.js";
 import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -59,7 +60,7 @@ test("a text-only chat model separates an attached file and reuses saved stems i
   };
   let turns = 0;
   let assetId = "";
-  const first = await handleAgentRequest(context, directory, interaction, "Separate vocals", runtime, "project", session.id, callbacks, async (request) => {
+  const first = await handleAgentRequest(agentRequestContext(context), directory, interaction, "Separate vocals", runtime, "project", session.id, callbacks, async (request) => {
     assert.ok(request.tools.some((tool) => tool.type === "function" && tool.function.name === separateStemsTool));
     assert.ok(request.attachmentParts?.every((part) => part.type !== "audio"));
     if (++turns === 1) {
@@ -74,7 +75,7 @@ test("a text-only chat model separates an attached file and reuses saved stems i
     return { content: "Stems ready.", toolCalls: [] };
   });
   assert.equal(first, "Stems ready."); assert.equal(uploads, 1);
-  await handleAgentRequest(context, directory, interaction, "Show previous results", runtime, "project", session.id, callbacks, async (request) => {
+  await handleAgentRequest(agentRequestContext(context), directory, interaction, "Show previous results", runtime, "project", session.id, callbacks, async (request) => {
     assert.match(request.requestAudioSampleSourceInstructions ?? "", new RegExp(assetId));
     assert.doesNotMatch(JSON.stringify(request), /fixture-private-audio-key|d\.lalal\.ai/);
     return { content: "Previous stems are available.", toolCalls: [] };
@@ -108,7 +109,7 @@ test("a text-only chat model generates music through a named connection and expo
     confirmActions: async () => { throw new Error("Generation must not modify Live"); }, audioProcessing: { generationAdapter } };
   let turns = 0;
   let assetId = "";
-  const first = await handleAgentRequest(context, directory, interaction, "Generate ambient piano", runtime, "project", session.id, callbacks, async (request) => {
+  const first = await handleAgentRequest(agentRequestContext(context), directory, interaction, "Generate ambient piano", runtime, "project", session.id, callbacks, async (request) => {
     assert.ok(request.tools.some((tool) => tool.type === "function" && tool.function.name === elevenMusicTool));
     assert.ok(!request.tools.some((tool) => tool.type === "function" && tool.function.name === separateStemsTool));
     assert.ok(!request.tools.some((tool) => tool.type === "function" && tool.function.name === "listen_to_audio_asset"));
@@ -123,7 +124,7 @@ test("a text-only chat model generates music through a named connection and expo
   });
   assert.equal(first, "Music ready."); assert.equal(generations, 1);
   assert.equal((await listAudioJobs(directory, session.id))[0]?.outputAssets[0]?.id, assetId);
-  await handleAgentRequest(context, directory, interaction, "Use that music", runtime, "project", session.id, callbacks, async (request) => {
+  await handleAgentRequest(agentRequestContext(context), directory, interaction, "Use that music", runtime, "project", session.id, callbacks, async (request) => {
     assert.match(request.requestAudioSampleSourceInstructions ?? "", new RegExp(assetId));
     assert.doesNotMatch(JSON.stringify(request), /fixture-music-secret|\/private\/tmp/);
     return { content: "The saved music is available.", toolCalls: [] };
@@ -178,7 +179,7 @@ test("a chat model can select Suno rendered audio with bounded advanced controls
   const interaction = { summary: "Track", presentation: liveContextPresentationFixture("Track"),
     target: {}, scope: session.scope };
   let turns = 0;
-  const result = await handleAgentRequest(context, directory, interaction,
+  const result = await handleAgentRequest(agentRequestContext(context), directory, interaction,
     "Use Suno to render this song", runtime, "project", session.id, {
       signal: new AbortController().signal, onDelta() {}, onProgress() {}, onSessionEvent() {},
       confirmActions: async () => { throw new Error("Rendered generation must not mutate Live"); },
@@ -229,7 +230,7 @@ test("an audio-capable chat model can listen to a generated Session asset in the
   const context = { application: { song: { tempo: 120 } },
     environment: { storageDirectory: directory, tempDirectory: directory } } as never;
   let turns = 0;
-  const result = await handleAgentRequest(context, directory, interaction, "Generate and analyze a short idea", runtime,
+  const result = await handleAgentRequest(agentRequestContext(context), directory, interaction, "Generate and analyze a short idea", runtime,
     "project", session.id, { signal: new AbortController().signal, onDelta() {}, onProgress() {}, onSessionEvent() {},
       confirmActions: async () => { throw new Error("Generation and listening must not modify Live"); },
       audioProcessing: { generationAdapter } }, async (request) => {

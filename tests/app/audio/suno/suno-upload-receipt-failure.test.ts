@@ -56,13 +56,13 @@ for (const phase of ["before-dispatch", "after-initialize"] as const) test(`manu
       return original.apply(this, args);
     });
   }
-  const run = () => runAudioParameterTool({ context: {} as never, storageDirectory: h.directory, sessionId: h.session.id,
+  const run = () => runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ context: {} as never, storageDirectory: h.directory, sessionId: h.session.id,
     target: {}, signal: h.controller.signal, onProgress() {}, onAssets() {},
     withAdmissionAuthorization: async (_signal, operation) => operation(),
     withGenerationAuthorization: async (_signal, operation) => operation(),
     processing: { pluginOverrides: { uploadAdapter: adapter } }, toolName: panel.toolName, signature: panel.signature,
     arguments: { connectionId: connection.id, rightsConfirmed: true, source: { kind: "audio_asset", assetRef: asset.id } },
-  });
+  } });
   try {
     if (phase === "before-dispatch") assert.deepEqual(await run(), { failed: true });
     else await assert.rejects(run(), ChatBridgeCommandOutcomeUnknownError);

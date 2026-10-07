@@ -26,7 +26,7 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
   }
   const calls: { queries: unknown[]; submissions: AudioGenerationRequest[] } = { queries: [], submissions: [] };
   const mode = { changeCredential: false };
-  const tools = await createRequestAudioTools({
+  const tools = await createRequestAudioTools({ assertLiveSetCurrent: () => {}, ...{
     context: {} as never, storageDirectory: directory, sessionId: session.id, requestId: "request",
     attachmentRefs: [], target: {}, signal: new AbortController().signal, onProgress() {}, onAssets() {},
     processing: {
@@ -43,7 +43,7 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
         },
       },
     },
-  });
+  } });
   const execute = (name: string, args: unknown) => tools.execute({
     id: "call",
     name: builtInAudioToolName(sunoWebsitePlugin, name),

@@ -65,12 +65,12 @@ test("host-authored query provenance overrides provider fields and restores obse
   const input = { context: {} as never, storageDirectory: h.directory, sessionId: h.session.id, target: {},
     signal: h.controller.signal, onProgress() {}, onAssets() {}, withAdmissionAuthorization: authorize, withGenerationAuthorization: authorize };
   const query = await panel("inspect_music_service");
-  await runAudioParameterTool({ ...input, toolName: query.toolName, signature: query.signature,
+  await runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...input, toolName: query.toolName, signature: query.signature,
     arguments: { connectionId: connection.id, query: "library" }, processing: {
       pluginOverrides: { plugin: { inspectMusicService: async () => ({ query: "library" as const, hasMore: false, clips: [{ id: currentClip, title: "Current clip", status: "complete", modelId: "model", styles: "" }],
         provenance: { connectionId: "wrong", accountId: "wrong" } }) } },
     },
-  });
+  } });
   const event = (await loadSessionEvents(h.directory, h.session.id)).at(-1)!;
   assert.deepEqual(JSON.parse(event.content).provenance, { connectionId: connection.id, accountId: "user_fixture" });
   const current = await panel("extend_music");
@@ -81,9 +81,9 @@ test("host-authored query provenance overrides provider fields and restores obse
   } } };
   // Each invocation constructs a fresh runtime without an in-memory observation map.
   const args = { connectionId: connection.id, clipId: currentClip, startSeconds: 1, prompt: "New verse", instrumental: false };
-  assert.deepEqual(await runAudioParameterTool({ ...input, toolName: current.toolName, signature: current.signature, arguments: args, processing }), { failed: false });
+  assert.deepEqual(await runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...input, toolName: current.toolName, signature: current.signature, arguments: args, processing } }), { failed: false });
   await h.sessions.save(connection.id, { accountId: "user_other", clientToken: fixtureToken("other") });
   const other = await panel("extend_music");
-  assert.deepEqual(await runAudioParameterTool({ ...input, toolName: other.toolName, signature: other.signature, arguments: args, processing }), { failed: true });
+  assert.deepEqual(await runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ ...input, toolName: other.toolName, signature: other.signature, arguments: args, processing } }), { failed: true });
   assert.equal(submissions, 1);
 });

@@ -1,3 +1,5 @@
+import type { ChatCommandActivity } from "../../ui/chat-state.js";
+import { isInterfaceMode, type InterfaceMode } from "../../model/interface-mode.js";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { isSessionTabs, type SessionShortcutId } from "../../model/session-tabs.js";
@@ -37,11 +39,13 @@ import {
   compareDefaultFollowUpBehaviorRevisions,
   compareCustomInstructionsRevisions,
   compareNetworkProxyRevisions,
+  compareInterfaceModeRevisions,
   compareUiLanguageRevisions,
   compareSessionTabsRevisions,
   isSessionTabsRevision,
   type SessionTabsRevision,
   isUiLanguage,
+  isInterfaceModeRevision,
   isUiLanguageRevision,
   type UiLanguage,
   type UiLanguageRevision,
@@ -346,6 +350,7 @@ export interface ChatBridgeStream {
 }
 
 export interface ChatBridge {
+  readonly busy: boolean;
   url: string;
   publishSessionApprovalMode(
     sessionId: string,
@@ -514,6 +519,7 @@ interface PendingSendAdmission {
 }
 
 type StateChangeSsePayloadBase =
+  | { type: "command_activity"; command: ChatCommandActivity | null }
   | {
       type: "steer_accepted";
       sendId: string;
@@ -587,7 +593,9 @@ type StateChangeSsePayloadBase =
       customInstructionsRevision: CustomInstructionsRevision;
       networkProxy: NetworkProxySettings;
       networkProxyRevision: NetworkProxyRevision;
+      interfaceMode: InterfaceMode;
       uiLanguage: UiLanguage;
+      interfaceModeRevision: string;
       uiLanguageRevision: UiLanguageRevision;
       sessionTabs: SessionShortcutId[];
       sessionTabsRevision: SessionTabsRevision;
@@ -764,6 +772,8 @@ export async function createChatBridge(
   const sessionActivities = new Map<string, ChatSessionActivity>();
   let activeCommandAbort: AbortController | null = null;
   let activeCommandId: string | null = null;
+  let commandActivity: ChatCommandActivity | null = null;
+  let hasCommandActivity = false;
   let activeCommandStopRequested = false;
   let activeCommandTerminal: Promise<void> | null = null;
   let latestGlobalSettingsChange: GlobalSettingsChange | undefined;
@@ -999,6 +1009,8 @@ export async function createChatBridge(
       !isCustomInstructionsRevision(settings.customInstructionsRevision) ||
       !isNetworkProxySettings(settings.networkProxy) ||
       !isNetworkProxyRevision(settings.networkProxyRevision) ||
+      !isInterfaceMode(settings.interfaceMode) ||
+      !isInterfaceModeRevision(settings.interfaceModeRevision) ||
       !isUiLanguage(settings.uiLanguage) ||
       !isUiLanguageRevision(settings.uiLanguageRevision) ||
       !isSessionTabs(settings.sessionTabs) ||
@@ -1017,7 +1029,9 @@ export async function createChatBridge(
         customInstructionsRevision: settings.customInstructionsRevision,
         networkProxy: settings.networkProxy,
         networkProxyRevision: settings.networkProxyRevision,
+        interfaceMode: settings.interfaceMode,
         uiLanguage: settings.uiLanguage,
+        interfaceModeRevision: settings.interfaceModeRevision,
         uiLanguageRevision: settings.uiLanguageRevision,
         sessionTabs: settings.sessionTabs,
         sessionTabsRevision: settings.sessionTabsRevision,
@@ -1043,6 +1057,10 @@ export async function createChatBridge(
       settings.sessionTabsRevision,
       latestGlobalSettingsChange.sessionTabsRevision,
     ) > 0;
+    const interfaceModeFromState = compareInterfaceModeRevisions(
+      settings.interfaceModeRevision,
+      latestGlobalSettingsChange.interfaceModeRevision,
+    ) > 0;
     const uiLanguageFromState = compareUiLanguageRevisions(
       settings.uiLanguageRevision,
       latestGlobalSettingsChange.uiLanguageRevision,
@@ -1059,7 +1077,7 @@ export async function createChatBridge(
       contextVisibilityFromState ||
       customInstructionsFromState ||
       networkProxyFromState ||
-      uiLanguageFromState || sessionTabsFromState || audioFromState
+      interfaceModeFromState || uiLanguageFromState || sessionTabsFromState || audioFromState
     ) {
       latestGlobalSettingsChange = {
         ...latestGlobalSettingsChange,
@@ -1084,6 +1102,10 @@ export async function createChatBridge(
               customInstructionsRevision: settings.customInstructionsRevision,
             }
           : {}),
+        ...(interfaceModeFromState ? {
+          interfaceMode: settings.interfaceMode,
+          interfaceModeRevision: settings.interfaceModeRevision,
+        } : {}),
         ...(uiLanguageFromState ? {
           uiLanguage: settings.uiLanguage,
           uiLanguageRevision: settings.uiLanguageRevision,
@@ -1118,7 +1140,9 @@ export async function createChatBridge(
         customInstructions: latestGlobalSettingsChange.customInstructions,
         customInstructionsRevision:
           latestGlobalSettingsChange.customInstructionsRevision,
+        interfaceMode: latestGlobalSettingsChange.interfaceMode,
         uiLanguage: latestGlobalSettingsChange.uiLanguage,
+        interfaceModeRevision: latestGlobalSettingsChange.interfaceModeRevision,
         uiLanguageRevision: latestGlobalSettingsChange.uiLanguageRevision,
         sessionTabs: latestGlobalSettingsChange.sessionTabs,
         sessionTabsRevision: latestGlobalSettingsChange.sessionTabsRevision,
@@ -1873,6 +1897,7 @@ export async function createChatBridge(
             bridgeStateRevision: nextStateRevision(),
           });
         }
+        if (hasCommandActivity) replay({ type: "command_activity", command: commandActivity, bridgeStateRevision: nextStateRevision() });
         if (pendingCommandConfirmation) {
           const { id, commandId, sessionId, request: confirmation } = pendingCommandConfirmation;
           replay({ type: "command_confirm_request", id, commandId, sessionId, ...confirmation });
@@ -2313,6 +2338,9 @@ export async function createChatBridge(
             }, 409);
             return;
           }
+          commandActivity = { id: commandId, sessionId: "sessionId" in input ? input.sessionId : null, stopping: false };
+          hasCommandActivity = true;
+          broadcastStateChange({ type: "command_activity", command: commandActivity });
           const confirmationCommandId = commandId;
           const commandState = await options.handleCommand(
             input,
@@ -2759,6 +2787,10 @@ export async function createChatBridge(
           if (!matchesActiveCommand) retainCommandId(stopTarget.id, "stopped");
           if (matchesActiveCommand && activeCommandAbort) {
             activeCommandStopRequested = true;
+            if (commandActivity) {
+              commandActivity = { ...commandActivity, stopping: true };
+              broadcastStateChange({ type: "command_activity", command: commandActivity });
+            }
             activeCommandAbort.abort(new ChatBridgeCommandStoppedError());
           }
           sendJson(response, {
@@ -2980,6 +3012,10 @@ export async function createChatBridge(
         activeCommandAbort = null;
         activeCommandId = null;
         activeCommandStopRequested = false;
+        if (commandActivity) {
+          commandActivity = null;
+          broadcastStateChange({ type: "command_activity", command: null });
+        }
       }
       if (
         attachmentSessionId !== undefined &&
@@ -3019,6 +3055,7 @@ export async function createChatBridge(
   };
 
   return {
+    get busy() { return pendingSendAdmissions.size > 0 || activeSendsById.size > 0 || activeCommandId !== null || inFlightMutationHandlers.size > 0; },
     url: `${bridgeBaseUrl(server)}/chat?token=${token}`,
     createAudioDownload: (sessionId, assetId, signal) => createMediaDownload("audio", sessionId, assetId, signal),
     createMidiDownload: (sessionId, assetId, signal) => createMediaDownload("midi", sessionId, assetId, signal),
@@ -3118,6 +3155,10 @@ export async function createChatBridge(
           change.sessionTabsRevision,
           latestGlobalSettingsChange.sessionTabsRevision,
         );
+        const interfaceModeOrder = compareInterfaceModeRevisions(
+          change.interfaceModeRevision,
+          latestGlobalSettingsChange.interfaceModeRevision,
+        );
         const uiLanguageOrder = compareUiLanguageRevisions(
           change.uiLanguageRevision,
           latestGlobalSettingsChange.uiLanguageRevision,
@@ -3134,6 +3175,10 @@ export async function createChatBridge(
             sessionTabsOrder === 0 &&
             (change.sessionTabs.length !== latestGlobalSettingsChange.sessionTabs.length ||
               change.sessionTabs.some((tab, index) => tab !== latestGlobalSettingsChange!.sessionTabs[index]))
+          ) ||
+          (
+            interfaceModeOrder === 0 &&
+            change.interfaceMode !== latestGlobalSettingsChange.interfaceMode
           ) ||
           (
             uiLanguageOrder === 0 &&
@@ -3169,6 +3214,7 @@ export async function createChatBridge(
             customInstructionsOrder <= 0 &&
             networkProxyOrder <= 0 &&
             audioOrder <= 0 &&
+            interfaceModeOrder <= 0 &&
             uiLanguageOrder <= 0 &&
             sessionTabsOrder <= 0 &&
             !(
@@ -3178,6 +3224,7 @@ export async function createChatBridge(
               customInstructionsOrder === 0 &&
               networkProxyOrder === 0 &&
               audioOrder === 0 &&
+              interfaceModeOrder === 0 &&
               uiLanguageOrder === 0 &&
               sessionTabsOrder === 0
             )
@@ -3210,6 +3257,12 @@ export async function createChatBridge(
           sessionTabsRevision: sessionTabsOrder > 0
             ? change.sessionTabsRevision
             : latestGlobalSettingsChange.sessionTabsRevision,
+          interfaceMode: interfaceModeOrder > 0
+            ? change.interfaceMode
+            : latestGlobalSettingsChange.interfaceMode,
+          interfaceModeRevision: interfaceModeOrder > 0
+            ? change.interfaceModeRevision
+            : latestGlobalSettingsChange.interfaceModeRevision,
           uiLanguage: uiLanguageOrder > 0
             ? change.uiLanguage
             : latestGlobalSettingsChange.uiLanguage,
