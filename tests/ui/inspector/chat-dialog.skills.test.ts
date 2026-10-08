@@ -506,9 +506,9 @@ test("Skill import, activation, and deletion keep bodies off JSON command paths"
     await harness.acceptAppConfirmation();
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {
-      kind: "set_session_skills",
+      kind: "remove_session_skill",
       sessionId: "session-1",
-      skillIds: [],
+      skillId: "mix-review",
     });
     const enabledDelete = harness.document.querySelector<HTMLButtonElement>(
       "#userSkillLibraryList [data-skill-id='mix-review'] .skill-delete",
@@ -932,9 +932,9 @@ test("a Skill can be disabled from archived history before deletion", async () =
     commandHeld = false;
     await harness.settle();
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {
-      kind: "set_session_skills",
+      kind: "remove_session_skill",
       sessionId: "session-archived",
-      skillIds: [],
+      skillId: "history-guide",
     });
     const deletion = harness.document.querySelector<HTMLButtonElement>(
       "#userSkillLibraryList [data-skill-id='history-guide'] .skill-delete",
@@ -950,3 +950,70 @@ test("a Skill can be disabled from archived history before deletion", async () =
     harness.close();
   }
 });
+
+
+test("disabling a Skill after peer selection removes only that Skill", async () => {
+  const state = stateFixture();
+  state.availableSkills = [
+    { id: "remove-me", description: "Remove this workflow", source: "user" },
+    { id: "keep-me", description: "Keep this workflow", source: "user" },
+  ];
+  state.activeSkillIds = ["remove-me"];
+  state.sessions[0]!.activeSkillIds = ["remove-me"];
+  const harness = await createDialogHarness(state);
+  try {
+    harness.click("#extensionsTab");
+    harness.click('#userSkillLibraryList [data-skill-id="remove-me"] .skill-delete');
+    const peer = structuredClone(state);
+    peer.activeSkillIds = ["remove-me", "keep-me"];
+    peer.sessions[0]!.activeSkillIds = ["remove-me", "keep-me"];
+    harness.setServerState(peer);
+    harness.emitServerEvent({ type: "session_state_invalidated", sessionId: state.activeSessionId! });
+    await waitForCondition(() => harness.document.querySelector<HTMLInputElement>('#userSkillList [data-skill-id="keep-me"] input')?.checked === true, "Expected peer Skill selection.");
+    await harness.acceptAppConfirmation();
+    await harness.settle();
+    assert.deepEqual(commandCalls(harness).at(-1)?.body, {
+      kind: "remove_session_skill", sessionId: state.activeSessionId, skillId: "remove-me",
+    });
+    assert.equal(harness.document.querySelector<HTMLInputElement>('#userSkillList [data-skill-id="keep-me"] input')!.checked, true);
+    assert.equal(harness.document.querySelector<HTMLInputElement>('#userSkillList [data-skill-id="remove-me"] input')!.checked, false);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
+for (const completion of ["cancel", "failure", "complete"] as const) {
+  test(`global Skill disable ${completion} respects the Session batch boundary`, async () => {
+    const state = stateFixture();
+    state.availableSkills = [
+      { id: "remove-me", description: "Remove this workflow", source: "user" },
+      { id: "keep-me", description: "Keep this workflow", source: "user" },
+    ];
+    state.activeSkillIds = ["remove-me"];
+    state.sessions[0]!.activeSkillIds = ["remove-me"];
+    state.previousSessions = [{ ...state.sessions[0]!, id: "previous-session", projectKey: "previous-project", activeSkillIds: ["remove-me", "keep-me"] }];
+    state.archivedSessions = [{ ...state.previousSessions[0]!, id: "archived-session", archivedAt: "2026-10-01T00:00:00.000Z" }];
+    const harness = await createDialogHarness(state);
+    try {
+      harness.click("#extensionsTab");
+      if (completion === "failure") harness.failNextCommand("Stop this Session's active request before changing its Skills.");
+      harness.click('#userSkillLibraryList [data-skill-id="remove-me"] .skill-delete');
+      if (completion === "cancel") await harness.cancelAppConfirmation();
+      else await harness.acceptAppConfirmation();
+      await harness.settle();
+      const commands = commandCalls(harness).map((call) => call.body);
+      assert.deepEqual(commands, completion === "cancel" ? [] : (completion === "failure" ? ["session-1"]
+        : ["session-1", "previous-session", "archived-session"]).map((sessionId) => ({
+        kind: "remove_session_skill", sessionId, skillId: "remove-me",
+      })));
+      assert.equal(harness.document.querySelector<HTMLInputElement>('#userSkillList [data-skill-id="remove-me"] input')!.checked,
+        completion !== "complete");
+      if (completion === "complete") {
+        const removeButton = harness.document.querySelector<HTMLButtonElement>('#userSkillLibraryList [data-skill-id="remove-me"] .skill-delete')!;
+        assert.equal(removeButton.textContent, "Delete");
+        const keepButton = harness.document.querySelector<HTMLButtonElement>('#userSkillLibraryList [data-skill-id="keep-me"] .skill-delete')!;
+        assert.equal(keepButton.textContent, "Disable");
+      }
+      assert.deepEqual(harness.errors, []);
+    } finally { harness.close(); }
+  });
+}

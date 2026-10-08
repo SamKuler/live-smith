@@ -2485,7 +2485,7 @@ export async function createAgentRuntime(
       return buildStateAfterCommandMutation();
     }
 
-    if (commandInput.kind === "set_session_skills") {
+    if (commandInput.kind === "set_session_skills" || commandInput.kind === "remove_session_skill") {
       const mutationKey = sessionMutationFenceKey(
         storageDirectory,
         commandInput.sessionId,
@@ -2495,7 +2495,7 @@ export async function createAgentRuntime(
           "Stop this Session's active request before changing its Skills.",
         );
       }
-      const requestedSkillIds = [...commandInput.skillIds].sort();
+      let requestedSkillIds: string[] = [];
       await withNamedSessionMutation(
         commandInput.sessionId,
         "skills",
@@ -2523,28 +2523,33 @@ export async function createAgentRuntime(
                         "That Session does not exist.",
                       );
                     }
-                    const installed = await listInstalledSkillsInTransaction(
-                      transaction,
-                      storageDirectory,
-                    );
-                    const pluginSkills = await pluginSkillsFromPackages(
-                      await readEnabledPluginPackagesInTransaction(transaction, storageDirectory),
-                    );
-                    const availableIds = new Set(
-                      availableSkillSummaries(installed, pluginSkills).map(
-                        (skill) => skill.id,
-                      ),
-                    );
-                    const unavailable = requestedSkillIds.find(
-                      (skillId) => !availableIds.has(skillId),
-                    );
-                    if (unavailable !== undefined) {
-                      throw new ChatBridgeSkillValidationError(
-                        `Skill ${unavailable} is not available.`,
+                    const currentSkillIds = session.activeSkillIds ?? [];
+                    requestedSkillIds = commandInput.kind === "remove_session_skill"
+                      ? currentSkillIds.filter((skillId) => skillId !== commandInput.skillId)
+                      : [...commandInput.skillIds].sort();
+                    if (commandInput.kind === "set_session_skills") {
+                      const installed = await listInstalledSkillsInTransaction(
+                        transaction,
+                        storageDirectory,
                       );
+                      const pluginSkills = await pluginSkillsFromPackages(
+                        await readEnabledPluginPackagesInTransaction(transaction, storageDirectory),
+                      );
+                      const availableIds = new Set(
+                        availableSkillSummaries(installed, pluginSkills).map(
+                          (skill) => skill.id,
+                        ),
+                      );
+                      const unavailable = requestedSkillIds.find(
+                        (skillId) => !availableIds.has(skillId),
+                      );
+                      if (unavailable !== undefined) {
+                        throw new ChatBridgeSkillValidationError(
+                          `Skill ${unavailable} is not available.`,
+                        );
+                      }
                     }
 
-                    const currentSkillIds = session.activeSkillIds ?? [];
                     const removalOnly = requestedSkillIds.every(
                       (skillId) => currentSkillIds.includes(skillId),
                     );

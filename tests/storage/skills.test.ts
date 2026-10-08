@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
+import mutableFs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
@@ -673,4 +675,50 @@ test("skill catalog recovers delete journal faults without a stable missing defi
     await assert.rejects(readInstalledSkill(directory, "delete-journal"), /does not exist/i);
     assert.deepEqual(await listInstalledSkills(directory), []);
   }
+});
+
+
+test("failed initial staging leaves healthy Skills readable and permits a later install", async (t) => {
+  const directory = await temporaryDirectory();
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const healthy = await installSkill(directory, skillBytes("healthy"));
+  const originalOpen = mutableFs.open;
+  mutableFs.open = (async (target, ...args) => {
+    if (String(target).includes(`${path.sep}incomplete${path.sep}`) && args[0] === "wx") {
+      throw Object.assign(new Error("Injected staging write failure"), { code: "ENOSPC" });
+    }
+    return originalOpen(target, ...args);
+  }) as typeof mutableFs.open;
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(installSkill(directory, skillBytes("incomplete")), /Injected staging write failure/);
+  } finally {
+    mutableFs.open = originalOpen;
+    syncBuiltinESMExports();
+  }
+  await assert.rejects(fs.lstat(path.dirname(definitionPath(directory, "incomplete"))), { code: "ENOENT" });
+  assert.deepEqual(await listInstalledSkills(directory), [healthy]);
+  assert.equal((await readInstalledSkill(directory, "healthy")).id, "healthy");
+  await installSkill(directory, skillBytes("incomplete"));
+  assert.deepEqual((await listInstalledSkills(directory)).map((skill) => skill.id), ["healthy", "incomplete"]);
+});
+
+test("startup recovers an empty pre-journal Skill directory but never follows an orphan symlink", async (t) => {
+  const directory = await temporaryDirectory();
+  const outside = await temporaryDirectory();
+  t.after(async () => {
+    await fs.rm(directory, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+  const healthy = await installSkill(directory, skillBytes("healthy"));
+  const orphan = path.dirname(definitionPath(directory, "incomplete"));
+  await fs.mkdir(orphan, { mode: 0o700 });
+  assert.deepEqual(await listInstalledSkills(directory), [healthy]);
+  await assert.rejects(fs.lstat(orphan), { code: "ENOENT" });
+  const sentinel = path.join(outside, "keep.txt");
+  await fs.writeFile(sentinel, "preserve me");
+  await fs.symlink(outside, orphan, "dir");
+  await assert.rejects(listInstalledSkills(directory), SkillStorageCorruptionError);
+  assert.equal(await fs.readFile(sentinel, "utf8"), "preserve me");
+  assert.equal((await fs.lstat(orphan)).isSymbolicLink(), true);
 });

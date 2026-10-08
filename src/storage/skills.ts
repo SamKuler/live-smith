@@ -416,24 +416,8 @@ class SkillCatalog implements SkillCatalogTransaction {
     await this.ensureCatalogExists();
     const root = catalogRoot(this.storageDirectory);
     const skillDirectory = path.join(root, definition.id);
-    if (existing === undefined) {
-      await ensureSkillDirectoryForInstall(skillDirectory);
-    }
     const stagingFile = `.SKILL.md.${createStorageId("skill")}.next`;
     const stagingTarget = path.join(skillDirectory, stagingFile);
-    const rootIdentity = await captureDirectoryIdentity(root);
-    const skillDirectoryIdentity = await captureDirectoryIdentity(skillDirectory);
-    await writeDefinitionBound(
-      stagingTarget,
-      bytes,
-      root,
-      rootIdentity,
-      skillDirectory,
-      skillDirectoryIdentity,
-      true,
-    );
-    await verifyDefinition(stagingTarget, metadata, this.fault);
-
     const pending: PendingSkillWrite = {
       kind: existing === undefined ? "install" : "replace",
       skillId: definition.id,
@@ -446,6 +430,21 @@ class SkillCatalog implements SkillCatalogTransaction {
     };
     let pendingCommitted = false;
     try {
+      if (existing === undefined) {
+        await ensureSkillDirectoryForInstall(skillDirectory);
+      }
+      const rootIdentity = await captureDirectoryIdentity(root);
+      const skillDirectoryIdentity = await captureDirectoryIdentity(skillDirectory);
+      await writeDefinitionBound(
+        stagingTarget,
+        bytes,
+        root,
+        rootIdentity,
+        skillDirectory,
+        skillDirectoryIdentity,
+        true,
+      );
+      await verifyDefinition(stagingTarget, metadata, this.fault);
       const pendingRootIdentity = await captureDirectoryIdentity(root);
       await injectFault(this.fault, "before-pending-catalog");
       await assertDirectoryIdentity(root, pendingRootIdentity);
@@ -790,10 +789,7 @@ async function validateSkillDirectoryEntries(
 async function cleanupOrphanStagingDirectory(directory: string): Promise<void> {
   await ensureExistingPrivateDirectory(directory);
   const entries = await fs.readdir(directory, { withFileTypes: true });
-  if (
-    entries.length === 0 ||
-    entries.some((entry) => !entry.isFile() || !stagingFilePattern.test(entry.name))
-  ) {
+  if (entries.some((entry) => !entry.isFile() || !stagingFilePattern.test(entry.name))) {
     throw new SkillStorageCorruptionError();
   }
   for (const entry of entries) {
@@ -1368,7 +1364,13 @@ async function cleanupUncommittedStaging(
 ): Promise<void> {
   const root = path.dirname(skillDirectory);
   const rootIdentity = await captureDirectoryIdentity(root);
-  const skillDirectoryIdentity = await captureDirectoryIdentity(skillDirectory);
+  let skillDirectoryIdentity: DirectoryIdentity;
+  try {
+    skillDirectoryIdentity = await captureDirectoryIdentity(skillDirectory);
+  } catch (error) {
+    if (isMissingFileError(error)) return;
+    throw error;
+  }
   await removePrivateFileBound(
     stagingTarget,
     root,

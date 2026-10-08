@@ -267,7 +267,7 @@ test("saved configuration reaches selected Skill instructions and a real MCP pro
     const initial = await bridge.state();
     await bridge.command(saveInput(plugin.sha256));
     await bridge.command({ kind: "set_plugin_enabled", pluginId, enabled: true });
-    await bridge.command({ kind: "set_plugin_mcp_server_approved", pluginId, serverId: "fixture", approved: true });
+    await bridge.command({ kind: "set_plugin_mcp_server_approved", pluginId, sha256: plugin.sha256, serverId: "fixture", approved: true });
     await bridge.command({ kind: "set_session_skills", sessionId: initial.activeSessionId, skillIds: [`${pluginId}:music`] });
     const catalog = await bridge.post("/session-tools", { kind: "load_session_tools", sessionId: initial.activeSessionId });
     assert.equal(catalog.status, 200, catalog.raw);

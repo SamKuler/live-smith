@@ -3906,3 +3906,31 @@ async function rawHttpStatus(
   assert.ok(match, `Expected an HTTP response, received ${JSON.stringify(statusLine)}.`);
   return Number(match[1]);
 }
+
+test("remove_session_skill admits one bounded Skill intent and rejects whole-selection payloads", async () => {
+  const received: unknown[] = [];
+  const state = {} as ChatDialogState;
+  const bridge = await createChatBridge({
+    buildState: async () => state,
+    renderHtml: () => "<html></html>",
+    handleCommand: async (input) => { received.push(input); return state; },
+    handleSend: async () => undefined,
+  });
+  const endpoint = new URL(bridge.url);
+  endpoint.pathname = "/command";
+  const command = { kind: "remove_session_skill", sessionId: "session-1", skillId: "music-tools:convert" };
+  try {
+    const accepted = await fetch(endpoint, {
+      method: "POST", headers: correlatedJsonHeaders("command"), body: JSON.stringify(command),
+    });
+    assert.equal(accepted.status, 200, await accepted.text());
+    assert.deepEqual(received, [command]);
+    for (const patch of [{ skillId: "../unsafe" }, { skillId: "" }, { skillId: undefined }, { skillIds: [] }, { profileId: "profile" }]) {
+      const invalid = await fetch(endpoint, {
+        method: "POST", headers: correlatedJsonHeaders("command"), body: JSON.stringify({ ...command, ...patch }),
+      });
+      assert.equal(invalid.status, 400, await invalid.text());
+    }
+    assert.equal(received.length, 1);
+  } finally { await bridge.close(); }
+});

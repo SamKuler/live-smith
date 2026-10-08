@@ -167,12 +167,21 @@ export function createPluginLifecycle(dependencies: PluginLifecycleOptions) {
     try {
       await withRequestConfiguration(signal,
         async () => {
+          let closeConnections = commandInput.kind === "delete_plugin" ||
+            commandInput.kind === "set_plugin_enabled" && !commandInput.enabled;
           try {
             await withStorageTransaction(storageDirectory, async (transaction) => {
               throwIfAborted(signal);
               const plugins = await listInstalledPluginsInTransaction(transaction, storageDirectory);
               const plugin = plugins.find((candidate) => candidate.id === commandInput.pluginId);
               if (!plugin) throw new ChatBridgeResourceNotFoundError("That Plugin is not installed.");
+              if (commandInput.kind === "set_plugin_mcp_server_approved" ||
+                commandInput.kind === "set_plugin_artifact_permission") {
+                if (plugin.sha256 !== commandInput.sha256) {
+                  throw new ChatBridgeConflictError("Plugin package changed. Review its permissions and try again.");
+                }
+                closeConnections = !commandInput.approved;
+              }
               const removeSessionSelections = async () => {
                 const prefix = `${plugin.id}:`;
                 for (const session of await listSessionsInTransaction(transaction, storageDirectory)) {
@@ -246,10 +255,7 @@ export function createPluginLifecycle(dependencies: PluginLifecycleOptions) {
               changed = true;
             });
           } finally {
-            if (commandInput.kind === "delete_plugin" ||
-              commandInput.kind === "set_plugin_enabled" && !commandInput.enabled ||
-              commandInput.kind === "set_plugin_mcp_server_approved" && !commandInput.approved ||
-              commandInput.kind === "set_plugin_artifact_permission" && !commandInput.approved) {
+            if (closeConnections) {
               await closeActivePluginConnections(storageDirectory, commandInput.pluginId);
             }
           }

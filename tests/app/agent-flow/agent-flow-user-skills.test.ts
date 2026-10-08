@@ -103,7 +103,18 @@ test("User Skill bridge preserves replacement receipts and prevents deletion whi
         await selectedDeletion.text();
         assert.equal((await listInstalledSkills(storageDirectory))[0]?.sha256, replacement.receipt.sha256);
 
-        await selectSkills([]);
+        const keepSkill = first.state.availableSkills.find((skill) => skill.source === "built-in")!;
+        assert.ok(keepSkill);
+        await selectSkills(["mix-review", keepSkill.id].sort());
+        const removal = { kind: "remove_session_skill", sessionId: first.state.activeSessionId, skillId: "mix-review" };
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const removed = await request("/command", {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(removal),
+          });
+          assert.equal(removed.status, 200, await removed.clone().text());
+          assert.deepEqual((await removed.json() as ChatDialogState).activeSkillIds, [keepSkill.id]);
+        }
+
         const deleted = await request("/skills/mix-review", { method: "DELETE" });
         assert.equal(deleted.status, 200, await deleted.clone().text());
         const deletedState = await deleted.json() as ChatDialogState;

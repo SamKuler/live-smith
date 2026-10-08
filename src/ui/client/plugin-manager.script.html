@@ -134,7 +134,7 @@
           permissions.className = "plugin-server-permissions";
           for (const [permission, property, label] of [
             ["input", "artifactInputApproved", "Audio or MIDI input"],
-            ["output", "artifactOutputApproved", "MIDI output"],
+            ["output", "artifactOutputApproved", "Audio or MIDI output"],
           ]) {
             const granted = server[property] === true;
             const button = makeButton(t(label), "secondary plugin-artifact-permission", () =>
@@ -406,6 +406,7 @@
         }
         const changed = await runPluginCommand("set_plugin_mcp_server_approved", {
           pluginId: plugin.id,
+          sha256: plugin.sha256,
           serverId: server.id,
           approved,
         }, reportMcpStatus);
@@ -419,15 +420,16 @@
         if (approved) {
           const input = permission === "input";
           if (!(await confirmAction({
-            title: window.LiveSmithI18n.message(input ? "Allow staged audio or MIDI input?" : "Allow validated MIDI output?"),
+            title: window.LiveSmithI18n.message(input ? "Allow staged audio or MIDI input?" : "Allow validated audio or MIDI output?"),
             message: input
               ? window.LiveSmithI18n.message("Plugin {pluginId} MCP server {serverId} may receive read-only temporary copies of exact Session audio or MIDI artifacts selected for its declared tools. The local process still runs as your operating-system user and is not sandboxed by Live Smith.", { pluginId: plugin.id, serverId: server.id })
-              : window.LiveSmithI18n.message("Plugin {pluginId} MCP server {serverId} may write only its declared temporary output file. Live Smith validates it as MIDI and saves it to the current Session; this permission does not import or change anything in Live.", { pluginId: plugin.id, serverId: server.id }),
+              : window.LiveSmithI18n.message("Plugin {pluginId} MCP server {serverId} may write only its declared temporary output file. Live Smith validates it as audio or MIDI and saves it to the current Session; this permission does not import or change anything in Live.", { pluginId: plugin.id, serverId: server.id }),
             acceptLabel: window.LiveSmithI18n.message("Allow"),
           }))) return;
         }
         const changed = await runPluginCommand("set_plugin_artifact_permission", {
           pluginId: plugin.id,
+          sha256: plugin.sha256,
           serverId: server.id,
           permission,
           approved,

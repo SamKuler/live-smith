@@ -294,9 +294,9 @@
           if (current.mcp.type === "stdio") {
             switchField(form, "Audio or MIDI input", "artifactInputApproved", current.artifactInputApproved,
               (value) => { current.artifactInputApproved = value; });
-            switchField(form, "MIDI output", "artifactOutputApproved", current.artifactOutputApproved,
+            switchField(form, "Audio or MIDI output", "artifactOutputApproved", current.artifactOutputApproved,
               (value) => { current.artifactOutputApproved = value; });
-            hint(form, "Audio or MIDI input grants temporary read-only copies of selected Session artifacts. MIDI output grants a temporary output file that Live Smith validates and saves. Neither permission changes Live.");
+            hint(form, "Audio or MIDI input grants temporary read-only copies of selected Session artifacts. Audio or MIDI output grants a temporary output file that Live Smith validates and saves. Neither permission changes Live.");
           }
         }
 
@@ -511,7 +511,7 @@
           ].join("\n") : current.mcp.url;
           return [t(local ? "This local MCP process runs as your operating-system user and is not sandboxed by Live Smith."
             : "Live Smith will connect to this MCP endpoint when its tools are requested."), target,
-            local ? t("Audio or MIDI input: {input} · MIDI output: {output}", {
+            local ? t("Audio or MIDI input: {input} · Audio or MIDI output: {output}", {
               input: t(current.artifactInputApproved ? "Allowed" : "Not allowed"),
               output: t(current.artifactOutputApproved ? "Allowed" : "Not allowed"),
             }) : ""].filter(Boolean).join("\n\n");

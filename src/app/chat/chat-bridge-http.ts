@@ -315,10 +315,11 @@ export type ChatBridgeCommandInput =
   | { kind: "archive_session"; sessionId: string }
   | { kind: "unarchive_session"; sessionId: string }
   | { kind: "set_session_skills"; sessionId: string; skillIds: string[] }
+  | { kind: "remove_session_skill"; sessionId: string; skillId: string }
   | { kind: "set_plugin_enabled"; pluginId: string; enabled: boolean }
   | { kind: "set_plugin_user_config"; pluginId: string; sha256: string; revision: string; values: Record<string, unknown>; secretUpdates: Record<string, unknown> }
-  | { kind: "set_plugin_mcp_server_approved"; pluginId: string; serverId: string; approved: boolean }
-  | { kind: "set_plugin_artifact_permission"; pluginId: string; serverId: string; permission: "input" | "output"; approved: boolean }
+  | { kind: "set_plugin_mcp_server_approved"; pluginId: string; sha256: string; serverId: string; approved: boolean }
+  | { kind: "set_plugin_artifact_permission"; pluginId: string; sha256: string; serverId: string; permission: "input" | "output"; approved: boolean }
   | { kind: "delete_plugin"; pluginId: string }
   | { kind: "discover_models"; profile: DraftProfile };
 
@@ -1565,6 +1566,13 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
       title,
     };
   }
+  if (kind === "remove_session_skill") {
+    assertOnlyInputKeys(input, ["kind", "sessionId", "skillId"], `${kind} command`);
+    if (!isSafeSkillReferenceId(input.skillId)) {
+      throw new ChatBridgeRequestValidationError("skillId must be a safe Skill ID.");
+    }
+    return { kind, sessionId: inputString(input, "sessionId"), skillId: input.skillId };
+  }
   if (kind === "set_session_skills") {
     assertOnlyInputKeys(
       input,
@@ -1607,21 +1615,23 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
     return { kind, pluginId: input.pluginId, enabled: input.enabled };
   }
   if (kind === "set_plugin_mcp_server_approved") {
-    assertOnlyInputKeys(input, ["kind", "pluginId", "serverId", "approved"], `${kind} command`);
-    if (!isSafePluginId(input.pluginId) || typeof input.serverId !== "string" ||
+    assertOnlyInputKeys(input, ["kind", "pluginId", "sha256", "serverId", "approved"], `${kind} command`);
+    if (!isSafePluginId(input.pluginId) || typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(input.sha256) ||
+        typeof input.serverId !== "string" ||
         !/^[A-Za-z0-9_-]{1,64}$/u.test(input.serverId) || typeof input.approved !== "boolean") {
       throw new ChatBridgeRequestValidationError("Plugin MCP server approval is invalid.");
     }
-    return { kind, pluginId: input.pluginId, serverId: input.serverId, approved: input.approved };
+    return { kind, pluginId: input.pluginId, sha256: input.sha256, serverId: input.serverId, approved: input.approved };
   }
   if (kind === "set_plugin_artifact_permission") {
-    assertOnlyInputKeys(input, ["kind", "pluginId", "serverId", "permission", "approved"], `${kind} command`);
-    if (!isSafePluginId(input.pluginId) || typeof input.serverId !== "string" ||
+    assertOnlyInputKeys(input, ["kind", "pluginId", "sha256", "serverId", "permission", "approved"], `${kind} command`);
+    if (!isSafePluginId(input.pluginId) || typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(input.sha256) ||
+        typeof input.serverId !== "string" ||
         !/^[A-Za-z0-9_-]{1,64}$/u.test(input.serverId) ||
         (input.permission !== "input" && input.permission !== "output") || typeof input.approved !== "boolean") {
       throw new ChatBridgeRequestValidationError("Plugin artifact permission is invalid.");
     }
-    return { kind, pluginId: input.pluginId, serverId: input.serverId,
+    return { kind, pluginId: input.pluginId, sha256: input.sha256, serverId: input.serverId,
       permission: input.permission, approved: input.approved };
   }
   if (kind === "delete_plugin") {

@@ -3440,7 +3440,7 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "load_midi_continuation" || input.kind === "configure_midi_continuation" ||
     input.kind === "fill_midi_continuation" || input.kind === "import_midi_continuation" ||
     input.kind === "select_artifact" ||
-    input.kind === "set_session_skills";
+    input.kind === "set_session_skills" || input.kind === "remove_session_skill";
 }
 
 function isCommandAllowedDuringSend(input: ChatBridgeCommandInput): boolean {

@@ -337,6 +337,7 @@ test("Plugin enable, disable, server approval, and deletion use explicit command
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {
       kind: "set_plugin_mcp_server_approved",
       pluginId: "music-tools",
+      sha256: state.plugins[0]!.sha256,
       serverId: "converter",
       approved: true,
     });
@@ -356,6 +357,7 @@ test("Plugin enable, disable, server approval, and deletion use explicit command
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {
       kind: "set_plugin_artifact_permission",
       pluginId: "music-tools",
+      sha256: state.plugins[0]!.sha256,
       serverId: "converter",
       permission: "input",
       approved: true,
@@ -366,6 +368,7 @@ test("Plugin enable, disable, server approval, and deletion use explicit command
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {
       kind: "set_plugin_artifact_permission",
       pluginId: "music-tools",
+      sha256: state.plugins[0]!.sha256,
       serverId: "converter",
       permission: "output",
       approved: true,
@@ -553,3 +556,31 @@ test("Plugin controls and review copy follow the selected UI language", async ()
     harness.close();
   }
 });
+
+
+for (const permission of ["server", "input", "output"] as const) {
+  test(`pending ${permission} permission retains the package digest reviewed before peer replacement`, async () => {
+    const state = stateFixture();
+    const plugin = installedPlugin();
+    plugin.mcpServers[0]!.approved = permission !== "server";
+    state.plugins = [plugin];
+    const harness = await createDialogHarness(state);
+    try {
+      const selector = permission === "server" ? ".plugin-server-approval" : `.plugin-artifact-permission:nth-child(${permission === "input" ? 1 : 2})`;
+      harness.click(`#pluginMcpSource-music-tools ${selector}`);
+      assert.equal(harness.document.getElementById("appConfirmation")!.hidden, false);
+      const replaced = structuredClone(state);
+      replaced.plugins[0]!.sha256 = "b".repeat(64);
+      replaced.plugins[0]!.mcpServers[0]!.target = "./replacement-command";
+      harness.setServerState(replaced);
+      harness.emitServerEvent({ type: "global_state_invalidated" });
+      await waitForCondition(() => harness.document.getElementById("pluginMcpSource-music-tools")!.textContent!.includes("replacement-command"), "Expected peer replacement.");
+      await harness.acceptAppConfirmation();
+      await harness.settle();
+      assert.equal((commandCalls(harness).at(-1)?.body as { sha256?: string }).sha256, plugin.sha256);
+      const button = harness.document.querySelector<HTMLButtonElement>(`#pluginMcpSource-music-tools ${selector}`)!;
+      assert.equal(permission === "server" ? button.textContent === "Revoke" : button.getAttribute("aria-pressed") === "true", false);
+      assert.deepEqual(harness.errors, []);
+    } finally { harness.close(); }
+  });
+}

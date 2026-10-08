@@ -406,11 +406,9 @@
           acceptLabel: window.LiveSmithI18n.message("Disable"),
         }))) return;
         for (const session of sessions) {
-          const changed = await runCommand("set_session_skills", {
+          const changed = await runCommand("remove_session_skill", {
             sessionId: session.id,
-            skillIds: (session.activeSkillIds || [])
-              .filter((activeId) => activeId !== skillId)
-              .sort(),
+            skillId,
           });
           if (!changed) return;
         }

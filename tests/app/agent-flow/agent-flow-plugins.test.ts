@@ -161,6 +161,7 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
         const approved = await command({
           kind: "set_plugin_mcp_server_approved",
           pluginId: "music-tools",
+          sha256: installed.receipt.sha256,
           serverId: "converter",
           approved: true,
         });
@@ -172,6 +173,7 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
           const granted = await command({
             kind: "set_plugin_artifact_permission",
             pluginId: "music-tools",
+            sha256: installed.receipt.sha256,
             serverId: "converter",
             permission,
             approved: true,
@@ -195,6 +197,21 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
         assert.ok(replaced.state.plugins[0]?.mcpServers.every((server) => !server.approved &&
           !server.artifactInputApproved && !server.artifactOutputApproved));
 
+        for (const grant of [
+          { kind: "set_plugin_mcp_server_approved" },
+          { kind: "set_plugin_artifact_permission", permission: "input" },
+          { kind: "set_plugin_artifact_permission", permission: "output" },
+        ]) {
+          const stale = await request("/command", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Live-Smith-Command-Id": `stale-permission-${++commandSequence}` },
+            body: JSON.stringify({ ...grant, pluginId: "music-tools", serverId: "converter", approved: true,
+              sha256: installed.receipt.sha256 }),
+          });
+          assert.equal(stale.status, 409, await stale.clone().text());
+          await stale.text();
+        }
+        assert.deepEqual((await listInstalledPlugins(storageDirectory))[0]!.approvedMcpServerIds, []);
         const deleted = await command({ kind: "delete_plugin", pluginId: "music-tools" });
         assert.deepEqual(deleted.plugins, []);
       },
@@ -315,22 +332,22 @@ test("revoking approval or disabling a Plugin closes its active MCP request pack
       const first = await openRequest(1);
       try {
         await command("revoke-active-server", {
-          kind: "set_plugin_mcp_server_approved", pluginId: "music-tools", serverId: "converter", approved: false,
+          kind: "set_plugin_mcp_server_approved", pluginId: "music-tools", sha256: initial.plugins[0]!.sha256, serverId: "converter", approved: false,
         });
         assert.deepEqual(closed, [1]);
       } finally { await first.close(); }
 
       await command("restore-server-approval", {
-        kind: "set_plugin_mcp_server_approved", pluginId: "music-tools", serverId: "converter", approved: true,
+        kind: "set_plugin_mcp_server_approved", pluginId: "music-tools", sha256: initial.plugins[0]!.sha256, serverId: "converter", approved: true,
       });
       await command("grant-artifact-input", {
-        kind: "set_plugin_artifact_permission", pluginId: "music-tools", serverId: "converter",
+        kind: "set_plugin_artifact_permission", pluginId: "music-tools", sha256: initial.plugins[0]!.sha256, serverId: "converter",
         permission: "input", approved: true,
       });
       const second = await openRequest(2);
       try {
         await command("revoke-artifact-input", {
-          kind: "set_plugin_artifact_permission", pluginId: "music-tools", serverId: "converter",
+          kind: "set_plugin_artifact_permission", pluginId: "music-tools", sha256: initial.plugins[0]!.sha256, serverId: "converter",
           permission: "input", approved: false,
         });
         assert.deepEqual(closed, [1, 2]);

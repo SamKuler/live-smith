@@ -141,6 +141,7 @@
         "archive_session",
         "unarchive_session",
         "set_session_skills",
+        "remove_session_skill",
         "set_session_approval_mode",
         "set_session_edit_scopes",
         "set_session_creative_brief",
@@ -2799,7 +2800,7 @@
             ? ["approvalMode", "updatedAt"]
             : kind === "set_session_edit_scopes"
               ? ["editScopes", "updatedAt"]
-              : kind === "set_session_skills"
+              : kind === "set_session_skills" || kind === "remove_session_skill"
                 ? ["activeSkillIds", "updatedAt"]
                 : kind === "set_session_creative_brief"
                   ? ["creativeBrief", "updatedAt"]

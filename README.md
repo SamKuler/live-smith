@@ -615,7 +615,7 @@ Credentials remain write-only environment variables or HTTP headers, never model
 tool arguments. Plugin connections bind to the exact installed package and
 server; direct connections bind to their exact launch configuration or URL.
 Changing that target requires entering credentials again. Direct local MCP
-connections have separate audio-input and MIDI-output grants. Disabling or
+connections have separate audio/MIDI-input and audio/MIDI-output grants. Disabling or
 removing a connection closes its active MCP clients and preserves saved Session
 artifacts.
 

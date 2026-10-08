@@ -1578,6 +1578,8 @@ async function createDialogHarness(
                   "xhigh" | "max" | "ultra" | null;
                 sessionId?: string;
                 skillIds?: string[];
+                skillId?: string;
+                sha256?: string;
                 pluginId?: string;
                 serverId?: string;
                 enabled?: boolean;
@@ -1617,8 +1619,11 @@ async function createDialogHarness(
                 typeof command.serverId === "string" &&
                 typeof command.approved === "boolean"
               ) {
-                const server = serverState.plugins.find((entry) => entry.id === command.pluginId)
-                  ?.mcpServers.find((entry) => entry.id === command.serverId);
+                const plugin = serverState.plugins.find((entry) => entry.id === command.pluginId);
+                if (plugin && plugin.sha256 !== command.sha256) {
+                  return failedResponse({ commandId, error: "Plugin package changed. Review its permissions and try again." }, 409, "Conflict");
+                }
+                const server = plugin?.mcpServers.find((entry) => entry.id === command.serverId);
                 if (server) {
                   server.approved = command.approved;
                   if (!command.approved) {
@@ -1633,8 +1638,11 @@ async function createDialogHarness(
                 (command.permission === "input" || command.permission === "output") &&
                 typeof command.approved === "boolean"
               ) {
-                const server = serverState.plugins.find((entry) => entry.id === command.pluginId)
-                  ?.mcpServers.find((entry) => entry.id === command.serverId);
+                const plugin = serverState.plugins.find((entry) => entry.id === command.pluginId);
+                if (plugin && plugin.sha256 !== command.sha256) {
+                  return failedResponse({ commandId, error: "Plugin package changed. Review its permissions and try again." }, 409, "Conflict");
+                }
+                const server = plugin?.mcpServers.find((entry) => entry.id === command.serverId);
                 if (server?.type === "stdio" && server.approved) {
                   if (command.permission === "input") server.artifactInputApproved = command.approved;
                   else server.artifactOutputApproved = command.approved;
@@ -1979,18 +1987,21 @@ async function createDialogHarness(
                 ) ?? [];
                 synchronizeActiveSessionProjection();
               } else if (
-                command.kind === "set_session_skills" &&
-                command.sessionId &&
-                Array.isArray(command.skillIds)
+                (command.kind === "set_session_skills" && Array.isArray(command.skillIds) ||
+                  command.kind === "remove_session_skill" && typeof command.skillId === "string") &&
+                command.sessionId
               ) {
                 const session = [
                   ...serverState.sessions,
                   ...serverState.previousSessions,
                   ...serverState.archivedSessions,
                 ].find((entry) => entry.id === command.sessionId);
-                if (session) session.activeSkillIds = [...command.skillIds].sort();
+                const skillIds = command.kind === "remove_session_skill"
+                  ? (session?.activeSkillIds ?? []).filter((skillId) => skillId !== command.skillId)
+                  : [...command.skillIds!].sort();
+                if (session) session.activeSkillIds = skillIds;
                 if (serverState.activeSessionId === command.sessionId) {
-                  serverState.activeSkillIds = [...command.skillIds].sort();
+                  serverState.activeSkillIds = [...skillIds];
                 }
               } else if (command.kind === "restore_session" && command.sessionId) {
                 const restored = serverState.previousSessions.find(
