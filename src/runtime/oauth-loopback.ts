@@ -1,7 +1,10 @@
 import { createServer, type Server } from "node:http";
+import type { Socket } from "node:net";
 import { clearTimeout as cancelTimeout, setTimeout as scheduleTimeout } from "node:timers";
 import { URL } from "node:url";
 import { throwIfAborted } from "./host.js";
+
+const CALLBACK_FLUSH_TIMEOUT_MS = 1_000;
 
 export interface OAuthCallbackResult { code: string; iss?: string }
 export interface OAuthLoopbackCallback {
@@ -28,16 +31,30 @@ export async function startOAuthLoopbackCallback(options: {
     reject = rejectPromise;
   });
   let server!: Server;
+  const sockets = new Set<Socket>();
   let timeout: ReturnType<typeof scheduleTimeout> | undefined;
   let boundPort = options.port;
   const listenHost = options.listenHost ?? "127.0.0.1";
   const redirectHost = options.redirectHost ?? "localhost";
-  const finish = (operation: () => void): void => {
+  const finish = (operation: () => void, callbackSocket?: Socket): void => {
     if (settled) return;
     settled = true;
     options.signal.removeEventListener("abort", onAbort);
     if (timeout !== undefined) cancelTimeout(timeout);
-    server.close(operation);
+    let closeTimeout: ReturnType<typeof scheduleTimeout> | undefined;
+    server.close(() => {
+      if (closeTimeout !== undefined) cancelTimeout(closeTimeout);
+      operation();
+    });
+    for (const socket of sockets) {
+      if (socket !== callbackSocket) socket.destroy();
+    }
+    // Allow the terminal callback HTML to flush, but never let an idle or
+    // non-reading browser connection retain the authorization lifecycle.
+    if (callbackSocket && !callbackSocket.destroyed) {
+      closeTimeout = scheduleTimeout(() => callbackSocket.destroy(), CALLBACK_FLUSH_TIMEOUT_MS);
+      closeTimeout.unref();
+    }
   };
   const onAbort = (): void => finish(() => {
     try {
@@ -61,7 +78,7 @@ export async function startOAuthLoopbackCallback(options: {
       }
       if (url.searchParams.has("error")) {
         sendHtml(response, 400, "OAuth authorization did not complete.");
-        finish(() => reject(new Error("OAuth authorization did not complete.")));
+        finish(() => reject(new Error("OAuth authorization did not complete.")), request.socket);
         return;
       }
       const code = url.searchParams.get("code");
@@ -71,10 +88,15 @@ export async function startOAuthLoopbackCallback(options: {
       }
       sendHtml(response, 200, options.successMessage);
       const issuer = url.searchParams.get("iss");
-      finish(() => settle({ code, ...(issuer === null ? {} : { iss: issuer }) }));
+      finish(() => settle({ code, ...(issuer === null ? {} : { iss: issuer }) }), request.socket);
     } catch {
       sendHtml(response, 500, "OAuth callback could not be processed.");
     }
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    if (settled) socket.destroy();
   });
   await new Promise<void>((resolve, rejectListen) => {
     server.once("error", rejectListen);

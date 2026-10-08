@@ -1,14 +1,28 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { execFile } from "node:child_process";
 import { once } from "node:events";
+import { execPath } from "node:process";
 import test from "node:test";
-import { URL } from "node:url";
+import { fileURLToPath, URL } from "node:url";
+import { promisify } from "node:util";
 
 import { WebSocketServer } from "ws";
 
 import { createHostAbortController } from "../../src/runtime/host.js";
 import { resolveNetworkRoute } from "../../src/runtime/proxy-fetch.js";
 import { createProxyAwareWebSocket } from "../../src/runtime/proxy-websocket.js";
+
+for (const scenario of ["abort", "http-rejection", "timeout"] as const) {
+  test(`WebSocket opening ${scenario} rejects without an unhandled socket error`, async () => {
+    const probe = fileURLToPath(new URL("./support/websocket-opening-probe.ts", import.meta.url));
+    const { stdout, stderr } = await promisify(execFile)(execPath, ["--import", "tsx", probe, scenario], {
+      timeout: 5_000,
+    });
+    assert.equal(stdout.trim(), "opening rejected and transport closed");
+    assert.equal(stderr, "");
+  });
+}
 
 test("proxy-aware WebSocket exchanges bounded text over a loopback-bypassed route", async (t) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0, perMessageDeflate: false });

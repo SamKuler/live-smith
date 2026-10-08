@@ -190,7 +190,9 @@ authorization code which the user pastes into Live Smith; the code is bounded,
 submitted only to the active Google Profile's pending attempt, and never stored
 or projected back into dialog state. Claude's loopback callback accepts only
 its exact path and state, returns inert local HTML, and closes after success,
-denial, cancellation, timeout, or backend shutdown.
+denial, cancellation, timeout, or backend shutdown. Accepted unrelated sockets
+are retired on completion. The terminal callback response has up to one second
+to flush before a non-reading peer is released.
 
 The dialog does not depend on popup support in Ableton's embedded WebView.
 After login acquisition returns a validated pending HTTPS URL, the Extension
@@ -724,7 +726,9 @@ and always generates 30 seconds. A different explicit duration for that model is
 rejected before an audio job or paid request is created. Instrumental requests
 add an explicit no-vocals instruction inside the provider adapter. Batch output
 is bounded, decoded from the final documented model-output audio block, then
-inspected and saved as an ordinary Session asset.
+inspected and saved as an ordinary Session asset. After the complete HTTP body
+reaches EOF, bounded local validation and decoding finish even if Stop arrives,
+so the received result can be saved. Incomplete reads remain cancellable.
 
 The experimental `lyria-realtime-exp` model uses the official
 [Live Music WebSocket](https://ai.google.dev/api/live_music). Live Smith sends

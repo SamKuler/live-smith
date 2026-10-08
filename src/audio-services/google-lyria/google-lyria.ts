@@ -155,7 +155,9 @@ async function generateBatch(
       preserveCompletedOnAbort: true,
     });
     const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-    return await interactionAudio(value, model, controller.signal, fail);
+    // EOF owns a complete paid response. Finish bounded local validation and
+    // decoding so the caller can save it even if Stop arrives while yielding.
+    return await interactionAudio(value, model, fail);
   } catch (error) {
     controller.abort();
     cancelStreamBestEffort(response?.body);
@@ -184,7 +186,6 @@ function batchPrompt(
 async function interactionAudio(
   value: unknown,
   model: "lyria-3.5" | "lyria-3-clip-preview",
-  signal: AbortSignal,
   fail: (detail: string) => GoogleLyriaError,
 ): Promise<Uint8Array> {
   const interaction = protocolObject(value, fail);
@@ -208,7 +209,7 @@ async function interactionAudio(
     : mime !== "audio/mpeg" && mime !== "audio/mp3") {
     throw fail("interaction returned an unsupported audio format.");
   }
-  return decodeCanonicalBase64(selected.data, MAX_AUDIO_ASSET_BYTES, signal, fail);
+  return decodeCanonicalBase64(selected.data, MAX_AUDIO_ASSET_BYTES, undefined, fail);
 }
 
 async function generateRealtime(
@@ -355,7 +356,7 @@ function isProtocolObject(value: unknown): value is Record<string, unknown> {
 async function decodeCanonicalBase64(
   value: string,
   maximumBytes: number,
-  signal: AbortSignal,
+  signal: AbortSignal | undefined,
   fail: (detail: string) => GoogleLyriaError,
 ): Promise<Uint8Array> {
   const maximumCharacters = Math.ceil(maximumBytes / 3) * 4;

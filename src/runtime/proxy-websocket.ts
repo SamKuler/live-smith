@@ -109,17 +109,17 @@ function waitForOpen(
 ): Promise<ProviderWebSocketConnection> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const cleanup = (): void => {
+    const cleanupOpening = (): void => {
       socket.off("open", onOpen);
-      socket.off("error", onError);
-      socket.off("close", onClose);
       socket.off("unexpected-response", onUnexpectedResponse);
       signal.removeEventListener("abort", onAbort);
     };
     const fail = (): void => {
       if (settled) return;
       settled = true;
-      cleanup();
+      cleanupOpening();
+      // Terminating CONNECTING emits an error before close on a later turn.
+      // Opening has settled, but its socket still owns those terminal events.
       socket.terminate();
       agent?.destroy();
       try {
@@ -133,18 +133,23 @@ function waitForOpen(
     const onOpen = (): void => {
       if (settled) return;
       settled = true;
-      cleanup();
+      cleanupOpening();
+      socket.off("error", onError);
+      socket.off("close", onClose);
       resolve(new WebSocketSession(socket, agent, maximumMessageBytes, signal));
     };
     const onError = (): void => fail();
-    const onClose = (): void => fail();
+    const onClose = (): void => {
+      fail();
+      socket.off("error", onError);
+    };
     const onUnexpectedResponse = (_request: unknown, response: { destroy(): void }): void => {
       response.destroy();
       fail();
     };
     const onAbort = (): void => fail();
     socket.once("open", onOpen);
-    socket.once("error", onError);
+    socket.on("error", onError);
     socket.once("close", onClose);
     socket.once("unexpected-response", onUnexpectedResponse);
     signal.addEventListener("abort", onAbort, { once: true });

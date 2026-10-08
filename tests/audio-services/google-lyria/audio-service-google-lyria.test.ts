@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
+import { setImmediate } from "node:timers";
 
 import { inspectAudioAttachment } from "../../../src/attachments/audio.js";
 import { AudioSubmissionNotStartedError, type AudioGenerationRequest } from "../../../src/audio-services/contracts.js";
@@ -100,6 +101,37 @@ test("Lyria Clip keeps its fixed duration and MP3 response contract", async () =
     adapter.submit({ ...MUSIC, durationSeconds: 29, instrumental: true }, signal()),
     /always generates 30 seconds/,
   );
+  assert.equal(requests.length, 1);
+});
+
+test("Lyria batch Stop still rejects a body whose audio bytes arrived without EOF", async () => {
+  const controller = createHostAbortController();
+  const completeBody = Buffer.from(await interaction(waveBytes(60)).arrayBuffer());
+  let cancelled = false;
+  let requests = 0;
+  const adapter = createGoogleLyriaAudioAdapter(KEY, { fetchImpl: async () => {
+    requests += 1;
+    return new Response(new ReadableStream({
+      start(stream) {
+        stream.enqueue(completeBody);
+        setImmediate(() => controller.abort());
+      },
+      cancel() { cancelled = true; },
+    }), { headers: { "content-type": "application/json" } });
+  } });
+  await assert.rejects(adapter.submit(MUSIC, controller.signal), (error: unknown) =>
+    error instanceof Error && error.name === "AbortError");
+  assert.equal(requests, 1);
+  assert.equal(cancelled, true);
+});
+
+test("Lyria batch validates the tail of a large base64 body after yielding", async () => {
+  const data = Buffer.from(waveBytes(60)).toString("base64");
+  const response = new Response(JSON.stringify({ steps: [{ type: "model_output", content: [
+    { type: "audio", mime_type: "audio/wav", data: `${data.slice(0, -8)}!${data.slice(-7)}` },
+  ] }] }), { headers: { "content-type": "application/json" } });
+  const { adapter, requests } = replay([response]);
+  await assert.rejects(adapter.submit(MUSIC, signal()), /audio data is not canonical base64/);
   assert.equal(requests.length, 1);
 });
 

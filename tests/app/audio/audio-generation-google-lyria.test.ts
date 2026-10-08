@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
 import test from "node:test";
+import { setImmediate } from "node:timers";
 
 import type { AudioGenerationAdapter } from "../../../src/audio-services/contracts.js";
+import { createGoogleLyriaAudioAdapter } from "../../../src/audio-services/google-lyria/google-lyria.js";
 import {
   builtInAudioLocalToolName,
   createBuiltInAudioToolsets,
@@ -87,6 +90,41 @@ test("Google Lyria uses the provider-neutral inline audio job and tool lifecycle
   assert.equal(recovered.status, "completed");
   assert.equal(recovered.outputAssets[0]?.id, job.outputAssets[0]?.id);
   assert.equal(h.submissions(), 1, "local receipt recovery must not generate again");
+});
+
+test("Stop during local decoding preserves complete Lyria audio in the existing job", async (t) => {
+  const h = await harness(t, "lyria-3.5");
+  const controller = new AbortController();
+  const audio = waveBytes(60);
+  assert.ok(audio.byteLength >= 256 * 1024);
+  const body = Buffer.from(JSON.stringify({ steps: [{ type: "model_output", content: [
+    { type: "audio", mime_type: "audio/wav", data: Buffer.from(audio).toString("base64") },
+  ] }] }));
+  let submissions = 0;
+  let eof = false;
+  const adapter = createGoogleLyriaAudioAdapter(h.connection.apiKey, { fetchImpl: async () => {
+    submissions += 1;
+    let sent = false;
+    return new Response(new ReadableStream({
+      pull(stream) {
+        if (!sent) { sent = true; stream.enqueue(body); return; }
+        eof = true;
+        stream.close();
+        setImmediate(() => controller.abort(new Error("Stop after EOF")));
+      },
+    }), { headers: { "content-type": "application/json" } });
+  } });
+  const job = await generateAudio({ ...h.context, signal: controller.signal, generationAdapter: adapter }, h.connection.id, {
+    operation: "generate_music", prompt: "Cinematic piano", instrumental: true,
+  });
+  assert.equal(eof, true);
+  assert.equal(controller.signal.aborted, true, "local decoding must yield so Stop can run");
+  assert.equal(submissions, 1);
+  assert.equal(job.status, "completed");
+  assert.equal(job.outputAssets.length, 1);
+  assert.equal(job.remoteTaskId, undefined);
+  assert.deepEqual((await listAudioJobs(h.directory, h.session.id)).map((saved) => saved.id), [job.id]);
+  assert.deepEqual((await readAudioAsset(h.directory, h.session.id, job.outputAssets[0]!.id)).bytes, audio);
 });
 
 test("model-specific Lyria limits reject before a job or paid submission exists", async (t) => {
