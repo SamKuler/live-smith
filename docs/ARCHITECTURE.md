@@ -1144,7 +1144,10 @@ the package ID, digest, exact MCP server, optional named Connection ID and
 private credential snapshot, exposed tool, server approval, and artifact
 approvals. Execution rechecks that admission inside the Plugin
 authorization fence. A changed, disabled, replaced, or unapproved package cannot
-reuse an older model-visible tool call.
+reuse an older model-visible tool call. Package MCP and artifact permission
+commands carry the reviewed archive digest. Grant and revoke compare that digest
+inside the storage transaction before accepting either a change or a no-op; a
+replaced package requires a new review.
 Standalone MCP Connections use the same transport, schema, result, and tool
 routing boundary without an installed package or digest. Their enabled state
 authorizes the exact saved launch configuration or endpoint. Execution rechecks
@@ -1171,7 +1174,9 @@ MCP tools cannot call the Live executor. An approved artifact-input contract
 replaces an opaque Session audio or MIDI reference with one read-only temporary file for
 the duration of the call. An independently approved artifact-output contract
 supplies one host-owned temporary destination, accepts only a regular contained
-file, parses bounded Standard MIDI, and stores an immutable Session artifact.
+file, validates its declared MIDI or WAV/MP3 format, and stores an immutable
+Session artifact. The output grant covers both audio and MIDI; it grants no Live
+mutation authority.
 The MIDI bytes are durably written before their metadata commit. Listing under
 the storage transaction admits only structurally complete pairs. Unpaired files
 remain private and count toward the storage limit; missing blobs retain their
@@ -1318,7 +1323,10 @@ HTTPS, and mailto destinations.
 same global per-storage transaction queue as Sessions. Install/replace/delete
 uses a recoverable pending mutation plus private staging, durable atomic writes,
 directory identity checks before and after mutation, and strict catalog
-validation. Stable catalog listing reads summaries and safe file metadata only;
+validation. The cleanup boundary includes initial directory creation and staging
+before a pending mutation is recorded. Startup removes empty or staging-only
+unreferenced owned directories, while rejecting links and foreign contents.
+Stable catalog listing reads summaries and safe file metadata only;
 only selected definitions are opened, bounded, hash-checked, and parsed. Catalog
 capabilities are scoped to an active opaque storage transaction, and detached
 operations are drained before the transaction releases.
@@ -2289,13 +2297,17 @@ using it after an insertion would authorize a different sequential meaning.
 
 Whole-Clip main Arrangement-lane MIDI authoring uses `create_midi_clip` and
 accepts 0-4096 notes per action. An empty named Clip is the staging anchor for
-longer work.
+longer work. Newly authored notes use `[0, durationBeats]`. Reusing a Clip
+requires its start marker and first playback pass to map this complete section
+directly; incompatible playback geometry uses the normal replacement policy.
+Arrangement, Session and Take Lane paths share this reuse decision.
 `replace_midi_clip_segment` then targets that exact arrangement Clip by track,
-name, and start beat. Notes are relative to the Clip; each segment removes only
-notes whose intervals overlap its range, preserves non-overlapping notes, and
-sorts the result deterministically. Plans reject overlapping segment actions
-for the same Clip. Preflight fingerprints the full current Clip and execution
-rechecks the segment against the current Clip duration before assigning notes.
+name, and start beat. Existing note times and segment ranges use Clip source
+beats, independent of Arrangement position and playback markers. Each segment
+removes only overlapping notes, preserves non-overlapping notes, and sorts the
+result deterministically. Overlap checks use the bound Clip handle so different
+track locators cannot bypass them. Preflight fingerprints the full current Clip
+and execution rechecks the source range before assigning notes.
 Every note must state its velocity explicitly; validation never invents a hidden
 musical default.
 
@@ -2303,9 +2315,12 @@ Deterministic whole-Clip MIDI transforms target exactly one Arrangement or
 Session MIDI Clip. The action binding captures the Clip handle before
 confirmation, preflight fingerprints every current note, and execution applies
 transpose, start quantization, velocity scaling, or beat shifting locally. A
-transform writes the complete resulting note set only after validating every
-pitch, start, and end against MIDI and Clip bounds; invalid output performs no
-mutation. Optional SDK note fields are preserved unchanged.
+transform writes the complete resulting note set only after validation. Pitch
+and velocity edits preserve existing source timing, including hidden notes.
+Timing edits use the source extent defined by the end marker, active loop end
+and stored note ends; the visible Arrangement duration does not truncate that
+extent. Invalid output performs no mutation. Optional SDK note fields are
+preserved unchanged.
 
 ### Take Lane Clip creation
 
@@ -2460,8 +2475,9 @@ a scope or choosing New Session does not persist an untouched empty Session.
 The storage module shares these transient records across dialogs for the same
 canonical storage directory. Session reads include them, so Approval mode, model
 selection, Skills, attachments, and Send keep using the same ID. An explicit
-metadata change, archive/restore, or the first event or attachment write persists
-that Session under the existing storage transaction; unrelated transient records
+metadata change, archive/restore, or the first event, attachment, MIDI artifact
+or continuation-buffer write persists that Session under the existing storage
+transaction; unrelated transient records
 are never included in the write. A confirmed saved record supersedes its
 in-memory reservation, including after an uncertain commit. The persisted
 Session format is unchanged. New and renamed titles are limited to 80 Unicode
@@ -2476,7 +2492,7 @@ win the same find-or-create race. New Session reuses the current candidate first
 then the newest matching candidate, only when its current state is
 pristine: blank title, no origin/archive marker, no model choice or creative
 brief, no non-default Approval mode, unrestricted Edit Scope, no active Skills, no events, no
-attachments, and no active or queued send. Event and attachment absence are
+attachments, audio jobs, MIDI content, and no active or queued send. Content absence is
 rechecked under the candidate's Session mutation fence, and the final decision
 rejects any Session operation queued behind that check. Approval and Edit Scope
 writes share a separate
@@ -2492,20 +2508,26 @@ absent from storage. The claim lasts until that dialog closes; explicit Session
 selection may still join a claimed Session.
 
 Current and History lists keep Sessions with a title, creative brief, events,
-attachments, or window-local draft/queued/running work. The current dialog also keeps every
+attachments, audio jobs, MIDI artifacts or continuation settings, or window-local
+draft/queued/running work. The current dialog also keeps every
 Session that has been active in that dialog, so an untouched empty Session remains
 reachable after switching until the dialog closes. Unvisited empty Sessions stay
 hidden, and a new dialog does not inherit the prior dialog's visibility. Explicitly
 archived Sessions remain visible for management. Track identity, timestamps, and
 permission or model settings do not count as conversation content.
 The app derives `ChatSessionSummary.hasContent` under the storage transaction;
-this is UI metadata and is never persisted. Unreadable content remains visible
+this is UI metadata and is never persisted. MIDI content reads do not reacquire
+the transaction held by the state snapshot. Unreadable content remains visible
 instead of being assumed empty. The complete Session membership stays in bridge
 state because the client uses missing IDs to reconcile deleted Sessions and
 their local drafts. Only list rendering and bulk selection omit inactive empty
 records; hiding them never deletes or rewrites their saved data.
 
 ### Session context, concurrency, and Approval
+
+Bulk Skill disable submits a remove-one-Skill intent for each confirmed Session.
+The server filters the current saved selection inside its Session/storage
+mutation boundary, preserving unrelated concurrent additions or removals.
 
 The Live context observer produces both the detailed summary and a structured
 presentation for the same resolved interaction. `ChatDialogState.liveContext`
@@ -2768,6 +2790,13 @@ authoritatively deleted or archived, target-scoped reconciliation removes or
 moves only that record.
 
 ### Bridge publications and authoritative receipts
+
+Tool results carry an optional persisted `outcome`: `success`, `failed`,
+`unknown` or `stopped`. New Agent and manual tool paths record the known outcome
+independently of loop continuation. Storage and browser validators accept it only
+on tool results. The timeline uses this field directly; historical results with
+no reliable outcome remain readable and display as unconfirmed. Existing Apply
+operation metadata retains its own lifecycle.
 
 `agent-flow.ts` produces an unversioned domain state. At the WebView boundary,
 each runtime bridge stamps every full `ChatBridgeState` exactly once with its own
@@ -3111,6 +3140,11 @@ already changed. Device parameter values outside the freshly observed range are
 rejected rather than silently clamped after confirmation.
 
 ### Window host lifetime
+
+Request tool resources have one cleanup owner from the first external resource
+acquisition through later initialization, event persistence and execution. Once
+the complete tool registry is available it owns that cleanup; earlier setup
+failures still release the admitted Plugin connections.
 
 `createAgentRuntime` owns an authenticated loopback HTTP/SSE bridge, Session claims,
 subscriptions and provider resources independently of a page. `runAgentFlow` owns
