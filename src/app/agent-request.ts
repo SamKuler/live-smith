@@ -326,6 +326,7 @@ export async function handleAgentRequest(
   let audioSampleSourceInstructions = requestAudioSampleSourceInstructions(requestAudioSources);
   const requestAttachmentQuota = prepared.attachmentQuota;
   let requestDocumentTextCharacters = prepared.documentTextCharacters;
+  let audioTools: Awaited<ReturnType<typeof createRequestAudioTools>>;
   const pluginTools: Awaited<ReturnType<typeof createRequestPluginTools>> = await createRequestPluginTools({
     onAudioArtifacts: (artifacts) => audioTools.registerArtifacts(artifacts),
     ...(prepared.userEvent.parentCandidate ? { artifactRevisionOf: prepared.userEvent.parentCandidate } : {}),
@@ -341,31 +342,33 @@ export async function handleAgentRequest(
       ? { withAuthorization: callbacks.withPluginAuthorization }
       : {}),
   });
-  const audioTools: Awaited<ReturnType<typeof createRequestAudioTools>> = await createRequestAudioTools({
-    context, assertLiveSetCurrent, storageDirectory, sessionId: session.id, requestId: prepared.userEvent.id,
-    attachmentRefs: requestAudioAttachmentRefs,
-    hasPluginAudioOutputs: pluginTools.hasAudioOutputs,
-    ...(prepared.userEvent.parentCandidate ? { artifactSource: prepared.userEvent.parentCandidate } : {}),
-    target: interaction.target, signal: callbacks.signal, onProgress: callbacks.onProgress,
-    ...(callbacks.withGenerationAuthorization ? { withGenerationAuthorization: callbacks.withGenerationAuthorization } : {}),
-    ...(callbacks.audioProcessing ? { processing: callbacks.audioProcessing } : {}),
-    ...(supportsArrangementAudioInput ? { modelAudioInput: {
-      canAccept: (byteLength: number) => attachmentRequestQuotaIsWithinLimits([
-        ...requestAttachmentQuota,
-        { kind: "audio", byteLength },
-      ]),
-    } } : {}),
-    onAssets: async (assets) => {
-      await addAudioAssetSampleSources({ context, storageDirectory, sessionId: session.id, signal: callbacks.signal }, requestAudioSources, assets);
-      audioSampleSourceInstructions = [
-        requestAudioSampleSourceInstructions(requestAudioSources),
-        audioAssetSampleSourceInstructions(requestAudioSources),
-      ].filter(Boolean).join("\n\n");
-    },
-  }).catch(async (error: unknown) => { await pluginTools.close(); throw error; });
-  let externalTools: ToolRegistry;
+  let toolResources: Pick<ToolRegistry, "close"> = pluginTools;
+  let unsubscribeEditScopes: (() => void) | undefined;
+  let unsubscribeEditScopesInvalidations: (() => void) | undefined;
   try {
-    externalTools = new ToolRegistry([
+    audioTools = await createRequestAudioTools({
+      context, assertLiveSetCurrent, storageDirectory, sessionId: session.id, requestId: prepared.userEvent.id,
+      attachmentRefs: requestAudioAttachmentRefs,
+      hasPluginAudioOutputs: pluginTools.hasAudioOutputs,
+      ...(prepared.userEvent.parentCandidate ? { artifactSource: prepared.userEvent.parentCandidate } : {}),
+      target: interaction.target, signal: callbacks.signal, onProgress: callbacks.onProgress,
+      ...(callbacks.withGenerationAuthorization ? { withGenerationAuthorization: callbacks.withGenerationAuthorization } : {}),
+      ...(callbacks.audioProcessing ? { processing: callbacks.audioProcessing } : {}),
+      ...(supportsArrangementAudioInput ? { modelAudioInput: {
+        canAccept: (byteLength: number) => attachmentRequestQuotaIsWithinLimits([
+          ...requestAttachmentQuota,
+          { kind: "audio", byteLength },
+        ]),
+      } } : {}),
+      onAssets: async (assets) => {
+        await addAudioAssetSampleSources({ context, storageDirectory, sessionId: session.id, signal: callbacks.signal }, requestAudioSources, assets);
+        audioSampleSourceInstructions = [
+          requestAudioSampleSourceInstructions(requestAudioSources),
+          audioAssetSampleSourceInstructions(requestAudioSources),
+        ].filter(Boolean).join("\n\n");
+      },
+    });
+    const externalTools = new ToolRegistry([
       {
         id: "live-smith.creative-brief",
         tools: () => [creativeBriefProposalTool],
@@ -379,184 +382,180 @@ export async function handleAgentRequest(
       ...audioTools.toolsets,
       ...pluginTools.toolsets,
     ]);
-  } catch (error) {
-    await pluginTools.close();
-    throw error;
-  }
-  const canReadArrangementAudio = () => supportsArrangementAudioInput &&
-    attachmentRequestQuotaIsWithinLimits([
-      ...requestAttachmentQuota,
-      { kind: "audio", byteLength: 1 },
+    toolResources = externalTools;
+    const canReadArrangementAudio = () => supportsArrangementAudioInput &&
+      attachmentRequestQuotaIsWithinLimits([
+        ...requestAttachmentQuota,
+        { kind: "audio", byteLength: 1 },
+      ]);
+    const knownEventIds = new Set([
+      ...prepared.priorEventIds,
+      prepared.userEvent.id,
     ]);
-  const knownEventIds = new Set([
-    ...prepared.priorEventIds,
-    prepared.userEvent.id,
-  ]);
-  const observedWebSearchIds = new Set<string>();
-  const persistedWebSearches = new Map<string, Promise<SessionEvent>>();
-  const observeWebSearchId = (webSearch: ModelHostedWebSearch): boolean => {
-    if (observedWebSearchIds.has(webSearch.id)) return true;
-    if (observedWebSearchIds.size >= HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND) {
-      return false;
-    }
-    observedWebSearchIds.add(webSearch.id);
-    return true;
-  };
-  const ensureTerminalWebSearchEvent = async (
-    webSearch: ModelHostedWebSearch,
-    content = webSearchSummary(webSearch),
-  ): Promise<{ event: SessionEvent; first: boolean } | undefined> => {
-    if (!observeWebSearchId(webSearch)) return undefined;
-    const existing = persistedWebSearches.get(webSearch.id);
-    if (existing) {
-      const event = await existing;
-      if (
-        event.content !== content ||
-        event.webSearch === undefined ||
-        !sameHostedWebSearch(event.webSearch, webSearch)
-      ) {
-        throw new TypeError(
-          "Hosted Web Search ID has conflicting terminal activity.",
-        );
+    const observedWebSearchIds = new Set<string>();
+    const persistedWebSearches = new Map<string, Promise<SessionEvent>>();
+    const observeWebSearchId = (webSearch: ModelHostedWebSearch): boolean => {
+      if (observedWebSearchIds.has(webSearch.id)) return true;
+      if (observedWebSearchIds.size >= HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND) {
+        return false;
       }
-      return { event, first: false };
-    }
-
-    const pending = appendTerminalWebSearchEvent(
-      storageDirectory,
-      session.id,
-      { kind: "web_search", content, webSearch },
-      knownEventIds,
-      appendTraceEvent,
-      loadEventsForSearchReconciliation,
-    );
-    persistedWebSearches.set(webSearch.id, pending);
-    try {
-      const event = await pending;
-      knownEventIds.add(event.id);
-      return { event, first: true };
-    } catch (error) {
-      if (persistedWebSearches.get(webSearch.id) === pending) {
-        persistedWebSearches.delete(webSearch.id);
-      }
-      throw error;
-    }
-  };
-  if (!session.title.trim()) {
-    await updateSession(storageDirectory, session.id, {
-      title: sessionTitleForPrompt(prompt, session.scope.label),
-    });
-  }
-  const requestLiveContext = prepared.recoveryContext
-    ? `${interaction.summary}\n\n${prepared.recoveryContext}`
-    : interaction.summary;
-  const autoCompactTokenLimit = resolveAutoCompactTokenLimit(runtimeProfile);
-  const maybeCompactContext = async (
-    agentMessages: Parameters<typeof buildModelRequest>[0]["agentMessages"],
-    tools: Parameters<typeof buildModelRequest>[0]["tools"],
-    editScopes: readonly EditScope[],
-    signal: AbortSignal,
-  ): Promise<void> => {
-    if (autoCompactTokenLimit === undefined) return;
-    const activeAgentMessages = agentMessages.slice(compactedAgentMessageCount);
-    const estimatedTokens = estimateTransportContextTokens(buildModelRequest({
-      prompt: activePrompt,
-      liveContext: requestLiveContext,
-      runtimeProfile,
-      history: activeHistory,
-      attachmentParts: activeAttachmentParts,
-      ...(audioSampleSourceInstructions
-        ? {
-          requestAudioSampleSourceInstructions:
-            audioSampleSourceInstructions,
+      observedWebSearchIds.add(webSearch.id);
+      return true;
+    };
+    const ensureTerminalWebSearchEvent = async (
+      webSearch: ModelHostedWebSearch,
+      content = webSearchSummary(webSearch),
+    ): Promise<{ event: SessionEvent; first: boolean } | undefined> => {
+      if (!observeWebSearchId(webSearch)) return undefined;
+      const existing = persistedWebSearches.get(webSearch.id);
+      if (existing) {
+        const event = await existing;
+        if (
+          event.content !== content ||
+          event.webSearch === undefined ||
+          !sameHostedWebSearch(event.webSearch, webSearch)
+        ) {
+          throw new TypeError(
+            "Hosted Web Search ID has conflicting terminal activity.",
+          );
         }
-        : {}),
-      skillContext: prepared.skillContext,
-      editScopes,
-      creativeBrief: session.creativeBrief ?? "",
-      ...(callbacks.customInstructionsSnapshot === undefined
-        ? {}
-        : { customInstructions: callbacks.customInstructionsSnapshot }),
-      agentMessages: activeAgentMessages,
-      tools,
-    }));
-    const activeTokens = latestAcceptedContextUsage === undefined
-      ? estimatedTokens
-      : latestAcceptedContextUsage.usedTokens + Math.max(
-          0,
-          estimatedTokens - (latestAcceptedProjectionTokens ?? estimatedTokens),
-        );
-    if (activeTokens < autoCompactTokenLimit) return;
+        return { event, first: false };
+      }
 
-    await callbacks.onProgress("Compacting conversation context");
-    const checkpoint = await createConversationCheckpoint({
-      prompt: activePrompt,
-      liveContext: requestLiveContext,
-      runtimeProfile,
-      history: activeHistory,
-      attachmentParts: activeAttachmentParts,
-      skillContext: prepared.skillContext,
-      editScopes,
-      creativeBrief: session.creativeBrief ?? "",
-      ...(callbacks.customInstructionsSnapshot === undefined
-        ? {}
-        : { customInstructions: callbacks.customInstructionsSnapshot }),
-      agentMessages: activeAgentMessages,
-      signal,
-      requestTurn: async (input) => (await requestModelWithReconnect({
-        signal,
-        resetTransient: () => {},
-        onProgress: callbacks.onProgress,
-        ...(waitForReconnectDelay
-          ? { waitForDelay: waitForReconnectDelay }
+      const pending = appendTerminalWebSearchEvent(
+        storageDirectory,
+        session.id,
+        { kind: "web_search", content, webSearch },
+        knownEventIds,
+        appendTraceEvent,
+        loadEventsForSearchReconciliation,
+      );
+      persistedWebSearches.set(webSearch.id, pending);
+      try {
+        const event = await pending;
+        knownEventIds.add(event.id);
+        return { event, first: true };
+      } catch (error) {
+        if (persistedWebSearches.get(webSearch.id) === pending) {
+          persistedWebSearches.delete(webSearch.id);
+        }
+        throw error;
+      }
+    };
+    if (!session.title.trim()) {
+      await updateSession(storageDirectory, session.id, {
+        title: sessionTitleForPrompt(prompt, session.scope.label),
+      });
+    }
+    const requestLiveContext = prepared.recoveryContext
+      ? `${interaction.summary}\n\n${prepared.recoveryContext}`
+      : interaction.summary;
+    const autoCompactTokenLimit = resolveAutoCompactTokenLimit(runtimeProfile);
+    const maybeCompactContext = async (
+      agentMessages: Parameters<typeof buildModelRequest>[0]["agentMessages"],
+      tools: Parameters<typeof buildModelRequest>[0]["tools"],
+      editScopes: readonly EditScope[],
+      signal: AbortSignal,
+    ): Promise<void> => {
+      if (autoCompactTokenLimit === undefined) return;
+      const activeAgentMessages = agentMessages.slice(compactedAgentMessageCount);
+      const estimatedTokens = estimateTransportContextTokens(buildModelRequest({
+        prompt: activePrompt,
+        liveContext: requestLiveContext,
+        runtimeProfile,
+        history: activeHistory,
+        attachmentParts: activeAttachmentParts,
+        ...(audioSampleSourceInstructions
+          ? {
+            requestAudioSampleSourceInstructions:
+              audioSampleSourceInstructions,
+          }
           : {}),
-        request: ({ reconnectState }) => requestTurn({
-          ...input,
-          reconnectState,
-        }),
-      })).value,
-    });
-    const event = await appendTraceEvent(storageDirectory, session.id, {
-      kind: "compaction",
-      content: checkpoint,
-    });
-    knownEventIds.add(event.id);
-    await callbacks.onSessionEvent(event);
+        skillContext: prepared.skillContext,
+        editScopes,
+        creativeBrief: session.creativeBrief ?? "",
+        ...(callbacks.customInstructionsSnapshot === undefined
+          ? {}
+          : { customInstructions: callbacks.customInstructionsSnapshot }),
+        agentMessages: activeAgentMessages,
+        tools,
+      }));
+      const activeTokens = latestAcceptedContextUsage === undefined
+        ? estimatedTokens
+        : latestAcceptedContextUsage.usedTokens + Math.max(
+            0,
+            estimatedTokens - (latestAcceptedProjectionTokens ?? estimatedTokens),
+          );
+      if (activeTokens < autoCompactTokenLimit) return;
 
-    activeHistory = [{
-      role: "user",
-      content: [{
-        type: "text",
-        text: conversationCheckpointMessage(checkpoint),
-      }],
-    }];
-    activePrompt = "Continue the current request from the conversation checkpoint.";
-    activeAttachmentParts = [];
-    compactedAgentMessageCount = agentMessages.length;
-    latestAcceptedContextUsage = undefined;
-    latestAcceptedProjectionTokens = undefined;
-    pendingAcceptedProjectionTokens = undefined;
-    await callbacks.onModelTurnAccepted?.(undefined);
-  };
-  // Committed changes update the synchronous action boundary without inserting
-  // a disk await after the final Live-state drift check.
-  const unsubscribeEditScopes = subscribeSessionEditScopesChanges(
-    storageDirectory,
-    (change) => {
-      if (change.sessionId !== session.id) return;
-      editScopesGeneration += 1;
-      activeEditScopes = resolveEditScopes(change.editScopes);
-    },
-  );
-  const unsubscribeEditScopesInvalidations = subscribeSessionEditScopesInvalidations(
-    storageDirectory,
-    (changedSessionId) => {
-      if (changedSessionId !== session.id) return;
-      editScopesGeneration += 1;
-      activeEditScopes = undefined;
-    },
-  );
-  try {
+      await callbacks.onProgress("Compacting conversation context");
+      const checkpoint = await createConversationCheckpoint({
+        prompt: activePrompt,
+        liveContext: requestLiveContext,
+        runtimeProfile,
+        history: activeHistory,
+        attachmentParts: activeAttachmentParts,
+        skillContext: prepared.skillContext,
+        editScopes,
+        creativeBrief: session.creativeBrief ?? "",
+        ...(callbacks.customInstructionsSnapshot === undefined
+          ? {}
+          : { customInstructions: callbacks.customInstructionsSnapshot }),
+        agentMessages: activeAgentMessages,
+        signal,
+        requestTurn: async (input) => (await requestModelWithReconnect({
+          signal,
+          resetTransient: () => {},
+          onProgress: callbacks.onProgress,
+          ...(waitForReconnectDelay
+            ? { waitForDelay: waitForReconnectDelay }
+            : {}),
+          request: ({ reconnectState }) => requestTurn({
+            ...input,
+            reconnectState,
+          }),
+        })).value,
+      });
+      const event = await appendTraceEvent(storageDirectory, session.id, {
+        kind: "compaction",
+        content: checkpoint,
+      });
+      knownEventIds.add(event.id);
+      await callbacks.onSessionEvent(event);
+
+      activeHistory = [{
+        role: "user",
+        content: [{
+          type: "text",
+          text: conversationCheckpointMessage(checkpoint),
+        }],
+      }];
+      activePrompt = "Continue the current request from the conversation checkpoint.";
+      activeAttachmentParts = [];
+      compactedAgentMessageCount = agentMessages.length;
+      latestAcceptedContextUsage = undefined;
+      latestAcceptedProjectionTokens = undefined;
+      pendingAcceptedProjectionTokens = undefined;
+      await callbacks.onModelTurnAccepted?.(undefined);
+    };
+    // Committed changes update the synchronous action boundary without inserting
+    // a disk await after the final Live-state drift check.
+    unsubscribeEditScopes = subscribeSessionEditScopesChanges(
+      storageDirectory,
+      (change) => {
+        if (change.sessionId !== session.id) return;
+        editScopesGeneration += 1;
+        activeEditScopes = resolveEditScopes(change.editScopes);
+      },
+    );
+    unsubscribeEditScopesInvalidations = subscribeSessionEditScopesInvalidations(
+      storageDirectory,
+      (changedSessionId) => {
+        if (changedSessionId !== session.id) return;
+        editScopesGeneration += 1;
+        activeEditScopes = undefined;
+      },
+    );
     await callbacks.onProgress("Starting agent loop");
     if (pluginTools.unavailableMidiArtifacts) {
       await callbacks.onProgress(uiMessage(
@@ -1067,9 +1066,9 @@ export async function handleAgentRequest(
     }
     throw error;
   } finally {
-    await externalTools.close();
-    unsubscribeEditScopes();
-    unsubscribeEditScopesInvalidations();
+    unsubscribeEditScopes?.();
+    unsubscribeEditScopesInvalidations?.();
+    await toolResources.close();
   }
 }
 
@@ -1352,6 +1351,7 @@ async function appendAgentLoopTraceEvent(
       kind: event.kind,
       name: event.name,
       content: event.content,
+      ...(event.kind === "tool_result" ? { outcome: event.outcome } : {}),
       ...(event.kind === "tool_result" && event.artifacts ? { artifacts: event.artifacts } : {}),
       ...(event.kind === "tool_call" && parentCandidate ? { parentCandidate,
         ...(requestEventId ? { requestEventId } : {}) } : {}),

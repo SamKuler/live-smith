@@ -32,9 +32,7 @@ import {
   type PreparedPluginRuntime,
 } from "../../storage/plugins.js";
 
-export interface RequestPluginToolResult extends AgentExternalToolResult {
-  outcomeUnknown?: boolean;
-}
+export type RequestPluginToolResult = AgentExternalToolResult;
 
 export interface RequestPluginTools extends Toolset {
   assertToolCurrent(name: string): Promise<void>;

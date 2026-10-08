@@ -1,3 +1,4 @@
+import { externalToolOutcome } from "../../agent/tool-outcome.js";
 import { createRequestPluginTools, type PluginExecutionAuthorization } from "./request-plugin-tools.js";
 import { validatePluginParameters } from "../../plugins/parameter-panel.js";
 import { appendSessionEvent } from "../../storage/events.js";
@@ -41,7 +42,7 @@ export async function runPluginParameterTool(input: {
       result = await tools.callTool({ id: "parameter-panel", name: input.toolName, arguments: JSON.stringify(args) });
     } catch (error) {
       await appendSessionEvent(input.storageDirectory, input.sessionId, {
-        kind: "tool_result", name: input.toolName,
+        kind: "tool_result", name: input.toolName, outcome: "unknown",
         content: "The tool did not return a confirmed result. Check the server's state before running it again.",
       }).catch(() => undefined);
       throw new ChatBridgeCommandOutcomeUnknownError(
@@ -51,7 +52,7 @@ export async function runPluginParameterTool(input: {
     }
     try {
       await appendSessionEvent(input.storageDirectory, input.sessionId, {
-        kind: "tool_result", name: input.toolName, content: result.content,
+        kind: "tool_result", name: input.toolName, content: result.content, outcome: externalToolOutcome(result),
               ...(result.artifacts ? { artifacts: result.artifacts } : {}),
       });
     } catch (cause) {

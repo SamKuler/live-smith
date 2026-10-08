@@ -37,6 +37,7 @@ test("a model proposal persists only as tool activity; all later turns retain th
   assert.equal((await listSessions(directory))[0]?.creativeBrief, "Keep original bass");
   const event = (await loadSessionEvents(directory, session.id)).find((entry) => entry.kind === "tool_result" && entry.name === "propose_creative_brief");
   assert.ok(event);
+  assert.equal(event.outcome, "success");
   assert.deepEqual(JSON.parse(event.content), { creativeBrief: "Keep original bass; bridge with half-time drums", expectedCreativeBrief: "Keep original bass", saved: false });
 });
 

@@ -11,10 +11,12 @@ function toolEvent(
   kind: "tool_call" | "tool_result",
   name: string,
   content: string,
+  outcome: "success" | "failed" | "unknown" | "stopped" | null = "success",
 ) {
   return {
     id,
     kind,
+    ...(kind === "tool_result" && outcome !== null ? { outcome } : {}),
     name,
     content,
     createdAt: `2026-08-31T00:00:0${id.at(-1) ?? "0"}.000Z`,
@@ -96,6 +98,7 @@ test("one unsuccessful tool step opens its detail and preserves a user close", a
       "tool_result",
       "inspect_song_info",
       'Tool call "inspect_song_info" has invalid arguments:\nCorrect the fields.',
+      null,
     ),
   ];
 
@@ -399,6 +402,7 @@ test("a rejected tool result opens inside compact activity", async () => {
       "tool_result",
       "apply_live_actions",
       'Tool call "apply_live_actions" has invalid arguments:\nCorrect the fields.',
+      null,
     ),
   ];
 
@@ -521,6 +525,7 @@ test("a live terminal failure opens a pending step once and preserves a later us
         "tool_result",
         "inspect_track",
         'Tool call "inspect_track" has invalid arguments:\nFirst rejection.',
+        null,
       ),
     });
 
@@ -543,6 +548,7 @@ test("a live terminal failure opens a pending step once and preserves a later us
         "tool_result",
         "inspect_track",
         'Tool call "inspect_track" has invalid arguments:\nUpdated rejection.',
+        null,
       ),
     });
 
@@ -599,6 +605,7 @@ test("a live grouped failure opens the group once and preserves a later user clo
         "tool_result",
         "inspect_track",
         'Tool call "inspect_track" has invalid arguments:\nFirst rejection.',
+        null,
       ),
     });
 
@@ -622,6 +629,7 @@ test("a live grouped failure opens the group once and preserves a later user clo
         "tool_result",
         "inspect_track",
         'Tool call "inspect_track" has invalid arguments:\nUpdated rejection.',
+        null,
       ),
     });
 

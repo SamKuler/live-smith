@@ -11,6 +11,7 @@ import { createRequestPluginTools } from "../../../src/app/plugins/request-plugi
 import { encodeMidiContinuationConditioning, generateMidiContinuationWithPlugin, midiContinuationGenerators } from "../../../src/app/midi/midi-continuation-generators.js";
 import { assertMidiContinuationOutput, assertMidiContinuationSource, fillMidiContinuation } from "../../../src/app/midi/midi-continuation.js";
 import { loadAgentSettings, saveGlobalSettings } from "../../../src/storage/settings.js";
+import { loadSessionEvents } from "../../../src/storage/events.js";
 import { listMidiArtifacts, parseMidiArtifact, readMidiArtifact, readMidiContinuation, saveMidiContinuation } from "../../../src/storage/midi-artifacts.js";
 import { continuationHarness } from "./support/continuation-harness.js";
 import { endTrack, event, midiBytes } from "../../attachments/support/midi-test-helpers.js";
@@ -38,6 +39,34 @@ const incompatibleOutputs = {
   subtick: midiBytes({ division: 3840, tracks: [[...event(0, 0x90, 60, 90),
     ...event(1, 0x80, 60, 0), ...endTrack(8 * 3840 - 1)]] }),
 };
+
+test("Plugin continuation retains an unknown dispatch result in its enclosing Fill outcome", async (t) => {
+  const h = await continuationHarness(t);
+  await saveGlobalSettings(h.directory, { integrationConnections: { action: "upsert", expectedRevision: "0", connection } });
+  let calls = 0;
+  const request = await createRequestPluginTools({ storageDirectory: h.directory, sessionId: h.sessionId, signal: h.signal,
+    withAuthorization: async (_signal, operation) => operation(),
+    createStandaloneConnection: saved => createStandaloneMcpConnection(saved, { connector: async () => ({
+      listTools: async () => [tool], close: async () => {},
+      callTool: async () => { calls++; throw new Error("Transport disconnected after dispatch"); },
+    }) }),
+  });
+  t.after(() => request.close());
+  const choice = midiContinuationGenerators(request)[0]!;
+  await saveMidiContinuation(h.directory, h.sessionId, { ...h.buffer, generator: { kind: "plugin",
+    toolName: choice.toolName, signature: choice.signature, inputArgument: choice.inputArgument,
+    lengthArgument: choice.lengthArgument, arguments: { style: "sparse" } } }, h.signal);
+  await assert.rejects(fillMidiContinuation({ ...h, bufferId: h.buffer.id,
+    validateGenerator: async () => request.assertToolCurrent(choice.toolName), onProgress: async () => {},
+    generate: (buffer, onEvent) => generateMidiContinuationWithPlugin({ storageDirectory: h.directory,
+      buffer, tools: request, signal: h.signal, beforeCommit: () => {}, onEvent }),
+  }), /confirmed artifact/);
+  assert.equal(calls, 1);
+  const results = (await loadSessionEvents(h.directory, h.sessionId)).filter(event => event.kind === "tool_result");
+  assert.equal(results.length, 2);
+  assert.ok(results.every(event => event.outcome === "unknown"));
+  assert.deepEqual((await readMidiContinuation(h.directory, h.sessionId))!.queue, []);
+});
 
 for (const revoke of [false, true]) test(`local MIDI conditioning preserves ordered context and authentic source${revoke ? " when approval is revoked" : ""}`, async (t) => {
   const h = await continuationHarness(t);
@@ -81,6 +110,10 @@ for (const revoke of [false, true]) test(`local MIDI conditioning preserves orde
       signal: h.signal, beforeCommit: () => { assertMidiContinuationSource(h.context, buffer, h.signal); }, onEvent }) });
   if (revoke) await assert.rejects(fill(), /changed|approved|admitted|confirmed/i);
   else await fill();
+  const results = (await loadSessionEvents(h.directory, h.sessionId)).filter(event => event.kind === "tool_result");
+  assert.equal(results.at(-1)?.name, "fill_midi_continuation");
+  assert.equal(results.at(-1)?.outcome, revoke ? "failed" : "success");
+  assert.equal(results.at(-2)?.outcome, "success");
   const buffer = (await readMidiContinuation(h.directory, h.sessionId))!;
   assert.equal(buffer.queue.length, revoke ? 1 : 2);
   assert.equal(staged.length, 2);

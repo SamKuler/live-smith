@@ -23,7 +23,7 @@ test("Fill creates ordered sections, consumes only the applied head and refills 
       const artifact = await saveMidiArtifact(h.directory, h.session.id, { source: { kind: "model", profileId: h.profile.id, model: h.profile.defaultModel },
         generationKind: "continuation", serverId: "host", toolName: "save_midi_artifact", label: `Section ${buffer.nextSequence + 1}`,
         bytes: writeStandardMidi({ tracks: tracks(48 + buffer.nextSequence), durationBeats: buffer.segmentBeats }), signal: h.signal });
-      await record({ kind: "tool_result", name: "save_midi_artifact", content: JSON.stringify({ artifacts: [{ kind: "midi", artifactRef: artifact.id }] }) });
+      await record({ kind: "tool_result", name: "save_midi_artifact", outcome: "success", content: JSON.stringify({ artifacts: [{ kind: "midi", artifactRef: artifact.id }] }) });
       return artifact;
     } });
   const first = await fill(); assert.equal(first.queue.length, 2); assert.equal(parents[0], undefined); assert.equal(parents[1], first.queue[0]!.artifactRef);

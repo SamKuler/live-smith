@@ -364,6 +364,7 @@ test("MCP App HTTP lifecycle delivers resources, enforces tool visibility, publi
       await patternInvalidation;
       const events = await loadSessionEvents(directory, sessionId);
       assert.deepEqual(events.map((event) => event.kind), ["tool_call", "tool_result", "tool_call", "tool_result"]);
+      assert.deepEqual(events.filter(event => event.kind === "tool_result").map(event => event.outcome), ["success", "success"]);
       assert.equal(events[2]!.name, descriptor.toolName);
       assert.deepEqual(JSON.parse(events[2]!.content), args);
       assert.deepEqual(JSON.parse(events[3]!.content).structuredContent, pattern);

@@ -1,3 +1,4 @@
+import { externalToolOutcome, type ToolResultOutcome } from "./tool-outcome.js";
 import type { AgentApplyOperation } from "./action-preview.js";
 import type { ArtifactRef } from "./artifact-contracts.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -52,7 +53,7 @@ export type AgentLoopTraceEvent =
       webSearch: ModelHostedWebSearch;
     }
   | { kind: "tool_call"; name: string; content: string }
-  | { kind: "tool_result"; name: string; content: string; artifacts?: ArtifactRef[] }
+  | { kind: "tool_result"; name: string; content: string; outcome: ToolResultOutcome; artifacts?: ArtifactRef[] }
   | { kind: "apply_requested"; content: string; applyOperation?: AgentApplyOperation }
   | { kind: "apply_auto_approved"; content: string; applyOperation?: AgentApplyOperation }
   | {
@@ -281,6 +282,7 @@ export interface AgentExternalToolResult {
   content: string;
   artifacts?: ArtifactRef[];
   failed?: boolean;
+  outcomeUnknown?: boolean;
   invalidArguments?: boolean;
   /** Binary input supplied to the next model turn only after the text result is recorded. */
   modelInputPart?: ModelToolInputPart;
@@ -919,7 +921,7 @@ async function executeToolCall(
       }
       try {
         await emitTraceEvent(options, {
-          kind: "tool_result", name: toolCall.name, content: result.content,
+          kind: "tool_result", name: toolCall.name, content: result.content, outcome: externalToolOutcome(result),
           ...(result.artifacts ? { artifacts: result.artifacts } : {}),
         });
       } catch {
@@ -972,6 +974,7 @@ async function executeToolCall(
         kind: "tool_result",
         name: toolCall.name,
         content: observation,
+        outcome: "success",
       });
       if (modelInputPart) options.onModelInputPartAccepted?.(modelInputPart);
       return {
@@ -1039,7 +1042,7 @@ async function executeToolCall(
         const content =
           "The user kept the unfinished operation active. No Live changes were made, and the replay-protection ledger remains in force.";
         await emitTraceEvent(options, {
-          kind: "tool_result",
+          kind: "tool_result", outcome: "stopped",
           name: toolCall.name,
           content,
         });
@@ -1345,7 +1348,7 @@ async function executeToolCall(
       throwIfAborted(options.signal);
       const content = `${scopeDenial.message}\nNo Live changes from this plan were applied.`;
       if (!applyResultRecorded) await emitTraceEvent(options, {
-        kind: "tool_result",
+        kind: "tool_result", outcome: "failed",
         name: toolCall.name,
         content,
       });
@@ -1360,7 +1363,7 @@ async function executeToolCall(
     }
     if (error instanceof AgentRecoveryResolutionSteeringError) {
       await emitTraceEvent(options, {
-        kind: "tool_result",
+        kind: "tool_result", outcome: "stopped",
         name: toolCall.name,
         content: error.message,
       });
@@ -1458,7 +1461,7 @@ async function executeToolCall(
     if (error instanceof AgentRecoveryPlanError) {
       const content = error.message;
       await emitTraceEvent(options, {
-        kind: "tool_result",
+        kind: "tool_result", outcome: "failed",
         name: toolCall.name,
         content,
       });
@@ -1478,7 +1481,7 @@ async function executeToolCall(
         "Correct the tool fields and types, then retry. Do not change the musical request or split valid work solely because of this argument error.",
       ].join("\n");
       await emitTraceEvent(options, {
-        kind: "tool_result",
+        kind: "tool_result", outcome: "failed",
         name: toolCall.name,
         content,
       });

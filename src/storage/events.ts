@@ -1,3 +1,4 @@
+import { isToolResultOutcome, type ToolResultOutcome } from "../agent/tool-outcome.js";
 import { isAgentApplyOperation, type AgentApplyOperation } from "../agent/action-preview.js";
 import { cloneJsonValue } from "../model/json-clone.js";
 import { isAttachmentProvenance } from "../attachments/provenance.js";
@@ -78,6 +79,7 @@ export interface SessionEventInput {
   kind: SessionEventKind;
   content: string;
   name?: string;
+  outcome?: ToolResultOutcome;
   recovery?: SessionRecoveryLedger;
   attachments?: SessionAttachmentRef[];
   citations?: ModelCitation[];
@@ -301,6 +303,7 @@ function isSessionEvent(
       "requestEventId",
       "applyOperation",
       "artifacts",
+      "outcome",
     ]) &&
     isSafeStorageId(record.id) &&
     typeof record.createdAt === "string" &&
@@ -311,6 +314,7 @@ function isSessionEvent(
     (record.requestEventId === undefined || record.kind === "tool_call" && isSafeStorageId(record.requestEventId)) &&
     (record.applyOperation === undefined || isAgentApplyOperation(record.applyOperation, record.kind)) &&
     (record.artifacts === undefined || record.kind === "tool_result" && isArtifactRefs(record.artifacts)) &&
+    (record.outcome === undefined || record.kind === "tool_result" && isToolResultOutcome(record.outcome)) &&
     (record.name === undefined || typeof record.name === "string") &&
     (record.recovery === undefined || (
       record.kind === "apply_result" && isSessionRecoveryLedger(record.recovery)

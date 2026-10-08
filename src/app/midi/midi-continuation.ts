@@ -9,9 +9,12 @@ import { appendSessionEvent, type SessionEventInput } from "../../storage/events
 import { createStorageId } from "../../storage/id.js";
 import { readMidiArtifact, readMidiContinuation, saveMidiArtifact, saveMidiContinuation, parseMidiArtifact, type MidiArtifact } from "../../storage/midi-artifacts.js";
 import { listSessions } from "../../storage/sessions.js";
+import { isStorageCommitOutcomeUnknownError } from "../../storage/persistence.js";
 import { captureMidiContinuationContext } from "./midi-continuation-context.js";
 
 type Runtime = { context: ExtensionContext<"1.0.0">; storageDirectory: string | undefined; sessionId: string; projectKey: string; signal: AbortSignal };
+
+export class MidiContinuationOutcomeUnknownError extends Error {}
 
 export function assertMidiContinuationSource(context: Runtime["context"], buffer: MidiContinuationBuffer, signal: AbortSignal): ReturnType<typeof captureMidiContinuationContext> {
   throwIfAborted(signal);
@@ -104,12 +107,14 @@ export async function fillMidiContinuation(input: Runtime & {
         updatedAt: new Date().toISOString() };
       await saveMidiContinuation(input.storageDirectory, input.sessionId, buffer, input.signal);
     }
-    await appendSessionEvent(input.storageDirectory, input.sessionId, { kind: "tool_result", name: "fill_midi_continuation",
+    await appendSessionEvent(input.storageDirectory, input.sessionId, { kind: "tool_result", name: "fill_midi_continuation", outcome: "success",
       content: JSON.stringify({ status: "completed", bufferId: buffer.id, queuedSections: buffer.queue.length }) });
     return buffer;
   } catch (error) {
-    await appendSessionEvent(input.storageDirectory, input.sessionId, { kind: "tool_result", name: "fill_midi_continuation",
-      content: JSON.stringify({ status: input.signal.aborted ? "cancelled" : "failed", bufferId: buffer.id,
+    const outcome = isStorageCommitOutcomeUnknownError(error) || error instanceof MidiContinuationOutcomeUnknownError
+      ? "unknown" : input.signal.aborted ? "stopped" : "failed";
+    await appendSessionEvent(input.storageDirectory, input.sessionId, { kind: "tool_result", name: "fill_midi_continuation", outcome,
+      content: JSON.stringify({ status: outcome === "stopped" ? "cancelled" : outcome, bufferId: buffer.id,
         message: "Existing saved MIDI artifacts were retained." }) }).catch(() => {});
     throw error;
   }

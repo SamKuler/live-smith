@@ -43,7 +43,7 @@ test("saved MIDI renders inline, preserves its part and viewport on refresh, and
     return original(input, init);
   } });
   try {
-    const output = event("saved-result", "tool_result", "Saved", { name: "save_midi_artifact", artifacts: [saved.ref] });
+    const output = event("saved-result", "tool_result", "Saved", { name: "save_midi_artifact", outcome: "success", artifacts: [saved.ref] });
     await publish(h, [output]);
     await waitForCondition(() => Boolean(h.document.querySelector(".chat-midi-preview .piano-roll-note")), "Expected inline saved notes");
     const card = h.document.querySelector<HTMLElement>(".chat-midi-preview")!;

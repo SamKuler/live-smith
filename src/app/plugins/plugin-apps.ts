@@ -1,3 +1,4 @@
+import { externalToolOutcome } from "../../agent/tool-outcome.js";
 import { Buffer } from "node:buffer";
 import { appResourceDocument } from "../../plugins/mcp/apps.js";
 import { configRecord } from "../../plugins/user-config.js";
@@ -141,13 +142,13 @@ export function createPluginAppSessions(input: {
             const result = await tools.callAppTool(app.toolName, request.name, request.arguments, operationSignal);
             if (result.history.outcomeUnknown) throw new Error("Plugin App tool outcome is unconfirmed.");
             await appendSessionEvent(input.storageDirectory, app.sessionId, {
-              kind: "tool_result", name: definition.tool.function.name, content: result.history.content,
+              kind: "tool_result", name: definition.tool.function.name, content: result.history.content, outcome: externalToolOutcome(result.history),
               ...(result.history.artifacts ? { artifacts: result.history.artifacts } : {}),
             });
             return result.result;
           } catch {
             await appendSessionEvent(input.storageDirectory, app.sessionId, {
-              kind: "tool_result", name: definition.tool.function.name,
+              kind: "tool_result", name: definition.tool.function.name, outcome: "unknown",
               content: "The Plugin app tool did not return a confirmed result. Check its state before retrying.",
             }).catch(() => undefined);
             throw new ChatBridgeConflictError("The Plugin app tool outcome is unconfirmed. Check its state before retrying.");

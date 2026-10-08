@@ -1,3 +1,4 @@
+import { externalToolOutcome } from "../../agent/tool-outcome.js";
 import { createHash } from "node:crypto";
 import type { MidiContinuationBuffer, MidiContinuationGenerator, MidiContinuationGeneratorChoice } from "../../agent/midi-continuation-contracts.js";
 import type { AgentLoopTraceEvent } from "../../agent/loop.js";
@@ -9,6 +10,7 @@ import { activeSavedProfile, savedProfileRevision, type AgentSettings } from "..
 import type { AgentSession } from "../../storage/sessions.js";
 import { effectiveSessionModelSelection } from "../model/dialog-model-state.js";
 import type { RequestPluginTools } from "../plugins/request-plugin-tools.js";
+import { MidiContinuationOutcomeUnknownError } from "./midi-continuation.js";
 
 export function midiModelGenerator(settings: AgentSettings, session: AgentSession): Extract<MidiContinuationGenerator, { kind: "model" }> {
   const profile = activeSavedProfile(settings);
@@ -69,9 +71,10 @@ export async function generateMidiContinuationWithPlugin(input: {
   const previous = new Set(input.tools.midiArtifacts().map((artifact) => artifact.id));
   await input.onEvent({ kind: "tool_call", name: generator.toolName, content: JSON.stringify(args) });
   const result = await input.tools.callTool({ id: `midi-section-${input.buffer.nextSequence}`, name: generator.toolName, arguments: JSON.stringify(args) });
-  await input.onEvent({ kind: "tool_result", name: generator.toolName, content: result.content, ...(result.artifacts ? { artifacts: result.artifacts } : {}) });
+  await input.onEvent({ kind: "tool_result", name: generator.toolName, content: result.content, outcome: externalToolOutcome(result), ...(result.artifacts ? { artifacts: result.artifacts } : {}) });
+  if (result.outcomeUnknown) throw new MidiContinuationOutcomeUnknownError("The MIDI generator did not return a confirmed artifact. Existing buffer entries were retained.");
   throwIfAborted(input.signal);
-  if (result.failed || result.outcomeUnknown) throw new Error("The MIDI generator did not return a confirmed artifact. Existing buffer entries were retained.");
+  if (result.failed) throw new Error("The MIDI generator did not return a confirmed artifact. Existing buffer entries were retained.");
   const created = input.tools.midiArtifacts().filter((artifact) => !previous.has(artifact.id));
   if (created.length !== 1) throw new Error("The MIDI generator must return exactly one saved artifact per section.");
   return created[0]!;

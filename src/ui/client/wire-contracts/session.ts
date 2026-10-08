@@ -1,3 +1,4 @@
+import { isToolResultOutcome } from "../../../agent/tool-outcome.js";
 import { isCreativeBrief } from "../../../agent/creative-brief.js";
 import { isAttachmentProvenance } from "../../../attachments/provenance.js";
 import { isAgentActionPreviews, isAgentApplyOperation, type AgentActionPreview } from "../../../agent/action-preview.js";
@@ -304,6 +305,7 @@ export function isWireSessionEvent(value: unknown, attachmentPolicy = "current")
       "requestEventId",
       "applyOperation",
       "artifacts",
+      "outcome",
     ]) ||
     !isWireStorageId(value.id) ||
     typeof value.createdAt !== "string" ||
@@ -327,6 +329,7 @@ export function isWireSessionEvent(value: unknown, attachmentPolicy = "current")
     (value.requestEventId !== undefined && (value.kind !== "tool_call" || !isWireStorageId(value.requestEventId))) ||
     (value.applyOperation !== undefined && !isAgentApplyOperation(value.applyOperation, value.kind)) ||
     (value.artifacts !== undefined && (value.kind !== "tool_result" || !isArtifactRefs(value.artifacts))) ||
+    (value.outcome !== undefined && (value.kind !== "tool_result" || !isToolResultOutcome(value.outcome))) ||
     (value.name !== undefined && typeof value.name !== "string") ||
     (value.attachments !== undefined && (
       value.kind !== "user" ||

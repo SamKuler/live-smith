@@ -4,6 +4,7 @@ import type { Toolset } from "../../plugins/registry.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { isSafeStorageId } from "../../storage/id.js";
 import { midiArtifactVersion, saveMidiArtifact, type MidiArtifact } from "../../storage/midi-artifacts.js";
+import { isStorageCommitOutcomeUnknownError } from "../../storage/persistence.js";
 import { midiArtifactAuthoringSchema, parseMidiArtifactAuthoringArguments } from "./midi-artifact-authoring.js";
 
 export const midiArtifactAuthoringTool = { type: "function", function: {
@@ -57,9 +58,11 @@ export function createMidiArtifactAuthoringToolset(input: {
           ...(revisionOf ? { revisionOf } : {}),
         });
         return { content: JSON.stringify({ artifacts: [midiArtifactView(artifact)] }), artifacts: [{ kind: "midi", id: artifact.id }] };
-      } catch {
-        throwIfAborted(input.signal);
-        return { content: "MIDI artifact storage could not be confirmed. Check this Session's saved artifacts before retrying.", failed: true, stop: true };
+      } catch (error) {
+        const outcomeUnknown = isStorageCommitOutcomeUnknownError(error);
+        if (!outcomeUnknown) throwIfAborted(input.signal);
+        return { content: "MIDI artifact storage could not be confirmed. Check this Session's saved artifacts before retrying.", failed: true, stop: true,
+          ...(outcomeUnknown ? { outcomeUnknown: true } : {}) };
       }
     },
   };

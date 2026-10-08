@@ -49,6 +49,7 @@ test("MCP transport loss after dispatch is uncertain; confirmed errors and admis
   assert.deepEqual(await runPluginParameterTool({ ...run, arguments: { text: "error" } }), { failed: true });
   let events = await loadSessionEvents(directory, session.id);
   assert.equal(JSON.parse(events.at(-1)!.content).isError, true);
+  assert.equal(events.at(-1)!.outcome, "failed");
   await assert.rejects(fs.access(marker), /ENOENT/);
 
   await assert.rejects(runPluginParameterTool({ ...run, arguments: { text: "disconnect" } }),
@@ -56,6 +57,7 @@ test("MCP transport loss after dispatch is uncertain; confirmed errors and admis
   assert.equal(await fs.readFile(marker, "utf8"), "performed");
   events = await loadSessionEvents(directory, session.id);
   assert.equal(events.at(-1)!.kind, "tool_result");
+  assert.equal(events.at(-1)!.outcome, "unknown");
   assert.match(events.at(-1)!.content, /did not return a confirmed result/);
   await fs.unlink(marker);
 
@@ -71,4 +73,5 @@ test("MCP transport loss after dispatch is uncertain; confirmed errors and admis
   await assert.rejects(fs.access(marker), /ENOENT/);
   events = await loadSessionEvents(directory, session.id);
   assert.match(events.at(-1)!.content, /could not start/);
+  assert.equal(events.at(-1)!.outcome, "failed");
 });

@@ -2450,7 +2450,7 @@
       }
 
       function activityStatusNeedsAttention(status) {
-        return ["failed", "partial", "stopped"].includes(status);
+        return ["failed", "partial", "stopped", "unconfirmed"].includes(status);
       }
 
       function activityStepsGainedAttention(steps, previousStates) {
@@ -2472,6 +2472,7 @@
         if (!terminal) return "pending";
         if (terminal.kind === "error") return "failed";
         if (terminal.kind === "tool_result") {
+          if (terminal.outcome) return activityEventOutcome(terminal);
           if (call?.name === "apply_live_actions") return "failed";
           if (call?.name === "resolve_live_recovery") return "stopped";
         }
@@ -3109,6 +3110,9 @@
       }
 
       function activityEventOutcome(event) {
+        if (event?.kind === "tool_result" && event.outcome) {
+          return event.outcome === "unknown" ? "unconfirmed" : event.outcome;
+        }
         if (event?.kind === "error") return "failed";
         if (event?.kind === "apply_result" && activityEventFirstLine(event) === "Applied:") {
           return "success";
@@ -3121,6 +3125,7 @@
           isRecoveryToolTerminalResult(event) ||
           isRejectedToolResult(event)
         ) return "stopped";
+        if (event?.kind === "tool_result") return "unconfirmed";
         return event?.kind === "apply_result" ? "stopped" : "success";
       }
 

@@ -1,3 +1,4 @@
+import { externalToolOutcome } from "../../agent/tool-outcome.js";
 import { listPluginAudioArtifacts } from "../../storage/audio-artifacts.js";
 import { audioParameterGroups, parseAudioParameters } from "../../plugins/builtins/parameter-panel.js";
 import { appendSessionEvent, loadSessionEvents } from "../../storage/events.js";
@@ -57,20 +58,18 @@ export async function runAudioParameterTool(input: Pick<AudioRuntimeInput,
     result = await tools.execute({ id: "audio-parameters", name: input.toolName, arguments: JSON.stringify(input.arguments) });
   } catch (cause) {
     await appendSessionEvent(input.storageDirectory, input.sessionId, {
-      kind: "tool_result", name: input.toolName,
+      kind: "tool_result", name: input.toolName, outcome: "unknown",
       content: "The audio tool did not return a confirmed result. Review this Session's tool history and the service before retrying.",
     }).catch(() => undefined);
     throw new ChatBridgeCommandOutcomeUnknownError("The audio tool outcome is unconfirmed. Review tool history and the service before retrying.", { cause });
   }
   try {
     await appendSessionEvent(input.storageDirectory, input.sessionId, {
-      kind: "tool_result", name: input.toolName, content: result.content,
+      kind: "tool_result", name: input.toolName, content: result.content, outcome: externalToolOutcome(result),
     });
   } catch (cause) {
     throw new ChatBridgeCommandOutcomeUnknownError("The audio result could not be recorded. Check the service and saved audio jobs before retrying.", { cause });
   }
-  let unknown = false;
-  try { unknown = JSON.parse(result.content)?.status === "unknown"; } catch { /* Non-job results may be plain text. */ }
-  if (unknown) throw new ChatBridgeCommandOutcomeUnknownError("Audio submission is unconfirmed. Review tool history and the service; do not submit it again automatically.");
+  if (result.outcomeUnknown) throw new ChatBridgeCommandOutcomeUnknownError("Audio submission is unconfirmed. Review tool history and the service; do not submit it again automatically.");
   return { failed: result.failed === true };
 }

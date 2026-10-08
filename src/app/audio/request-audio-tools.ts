@@ -230,13 +230,14 @@ export async function createRequestAudioTools(input: {
         const partialCollection = job.status === "partial" && job.remoteOutputs !== undefined &&
           audioJobRemoteSettled(job) && !job.failedOutputKeys?.length;
         return {
+          ...(job.status === "unknown" ? { outcomeUnknown: true } : {}),
           content: audioJobResultText(job), progressKey: `${job.id}:${job.updatedAt}`,
           ...(job.status === "unknown" || job.status === "failed" || job.status === "interrupted" || job.status === "partial" && !partialCollection
             ? { failed: true, stop: true } : {}),
         };
     } catch (error) {
       if (error instanceof AudioToolOutcomeUnknownError) return {
-        content: JSON.stringify({ status: "unknown", message: error.message }), failed: true, stop: true,
+        content: JSON.stringify({ status: "unknown", message: error.message }), failed: true, stop: true, outcomeUnknown: true,
       };
       if (error instanceof AudioServiceHttpError && error.status !== undefined &&
           error.status >= 400 && error.status < 500 && error.status !== 408) return {

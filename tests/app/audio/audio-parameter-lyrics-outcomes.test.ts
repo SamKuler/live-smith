@@ -40,6 +40,8 @@ for (const response of ["lost", "invalid", "rejected", "rejected-stop", "stopped
   assert.equal(submissions, 1);
   const events = await loadSessionEvents(h.directory, h.session.id);
   assert.equal(events.at(-1)?.kind, "tool_result");
+  assert.equal(events.at(-1)?.outcome, response === "lost" || response === "invalid" ? "unknown"
+    : response === "stopped" ? "success" : "failed");
   if (response === "lost" || response === "invalid") assert.equal(JSON.parse(events.at(-1)!.content).status, "unknown");
   if (response === "stopped") assert.equal(JSON.parse(events.at(-1)!.content).lyrics, "Rain falls over the city");
   if (response === "rejected-stop") assert.equal(JSON.parse(events.at(-1)!.content).status, "failed");

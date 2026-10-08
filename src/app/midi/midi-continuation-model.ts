@@ -5,6 +5,7 @@ import { writeStandardMidi } from "../../attachments/midi-writer.js";
 import { ToolRegistry, type Toolset } from "../../plugins/registry.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { type MidiArtifact, saveMidiArtifact } from "../../storage/midi-artifacts.js";
+import { isStorageCommitOutcomeUnknownError } from "../../storage/persistence.js";
 import type { RuntimeProfile } from "../../model/provider.js";
 import { midiArtifactAuthoringSchema, parseMidiArtifactAuthoringArguments } from "./midi-artifact-authoring.js";
 import type { AgentModelTurnRequester } from "../agent-request.js";
@@ -50,8 +51,11 @@ export async function generateMidiContinuationWithModel(input: {
       return { content: JSON.stringify({ artifacts: [{ kind: "midi", artifactRef: artifact.id, label: artifact.label,
         durationBeats: artifact.durationBeats, trackCount: artifact.trackCount, noteCount: artifact.noteCount }] }), artifacts: [{ kind: "midi", id: artifact.id }], stop: true };
       } catch (error) {
-        throwIfAborted(input.signal); saveFailure = error;
-        return { content: "The MIDI artifact could not be saved against the current source.", failed: true, stop: true };
+        const outcomeUnknown = isStorageCommitOutcomeUnknownError(error);
+        if (!outcomeUnknown) throwIfAborted(input.signal);
+        saveFailure = error;
+        return { content: "The MIDI artifact could not be saved against the current source.", failed: true, stop: true,
+          ...(outcomeUnknown ? { outcomeUnknown: true } : {}) };
       }
     },
   };
@@ -77,9 +81,12 @@ export async function generateMidiContinuationWithModel(input: {
     confirmActions: async () => { throw new Error("Live actions are not admitted in MIDI artifact generation."); },
     executeActions: async () => { throw new Error("Live actions are not admitted in MIDI artifact generation."); },
     onEvent: input.onEvent, onProgress: input.onProgress,
+  }).catch((error: unknown) => {
+    if (isStorageCommitOutcomeUnknownError(saveFailure)) throw saveFailure;
+    throw error;
   });
-  throwIfAborted(input.signal);
   if (saveFailure) throw saveFailure;
+  throwIfAborted(input.signal);
   if (!artifact) throw new Error("The model did not save a MIDI artifact. Existing buffer entries are unchanged.");
   return artifact;
 }
