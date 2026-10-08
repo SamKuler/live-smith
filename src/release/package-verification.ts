@@ -6,44 +6,51 @@ import { parsePluginPackageManifest } from "../plugins/manifest.js";
 
 const REQUIRED_THIRD_PARTY_NOTICE_MARKERS = [
   "Third-Party Notices for Live Smith",
-  "`fflate` 0.8.3 — Copyright (c) 2026 Arjun Barrett",
-  "`officeparser` 8.1.0",
-  "`xlsx` 0.20.3",
-  "`fast-xml-parser` 5.10.1 — Copyright (c) 2017 Amit Kumar Gupta",
-  "`@nodable/entities` 3.0.0 — authored by Amit Gupta",
-  "`anynum` 1.0.1 — Copyright (c) 2026 Natural Intelligence",
-  "`fast-xml-builder` 1.3.0 — Copyright (c) 2026 Natural Intelligence",
-  "`is-unsafe` 2.0.0 — Copyright (c) 2026 Natural Intelligence",
-  "`path-expression-matcher` 1.6.2 — Copyright (c) 2024",
-  "`strnum` 2.4.1 — Copyright (c) 2021 Natural Intelligence",
-  "`xml-naming` 0.3.0 — Copyright (c) 2026 Natural Intelligence",
-  "`tailwindcss` 4.3.3",
+  "`fflate`",
+  "Copyright (c) 2026 Arjun Barrett",
+  "`officeparser`",
+  "`xlsx`",
+  "`fast-xml-parser`",
+  "Copyright (c) 2017 Amit Kumar Gupta",
+  "`@nodable/entities`",
+  "authored by Amit Gupta",
+  "`anynum`",
+  "Copyright (c) 2026 Natural Intelligence",
+  "`fast-xml-builder`",
+  "`is-unsafe`",
+  "`path-expression-matcher`",
+  "Copyright (c) 2024",
+  "`strnum`",
+  "Copyright (c) 2021 Natural Intelligence",
+  "`xml-naming`",
+  "`tailwindcss`",
   "Copyright (c) Tailwind Labs, Inc.",
-  "`@modelcontextprotocol/client` 2.0.0",
-  "`@modelcontextprotocol/ext-apps` 2.0.0",
-  "`@standard-schema/spec` 1.1.0",
+  "`@modelcontextprotocol/client`",
+  "`@modelcontextprotocol/core`",
+  "`@modelcontextprotocol/ext-apps`",
+  "`@standard-schema/spec`",
   "Copyright (c) 2024-2025 Model Context Protocol",
-  "`eventsource` 3.0.7",
-  "`jose` 6.2.12",
-  "`zod` 4.6.5",
-  "`cross-spawn` 7.0.6",
+  "`eventsource`",
+  "`jose`",
+  "`zod`",
+  "`cross-spawn`",
   "The ISC License",
-  "`ws` 8.21.3",
+  "`ws`",
   "Copyright (c) 2016 Luigi Pinca",
-  "`https-proxy-agent` 9.1.0",
-  "`socks-proxy-agent` 10.1.0",
-  "`agent-base` 9.0.0",
-  "`proxy-agent-negotiate` 1.1.0",
-  "`debug` 4.4.3",
-  "`ms` 2.1.3",
-  "`socks` 2.8.10",
-  "`ip-address` 10.7.2",
-  "`smart-buffer` 4.2.0",
-  "`marked` 18.0.9",
+  "`https-proxy-agent`",
+  "`socks-proxy-agent`",
+  "`agent-base`",
+  "`proxy-agent-negotiate`",
+  "`debug`",
+  "`ms`",
+  "`socks`",
+  "`ip-address`",
+  "`smart-buffer`",
+  "`marked`",
   "Copyright (c) 2018+, MarkedJS",
   "Copyright (c) 2011-2018, Christopher Jeffrey",
   "Copyright © 2004, John Gruber",
-  "`dompurify` 3.4.16",
+  "`dompurify`",
   "Copyright (c) Cure53 and other contributors",
   "Apache License",
   "Version 2.0, January 2004",
@@ -86,6 +93,7 @@ export function assertPackagedBundleMatches(
 
 export function assertPackagedBundleContainsThirdPartyNotices(
   packagedBundle: Uint8Array,
+  lockfile: { packages: Record<string, { version?: string }> },
 ): void {
   const bundle = Buffer.from(
     packagedBundle.buffer,
@@ -95,11 +103,34 @@ export function assertPackagedBundleContainsThirdPartyNotices(
   const missingMarker = REQUIRED_THIRD_PARTY_NOTICE_MARKERS.find(
     (marker) => !bundle.includes(marker),
   );
-  if (missingMarker === undefined) return;
+  if (missingMarker !== undefined) {
+    throw new Error(
+      "Packaged extension bundle is missing the required third-party notice. Rebuild before release.",
+    );
+  }
+  assertThirdPartyNoticeVersions(bundle.toString("utf8"), lockfile);
+}
 
-  throw new Error(
-    "Packaged extension bundle is missing the required third-party notice. Rebuild before release.",
-  );
+function assertThirdPartyNoticeVersions(
+  notices: string,
+  lockfile: { packages: Record<string, { version?: string }> },
+): void {
+  const verified = new Set<string>();
+  for (const [, name, declared] of notices.matchAll(/`([^`\r\n]+)`[ \t]+([0-9][^\s`]*)/gu)) {
+    const locked = lockfile.packages[`node_modules/${name}`]?.version;
+    // Embedded upstream components can have notices without separate npm
+    // lock entries; their license text remains part of the bundled notice.
+    if (locked === undefined) continue;
+    if (declared !== locked) {
+      throw new Error(`Third-party notice version for ${name} is ${declared}; package-lock.json requires ${locked}.`);
+    }
+    verified.add(`\`${name}\``);
+  }
+  for (const marker of REQUIRED_THIRD_PARTY_NOTICE_MARKERS) {
+    if (marker.startsWith("`") && !verified.has(marker)) {
+      throw new Error(`Third-party notice must declare the locked version of ${marker}.`);
+    }
+  }
 }
 
 export function assertPluginFixtureReleaseSafety(

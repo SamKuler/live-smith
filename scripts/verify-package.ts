@@ -25,6 +25,7 @@ const archivePath = path.resolve(
   argv[2] ?? `${packageSlug(manifest.name)}-${manifest.version}.ablx`,
 );
 const currentBundle = await readFile(path.resolve(projectDirectory, manifest.entry));
+const packageLock = JSON.parse(await readFile(path.join(projectDirectory, "package-lock.json"), "utf8"));
 const extraction = spawnSync(
   "unzip",
   ["-p", archivePath, manifest.entry],
@@ -41,7 +42,7 @@ if (extraction.status !== 0 || !extraction.stdout?.length) {
 }
 
 assertPackagedBundleMatches(currentBundle, extraction.stdout);
-assertPackagedBundleContainsThirdPartyNotices(extraction.stdout);
+assertPackagedBundleContainsThirdPartyNotices(extraction.stdout, packageLock);
 await verifyTrackedPluginFixtures(projectDirectory);
 console.log(
   `Verified ${path.basename(archivePath)} contains the current ${manifest.entry}; tracked Plugin fixtures passed release checks.`,

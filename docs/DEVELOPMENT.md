@@ -389,7 +389,9 @@ npm run verify:package
 `verify:package` can check an existing package and rejects a stale bundle or an
 unsafe Plugin compatibility fixture. Keep generated bundles and packages out of
 source control. Package notices are maintained in
-[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). Build and package verification
+check declared dependency versions against `package-lock.json` so notices must
+be updated with dependency upgrades.
 
 ## Development data
 

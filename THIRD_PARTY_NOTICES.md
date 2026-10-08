@@ -97,8 +97,8 @@ section above.
 
 ### Model Context Protocol
 
-- `@modelcontextprotocol/client` 2.0.0
-- `@modelcontextprotocol/core` 2.0.0
+- `@modelcontextprotocol/client` 2.2.0
+- `@modelcontextprotocol/core` 2.2.0
 - `@modelcontextprotocol/ext-apps` 2.0.0
 
 Copyright (c) 2024-2025 Model Context Protocol, a Series of LF Projects, LLC.

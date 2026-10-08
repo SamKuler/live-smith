@@ -35,41 +35,51 @@ test("package verification requires the actual bundled third-party notices", asy
   const noticedBundle = await readFile(
     new URL("../../THIRD_PARTY_NOTICES.md", import.meta.url),
   );
+  const lockfile = JSON.parse(await readFile(new URL("../../package-lock.json", import.meta.url), "utf8"));
   assert.doesNotThrow(() =>
-    assertPackagedBundleContainsThirdPartyNotices(noticedBundle)
+    assertPackagedBundleContainsThirdPartyNotices(noticedBundle, lockfile)
   );
 
   for (const missingMarker of [
     "Third-Party Notices for Live Smith",
-    "`fflate` 0.8.3 — Copyright (c) 2026 Arjun Barrett",
-    "`officeparser` 8.1.0",
-    "`xlsx` 0.20.3",
-    "`fast-xml-parser` 5.10.1 — Copyright (c) 2017 Amit Kumar Gupta",
-    "`@nodable/entities` 3.0.0 — authored by Amit Gupta",
-    "`anynum` 1.0.1 — Copyright (c) 2026 Natural Intelligence",
-    "`fast-xml-builder` 1.3.0 — Copyright (c) 2026 Natural Intelligence",
-    "`is-unsafe` 2.0.0 — Copyright (c) 2026 Natural Intelligence",
-    "`path-expression-matcher` 1.6.2 — Copyright (c) 2024",
-    "`strnum` 2.4.1 — Copyright (c) 2021 Natural Intelligence",
-    "`xml-naming` 0.3.0 — Copyright (c) 2026 Natural Intelligence",
-    "`tailwindcss` 4.3.3",
+    "`fflate`",
+    "Copyright (c) 2026 Arjun Barrett",
+    "`officeparser`",
+    "`xlsx`",
+    "`fast-xml-parser`",
+    "Copyright (c) 2017 Amit Kumar Gupta",
+    "`@nodable/entities`",
+    "authored by Amit Gupta",
+    "`anynum`",
+    "Copyright (c) 2026 Natural Intelligence",
+    "`fast-xml-builder`",
+    "`is-unsafe`",
+    "`path-expression-matcher`",
+    "Copyright (c) 2024",
+    "`strnum`",
+    "Copyright (c) 2021 Natural Intelligence",
+    "`xml-naming`",
+    "`tailwindcss`",
+    "`@modelcontextprotocol/client`",
+    "`@modelcontextprotocol/core`",
+    "`@modelcontextprotocol/ext-apps`",
     "Copyright (c) Tailwind Labs, Inc.",
-    "`ws` 8.21.3",
+    "`ws`",
     "Copyright (c) 2016 Luigi Pinca",
-    "`https-proxy-agent` 9.1.0",
-    "`socks-proxy-agent` 10.1.0",
-    "`agent-base` 9.0.0",
-    "`proxy-agent-negotiate` 1.1.0",
-    "`debug` 4.4.3",
-    "`ms` 2.1.3",
-    "`socks` 2.8.10",
-    "`ip-address` 10.7.2",
-    "`smart-buffer` 4.2.0",
-    "`marked` 18.0.9",
+    "`https-proxy-agent`",
+    "`socks-proxy-agent`",
+    "`agent-base`",
+    "`proxy-agent-negotiate`",
+    "`debug`",
+    "`ms`",
+    "`socks`",
+    "`ip-address`",
+    "`smart-buffer`",
+    "`marked`",
     "Copyright (c) 2018+, MarkedJS",
     "Copyright (c) 2011-2018, Christopher Jeffrey",
     "Copyright © 2004, John Gruber",
-    "`dompurify` 3.4.16",
+    "`dompurify`",
     "Copyright (c) Cure53 and other contributors",
     "Apache License",
     "Version 2.0, January 2004",
@@ -81,10 +91,37 @@ test("package verification requires the actual bundled third-party notices", asy
     assert.throws(
       () => assertPackagedBundleContainsThirdPartyNotices(
         Buffer.from(noticedBundle.toString("utf8").replaceAll(missingMarker, "missing")),
+        lockfile,
       ),
       /third-party notice/i,
     );
   }
+});
+
+for (const packageName of ["@modelcontextprotocol/client", "@modelcontextprotocol/core", "fflate", "undici"]) {
+  test(`package verification rejects notice versions behind the lockfile for ${packageName}`, async () => {
+    const bundle = await readFile(new URL("../../THIRD_PARTY_NOTICES.md", import.meta.url));
+    const lockfile = JSON.parse(await readFile(new URL("../../package-lock.json", import.meta.url), "utf8"));
+    lockfile.packages[`node_modules/${packageName}`].version = "99.0.0";
+    assert.throws(() => assertPackagedBundleContainsThirdPartyNotices(bundle, lockfile), (error: unknown) =>
+      error instanceof Error && error.message.includes(packageName) && error.message.includes("99.0.0"));
+  });
+}
+
+test("notice upgrades follow the lockfile without changing release validation code", async () => {
+  const notices = await readFile(new URL("../../THIRD_PARTY_NOTICES.md", import.meta.url), "utf8");
+  const lockfile = JSON.parse(await readFile(new URL("../../package-lock.json", import.meta.url), "utf8"));
+  const packageName = "@modelcontextprotocol/client";
+  const locked = lockfile.packages[`node_modules/${packageName}`];
+  const updated = notices.replaceAll(`\`${packageName}\` ${locked.version}`, `\`${packageName}\` 99.0.0`);
+  assert.notEqual(updated, notices);
+  locked.version = "99.0.0";
+  assert.doesNotThrow(() => assertPackagedBundleContainsThirdPartyNotices(Buffer.from(updated), lockfile));
+  assert.throws(() => assertPackagedBundleContainsThirdPartyNotices(
+    Buffer.from(updated.replaceAll(`\`${packageName}\` 99.0.0`, `\`${packageName}\``)), lockfile,
+  ), /declare the locked version/);
+  delete lockfile.packages[`node_modules/${packageName}`];
+  assert.throws(() => assertPackagedBundleContainsThirdPartyNotices(Buffer.from(updated), lockfile), /locked version/);
 });
 
 test("bundled notices retain the complete Markdown dependency licenses", async () => {

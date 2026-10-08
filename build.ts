@@ -17,6 +17,7 @@ const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8")) as {
 };
 const production = argv.includes("--production");
 const thirdPartyNotices = fs.readFileSync("THIRD_PARTY_NOTICES.md", "utf8");
+const packageLock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
 const networkRuntimeInject = "src/runtime/network-node-globals.ts";
 
 verifySourceRuntimeBoundaries("src");
@@ -68,7 +69,7 @@ const entryOutput = outputFiles.find((output) =>
 if (!entryOutput) throw new Error(`Build did not produce ${manifest.entry}.`);
 const bundle = entryOutput.text;
 
-assertPackagedBundleContainsThirdPartyNotices(entryOutput.contents);
+assertPackagedBundleContainsThirdPartyNotices(entryOutput.contents, packageLock);
 verifyNetworkRuntimeBundleInputs(buildResult.metafile);
 verifyBundleDoesNotUseUnsupportedGlobals(bundle, manifest.entry);
 verifyBundleEntrypointLoads(bundle, manifest.entry);
