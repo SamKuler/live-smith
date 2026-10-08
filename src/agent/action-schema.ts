@@ -212,7 +212,7 @@ const actionDescriptors = {
       clipName: requiredString("Exact arrangement MIDI Clip name."),
       startBeat: requiredNumber("Exact arrangement Clip start beat."),
       segmentStartTime: requiredNonNegativeNumber(
-        "Segment start in beats relative to the Clip.",
+        "Segment start in Clip source beats, independent of Arrangement position and playback markers.",
       ),
       segmentDurationBeats: requiredPositiveNumber(),
       notes: requiredNotes(0),

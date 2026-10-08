@@ -7,6 +7,7 @@ import { throwIfAborted } from "../../runtime/host.js";
 import { listSessionAttachments } from "../../storage/attachments.js";
 import { listAudioJobs } from "../../storage/audio-jobs.js";
 import { loadSessionEvents, type SessionEvent } from "../../storage/events.js";
+import { hasSessionMidiContent } from "../../storage/midi-artifacts.js";
 import { createStorageId } from "../../storage/id.js";
 import {
   createSession,
@@ -204,6 +205,9 @@ export async function sessionSummaries(
         hasContent = (await loadSessionEvents(storageDirectory, session.id)).length > 0 ||
           (await listSessionAttachments(storageDirectory, session.id)).length > 0 ||
           storageDirectory !== undefined && (await listAudioJobs(storageDirectory, session.id)).length > 0;
+        if (!hasContent) {
+          hasContent = await hasSessionMidiContent(storageDirectory, session.id);
+        }
       } catch {
         // Unreadable content is not evidence of emptiness.
         hasContent = true;

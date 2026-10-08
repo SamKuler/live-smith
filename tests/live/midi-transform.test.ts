@@ -10,7 +10,7 @@ test("segment prediction preserves non-overlapping SDK note fields and removes o
   };
   const overlapping = { pitch: 60, startTime: 1.5, duration: 1, velocity: 90 };
   const replacement = { pitch: 65, startTime: 2, duration: 1, velocity: 100 };
-  const clip = { name: "Phrase", duration: 4, notes: [preserved, overlapping] };
+  const clip = { name: "Phrase", endMarker: 4, looping: false, loopEnd: 4, notes: [preserved, overlapping] };
   const result = calculateMidiNoteEdit(clip, {
     type: "replace_midi_clip_segment", clipName: "Phrase", startBeat: 32,
     segmentStartTime: 2, segmentDurationBeats: 1, notes: [replacement],
@@ -23,7 +23,7 @@ test("segment prediction preserves non-overlapping SDK note fields and removes o
 
 test("segment prediction keeps the actual prior notes when the executor would treat it as a no-op", () => {
   const before = { pitch: 60, startTime: 0, duration: 1, velocity: 90 };
-  const result = calculateMidiNoteEdit({ name: "Phrase", duration: 4, notes: [before] }, {
+  const result = calculateMidiNoteEdit({ name: "Phrase", endMarker: 4, looping: false, loopEnd: 4, notes: [before] }, {
     type: "replace_midi_clip_segment", clipName: "Phrase", startBeat: 0,
     segmentStartTime: 0, segmentDurationBeats: 4,
     notes: [{ ...before, duration: 1 + 1e-9 }],
@@ -175,19 +175,19 @@ test("transforms reject pitch and timing output outside the Clip", () => {
   );
 });
 
-test("Clip-end validation accepts only machine-precision representation noise", () => {
+test("source-end validation for timing edits accepts only machine-precision representation noise", () => {
   assert.doesNotThrow(() => transformMidiNotes([{
     pitch: 60,
     startTime: 0.1,
     duration: 0.2,
     velocity: 80,
-  }], 0.3, { type: "transpose", semitones: 0 }));
+  }], 0.3, { type: "shift", offsetBeats: 0 }));
   assert.throws(() => transformMidiNotes([{
     pitch: 60,
     startTime: 0.1,
     duration: 0.20000005,
     velocity: 80,
-  }], 0.3, { type: "transpose", semitones: 0 }), /outside.*Clip/i);
+  }], 0.3, { type: "shift", offsetBeats: 0 }), /outside.*Clip/i);
 });
 
 test("transform inputs must be finite and within their public bounds", () => {

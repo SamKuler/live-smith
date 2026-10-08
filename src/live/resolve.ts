@@ -14,6 +14,7 @@ import {
 } from "@ableton-extensions/sdk";
 
 import { trackTypeLabel, type LiveTarget } from "./target.js";
+import { midiClipHasAuthoringTiming } from "./midi-clip-timing.js";
 export {
   resolveDeviceTarget,
   type DevicePath,
@@ -211,7 +212,7 @@ export function findReusableMidiClip(
       clip instanceof MidiClip &&
       equalsLoose(clip.name, name) &&
       Math.abs(clip.startTime - startBeat) < 0.0001 &&
-      Math.abs(clip.duration - durationBeats) < 0.0001,
+      midiClipHasAuthoringTiming(clip, durationBeats),
   );
 }
 

@@ -130,6 +130,7 @@ test("a creator ref binds the returned MIDI track for later actions", async () =
 
 test("replace_midi_clip_segment removes only overlapping notes and keeps deterministic order", async () => {
   const clip = Object.defineProperties(Object.create(MidiClip.prototype), {
+    endMarker: { value: 8 }, looping: { value: false }, loopEnd: { value: 8 },
     handle: { enumerable: true, value: { id: "clip-1" } },
     name: { enumerable: true, value: "Full arrangement" },
     startTime: { enumerable: true, value: 0 },
@@ -181,11 +182,12 @@ test("replace_midi_clip_segment removes only overlapping notes and keeps determi
   assert.match(results[0] ?? "", /removed 2 notes.*added 2.*final 4/i);
 });
 
-test("replace_midi_clip_segment rechecks the current clip duration before mutation", async () => {
+test("replace_midi_clip_segment checks the current source extent before mutation", async () => {
   const originalNotes = [
     { pitch: 48, startTime: 0, duration: 1, velocity: 90 },
   ];
   const clip = Object.defineProperties(Object.create(MidiClip.prototype), {
+    endMarker: { value: 8 }, looping: { value: false }, loopEnd: { value: 8 },
     handle: { enumerable: true, value: { id: "clip-1" } },
     name: { enumerable: true, value: "Full arrangement" },
     startTime: { enumerable: true, value: 0 },
@@ -3070,6 +3072,10 @@ function sdkObject<T extends object>(
   prototype: object,
   properties: Record<string, unknown>,
 ): T {
+  if (prototype === MidiClip.prototype) properties = {
+    startMarker: 0, endMarker: properties.duration, looping: false,
+    loopStart: 0, loopEnd: properties.duration, ...properties,
+  };
   return Object.defineProperties(
     Object.create(prototype),
     Object.fromEntries(

@@ -21,7 +21,7 @@ import {
   type MidiActionPreview,
   type ParameterActionPreview,
 } from "../agent/action-preview.js";
-import { calculateMidiNoteEdit, type MidiNoteEditAction } from "./midi-transform.js";
+import { calculateMidiNoteEdit, type MidiNoteEditAction, type MidiNoteEditClip } from "./midi-transform.js";
 import { sessionMidiClipCanBeReused } from "./action-bindings.js";
 import {
   assertParameterValueInObservedRange,
@@ -981,10 +981,8 @@ async function trackContentIdentity(track: Track<"1.0.0">): Promise<object> {
   };
 }
 
-interface MidiClipObservation {
-  name: string;
+interface MidiClipObservation extends MidiNoteEditClip {
   duration: number;
-  notes: NoteDescription[];
 }
 
 function clipContentIdentity(clip: MidiClip<"1.0.0">): MidiClipObservation;

@@ -5,7 +5,7 @@ import { runAgentFlow, type AgentFlowDependencies } from "../../../src/app/agent
 import type { MidiContinuationView } from "../../../src/agent/midi-continuation-contracts.js";
 import { pendingArtifactParentFromEvents } from "../../../src/agent/artifact-contracts.js";
 import { loadSessionEvents } from "../../../src/storage/events.js";
-import { readMidiArtifact, readMidiContinuation } from "../../../src/storage/midi-artifacts.js";
+import { readMidiArtifact, readMidiContinuation, saveMidiArtifact } from "../../../src/storage/midi-artifacts.js";
 import { saveSavedProfile } from "../../../src/storage/settings.js";
 import type { ChatDialogState } from "../../../src/ui/chat-state.js";
 import type { LiveInteractionContext } from "../../../src/live/context.js";
@@ -49,6 +49,37 @@ async function configure(url: string) {
     sourceClips: loaded.midiContinuation!.clips.map(({ trackId, clipId }) => ({ trackId, clipId })), segmentBeats: 8, capacity: 2, prompt: "Keep both voices.", generator: { kind: "model" } }));
   assert.equal(configured.midiContinuation!.buffer!.queue.length, 0);
   return configured;
+}
+
+for (const content of ["configuration", "artifact"] as const) {
+  test(`New Session preserves a message-free Session with only MIDI ${content}`, async (t) => {
+    await withFlow(t, async ({ url, h }) => {
+      const initial = await state(await command(url, { kind: "new_session" }));
+      const originalId = initial.activeSessionId;
+      const stillEmpty = await state(await command(url, { kind: "new_session" }));
+      assert.equal(stillEmpty.activeSessionId, originalId, "a pristine Session remains reusable");
+      let artifactId: string;
+      if (content === "configuration") {
+        const configured = await configure(url);
+        assert.equal(configured.activeSessionId, originalId);
+        artifactId = configured.midiContinuation!.buffer!.sourceArtifactRef;
+      } else {
+        const source = await readMidiArtifact(h.directory, h.session.id, h.buffer.sourceArtifactRef);
+        const artifact = await saveMidiArtifact(h.directory, originalId, {
+          source: { kind: "host", operation: "live-midi-context" }, serverId: "host", toolName: "capture", label: "Source MIDI",
+          bytes: source.bytes, signal: h.signal,
+        });
+        artifactId = artifact.id;
+      }
+      assert.deepEqual(await loadSessionEvents(h.directory, originalId), []);
+      const fresh = await state(await command(url, { kind: "new_session" }));
+      assert.notEqual(fresh.activeSessionId, originalId, "MIDI-owned content prevents pristine reuse");
+      assert.equal(fresh.sessions.find((session) => session.id === originalId)?.hasContent, true);
+      assert.equal((await readMidiArtifact(h.directory, originalId, artifactId)).artifact.id, artifactId);
+      const repeated = await state(await command(url, { kind: "new_session" }));
+      assert.equal(repeated.activeSessionId, fresh.activeSessionId);
+    }, async () => assert.fail("Session configuration must not request model generation"));
+  });
 }
 
 test("real command flow loads sources, configures, generates and refills after a confirmed mapped import", async (t) => {

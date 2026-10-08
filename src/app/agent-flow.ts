@@ -44,6 +44,7 @@ import { createAttachmentOpener } from "./attachments/attachment-opener.js";
 import { integrationConnectionsView } from "../storage/settings.js";
 import { AudioArtifactNotFoundError, readSessionAudioArtifact } from "../storage/audio-artifacts.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
+import { hasSessionMidiContent } from "../storage/midi-artifacts.js";
 import {
   type AgentConfirmationDecision,
 } from "../agent/loop.js";
@@ -2715,6 +2716,7 @@ export async function createAgentRuntime(
             )(storageDirectory, current.id);
             if (events.length) return undefined;
             if (storageDirectory !== undefined && (await listAudioJobs(storageDirectory, current.id)).length) return undefined;
+            if (await hasSessionMidiContent(storageDirectory, current.id)) return undefined;
             const attachments = await listPendingSessionAttachments(
               storageDirectory,
               current.id,

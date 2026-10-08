@@ -482,7 +482,7 @@ test("replace_midi_clip_segment validates relative timing and always confirms", 
 
   assert.equal(plan.actions[0]?.type, "replace_midi_clip_segment");
   assert.equal(requiresExplicitConfirmation(plan), true);
-  assert.match(summarizeActionPlan(plan), /relative beats 64-128.*2 notes/i);
+  assert.match(summarizeActionPlan(plan), /source beats 64-128.*2 notes/i);
 
   assert.throws(
     () => validateAgentPlan({

@@ -6,17 +6,26 @@ export type MidiNoteEditAction = Extract<AgentAction, {
     | "scale_midi_velocity" | "shift_midi_notes";
 }>;
 
+export interface MidiNoteEditClip {
+  name: string;
+  endMarker: number;
+  looping: boolean;
+  loopEnd: number;
+  notes: readonly NoteDescription[];
+}
+
 /** The proposed note set and no-op decision shared by preflight and execution. */
 export function calculateMidiNoteEdit(
-  clip: { name: string; duration: number; notes: readonly NoteDescription[] },
+  clip: MidiNoteEditClip,
   action: MidiNoteEditAction,
 ): { notes: NoteDescription[]; changed: boolean; removedNoteCount: number } {
   if (action.type === "replace_midi_clip_segment") {
     const segmentEnd = action.segmentStartTime + action.segmentDurationBeats;
     const tolerance = 1e-7;
-    if (segmentEnd > clip.duration + tolerance) {
+    const sourceEnd = midiSourceEnd(clip);
+    if (segmentEnd > sourceEnd + tolerance) {
       throw new Error(
-        `Relative segment ${action.segmentStartTime}-${segmentEnd} exceeds MIDI clip "${clip.name}" bounds 0-${clip.duration}. Inspect the clip and use a segment inside its duration.`,
+        `Source segment ${action.segmentStartTime}-${segmentEnd} exceeds MIDI clip "${clip.name}" source bounds 0-${sourceEnd}. Inspect the source notes and markers before editing.`,
       );
     }
     const preserved = clip.notes.filter((note) => !(
@@ -31,12 +40,23 @@ export function calculateMidiNoteEdit(
       removedNoteCount: clip.notes.length - preserved.length,
     };
   }
-  const transformed = transformMidiNotes(clip.notes, clip.duration, midiTransformForAction(action));
+  const transform = midiTransformForAction(action);
+  const transformed = transformMidiNotes(clip.notes,
+    transform.type === "shift" || transform.type === "quantize" ? midiSourceEnd(clip) : undefined,
+    transform);
   return {
     notes: transformed,
     changed: !transformedMidiNotesEqual(clip.notes, transformed),
     removedNoteCount: 0,
   };
+}
+
+/** Source markers and stored material define the editable extent, independently of playback length. */
+function midiSourceEnd(clip: MidiNoteEditClip): number {
+  const end = clip.notes.reduce((maximum, note) => Math.max(maximum, note.startTime + note.duration),
+    Math.max(clip.endMarker, clip.looping ? clip.loopEnd : 0));
+  if (!Number.isFinite(end) || end <= 0) throw new Error("MIDI Clip source extent must be positive and finite.");
+  return end;
 }
 
 export type MidiTransform =
@@ -47,11 +67,12 @@ export type MidiTransform =
 
 export function transformMidiNotes(
   notes: readonly NoteDescription[],
-  clipDuration: number,
+  sourceEnd: number | undefined,
   transform: MidiTransform,
 ): NoteDescription[] {
-  if (!Number.isFinite(clipDuration) || clipDuration <= 0) {
-    throw new Error("MIDI Clip duration must be positive and finite.");
+  const changesTiming = transform.type === "shift" || transform.type === "quantize";
+  if (changesTiming && (sourceEnd === undefined || !Number.isFinite(sourceEnd) || sourceEnd <= 0)) {
+    throw new Error("MIDI Clip source extent must be positive and finite.");
   }
   validateTransform(transform);
 
@@ -111,7 +132,7 @@ export function transformMidiNotes(
         };
         break;
     }
-    assertTransformedNote(transformed, clipDuration, index);
+    assertTransformedNote(transformed, changesTiming ? sourceEnd : undefined, index);
     return transformed;
   });
 }
@@ -164,7 +185,7 @@ function assertValidNote(note: NoteDescription, index: number): void {
 
 function assertTransformedNote(
   note: NoteDescription,
-  clipDuration: number,
+  sourceEnd: number | undefined,
   index: number,
 ): void {
   const end = note.startTime + note.duration;
@@ -182,10 +203,10 @@ function assertTransformedNote(
       `MIDI note ${index + 1} pitch ${note.pitch} is outside 0-127 after transform.`,
     );
   }
-  const normalizedEnd = nearlyEqual(end, clipDuration) ? clipDuration : end;
-  if (note.startTime < 0 || normalizedEnd > clipDuration) {
+  const normalizedEnd = sourceEnd !== undefined && nearlyEqual(end, sourceEnd) ? sourceEnd : end;
+  if (sourceEnd !== undefined && (note.startTime < 0 || normalizedEnd > sourceEnd)) {
     throw new Error(
-      `MIDI note ${index + 1} at ${note.startTime}-${end} is outside Clip bounds 0-${clipDuration} after transform.`,
+      `MIDI note ${index + 1} at ${note.startTime}-${end} is outside Clip source bounds 0-${sourceEnd} after transform.`,
     );
   }
 }

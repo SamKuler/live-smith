@@ -621,16 +621,14 @@ async function executeAction(
         );
       }
       const segmentEnd = action.segmentStartTime + action.segmentDurationBeats;
-      const edited = calculateMidiNoteEdit({
-        name: resolvedClip.name, duration: resolvedClip.duration, notes: resolvedClip.notes,
-      }, action);
+      const edited = calculateMidiNoteEdit(resolvedClip, action);
       if (!edited.changed) {
         return noMutation(
-          `Kept relative beats ${action.segmentStartTime}-${segmentEnd} in MIDI clip "${resolvedClip.name}" on track "${track.name}" because the resulting notes already match.`,
+          `Kept source beats ${action.segmentStartTime}-${segmentEnd} in MIDI clip "${resolvedClip.name}" on track "${track.name}" because the resulting notes already match.`,
         );
       }
       resolvedClip.notes = edited.notes;
-      return `Replaced relative beats ${action.segmentStartTime}-${segmentEnd} in MIDI clip "${resolvedClip.name}" on track "${track.name}": removed ${edited.removedNoteCount} notes, added ${action.notes.length}, final ${edited.notes.length} notes.`;
+      return `Replaced source beats ${action.segmentStartTime}-${segmentEnd} in MIDI clip "${resolvedClip.name}" on track "${track.name}": removed ${edited.removedNoteCount} notes, added ${action.notes.length}, final ${edited.notes.length} notes.`;
     }
     case "transpose_midi_notes":
     case "quantize_midi_notes":
@@ -652,9 +650,7 @@ async function executeAction(
           `Clip "${clip.name}" on track "${track.name}" is not a MIDI clip.`,
         );
       }
-      const edited = calculateMidiNoteEdit({
-        name: clip.name, duration: clip.duration, notes: clip.notes,
-      }, action);
+      const edited = calculateMidiNoteEdit(clip, action);
       if (!edited.changed) {
         return noMutation(
           `Kept MIDI clip "${clip.name}" on track "${track.name}" because the transform produced no note changes.`,

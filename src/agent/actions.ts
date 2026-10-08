@@ -505,7 +505,7 @@ export function summarizeAgentAction(action: AgentAction): string {
     case "create_session_midi_clip":
       return `Create or replace Session MIDI clip${action.name ? ` "${action.name}"` : ""} in slot ${action.slotIndex} on ${targetTrack(action)} for ${action.durationBeats} beats with ${action.notes.length} notes.`;
     case "replace_midi_clip_segment":
-      return `Replace notes in MIDI clip "${action.clipName}" on ${targetTrack(action)} at arrangement beat ${action.startBeat}, relative beats ${action.segmentStartTime}-${action.segmentStartTime + action.segmentDurationBeats}, with ${action.notes.length} notes.`;
+      return `Replace notes in MIDI clip "${action.clipName}" on ${targetTrack(action)} at arrangement beat ${action.startBeat}, source beats ${action.segmentStartTime}-${action.segmentStartTime + action.segmentDurationBeats}, with ${action.notes.length} notes.`;
     case "transpose_midi_notes":
       return `Transpose every note in ${clipLocatorText(action)} on ${targetTrack(action)} by ${action.semitones} semitones.`;
     case "quantize_midi_notes":
@@ -823,7 +823,10 @@ function validateMidiActionTiming(action: AgentAction): void {
   }
 }
 
-function validateMidiSegmentRanges(actions: AgentAction[]): void {
+export function validateMidiSegmentRanges(
+  actions: readonly AgentAction[],
+  clipIdentity: (action: Extract<AgentAction, { type: "replace_midi_clip_segment" }>, index: number) => string | undefined = midiSegmentLocatorIdentity,
+): void {
   const tolerance = 1e-7;
   const ranges = new Map<
     string,
@@ -832,16 +835,8 @@ function validateMidiSegmentRanges(actions: AgentAction[]): void {
 
   actions.forEach((action, index) => {
     if (action.type !== "replace_midi_clip_segment") return;
-    const target = action.trackRef
-      ? `ref:${action.trackRef.toLocaleLowerCase()}`
-      : action.trackName
-        ? `name:${action.trackName.toLocaleLowerCase()}`
-        : "selected-track";
-    const key = [
-      target,
-      action.clipName.toLocaleLowerCase(),
-      String(action.startBeat),
-    ].join("\u0000");
+    const key = clipIdentity(action, index);
+    if (key === undefined) return;
     const start = action.segmentStartTime;
     const end = start + action.segmentDurationBeats;
     const priorRanges = ranges.get(key) ?? [];
@@ -855,6 +850,13 @@ function validateMidiSegmentRanges(actions: AgentAction[]): void {
     priorRanges.push({ actionNumber: index + 1, start, end });
     ranges.set(key, priorRanges);
   });
+}
+
+function midiSegmentLocatorIdentity(action: Extract<AgentAction, { type: "replace_midi_clip_segment" }>): string {
+  const target = action.trackRef
+    ? `ref:${action.trackRef.toLocaleLowerCase()}`
+    : action.trackName ? `name:${action.trackName.toLocaleLowerCase()}` : "selected-track";
+  return [target, action.clipName.toLocaleLowerCase(), String(action.startBeat)].join("\u0000");
 }
 
 function validateSceneIndexStability(actions: AgentAction[]): void {

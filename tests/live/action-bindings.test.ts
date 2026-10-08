@@ -1558,6 +1558,10 @@ test("Take Lane Clip actions bind the lane and reject lane drift or overlapping 
 });
 
 function sdkObject<T extends object>(prototype: T, properties: Record<string, unknown>): T {
+  if (prototype === MidiClip.prototype) properties = {
+    startMarker: 0, endMarker: properties.duration, looping: false,
+    loopStart: 0, loopEnd: properties.duration, ...properties,
+  };
   return Object.defineProperties(Object.create(prototype), Object.fromEntries(
     Object.entries(properties).map(([key, value]) => [
       key, { configurable: true, enumerable: true, writable: true, value },

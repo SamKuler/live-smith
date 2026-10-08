@@ -23,7 +23,7 @@ import {
   writeJsonAtomicallyCreateOnly,
   writeJsonAtomically,
 } from "./persistence.js";
-import { listSessions } from "./sessions.js";
+import { listSessions, persistTransientSessionInTransaction } from "./sessions.js";
 
 export const MAX_MIDI_ARTIFACT_BYTES = 8 * 1024 * 1024;
 export const MAX_MIDI_ARTIFACTS_PER_SESSION = 64;
@@ -208,9 +208,10 @@ export async function saveMidiArtifact(
     durationBeats: parsed.durationBeats,
     createdAt: new Date().toISOString(),
   };
-  return withStorageTransaction(storageDirectory, async () => {
+  return withStorageTransaction(storageDirectory, async (transaction) => {
     throwIfAborted(input.signal);
     await requireSession(storageDirectory, sessionId);
+    await persistTransientSessionInTransaction(transaction, storageDirectory, sessionId);
     const directory = await bindSessionDirectory(storageDirectory, sessionId, true);
     const entries = await readArtifacts(directory!);
     for (const ref of [input.revisionOf, input.groupWith]) {
@@ -262,6 +263,17 @@ export async function inspectMidiArtifacts(
     const { artifacts, unavailableCount } = await readArtifacts(directory);
     return { artifacts, unavailableCount };
   });
+}
+
+/** Read-only content check usable within a caller's storage snapshot transaction. */
+export async function hasSessionMidiContent(storageDirectory: string | undefined, sessionId: string): Promise<boolean> {
+  requireSafeStorageId(sessionId, "Session ID");
+  if (!storageDirectory) return false;
+  const directory = await bindSessionDirectory(storageDirectory, sessionId);
+  if (!directory) return false;
+  const entries = await readArtifacts(directory);
+  return entries.artifacts.length > 0 || entries.unavailableCount > 0 ||
+    (await readMidiContinuation(storageDirectory, sessionId)) !== undefined;
 }
 
 export async function readMidiArtifact(
@@ -571,9 +583,10 @@ export async function saveMidiContinuation(storageDirectory: string | undefined,
   if (!storageDirectory || !isMidiContinuationBuffer(input) || input.sessionId !== sessionId ||
       Buffer.byteLength(JSON.stringify(input, null, 2), "utf8") > MAX_MIDI_CONTINUATION_BYTES) throw new MidiArtifactStorageError("MIDI continuation settings exceed the supported limits.");
   const value = JSON.parse(JSON.stringify(input)) as MidiContinuationBuffer;
-  await withStorageTransaction(storageDirectory, async () => {
+  await withStorageTransaction(storageDirectory, async (transaction) => {
     throwIfAborted(signal);
     await requireSession(storageDirectory, sessionId);
+    await persistTransientSessionInTransaction(transaction, storageDirectory, sessionId);
     const directory = await bindSessionDirectory(storageDirectory, sessionId, true);
     await assertDirectory(directory!);
     await writeJsonAtomically(path.join(directory!.path, "continuation.json"), value);

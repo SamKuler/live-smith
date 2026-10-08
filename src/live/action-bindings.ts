@@ -18,6 +18,7 @@ import {
 
 import {
   supportsNonRegularTrackAction,
+  validateMidiSegmentRanges,
   type AgentAction,
   type AgentPlan,
 } from "../agent/actions.js";
@@ -51,6 +52,7 @@ import {
   type ResolvedSampleSource,
 } from "./sample-source.js";
 import { findTrackAncestor, type LiveTarget } from "./target.js";
+import { midiClipHasAuthoringTiming } from "./midi-clip-timing.js";
 
 type Api = ExtensionContext<"1.0.0">;
 
@@ -127,6 +129,10 @@ export function bindAgentPlanTargets(
     actionTracks,
     requestAudioSources,
   );
+  validateMidiSegmentRanges(plan.actions, (_action, index) => {
+    const clip = actionObjects.get(index)?.clip;
+    return clip ? hostObjectHandleId(clip, "MIDI Clip") : undefined;
+  });
   assertStructuralActionDependenciesAreStable(
     context,
     plan,
@@ -923,7 +929,7 @@ export function sessionMidiClipCanBeReused(
   clip: Clip<"1.0.0"> | null | undefined,
   durationBeats: number,
 ): clip is MidiClip<"1.0.0"> {
-  return clip instanceof MidiClip && Math.abs(clip.duration - durationBeats) < 0.0001;
+  return clip instanceof MidiClip && midiClipHasAuthoringTiming(clip, durationBeats);
 }
 
 export function sessionAudioClipCanBeReused(
