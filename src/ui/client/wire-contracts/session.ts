@@ -408,6 +408,7 @@ export function isWireAgentSession(value: unknown): value is ChatSessionSummary 
       "modelSelection",
       "creativeBrief",
       "hasContent",
+      "lastMessageAt",
       "createdAt",
       "updatedAt",
     ]) &&
@@ -428,6 +429,7 @@ export function isWireAgentSession(value: unknown): value is ChatSessionSummary 
     (value.modelSelection === undefined ||
       isWireSessionModelSelection(value.modelSelection)) &&
     (value.hasContent === undefined || typeof value.hasContent === "boolean") &&
+    (value.lastMessageAt === undefined || typeof value.lastMessageAt === "string") &&
     typeof value.createdAt === "string" &&
     typeof value.updatedAt === "string";
 }

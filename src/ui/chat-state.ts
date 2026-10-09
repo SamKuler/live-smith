@@ -48,6 +48,7 @@ export const MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH = 512;
 export interface ChatSessionSummary extends AgentSession {
   /** Derived display metadata; never part of the stored Session record. */
   hasContent?: boolean;
+  lastMessageAt?: string;
 }
 
 export type ChatLiveContext =

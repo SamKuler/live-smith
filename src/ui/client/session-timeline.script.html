@@ -24,6 +24,7 @@
       }) {
       const t = (message, params) => window.LiveSmithI18n.t(message, params);
       const { message } = window.LiveSmithI18n;
+      const sessionActivityAt = window.LiveSmithFactories.sessionActivityAt;
       const builtInAudioToolNames = __BUILT_IN_AUDIO_TOOL_NAMES__;
       const sessionActionLabels = new WeakMap();
       const maximumSessionTitleCodePoints = __MAX_SESSION_TITLE_CODE_POINTS__;
@@ -84,9 +85,9 @@
         retainActiveSessionForWindow();
         const state = getState();
         return [
-          ...(state.sessions || []).map((session) => ({ session, archived: false })),
-          ...(state.previousSessions || []).map((session) => ({ session, archived: false })),
-          ...(state.archivedSessions || []).map((session) => ({ session, archived: true })),
+          ...sessionSearch.orderSessions(state.sessions || []).map((session) => ({ session, archived: false })),
+          ...sessionSearch.orderSessions(state.previousSessions || []).map((session) => ({ session, archived: false })),
+          ...sessionSearch.orderSessions(state.archivedSessions || []).map((session) => ({ session, archived: true })),
         ].filter(({ session, archived }) => isSessionVisible(session, archived));
       }
 
@@ -875,7 +876,7 @@
         const archivedDate = session.archivedAt
           ? formatSessionDate(session.archivedAt)
           : "";
-        const date = formatSessionDate(session.updatedAt || session.createdAt);
+        const date = formatSessionDate(sessionActivityAt(session));
         return [
           archivedDate ? t("Archived {date}", { date: archivedDate }) : "",
           date ? t("Updated {date}", { date }) : "",
@@ -1354,11 +1355,11 @@
           desiredNodes.push(entry);
         };
 
-        for (const session of currentSessions) appendSession(session, "current");
+        for (const session of sessionSearch.orderSessions(currentSessions)) appendSession(session, "current");
 
         if (previousSessions.length) {
           desiredNodes.push(sessionSection("history", t("History"), existingSections));
-          for (const session of previousSessions) appendSession(session, "history");
+          for (const session of sessionSearch.orderSessions(previousSessions)) appendSession(session, "history");
         }
 
         const archivedSessions = (state.archivedSessions || []).filter(
@@ -1366,7 +1367,7 @@
         );
         if (archivedSessions.length) {
           desiredNodes.push(sessionSection("archived", t("Archived"), existingSections));
-          for (const session of archivedSessions) appendSession(session, "archived");
+          for (const session of sessionSearch.orderSessions(archivedSessions)) appendSession(session, "archived");
         }
         reconcileChildNodes(list, desiredNodes);
         if (renameState && !renameState.input.isConnected && renameState.sessionId) {

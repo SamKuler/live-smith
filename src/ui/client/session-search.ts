@@ -175,6 +175,14 @@ export function createSessionSearch(deps: Dependencies) {
     get active() { return Boolean(query); },
     getMatch(sessionId: string) { return matches.get(sessionId); },
     includes(sessionId: string) { return !query || matches.has(sessionId); },
+    orderSessions<T extends { id: string }>(sessions: readonly T[]): readonly T[] {
+      if (!query) return sessions;
+      const byId = new Map(sessions.map((session) => [session.id, session]));
+      return [...matches.keys()].flatMap((id) => {
+        const session = byId.get(id);
+        return session ? [session] : [];
+      });
+    },
     invalidate,
     syncState(state: ChatBridgeState) {
       if (!input) initialize();
@@ -184,7 +192,7 @@ export function createSessionSearch(deps: Dependencies) {
       const lastEventId = state.events.findLast((event) => event.kind === "user" || event.kind === "assistant")?.id ?? "";
       const previousEventId = lastEvents.get(state.activeSessionId);
       lastEvents.set(state.activeSessionId, lastEventId);
-      const nextSignature = JSON.stringify(records.map((session) => [session.id, session.title, session.updatedAt]));
+      const nextSignature = JSON.stringify(records.map((session) => [session.id, session.title, session.updatedAt, session.lastMessageAt]));
       const changed = stateSignature !== undefined && (nextSignature !== stateSignature ||
         previousEventId !== undefined && previousEventId !== lastEventId);
       stateSignature = nextSignature;

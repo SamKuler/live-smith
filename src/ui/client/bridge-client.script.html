@@ -700,6 +700,14 @@
           ...Object.keys(authoritative.session),
         ]);
         for (const key of keys) {
+          if (key === "lastMessageAt") {
+            const currentTime = current.session.lastMessageAt;
+            const incomingTime = authoritative.session.lastMessageAt;
+            const latest = incomingTime === undefined || currentTime !== undefined && currentTime > incomingTime
+              ? currentTime : incomingTime;
+            if (latest !== undefined) session.lastMessageAt = latest;
+            continue;
+          }
           const approvalPatchOrder = key === "approvalMode"
             ? compareDecimalRevisions(
               approvalProjection?.revision || "0",
@@ -6263,6 +6271,11 @@
         }
         const session = sessionStateEntry(getState(), sessionId)?.session;
         if (session) session.hasContent = true;
+        if (session && (event.kind === "user" || event.kind === "assistant") &&
+            (!session.lastMessageAt || event.createdAt > session.lastMessageAt)) {
+          session.lastMessageAt = event.createdAt;
+          requireView().syncSessionPresentation(sessionId);
+        }
         reconcilePendingUserMessage(
           sendAttemptsBySession.get(sessionId),
           event,

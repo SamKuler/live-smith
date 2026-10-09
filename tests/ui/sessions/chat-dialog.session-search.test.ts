@@ -90,6 +90,40 @@ test("Session search waits for Chinese composition and Escape cancels a pending 
   } finally { s.close(); }
 });
 
+test("Session search renders the returned activity order and clearing restores ordinary navigation order", async () => {
+  const s = await setup();
+  const { h, requests } = s;
+  try {
+    await s.search("phrase");
+    requests[0]!.resolve(reply("phrase", [
+      { sessionId: "session-2", excerpt: "Newer phrase" },
+      { sessionId: "session-1", excerpt: "Older phrase" },
+    ]));
+    await h.settle();
+    assert.deepEqual(rows(h), ["session-2", "session-1"]);
+    h.input("#sessionSearch", "");
+    assert.deepEqual(rows(h), ["session-1", "session-2"]);
+    assert.deepEqual(h.errors, []);
+  } finally { s.close(); }
+});
+
+test("range selection follows the visible search order", async () => {
+  const state = stateFixture();
+  state.sessions.push({ ...state.sessions[0]!, id: "session-3", title: "Third phrase" });
+  const s = await setup(state);
+  const { h, requests } = s;
+  try {
+    await s.search("phrase");
+    requests[0]!.resolve(reply("phrase", ["session-3", "session-1", "session-2"].map((sessionId) => ({ sessionId, excerpt: "Phrase" }))));
+    await h.settle();
+    required(h, '[data-session-id="session-3"] .session-row').dispatchEvent(new h.window.MouseEvent("click", { bubbles: true, metaKey: true }));
+    required(h, '[data-session-id="session-1"] .session-row').dispatchEvent(new h.window.MouseEvent("click", { bubbles: true, shiftKey: true }));
+    assert.deepEqual([...h.document.querySelectorAll<HTMLElement>(".session-entry[data-selected]")].map((entry) => entry.dataset.sessionId), ["session-3", "session-1"]);
+    assert.deepEqual(commandCalls(h), []);
+    assert.deepEqual(h.errors, []);
+  } finally { s.close(); }
+});
+
 test("Session search ignores late successes and failures after a newer query", async () => {
   const s = await setup(); const { h, requests } = s;
   try {

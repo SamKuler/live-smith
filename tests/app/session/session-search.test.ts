@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import { searchSessions } from "../../../src/app/session/session-search.js";
-import { createSession, setSessionArchived } from "../../../src/storage/sessions.js";
+import { createSession, listSessions, setSessionArchived, updateSession } from "../../../src/storage/sessions.js";
 import { appendSessionEvent } from "../../../src/storage/events.js";
 import { createHostAbortController } from "../../../src/runtime/host.js";
+import { sessionSummaries } from "../../../src/app/context/session-context.js";
 
 async function setup(t: TestContext) {
   const storageDirectory = await fs.mkdtemp("/private/tmp/live-smith-search-");
@@ -83,4 +84,43 @@ test("untitled Sessions are searchable by their displayed Live context label", a
   await appendSessionEvent(h.storageDirectory, session.id, { kind: "assistant", content: "Saved this idea" });
   const result = await h.search("piano");
   assert.deepEqual(result.matches, [{ sessionId: session.id, excerpt: "Piano melody" }]);
+});
+
+test("continued named Sessions use saved chat activity for display and search without rewriting metadata", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-01-01T00:00:00Z") });
+  const h = await setup(t);
+  const older = await h.create("Needle older");
+  t.mock.timers.tick(86_400_000);
+  const newer = await h.create("Needle newer");
+  t.mock.timers.tick(86_400_000);
+  await appendSessionEvent(h.storageDirectory, older.id, { kind: "user", content: "Continue this arrangement" });
+  t.mock.timers.tick(86_400_000);
+  const reply = await appendSessionEvent(h.storageDirectory, older.id, { kind: "assistant", content: "New variation" });
+  t.mock.timers.tick(86_400_000);
+  await appendSessionEvent(h.storageDirectory, newer.id, { kind: "reasoning", content: "An internal update" });
+
+  assert.deepEqual((await h.search("needle")).matches.map((match) => match.sessionId), [older.id, newer.id]);
+  const records = await listSessions(h.storageDirectory);
+  const summaries = await sessionSummaries(h.storageDirectory, records);
+  const continued = summaries.find((session) => session.id === older.id)!;
+  assert.equal(continued.lastMessageAt, reply.createdAt);
+  assert.equal(continued.updatedAt, older.updatedAt, "activity does not change the metadata ordering clock");
+  assert.equal(summaries.find((session) => session.id === newer.id)?.lastMessageAt, undefined);
+  assert.deepEqual(await listSessions(h.storageDirectory), records, "activity projection is read-only");
+
+  await updateSession(h.storageDirectory, newer.id, { title: "Needle renamed" });
+  assert.deepEqual((await h.search("needle")).matches.map((match) => match.sessionId), [newer.id, older.id]);
+});
+
+test("a matching name remains searchable when its activity history is unreadable", async (t) => {
+  const h = await setup(t);
+  const session = await h.create("Needle named conversation");
+  await appendSessionEvent(h.storageDirectory, session.id, { kind: "assistant", content: "Saved message" });
+  await fs.writeFile(`${h.storageDirectory}/live-smith-events/${session.id}.json`, "{");
+  const result = await h.search("needle");
+  assert.equal(result.unavailableCount, 1);
+  assert.equal(result.matches[0]?.sessionId, session.id);
+  const summary = (await sessionSummaries(h.storageDirectory, await listSessions(h.storageDirectory)))[0]!;
+  assert.equal(summary.hasContent, true);
+  assert.equal(summary.updatedAt, session.updatedAt);
 });

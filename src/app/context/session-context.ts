@@ -25,6 +25,7 @@ import {
   sessionIsClaimedByAnotherOwner,
 } from "../session/session-claims.js";
 import type { ChatSessionSummary } from "../../ui/chat-state.js";
+import { lastSessionMessageAt } from "../session/session-activity.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const maxRecoveryEvents = 12;
@@ -200,20 +201,23 @@ export async function sessionSummaries(
 ): Promise<ChatSessionSummary[]> {
   return Promise.all(sessions.map(async (session) => {
     let hasContent = session.title.trim().length > 0 || (session.creativeBrief ?? "").trim().length > 0;
-    if (!hasContent) {
-      try {
-        hasContent = (await loadSessionEvents(storageDirectory, session.id)).length > 0 ||
+    let lastMessageAt: string | undefined;
+    try {
+      const events = await loadSessionEvents(storageDirectory, session.id);
+      lastMessageAt = lastSessionMessageAt(events);
+      if (!hasContent) {
+        hasContent = events.length > 0 ||
           (await listSessionAttachments(storageDirectory, session.id)).length > 0 ||
           storageDirectory !== undefined && (await listAudioJobs(storageDirectory, session.id)).length > 0;
         if (!hasContent) {
           hasContent = await hasSessionMidiContent(storageDirectory, session.id);
         }
-      } catch {
-        // Unreadable content is not evidence of emptiness.
-        hasContent = true;
       }
+    } catch {
+      // Unreadable content is not evidence of emptiness.
+      hasContent = true;
     }
-    return { ...session, hasContent };
+    return { ...session, hasContent, ...(lastMessageAt === undefined ? {} : { lastMessageAt }) };
   }));
 }
 
