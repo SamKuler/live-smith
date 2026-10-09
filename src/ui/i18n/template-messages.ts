@@ -285,7 +285,6 @@ export const templateMessages: Record<string, string> = {
   "Plugin-generated MIDI": "插件生成",
   "Tool: {name}": "工具：{name}",
   "Generation parameters": "生成参数",
-  "Original generation parameters are unavailable.": "原始生成参数不可用。",
   "Parameters are shortened here; the original tool call remains in Session history.": "此处缩短显示参数，原始工具调用保留在会话历史中。",
   "Next request starts from: {name}": "下次请求基于：{name}",
   "Continue in chat prepares a draft. Sending it uses the normal model and tool permissions.": "在聊天中继续会准备一份草稿。发送后遵循现有模型与工具权限。",

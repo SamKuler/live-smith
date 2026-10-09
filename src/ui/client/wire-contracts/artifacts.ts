@@ -1,6 +1,7 @@
 import { isArtifactRef, isArtifactVersion, MAX_MIDI_ARTIFACT_OVERVIEW_NOTES } from "../../../agent/artifact-contracts.js";
 import type { MidiPartPreview, SessionArtifact, SessionArtifactDetail, SessionArtifacts } from "../../../app/session/session-artifacts.js";
 import { MAX_SEARCH_QUERY_LENGTH, normalizeSearchQuery } from "../../../app/session/search-contracts.js";
+import { isDeviceParameterSnapshot, isDeviceParameterTarget, MAX_DEVICE_PARAMETERS } from "../../../agent/device-parameter-contracts.js";
 // Mirrors MAX_MIDI_ARTIFACT_NOTES in storage/midi-artifacts.ts, which requires Node.
 const MAX_SOURCE_NOTES = 4096;
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -17,7 +18,7 @@ export function isMidiPartPreview(value: unknown): value is MidiPartPreview {
 }
 export function isSessionArtifactDetail(value: unknown): value is SessionArtifactDetail {
   if (!record(value) || !text(value.sessionId, 128) || !isSessionArtifact(value.artifact, MAX_SOURCE_NOTES)) return false;
-  return value.artifact.ref.kind !== "midi" || value.artifact.midi!.omittedNoteCount === 0;
+  return value.artifact.ref.kind === "device-parameters" ? value.artifact.deviceParameters?.parameters !== undefined : value.artifact.ref.kind !== "midi" || value.artifact.midi!.omittedNoteCount === 0;
 }
 export function isSessionArtifacts(value: unknown): value is SessionArtifacts {
   return record(value) && text(value.sessionId, 128) && Array.isArray(value.artifacts) && value.artifacts.length <= 24 &&
@@ -47,7 +48,12 @@ function isSessionArtifact(artifact: unknown, maximumMidiNotes: number): artifac
       text(artifact.generation.callEventId, 128) && text(artifact.generation.resultEventId, 128) &&
       (artifact.generation.requestEventId === undefined || text(artifact.generation.requestEventId, 128)) &&
       text(artifact.generation.parameters, 4000) && typeof artifact.generation.parametersTruncated === "boolean") &&
-    (ref.kind === "audio" ? record(artifact.audio) && finite(artifact.audio.durationSeconds) && (artifact.audio.jobId === undefined || text(artifact.audio.jobId, 128)) &&
+    (ref.kind === "device-parameters" ? record(artifact.deviceParameters) && isDeviceParameterTarget(artifact.deviceParameters.target) &&
+      ["captured", "model"].includes(String(artifact.deviceParameters.source)) && Number.isSafeInteger(artifact.deviceParameters.parameterCount) &&
+      Number(artifact.deviceParameters.parameterCount) > 0 && Number(artifact.deviceParameters.parameterCount) <= MAX_DEVICE_PARAMETERS &&
+      (artifact.deviceParameters.parameters === undefined || isDeviceParameterSnapshot({ target: artifact.deviceParameters.target, parameters: artifact.deviceParameters.parameters }) &&
+        (artifact.deviceParameters.parameters as unknown[]).length === artifact.deviceParameters.parameterCount)
+      : ref.kind === "audio" ? record(artifact.audio) && finite(artifact.audio.durationSeconds) && (artifact.audio.jobId === undefined || text(artifact.audio.jobId, 128)) &&
       ["audio/wav", "audio/mpeg"].includes(artifact.audio.mediaType as string)
       : record(artifact.midi) && finite(artifact.midi.durationBeats) && artifact.midi.durationBeats > 0 && finite(artifact.midi.noteCount) &&
         Number.isSafeInteger(artifact.midi.noteCount) && artifact.midi.noteCount <= MAX_SOURCE_NOTES &&

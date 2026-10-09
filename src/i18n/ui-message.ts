@@ -10,6 +10,13 @@ export function uiMessage(source: string, values: UiMessageValues = {}): UiMessa
   return { source, values: { ...values } };
 }
 
+/** Keep app-authored errors localizable while Error.message remains plain English. */
+export class UiMessageError extends Error {
+  constructor(readonly displayMessage: UiMessage, options?: ErrorOptions) {
+    super(formatUiMessage(displayMessage), options);
+  }
+}
+
 /** English fallback for non-localized consumers; never translates raw strings. */
 export function formatUiMessage(value: UiMessage | number | boolean): string {
   if (typeof value !== "object") return String(value);

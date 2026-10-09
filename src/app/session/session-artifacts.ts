@@ -9,6 +9,8 @@ import { listSessions } from "../../storage/sessions.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { normalizeSearchQuery, searchTextMatches } from "./search-contracts.js";
 import { uiCatalogs } from "../../ui/i18n/messages.js";
+import { listDeviceParameterArtifacts, readDeviceParameterArtifact } from "../../storage/device-parameter-artifacts.js";
+import type { DeviceParameterSnapshot } from "../../agent/device-parameter-contracts.js";
 
 export const ARTIFACT_PAGE_SIZE = 24;
 export interface ArtifactGeneration {
@@ -32,6 +34,7 @@ export interface SessionArtifact {
   audio?: { durationSeconds: number; mediaType: "audio/wav" | "audio/mpeg"; jobId?: string };
   midi?: { durationBeats: number; noteCount: number; parts: MidiArtifactPartSummary[];
     notes: (MidiPreviewNote & { partId: string })[]; omittedNoteCount: number };
+  deviceParameters?: { parameterCount: number; target: DeviceParameterSnapshot["target"]; source: "captured" | "model"; parameters?: DeviceParameterSnapshot["parameters"] };
 }
 export interface SessionArtifactDetail { sessionId: string; artifact: SessionArtifact }
 export interface SessionArtifacts {
@@ -89,7 +92,7 @@ export function artifactGenerationsFromEvents(events: readonly SessionEvent[]): 
     if (!record(result) || result.isError === true || result.status === "failed") continue;
     const meta = record(result._meta) ? result._meta["io.github.samkuler/live-smith-artifacts"] : undefined;
     const entries = record(meta) && meta.version === 1 ? meta.artifacts : result.artifacts;
-    const refs = Array.isArray(entries) ? entries.flatMap((entry) => record(entry) && (entry.kind === "midi" || entry.kind === "audio") && typeof entry.artifactRef === "string"
+    const refs = Array.isArray(entries) ? entries.flatMap((entry) => record(entry) && (entry.kind === "midi" || entry.kind === "audio" || entry.kind === "device-parameters") && typeof entry.artifactRef === "string"
       ? [`${entry.kind}:${entry.artifactRef}`] : []) : [];
     if (typeof result.id === "string" && typeof result.createdAt === "string" && call.createdAt <= result.createdAt) refs.push(`job:${result.id}`);
     for (const ref of refs) {
@@ -113,6 +116,7 @@ async function requireSession(input: SessionInput): Promise<void> {
 export async function assertSessionArtifact(input: SessionInput & { artifact: ArtifactRef }): Promise<void> {
   await requireSession(input);
   if (input.artifact.kind === "midi") await readMidiArtifact(input.storageDirectory, input.sessionId, input.artifact.id, input.signal);
+  else if (input.artifact.kind === "device-parameters") await readDeviceParameterArtifact(input.storageDirectory, input.sessionId, input.artifact.id);
   else {
     const read = await readSessionAudioArtifact(input.storageDirectory, input.sessionId, input.artifact.id, input.signal);
     if ("role" in read.asset && read.asset.role === "source") throw new Error("Choose a saved audio result.");
@@ -157,11 +161,12 @@ export async function readSessionArtifactCatalog(input: SessionInput & { include
   artifacts: SessionArtifact[]; unavailableCount: number; continuation?: ArtifactRef;
 }> {
   await requireSession(input);
-  const [listing, audio, pluginAudio, events] = await Promise.all([
+  const [listing, audio, pluginAudio, events, parameters] = await Promise.all([
     inspectMidiArtifacts(input.storageDirectory, input.sessionId), input.storageDirectory
       ? readAudioSessionState(input.storageDirectory, input.sessionId) : Promise.resolve({ jobs: [], assets: [] }),
     listPluginAudioArtifacts(input.storageDirectory, input.sessionId),
     loadSessionEvents(input.storageDirectory, input.sessionId),
+    listDeviceParameterArtifacts(input.storageDirectory, input.sessionId),
   ]);
   const { jobs, assets } = audio;
   const generations = artifactGenerationsFromEvents(events);
@@ -173,6 +178,11 @@ export async function readSessionArtifactCatalog(input: SessionInput & { include
   const continuation = pendingArtifactParentFromEvents(events);
   const jobMap = new Map(jobs.map((job) => [job.id, job]));
   const summaries: SessionArtifact[] = [
+    ...parameters.map((artifact): SessionArtifact => ({ ref: { kind: "device-parameters", id: artifact.id }, label: artifact.label,
+      createdAt: artifact.createdAt, sourceLabel: artifact.source.kind === "captured" ? "Captured device parameters" : "AI-proposed device parameters",
+      ...generationAt(`device-parameters:${artifact.id}`, artifact.createdAt),
+      version: { ...artifact.version, groupLabel: artifact.label },
+      deviceParameters: { parameterCount: artifact.parameters.length, target: artifact.target, source: artifact.source.kind } })),
     ...listing.artifacts.filter((artifact) => input.includeHostMidi || artifact.source?.kind !== "host").map((artifact): SessionArtifact => ({ ref: { kind: "midi", id: artifact.id }, label: artifact.label,
       createdAt: artifact.createdAt, sourceLabel: artifact.source?.kind === "model" ? "AI-generated MIDI" : artifact.source?.kind === "host" ? "Live MIDI source" : "Plugin-generated MIDI",
       ...generationAt(`midi:${artifact.id}`, artifact.createdAt),
@@ -255,6 +265,7 @@ export async function listSessionArtifacts(input: SessionInput & { offset?: numb
   const summaries = groupSessionArtifacts(catalog.artifacts).map((group) => {
     if (!query) return group;
     const matches = group.filter((artifact) => [artifact.label, artifact.sourceLabel, artifact.version ? `v${artifact.version.number}` : "",
+      artifact.deviceParameters?.target.trackName ?? "", artifact.deviceParameters?.target.deviceName ?? "",
       ...Object.values(uiCatalogs).map((catalog) => catalog[artifact.sourceLabel] ?? "")]
       .some((text) => searchTextMatches(text, query)));
     return matches.length ? matches : group.some((artifact) => searchTextMatches(artifact.version?.groupLabel ?? "", query)) ? group : [];
@@ -267,7 +278,7 @@ export async function listSessionArtifacts(input: SessionInput & { offset?: numb
     const ordered = [selected, ...group.filter((artifact) => artifact !== selected)];
     for (const artifact of ordered) {
       throwIfAborted(input.signal);
-      if (artifact.ref.kind === "audio") { artifacts.push(artifact); break; }
+      if (artifact.ref.kind !== "midi") { artifacts.push(artifact); break; }
       try { artifacts.push(await hydrateMidiArtifact(input, artifact)); break; }
       catch { throwIfAborted(input.signal); unavailableCount += 1; }
     }
@@ -283,6 +294,10 @@ export async function readSessionArtifact(input: SessionInput & { artifact: Arti
   let artifact = catalog.artifacts.find((entry) => artifactKey(entry.ref) === artifactKey(input.artifact));
   if (!artifact) throw new Error("That saved artifact is not available in this Session.");
   if (artifact.ref.kind === "midi") artifact = await hydrateMidiArtifact(input, artifact, MAX_MIDI_ARTIFACT_NOTES);
+  if (artifact.ref.kind === "device-parameters") {
+    const saved = await readDeviceParameterArtifact(input.storageDirectory, input.sessionId, artifact.ref.id);
+    artifact = { ...artifact, deviceParameters: { parameterCount: saved.parameters.length, target: saved.target, source: saved.source.kind, parameters: saved.parameters } };
+  }
   await requireSession(input);
   return { sessionId: input.sessionId, artifact };
 }

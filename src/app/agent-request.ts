@@ -1,6 +1,7 @@
 import { createLiveSetGuard } from "../live/set-identity.js";
 import { createMidiArtifactAuthoringToolset } from "./midi/midi-artifact-tools.js";
 import { createSessionArtifactToolset } from "./session/session-artifact-tools.js";
+import { createParameterArtifactToolset } from "./parameters/parameter-artifact-tools.js";
 import { creativeBriefProposalTool, proposeCreativeBrief } from "./context/creative-brief.js";
 import { ModelInputTooLargeError } from "../model/connection-error.js";
 import { artifactSourceInstructions, pendingArtifactParentFromEvents, type ArtifactRef } from "../agent/artifact-contracts.js";
@@ -379,6 +380,9 @@ export async function handleAgentRequest(
         createMidiArtifactAuthoringToolset({ storageDirectory, sessionId: session.id,
         runtimeProfile, signal: callbacks.signal,
         ...(prepared.userEvent.parentCandidate?.kind === "midi" ? { revisionOf: prepared.userEvent.parentCandidate.id } : {}),
+      }), createParameterArtifactToolset({ context, storageDirectory, sessionId: session.id, projectKey, assertLiveSetCurrent,
+        target: interaction.target, runtimeProfile, signal: callbacks.signal,
+        ...(prepared.userEvent.parentCandidate?.kind === "device-parameters" ? { revisionOf: prepared.userEvent.parentCandidate.id } : {}),
       })] : []),
       ...audioTools.toolsets,
       ...pluginTools.toolsets,
@@ -1121,7 +1125,7 @@ export async function preflightAgentPlan(
     requestAudioSources,
     plan.actions.length === 1,
   );
-  authorization?.assert(plan, initialBindings);
+  authorization?.assert(plan, withPreflightParameters(initialBindings, initialSnapshots));
 
   const guard: AgentActionPreflightGuard<AgentPlanBindings> = async () => {
     await authorization?.refresh();
@@ -1154,8 +1158,9 @@ export async function preflightAgentPlan(
         `Live target or relevant state changed for action ${actionNumber} while confirmation was open. Inspect the current Live state and try again.`,
       );
     }
-    authorization?.assert(plan, currentBindings);
-    return currentBindings;
+    const bindings = withPreflightParameters(currentBindings, currentSnapshots);
+    authorization?.assert(plan, bindings);
+    return bindings;
   };
   Object.defineProperty(guard, "actionKeys", {
     enumerable: true,
@@ -1166,6 +1171,19 @@ export async function preflightAgentPlan(
     Object.defineProperty(guard, "previews", { enumerable: true, value: [preview] });
   }
   return guard;
+}
+
+function withPreflightParameters(
+  bindings: AgentPlanBindings,
+  snapshots: readonly LiveActionPreflightObservation[],
+): AgentPlanBindings {
+  return {
+    ...bindings,
+    actionObjects: new Map([...bindings.actionObjects].map(([index, objects]) => {
+      const parameterValues = snapshots[index]?.executionParameters;
+      return [index, parameterValues ? { ...objects, parameterValues } : objects];
+    })),
+  };
 }
 
 function planActionIdentityKeys(

@@ -6,12 +6,14 @@ import { isSafeStorageId } from "../../storage/id.js";
 import { readMidiArtifact, midiArtifactPartSummaries } from "../../storage/midi-artifacts.js";
 import { midiArtifactView } from "../midi/midi-artifact-tools.js";
 import { defaultSessionArtifact, groupSessionArtifacts, readSessionArtifactCatalog, type SessionArtifact } from "./session-artifacts.js";
+import { readDeviceParameterArtifact } from "../../storage/device-parameter-artifacts.js";
+import { parameterArtifactView } from "../parameters/parameter-artifacts.js";
 
 export const sessionArtifactTools = [{
   type: "function",
   function: {
     name: "list_session_artifacts",
-    description: "List saved MIDI and audio artifacts owned by this Session, including Plugin outputs whose tool result was not confirmed. Audio entries contain metadata and exact artifactRef values for audio tools; complete audio bytes are checked when consumed. If saved MIDI data is unavailable, the result includes an unavailableCount and warning; do not use those missing artifacts. Use an exact listed MIDI artifactRef with create_midi_clip_from_artifact when that action is available. This verifies saved MIDI bytes and returns read-derived source part summaries and timing event counts; it does not run a Plugin or change Live. Each work marks its primary version when selected, otherwise its newest readable version, with defaultForWork; explicit artifactRef requests always keep that exact version. For multitrack MIDI, select a listed partId per destination or explicitly request mergeParts.",
+    description: "List Session-owned MIDI, audio and device-parameter artifacts, including saved outputs whose tool result was not confirmed. Each work marks its primary or newest readable version with defaultForWork; exact artifactRef requests preserve that version. MIDI bytes are verified and unavailable files produce a warning; audio bytes are verified when consumed. Read MIDI with inspect_midi_artifact and parameter snapshots with inspect_device_parameter_artifact. Use create_midi_clip_from_artifact with a listed partId or explicit mergeParts to import MIDI. Parameter snapshots are compared and applied through their Artifact card. Listing does not run a Plugin or change Live.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
 }, {
@@ -60,6 +62,11 @@ export function createSessionArtifactToolset(
         const current: { artifact: SessionArtifact; view: Record<string, unknown>; revision: string }[] = [];
         for (const artifact of catalog.artifacts) {
           throwIfAborted(input.signal);
+          if (artifact.ref.kind === "device-parameters") {
+            const saved = await readDeviceParameterArtifact(input.storageDirectory, input.sessionId, artifact.ref.id);
+            current.push({ artifact, revision: saved.id, view: parameterArtifactView(saved) });
+            continue;
+          }
           if (artifact.ref.kind === "audio") {
             const { groupLabel: _groupLabel, ...version } = artifact.version!;
             current.push({ artifact, revision: artifact.ref.id, view: {

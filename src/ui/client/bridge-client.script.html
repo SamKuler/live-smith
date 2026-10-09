@@ -156,6 +156,10 @@
         "fill_midi_continuation",
         "import_midi_continuation",
         "select_artifact",
+        "capture_device_parameters",
+        "apply_device_parameters",
+        "restore_device_parameters",
+        "keep_device_parameters",
         "compact_session",
         "resume_audio_job",
         "download_audio_output",
@@ -1665,6 +1669,7 @@
         if (response.ok) return decodeBridgeHttpSuccess(path, value, context);
         const envelope = decodeBridgeHttpError(path, value, context);
         const error = new Error(envelope.error);
+        if (envelope.displayMessage !== undefined) error.displayMessage = envelope.displayMessage;
         error.httpStatus = response.status;
         if (typeof envelope.field === "string") error.field = envelope.field;
         if (["stopped", "unknown"].includes(envelope.commandOutcome)) {
@@ -1781,7 +1786,7 @@
       }
 
       function decodeBridgeHttpError(path, value, context) {
-        if (typeof value.error !== "string" || !value.error) {
+        if (typeof value.error !== "string" || !value.error || value.displayMessage !== undefined && !isWireUiMessage(value.displayMessage)) {
           throw invalidBridgeHttpResponse(path);
         }
         if (path === "/command" || path === "/session-model-capabilities" || path === "/session-tools") {
@@ -1791,6 +1796,7 @@
           if (
             !hasOnlyWireKeys(value, [
               "error",
+              "displayMessage",
               "commandId",
               "field",
               "commandOutcome",
@@ -2677,7 +2683,7 @@
         commandInProgress = null;
         syncOperationState();
         startQueuedFollowUpsForIdleSessions();
-        if (outcome?.error) showStatus(outcome.error.message, outcome.error.commandOutcome !== "stopped");
+        if (outcome?.error) showStatus(outcome.error.displayMessage ?? outcome.error.message, outcome.error.commandOutcome !== "stopped");
       }
 
       function adoptCommandActivity(payload) {
@@ -3006,7 +3012,7 @@
               false,
             );
             if (commandSucceeded) {
-              commandWarning = outcome.error.message || String(outcome.error);
+              commandWarning = outcome.error.displayMessage ?? (outcome.error.message || String(outcome.error));
             }
           } else if (outcome.error.commandOutcome === "stopped") {
             if (isWireChatBridgeState(outcome.error.state)) {
@@ -3069,7 +3075,7 @@
             !commandError.field ||
             !requireView().showFieldError(commandError.field, message)
           ) {
-            reportStatus(message, true);
+            reportStatus(commandError.displayMessage ?? message, true);
           } else {
             reportStatus("");
           }
@@ -7689,6 +7695,7 @@
                 payload.commandId !== activeCommandAttempt.id
               ) return;
               const error = new Error(payload.message);
+              if (payload.displayMessage !== undefined) error.displayMessage = payload.displayMessage;
               if (typeof payload.field === "string") error.field = payload.field;
               if (["stopped", "unknown"].includes(payload.commandOutcome)) {
                 error.commandOutcome = payload.commandOutcome;
@@ -7822,6 +7829,18 @@
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || t("MIDI part preview is unavailable."));
+          return result;
+        },
+        readDeviceParameters: async (input, signal) => {
+          const response = await fetch(bridgeUrl("/device-parameters"), {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input), signal,
+          });
+          const result = await response.json();
+          if (!response.ok) {
+            const error = new Error(result.error || t("Device parameter preview is unavailable."));
+            if (result.displayMessage !== undefined && isWireUiMessage(result.displayMessage)) error.displayMessage = result.displayMessage;
+            throw error;
+          }
           return result;
         },
         readSessionArtifact: async (input, signal) => {

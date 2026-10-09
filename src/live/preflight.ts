@@ -53,12 +53,15 @@ import {
   type ManagedSampleSources,
 } from "./sample-source.js";
 import type { LiveTarget } from "./target.js";
+import { observeParameterWrites } from "./device-parameters.js";
+import type { DeviceParameterValue } from "../agent/device-parameter-contracts.js";
 
 type Api = ExtensionContext<"1.0.0">;
 
 export interface LiveActionPreflightObservation {
   fingerprint: string;
   preview?: AgentActionPreview;
+  executionParameters?: DeviceParameterValue[];
 }
 
 /** Ordered MIDI state for one complete preflight pass, keyed by existing Clip handle. */
@@ -345,6 +348,20 @@ async function observeActionPreflight(
         rackPath: resolved.path,
         rack: deviceTargetIdentity(resolved.device),
       });
+    }
+    case "set_device_parameters": {
+      const track = resolveTrack(context, action.trackName, target);
+      const { device, path } = resolveDeviceTarget(track, target, action.deviceName, action.devicePath, action.deviceIndex);
+      const parameters = await observeParameterWrites(device, action.values);
+      const state = { song: songIdentity, track: trackIdentity(track), device: { id: requireHandleIdentity(device, "device"), name: device.name, path }, parameters };
+      return { fingerprint: fingerprint(action.type, state), executionParameters: parameters, ...(includePreview ? { preview: {
+        kind: "device-parameters" as const, actionIndex: 0, status: "proposed" as const,
+        targetLabel: `Device "${device.name}" on track "${track.name}"`,
+        parameters: action.values.map((entry) => {
+          const parameter = parameters[entry.parameterIndex]!;
+          return { index: entry.parameterIndex, name: parameter.name, before: parameter.value, after: entry.value, minimum: parameter.min, maximum: parameter.max };
+        }),
+      } } : {}) };
     }
     case "set_device_parameter": {
       const track = resolveTrack(context, action.trackName, target);

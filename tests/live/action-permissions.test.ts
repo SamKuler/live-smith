@@ -35,7 +35,7 @@ const fixedScopes: Record<EditScope, AgentAction["type"][]> = {
   ],
   audio: ["create_arrangement_audio_clip", "create_session_audio_clip", "set_audio_clip_warp"],
   devices: [
-    "insert_device", "insert_chain_device", "set_device_parameter", "replace_simpler_sample",
+    "insert_device", "insert_chain_device", "set_device_parameter", "set_device_parameters", "replace_simpler_sample",
   ],
   mixer: [
     "set_track_mute", "set_track_solo", "set_track_arm",

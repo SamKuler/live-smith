@@ -2,9 +2,10 @@ import { createSseClient } from "./sse-client.js";
 import type { ChatCommandActivity } from "../../ui/chat-state.js";
 import { isInterfaceMode, type InterfaceMode } from "../../model/interface-mode.js";
 import { Buffer } from "node:buffer";
+import { isParameterArtifactRead, type ParameterArtifactRead } from "../parameters/contracts.js";
 import { randomUUID } from "node:crypto";
 import { isSessionTabs, type SessionShortcutId } from "../../model/session-tabs.js";
-import type { UiMessage } from "../../i18n/ui-message.js";
+import { UiMessageError, type UiMessage } from "../../i18n/ui-message.js";
 import { sendMediaAssetResponse } from "./media-response.js";
 import type { IntegrationConnectionsView } from "../../plugins/integration-connections.js";
 import {
@@ -269,12 +270,12 @@ function promptPersistenceForSendOutcome(
   return observed ?? "not_persisted";
 }
 
-export class ChatBridgeCommandOutcomeUnknownError extends Error {
+export class ChatBridgeCommandOutcomeUnknownError extends UiMessageError {
   readonly authoritativeState: ChatDialogState | undefined;
   readonly authoritativeStateAttempted: boolean;
 
   constructor(
-    message: string,
+    message: UiMessage,
     options?: ErrorOptions & { authoritativeState?: ChatDialogState | undefined },
   ) {
     super(message, options);
@@ -388,6 +389,7 @@ interface ChatBridgeOptions {
   readMidiArtifact?(sessionId: string, artifactRef: string, signal: AbortSignal): Promise<{ bytes: Uint8Array; fileName: string }>;
   searchSessions?(input: SessionSearchInput, signal: AbortSignal): Promise<SessionSearchResult>;
   readSessionArtifacts?(input: { sessionId: string; offset: number; query?: string }, signal: AbortSignal): Promise<unknown>;
+  readDeviceParameters?(input: ParameterArtifactRead, signal: AbortSignal): Promise<unknown>;
   readSessionArtifact?(input: { sessionId: string; artifact: ArtifactRef }, signal: AbortSignal): Promise<SessionArtifactDetail>;
   readMidiArtifactDiff?(input: { sessionId: string; artifactRef: string; baseArtifactRef?: string }, signal: AbortSignal): Promise<MidiArtifactDiff>;
   readMidiPartPreview?(input: { sessionId: string; artifactRef: string; partId: string }, signal: AbortSignal): Promise<MidiPartPreview>;
@@ -711,6 +713,7 @@ type SsePayload =
       sessionId?: string;
       commandId?: string;
       message: string;
+      displayMessage?: UiMessage;
       field?: string;
       promptPersistence?: PromptPersistence;
       sendFailureKind?: ChatBridgeSendFailureKind;
@@ -2144,6 +2147,15 @@ export async function createChatBridge(
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/device-parameters") {
+        if (!options.readDeviceParameters) { request.resume(); response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token"], "Device parameters");
+        const input = await readRequestBody(request);
+        if (!isParameterArtifactRead(input)) throw new ChatBridgeRequestValidationError("Choose a Session and device parameter version.");
+        sendJson(response, await options.readDeviceParameters(input, beginReadOnlyBuild(response, handlerTerminal)));
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/session-artifacts") {
         if (!options.readSessionArtifacts) { request.resume(); response.writeHead(404).end("Not found"); return; }
         assertExactQueryParameters(url, ["token"], "Session artifacts");
@@ -2840,6 +2852,9 @@ export async function createChatBridge(
       const reportedError = error instanceof ChatBridgeSendFailureError
         ? error.originalError
         : error;
+      const displayMessage = (requestPath === "/command" || requestPath === "/device-parameters") &&
+        reportedError instanceof UiMessageError && typeof reportedError.displayMessage === "object"
+        ? reportedError.displayMessage : undefined;
       const attachmentRequest = requestPath === "/attachments" ||
         requestPath.startsWith("/attachments/");
       const attachmentMutation = attachmentRequest && (request.method === "POST" || request.method === "DELETE");
@@ -2941,6 +2956,7 @@ export async function createChatBridge(
           ...(sendSessionId === undefined ? {} : { sessionId: sendSessionId }),
           ...(commandId === undefined ? {} : { commandId }),
           message,
+          ...(displayMessage === undefined ? {} : { displayMessage }),
           ...(field === undefined ? {} : { field }),
           ...(promptPersistence === undefined ? {} : { promptPersistence }),
           ...(sendFailureKind === undefined ? {} : { sendFailureKind }),
@@ -2959,6 +2975,7 @@ export async function createChatBridge(
         response,
         {
           error: message,
+          ...(displayMessage === undefined ? {} : { displayMessage }),
           ...(commandId === undefined ? {} : { commandId }),
           ...(field === undefined ? {} : { field }),
           ...(promptPersistence === undefined ? {} : { promptPersistence }),
@@ -3461,6 +3478,8 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "load_midi_continuation" || input.kind === "configure_midi_continuation" ||
     input.kind === "fill_midi_continuation" || input.kind === "import_midi_continuation" ||
     input.kind === "select_artifact" ||
+    input.kind === "capture_device_parameters" || input.kind === "apply_device_parameters" ||
+    input.kind === "restore_device_parameters" || input.kind === "keep_device_parameters" ||
     input.kind === "set_session_skills" || input.kind === "remove_session_skill";
 }
 

@@ -1,6 +1,7 @@
 import type { AgentActionPreview, MidiActionPreview, MidiPreviewNote } from "../../agent/action-preview.js";
 import { createLocaleBindings, type LocalizedText } from "./locale-bindings.js";
 import { createMidiPianoRoll } from "./midi-piano-roll.js";
+import { createParameterTable } from "./parameter-table.js";
 
 let nextPreviewId = 0;
 
@@ -67,6 +68,11 @@ export function createActionPreview() {
       };
       card.append(sides, pianoRoll.element, limits, empty);
       refreshMidi();
+    } else if (preview.kind === "device-parameters") {
+      const table = createParameterTable();
+      table.update(preview.parameters.map((parameter) => ({ index: parameter.index, name: parameter.name, before: parameter.before,
+        after: parameter.after, min: parameter.minimum, max: parameter.maximum })), { before: "Before", after: "Proposed after" });
+      card.append(table.element); refreshMidi = () => table.refreshLocale();
     } else {
       card.append(node("h4", preview.parameterName));
       card.append(node("p", `${preview.before} → ${preview.after}`, "parameter-preview-values"));

@@ -69,6 +69,7 @@ interface DialogHarness {
     field?: string,
     details?: {
       commandOutcome?: "stopped" | "unknown";
+      displayMessage?: unknown;
       reconciliationRequired?: boolean;
       state?: ChatBridgeState;
       status?: number;
@@ -485,6 +486,7 @@ async function createDialogHarness(
     error: string;
     field?: string;
     commandOutcome?: "stopped" | "unknown";
+    displayMessage?: unknown;
     reconciliationRequired?: boolean;
     state?: ChatBridgeState;
     status?: number;

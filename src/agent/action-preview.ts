@@ -1,3 +1,5 @@
+import { MAX_DEVICE_PARAMETERS } from "./device-parameter-contracts.js";
+
 /** Matches the existing Live observer's default parameter value-item page. */
 export const MAX_PARAMETER_PREVIEW_VALUE_ITEMS = 12;
 
@@ -39,7 +41,15 @@ export interface ParameterActionPreview {
   valueItems?: { name: string; shortName: string }[];
 }
 
-export type AgentActionPreview = MidiActionPreview | ParameterActionPreview;
+export interface DeviceParametersActionPreview {
+  kind: "device-parameters";
+  actionIndex: number;
+  status: "proposed";
+  targetLabel: string;
+  parameters: { index: number; name: string; before: number; after: number; minimum: number; maximum: number }[];
+}
+
+export type AgentActionPreview = MidiActionPreview | ParameterActionPreview | DeviceParametersActionPreview;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -84,6 +94,13 @@ function isAgentActionPreview(preview: unknown): preview is AgentActionPreview {
       range.coordinate === "clip-beats" && isFiniteNumber(range.start) && isFiniteNumber(range.end) &&
       range.start >= 0 && range.end > range.start && isMidiPreviewSide(preview.before, { start: range.start, end: range.end }) && isMidiPreviewSide(preview.after, { start: range.start, end: range.end });
   }
+  if (preview.kind === "device-parameters") return hasOnlyKeys(preview, ["kind", "actionIndex", "status", "targetLabel", "parameters"]) &&
+    Array.isArray(preview.parameters) && preview.parameters.length > 0 && preview.parameters.length <= MAX_DEVICE_PARAMETERS &&
+    preview.parameters.every((item) => isRecord(item) && hasOnlyKeys(item, ["index", "name", "before", "after", "minimum", "maximum"]) &&
+      isSafeInteger(item.index) && item.index >= 0 && item.index < MAX_DEVICE_PARAMETERS && typeof item.name === "string" &&
+      isFiniteNumber(item.before) && isFiniteNumber(item.after) && isFiniteNumber(item.minimum) && isFiniteNumber(item.maximum) &&
+      item.minimum <= item.maximum && item.before >= item.minimum && item.before <= item.maximum && item.after >= item.minimum && item.after <= item.maximum) &&
+    new Set(preview.parameters.map((item) => item.index)).size === preview.parameters.length;
   return preview.kind === "parameter-value" && hasOnlyKeys(preview, [
     "kind", "actionIndex", "status", "targetLabel", "parameterName", "before", "after",
     "minimum", "maximum", "isQuantized", "valueItems",

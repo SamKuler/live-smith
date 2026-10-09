@@ -4,7 +4,7 @@ import type { SessionEvent } from "../storage/events.js";
 /** Artifact lists carry an overview; opening an artifact reads its complete notes. */
 export const MAX_MIDI_ARTIFACT_OVERVIEW_NOTES = 256;
 
-export interface ArtifactRef { kind: "midi" | "audio"; id: string }
+export interface ArtifactRef { kind: "midi" | "audio" | "device-parameters"; id: string }
 export type ArtifactPluginSource =
   | { pluginId: string; connectionId?: never }
   | { connectionId: string; pluginId?: never };
@@ -38,7 +38,7 @@ export function artifactVersion(artifact: VersionedArtifact): ArtifactVersion {
   return artifact.version ? { ...artifact.version } : { groupId: artifact.id, number: 1 };
 }
 
-/** Call inside the owning media store transaction, including metadata whose bytes are unavailable. */
+/** Call inside the owning artifact store transaction, including metadata whose bytes are unavailable. */
 export function allocateArtifactVersion(
   id: string,
   records: readonly VersionedArtifact[],
@@ -75,7 +75,7 @@ const isArtifactId = (value: unknown): value is string => typeof value === "stri
 export function isArtifactRef(value: unknown): value is ArtifactRef {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  return Object.keys(record).length === 2 && (record.kind === "midi" || record.kind === "audio") &&
+  return Object.keys(record).length === 2 && (record.kind === "midi" || record.kind === "audio" || record.kind === "device-parameters") &&
     isArtifactId(record.id);
 }
 

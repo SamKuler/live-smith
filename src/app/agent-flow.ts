@@ -26,6 +26,8 @@ import { createSessionLifecycle } from "./session/session-lifecycle.js";
 import { importMidiArtifact } from "./midi-artifact-import.js";
 import { prepareMidiArtifactImport } from "./midi-artifact-preview.js";
 import { readMidiArtifactDiff } from "./midi/midi-artifact-diff.js";
+import { captureParameterArtifact, readParameterArtifactPreview } from "./parameters/parameter-artifacts.js";
+import { runParameterApplication } from "./parameters/parameter-application.js";
 import { listSessionArtifacts, readSessionArtifact, readSessionMidiPartPreview, selectSessionArtifact } from "./session/session-artifacts.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 
@@ -1692,6 +1694,38 @@ export async function createAgentRuntime(
       });
     }
 
+    if (commandInput.kind === "capture_device_parameters" || commandInput.kind === "apply_device_parameters" || commandInput.kind === "restore_device_parameters" || commandInput.kind === "keep_device_parameters") {
+      if (!storageDirectory) throw new Error("Private storage is required for device parameter artifacts.");
+      if (commandInput.sessionId !== activeSessionId || sessionMutationFence.hasQueuedOrActive(
+        sessionMutationFenceKey(storageDirectory, commandInput.sessionId), "send",
+      )) throw new ChatBridgeConflictError("Choose an idle active Session for device parameters.");
+      return withNamedSessionMutation(commandInput.sessionId, "send", signal, async () => {
+        if (commandInput.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed before the parameter operation.");
+        const session = (await listSessions(storageDirectory, projectKey)).find((entry) => entry.id === commandInput.sessionId && !entry.archivedAt);
+        if (!session) throw new ChatBridgeResourceNotFoundError("That Session is not available in this Live Set.");
+        const sessionInteraction = resolveSessionInteraction(session);
+        if (!sessionInteraction) throw new ChatBridgeResourceNotFoundError("The Live object for this Session is no longer available.");
+        const common = { context, storageDirectory, sessionId: session.id, projectKey, signal, assertLiveSetCurrent };
+        try {
+          if (commandInput.kind === "capture_device_parameters") {
+            await captureParameterArtifact({ ...common, ...commandInput });
+            status = uiMessage("Device parameter snapshot saved.");
+          } else {
+            const result = await runParameterApplication({ ...common, ...commandInput, interaction: sessionInteraction, mutationQueue: liveMutationQueue,
+              confirm: (plan, guard, operationId) => decidePlanApproval(storageDirectory, session.id, plan, async () => {
+                if (!commandContext.requestConfirmation) throw new Error("Device parameter confirmation is unavailable.");
+                return commandContext.requestConfirmation({ kind: "apply", operationId, message: plan.message,
+                  groups: actionDiffGroups(plan.actions, plan.targets), ...(guard.previews ? { previews: guard.previews } : {}) });
+              }),
+            });
+            status = uiMessage(result === "applied" ? "Device parameters applied." : result === "restored" ? "Previous device parameters restored."
+              : result === "kept" ? "Current device parameters kept." : result === "unchanged" ? "Device parameters already match this version." : "Device parameter application cancelled.");
+          }
+        } finally { notifySessionStateChanged(session.id); }
+        return buildStateAfterCommandMutation(undefined, { heldSessionId: session.id, sessionMutationHeld: true });
+      });
+    }
+
     if (commandInput.kind === "import_midi_artifact" || commandInput.kind === "import_midi_continuation") {
       if (commandInput.sessionId !== activeSessionId || sessionMutationFence.hasQueuedOrActive(
         sessionMutationFenceKey(storageDirectory, commandInput.sessionId), "send",
@@ -2346,6 +2380,7 @@ export async function createAgentRuntime(
 
     if (commandInput.kind === "export_artifact" || commandInput.kind === "attach_artifact") {
       const { sessionId, artifact } = commandInput;
+      if (artifact.kind === "device-parameters") throw new Error("Device parameter versions are opened and applied from Artifacts.");
       await attachmentSession(sessionId);
       if (commandInput.kind === "attach_artifact") {
         const file = artifact.kind === "midi"
@@ -3300,6 +3335,12 @@ export async function createAgentRuntime(
         const result = await prepareMidiArtifactImport({ ...input, context, storageDirectory, projectKey, signal,
           ...(sessionInteraction ? { interaction: sessionInteraction } : {}) });
         if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while preparing MIDI import.");
+        return result;
+      },
+      readDeviceParameters: async (input, signal) => {
+        if (!storageDirectory || input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the active Session before reading device parameters.");
+        const result = await readParameterArtifactPreview({ ...input, context, storageDirectory, projectKey, signal, assertLiveSetCurrent });
+        if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while reading device parameters.");
         return result;
       },
       readSessionArtifacts: async (input, signal) => {

@@ -151,5 +151,5 @@ export function createMidiArtifactDiffView(input: {
     }
   }
   update(artifact);
-  return { element: detail, update, dispose: abort };
+  return { element: detail, update, resume() { if (retry.hidden) void read(); }, dispose: abort };
 }

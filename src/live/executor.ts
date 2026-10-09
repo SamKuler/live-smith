@@ -51,6 +51,7 @@ import {
 } from "./resolve.js";
 import { resolveSampleSource } from "./sample-source.js";
 import type { LiveTarget } from "./target.js";
+import { DeviceParameterWriteError, executeParameterWrites, parameterHandleId, type ParameterWriteHooks } from "./device-parameters.js";
 import { calculateMidiNoteEdit, midiNotesEqual } from "./midi-transform.js";
 import {
   bindAgentPlanTargets,
@@ -98,12 +99,14 @@ export async function executeAgentPlanWithProgress(
   signal?: AbortSignal,
   initialBindings?: AgentPlanBindings,
   beforeAction?: (actionIndex: number, action: AgentAction) => void,
+  parameterWrites?: ParameterWriteHooks,
 ): Promise<AgentPlanExecutionOutcome> {
   const bindings = initialBindings ?? bindAgentPlanTargets(context, plan, target);
   const results: string[] = [];
   let mutationCount = 0;
   const completedActionKeys: string[][] = [];
   const tracks = new Map(bindings.tracks);
+  const writtenParameterValues = plan.actions.some((action) => action.type === "set_device_parameters") ? new Map<string, number>() : undefined;
 
   for (const [actionIndex, action] of plan.actions.entries()) {
     const identityTrack = trackForActionIdentity(
@@ -143,6 +146,10 @@ export async function executeAgentPlanWithProgress(
         tracks,
         bindings.actionTracks,
         bindings.actionObjects,
+        signal,
+        () => beforeAction?.(actionIndex, action),
+        parameterWrites,
+        writtenParameterValues,
       );
       results.push(typeof result === "string" ? result : result.result);
       if (typeof result === "string" ? true : result.mutated) mutationCount += 1;
@@ -375,6 +382,10 @@ async function executeAction(
   tracks: Map<string, Track<"1.0.0">>,
   actionTracks: ReadonlyMap<number, Track<"1.0.0">>,
   actionObjects: ReadonlyMap<number, BoundActionObjects>,
+  signal?: AbortSignal,
+  assertActionCurrent?: () => void,
+  parameterWrites?: ParameterWriteHooks,
+  writtenParameterValues?: Map<string, number>,
 ): Promise<string | NoMutationActionOutcome> {
   const bound = actionObjects.get(actionIndex);
   switch (action.type) {
@@ -711,6 +722,32 @@ async function executeAction(
       await resolved.device.insertChain(chainIndex);
       return `Appended an empty Chain ${chainIndex} to Rack "${rackName}" on track "${trackName}".`;
     }
+    case "set_device_parameters": {
+      const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
+      const resolved = bound?.deviceTarget ?? resolveDeviceTarget(track, target, action.deviceName, action.devicePath, action.deviceIndex);
+      const deviceId = parameterHandleId(resolved.device);
+      const expected = bound?.parameterValues?.map((parameter) => {
+        const value = writtenParameterValues?.get(JSON.stringify([deviceId, parameter.handleId]));
+        return value === undefined ? parameter : { ...parameter, value };
+      });
+      try {
+        const outcome = await executeParameterWrites(resolved.device, action.values, { ...parameterWrites, ...(signal ? { signal } : {}),
+          ...(expected ? { expected } : {}), afterWrite: async (index, value) => {
+            const parameter = resolved.device.parameters[action.values[index]!.parameterIndex]!;
+            writtenParameterValues?.set(JSON.stringify([deviceId, parameterHandleId(parameter)]), value);
+            await parameterWrites?.afterWrite?.(index, value);
+          }, assertCurrent: () => {
+          assertActionCurrent?.();
+          if (!songTrackEntryForTrack(context.application.song, track) ||
+              parameterHandleId(resolveDeviceTarget(track, target, action.deviceName, resolved.path).device) !== deviceId) throw new Error("The parameter destination changed during application.");
+        } });
+        return outcome.mutationCount ? outcome.results.join(" ") : noMutation(`Kept ${action.values.length} parameters on "${resolved.device.name}" because they already match.`);
+      } catch (error) {
+        if (error instanceof DeviceParameterWriteError) throw new AgentPlanExecutionError(error.completed, error.cause,
+          actionIndex, action, track.name, [], error.writesStarted, undefined, 0);
+        throw error;
+      }
+    }
     case "set_device_parameter": {
       const track = trackForAction(context, action, actionIndex, target, tracks, actionTracks);
       const resolved = bound?.deviceTarget ?? resolveDeviceTarget(
@@ -739,6 +776,16 @@ async function executeAction(
         );
       }
       await parameter.setValue(action.value);
+      if (writtenParameterValues) {
+        try {
+          const value = await parameter.getValue();
+          if (!Number.isFinite(value)) throw new Error("The parameter readback is unavailable.");
+          writtenParameterValues.set(JSON.stringify([parameterHandleId(device), parameterHandleId(parameter)]), value);
+        } catch (error) {
+          throw new AgentPlanExecutionError([`Wrote "${parameter.name}" on "${device.name}"; its resulting value could not be verified.`], error,
+            actionIndex, action, track.name, [], 1, undefined, 0);
+        }
+      }
       return `Set "${parameter.name}" on "${device.name}" at ${devicePathLabel(resolved.path)} in track "${track.name}" to ${action.value}.`;
     }
     case "duplicate_device": {

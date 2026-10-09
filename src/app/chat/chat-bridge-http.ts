@@ -6,6 +6,7 @@ import type { MidiContinuationCommand } from "../../agent/midi-continuation-cont
 import { isCreativeBrief, MAX_CREATIVE_BRIEF_CODE_POINTS } from "../../agent/creative-brief.js";
 import { MAX_AUDIO_PARAMETER_BYTES } from "../../plugins/builtins/parameter-panel.js";
 import type { MidiArtifactImportCommand } from "../midi-artifact-import.js";
+import { isParameterArtifactCommand, type ParameterArtifactCommand } from "../parameters/contracts.js";
 import { isArtifactRef, isArtifactSelection, type ArtifactRef, type ArtifactSelectionCommand } from "../../agent/artifact-contracts.js";
 import { Buffer } from "node:buffer";
 import type { IncomingMessage } from "node:http";
@@ -137,6 +138,7 @@ export interface RawSkillBodyReadOptions {
 export interface RawPluginBodyReadOptions extends RawAttachmentBodyReadOptions {}
 
 export type ChatBridgeCommandInput =
+  | ParameterArtifactCommand
   | MidiContinuationCommand
   | MidiArtifactImportCommand
   | { kind: "select_artifact"; sessionId: string; selection: ArtifactSelectionCommand }
@@ -1212,7 +1214,7 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   }
   if (kind === "export_artifact" || kind === "attach_artifact") {
     assertOnlyInputKeys(input, ["kind", "sessionId", "artifact"], `${kind} command`);
-    if (!isSafeStorageId(input.sessionId) || !isArtifactRef(input.artifact)) {
+    if (!isSafeStorageId(input.sessionId) || !isArtifactRef(input.artifact) || input.artifact.kind === "device-parameters") {
       throw new ChatBridgeRequestValidationError("Choose a saved artifact in this Session.");
     }
     return { kind, sessionId: input.sessionId, artifact: input.artifact };
@@ -1437,6 +1439,10 @@ export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
         : { mappings: mappings as NonNullable<MidiArtifactImportCommand["mappings"]> }),
       startBeat: input.startBeat,
       ...(input.name === undefined ? {} : { name: input.name as string }) };
+  }
+  if (kind === "capture_device_parameters" || kind === "apply_device_parameters" || kind === "restore_device_parameters" || kind === "keep_device_parameters") {
+    if (!isParameterArtifactCommand(input)) throw new ChatBridgeRequestValidationError("Choose a saved device parameter version or a current device.");
+    return input;
   }
   if (kind === "select_artifact") {
     assertOnlyInputKeys(input, ["kind", "sessionId", "selection"], `${kind} command`);

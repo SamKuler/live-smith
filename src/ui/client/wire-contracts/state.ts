@@ -249,6 +249,7 @@ export function createStateValidators({ isWireIntegrationConnections, isWireSuno
       !isWireRecord(payload) ||
       payload.type !== "error" ||
       typeof payload.message !== "string" ||
+      (payload.displayMessage !== undefined && !isWireUiMessage(payload.displayMessage)) ||
       (payload.field !== undefined && typeof payload.field !== "string")
     ) return null;
     const hasSendCorrelation =
@@ -283,6 +284,7 @@ export function createStateValidators({ isWireIntegrationConnections, isWireSuno
           "type",
           "commandId",
           "message",
+          "displayMessage",
           "field",
           "commandOutcome",
           "state",

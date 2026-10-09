@@ -2432,9 +2432,9 @@
           if (step.operationId) {
             content.push(renderOperationReview(step.operationId, step.events, confirm));
           } else {
-            const midiRefs = step.events.flatMap((event) => event.artifacts || []).filter((ref) => ref.kind === "midi");
-            if (midiRefs.length) {
-              for (const ref of midiRefs) { const preview = artifactPreviews.render(ref); if (preview) content.push(preview); }
+            const savedRefs = step.events.flatMap((event) => event.artifacts || []).filter((ref) => ref.kind === "midi" || ref.kind === "device-parameters");
+            if (savedRefs.length) {
+              for (const ref of savedRefs) { const preview = artifactPreviews.render(ref); if (preview) content.push(preview); }
             }
             const eventDetails = [];
             for (const event of step.events) {
@@ -2443,7 +2443,7 @@
               const body = document.createElement("div"); body.className = "timeline-activity-detail-content"; body.textContent = event.content || "";
               section.append(label, body); eventDetails.push(section);
             }
-            if (midiRefs.length && eventDetails.length) {
+            if (savedRefs.length && eventDetails.length) {
               const details = document.createElement("details");
               const summary = document.createElement("summary"); summary.textContent = t("Tool details");
               details.append(summary, ...eventDetails); content.push(details);
@@ -2547,7 +2547,10 @@
           if (status === "waiting") return t("Needs approval");
           if (["approved", "unconfirmed"].includes(status)) return t("Live changes");
         }
-        if (isSavedMidiStep(step)) return t("Saved MIDI");
+        if (isSavedPreviewArtifactStep(step)) {
+          const refs = step.events.flatMap((event) => event.artifacts || []);
+          return t(refs.every((ref) => ref.kind === "midi") ? "Saved MIDI" : refs.every((ref) => ref.kind === "device-parameters") ? "Saved device parameters" : "Saved artifacts");
+        }
         const call = step.events.find((event) => event.kind === "tool_call");
         const terminal = [...step.events].reverse().find(
           (event) =>
@@ -2588,7 +2591,7 @@
           return step.events.find((event) => event.applyOperation?.previews?.length)?.applyOperation.previews[0].targetLabel ||
             step.events.find((event) => event.kind === "apply_requested")?.content.split("\n")[0] || "";
         }
-        if (isSavedMidiStep(step)) return "";
+        if (isSavedPreviewArtifactStep(step)) return "";
         const call = step.events.find((event) => event.kind === "tool_call");
         const applyLifecycle = call?.name === "apply_live_actions" || (
           !call && step.events.some((event) => event.kind.startsWith("apply_"))
@@ -2634,17 +2637,17 @@
         return value.split("\n")[0]?.trim() || "";
       }
 
-      function isMidiArtifactOnlyResult(event) {
-        if (event.kind !== "tool_result" || !event.artifacts?.length || event.artifacts.some((ref) => ref.kind !== "midi")) return false;
+      function isPreviewArtifactOnlyResult(event) {
+        if (event.kind !== "tool_result" || !event.artifacts?.length || event.artifacts.some((ref) => ref.kind !== "midi" && ref.kind !== "device-parameters")) return false;
         try {
           const value = JSON.parse(event.content);
           return value && Object.keys(value).length === 1 && Array.isArray(value.artifacts);
         } catch { return false; }
       }
 
-      function isSavedMidiStep(step) {
+      function isSavedPreviewArtifactStep(step) {
         const results = step.events.filter((event) => event.kind !== "tool_call");
-        return results.length > 0 && results.every(isMidiArtifactOnlyResult);
+        return results.length > 0 && results.every(isPreviewArtifactOnlyResult);
       }
 
       function activityStepChangeCount(step) {

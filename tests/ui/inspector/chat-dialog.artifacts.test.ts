@@ -87,6 +87,10 @@ test("artifact browsing keeps source selection out of the timeline and prepares 
     assert.equal(h.document.querySelector('[aria-label="Saved MIDI note preview"]')!.getAttribute("role"), "img");
     assert.match(h.document.querySelector("#artifactLibrary")!.textContent!, /Source artifact: Piano variation/);
     assert.match(h.document.querySelector("#artifactLibrary")!.textContent!, /"seed":12/);
+    const generationSections = [...h.document.querySelectorAll<HTMLDetailsElement>(".artifact-card details")].filter((details) => details.querySelector("summary")?.textContent === "Generation parameters");
+    assert.equal(generationSections.length, 2);
+    assert.equal(generationSections[0]!.hidden, false); assert.equal(generationSections[1]!.hidden, true);
+    generationSections[0]!.open = true; assert.match(generationSections[0]!.textContent!, /"seed":12/);
     const audio = h.document.querySelector<HTMLAudioElement>(".artifact-card audio")!;
     assert.match(audio.src, /\/audio-assets\/audio-b\?token=.*sessionId=/); assert.equal(audio.controls, false);
     h.click(".artifact-card .attachment-audio-toggle"); await h.settle(); assert.equal(s.playCount, 1);
@@ -857,4 +861,36 @@ test("a dense preview retries its exact read and retains complete notes when the
     assert.match(svg.textContent!, /beat 296/);
     assert.equal(reads, 2); assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
   } finally { h.close(); }
+});
+
+test("browser resume restarts an interrupted dense MIDI preview without a user retry", async () => {
+  const notes = Array.from({ length: 300 }, (_, index) => ({ partId: "track-0-channel-1", pitch: 60, startTime: index, duration: .5 }));
+  const base = { ...artifacts[0]!, midi: { ...artifacts[0]!.midi!, noteCount: 300, durationBeats: 300,
+    parts: [{ ...artifacts[0]!.midi!.parts[0]!, noteCount: 300, durationBeats: 300 }], notes: notes.slice(0, 256), omittedNoteCount: 44 } };
+  const s = await setup(false, [base]); const { h } = s;
+  let reads = 0; let heldSignal: AbortSignal | null | undefined;
+  let release!: () => void; const held = new Promise<void>((resolve) => { release = resolve; });
+  const originalFetch = h.window.fetch;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === "/session-artifact") {
+      reads++;
+      if (reads === 1) { heldSignal = init?.signal; await held; }
+      return { ok: true, json: async () => ({ sessionId: s.state.activeSessionId,
+        artifact: { ...base, midi: { ...base.midi, notes, omittedNoteCount: 0 } } }) };
+    }
+    return originalFetch(input, init);
+  } });
+  try {
+    await s.open(); h.click(".artifact-open");
+    await waitForCondition(() => Boolean(heldSignal), "Expected full MIDI hydration");
+    h.window.dispatchEvent(new h.window.PageTransitionEvent("pagehide", { persisted: true }));
+    assert.equal(heldSignal!.aborted, true); release(); await h.settle();
+    assert.equal(reads, 1); assert.equal(h.document.querySelector(".midi-piano-roll"), null);
+    h.window.dispatchEvent(new h.window.PageTransitionEvent("pageshow", { persisted: true }));
+    await waitForCondition(() => Boolean(h.document.querySelector(".midi-piano-roll")), "Expected a resumed complete preview");
+    assert.equal(reads, 2);
+    h.input(".piano-roll-position", "280");
+    assert.match(h.document.querySelector('svg[aria-label="Saved MIDI note preview"]')!.textContent!, /beat 296/);
+    assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
+  } finally { release(); h.close(); }
 });

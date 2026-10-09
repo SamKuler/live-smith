@@ -415,7 +415,9 @@ metadata. `live-smith-settings.json` contains Direct API and built-in Plugin
 connection keys as plain text;
 `oauth/credentials.json` contains private provider OAuth credentials.
 Audio-processing jobs and input/output assets are stored under
-`live-smith-audio/<sessionId>/`. Immutable installed archives, their catalog,
+`live-smith-audio/<sessionId>/`. Device parameter snapshots and their application
+baselines, progress and results live under `live-smith-device-parameters/<sessionId>/`;
+preserve the complete Session directory when copying this data. Immutable installed archives, their catalog,
 materialized runtime files, and mutable per-Plugin data live under
 `live-smith-plugins/`; do not edit or partially copy that directory.
 Processing tests use injected services and local audio fixtures; they do not

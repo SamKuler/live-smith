@@ -116,6 +116,11 @@ function actionDiffRow(
         track: trackLabel(action, refLabels), deviceName: action.deviceName,
         path: pathSuffix(action.devicePath, action.deviceIndex), parameterName: action.parameterName, value: action.value,
       }) };
+    case "set_device_parameters":
+      return { title: "Set Parameters", row: m("~ {track}.{deviceName}{path}: {values}", {
+        track: trackLabel(action, refLabels), deviceName: action.deviceName, path: pathSuffix(action.devicePath, action.deviceIndex),
+        values: action.values.map((entry) => `[${entry.parameterIndex}] ${entry.parameterName} = ${entry.value}`).join(", "),
+      }) };
     case "duplicate_device":
       return { title: "Insert Devices", row: m("+ Duplicate {deviceName}{path} on {track}", {
         deviceName: action.deviceName, path: pathSuffix(action.devicePath, action.deviceIndex), track: trackLabel(action, refLabels),

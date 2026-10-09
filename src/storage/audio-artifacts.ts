@@ -21,6 +21,7 @@ import { storedSessionAudioBytes } from "./audio-storage-budget.js";
 import { isMissingFileError } from "./errors.js";
 import { createStorageId, isSafeStorageId, requireSafeStorageId } from "./id.js";
 import { readMidiArtifact } from "./midi-artifacts.js";
+import { readDeviceParameterArtifact } from "./device-parameter-artifacts.js";
 import {
   ensurePrivateDirectoryDurably, removeDirectoryDurably, removeFileDurably, withStorageTransaction,
   writeBytesAtomicallyCreateOnly, writeJsonAtomicallyCreateOnly,
@@ -68,6 +69,7 @@ export async function savePluginAudioArtifact(
     throwIfAborted(input.signal);
     await requireAudioSession(storageDirectory, sessionId, transaction);
     if (sourceArtifact?.kind === "midi") await readMidiArtifact(storageDirectory, sessionId, sourceArtifact.id, input.signal);
+    if (sourceArtifact?.kind === "device-parameters") await readDeviceParameterArtifact(storageDirectory, sessionId, sourceArtifact.id);
     const audioParent = sourceArtifact?.kind === "audio"
       ? (await readSessionAudioArtifact(storageDirectory, sessionId, sourceArtifact.id, input.signal)).asset : undefined;
     const directory = (await bindDirectory(storageDirectory, sessionId, true))!;

@@ -1,4 +1,5 @@
 import { midiArtifactAuthoringTool } from "../midi/midi-artifact-tools.js";
+import { parameterArtifactTools } from "../parameters/parameter-artifact-tools.js";
 import { sessionArtifactTools } from "./session-artifact-tools.js";
 import { creativeBriefProposalTool } from "../context/creative-brief.js";
 import { liveSmithTools } from "../../agent/tool-definitions.js";
@@ -88,7 +89,7 @@ export async function loadSessionToolCatalog(input: {
     addTool(liveGroup, tool.function.name, tool.function.description);
   }
   if (input.storageDirectory) {
-    for (const tool of [...sessionArtifactTools, midiArtifactAuthoringTool]) {
+    for (const tool of [...sessionArtifactTools, midiArtifactAuthoringTool, ...parameterArtifactTools]) {
       addTool(liveGroup, tool.function.name, tool.function.description);
     }
   }

@@ -20,7 +20,7 @@ implementation plan, or record of individual changes.
 ## Project map
 
 - `src/app/` owns application orchestration. Its `chat/`, `audio/`, `plugins/`,
-  `model/`, `context/`, and `session/` directories own the corresponding
+  `model/`, `context/`, `session/`, and `parameters/` directories own the corresponding
   workflows; request and dialog coordinators remain at the application root.
   Provider-specific application workflows stay in their provider directory,
   such as `src/app/audio/suno/`; shared audio workflows consume Plugin methods

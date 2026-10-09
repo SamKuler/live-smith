@@ -48,6 +48,7 @@ test("apply_live_actions exposes every validated action schema", () => {
     "set_chain_mixer_parameter",
     "set_clip_properties",
     "set_device_parameter",
+    "set_device_parameters",
     "set_tempo",
     "set_track_arm",
     "set_track_mixer_parameter",

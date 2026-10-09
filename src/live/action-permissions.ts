@@ -64,6 +64,7 @@ export function requiredEditScopesForAction(
     case "insert_device":
     case "insert_chain_device":
     case "set_device_parameter":
+    case "set_device_parameters":
     case "replace_simpler_sample":
       return ["devices"];
     case "create_rack_chain":

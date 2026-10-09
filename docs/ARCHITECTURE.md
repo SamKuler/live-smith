@@ -94,7 +94,7 @@ src/
       session-activity.ts
         Derive chat activity time independently of Session metadata revisions.
       session-artifacts.ts
-        Project saved MIDI/audio versions and filter the artifact catalog.
+        Project saved MIDI/audio/parameter versions and filter the artifact catalog.
       session-lifecycle.ts
         Own metadata-first deletion, pending cleanup and startup orphan
         reconciliation through the shared Session mutation boundary.
@@ -327,6 +327,9 @@ src/
       separate mutable data directories, and recoverable catalog mutations.
     midi-artifacts.ts
       Immutable Session-owned Standard MIDI files and their version metadata.
+    device-parameter-artifacts.ts
+      Immutable parameter snapshots, durable application baselines and small
+      per-parameter progress records, with Session-owned cleanup.
     audio-artifacts.ts, audio-storage-budget.ts
       Immutable Plugin audio, shared exact audio reads and the aggregate budget
       across Plugin files and provider-job assets.
@@ -949,6 +952,47 @@ or automatic replenishment; Fill/Refill and Use next are user actions.
 
 ### Saved artifacts, versions and lineage
 
+Device parameter snapshots use the `device-parameters` Artifact kind.
+`app/parameters/` owns capture, model authoring, comparisons and explicit
+Apply/Keep/Restore commands. Captures contain the complete SDK parameter layout,
+raw values and runtime/Set/Track/Device/parameter identities. Model revisions copy
+an exact saved source and replace validated indexed values; they preserve the
+remaining parameters and cannot invent a target binding. The same version,
+primary, source and search contracts apply. Native parameter tools appear in the
+Session tool catalog; Plugin file contracts remain MIDI/audio-only.
+
+Parameter application resolves the original runtime binding or an explicitly
+chosen compatible device, then builds a validated `set_device_parameters` action.
+Preflight observations validate the complete preparation snapshot before approval,
+including parameters that need no write, and supply the approval table and internal
+execution baselines. The executor preserves those baselines, validates every
+parameter before the first write, and rechecks cancellation, authorization,
+identity and current value after asynchronous reads immediately before each
+write. Complete-device reconciliation detects changed layouts and side effects
+outside the explicitly written values.
+
+`storage/device-parameter-artifacts.ts` stores create-only snapshot JSON under
+`live-smith-device-parameters/<sessionId>/`. Snapshot bounds are 4,096 parameters,
+4 MiB per snapshot, 64 snapshots and 64 MiB per Session. Application baselines are
+immutable; separate small progress files are flushed before individual SDK
+writes and after verified readback. Terminal results retain Keep/Restore decisions.
+Storage reserves space for progress, a restore baseline and the final result
+before writing to Live, with a 64 MiB application-history budget and 256 records
+per Session. Newly created private directories are durably linked before their
+contents are published. Session deletion and startup orphan reconciliation cover
+both snapshots and application data.
+
+An application result remains separate from immutable Artifact content.
+Unknown writes and full-device conflicts remain explicit and prevent automatic
+restoration. Restore checks confirmed values, retains its own starting snapshot,
+and reports partial restoration; it does not assume that multiple parameter
+writes are atomic or that SDK automation state is available. Browser reads may
+be cancelled or superseded without replaying a command. Restarted runtimes require
+explicit destination binding for a new application; old application receipts do
+not authorize writes to a replacement device. Parameter Artifacts offer native
+comparison/application controls and are rejected by binary export/attachment
+commands.
+
 Ordinary chat registers MIDI authoring from `app/midi/midi-artifact-tools.ts`
 and shared list/inspection tools from `app/session/session-artifact-tools.ts`
 whenever private storage is available. Plugin discovery
@@ -962,7 +1006,7 @@ are excluded from the artifact library. Each future section is an independent
 version group, while explicit revisions of a section preserve its existing group.
 
 `agent/artifact-contracts.ts` owns the media-neutral version, source and primary
-selection contracts. Version metadata remains on each immutable media record.
+selection contracts. Version metadata remains on each immutable artifact record.
 The shared allocator runs inside its owning store transaction; unavailable bytes
 do not release a reserved version number. Legacy records project as independent
 v1 groups. Explicit revisions record their actual parent; independent generation
@@ -977,7 +1021,7 @@ Resource-only tickets bind the media kind and expire independently of the bridge
 control token. Attaching uses the existing upload admission and pending-attachment
 flow, including during an active model request.
 
-`app/session/session-artifacts.ts` projects Session-owned MIDI artifacts and
+`app/session/session-artifacts.ts` projects Session-owned MIDI and parameter artifacts,
 committed provider audio results and standalone Plugin audio into the paginated
 artifact library. Version groups are assembled before pagination. Without a
 search filter, each work selects its saved primary when available, otherwise the
@@ -991,7 +1035,13 @@ asset route; MIDI overviews contain at most 256 notes with source-part identity
 and bounded part summaries. The read-only `/midi-artifact-preview` route reads a
 selected part in full. Exact artifact details also return complete notes; both
 retain the saved-file limit of 4096 notes, while the paginated catalog keeps its
-256-note overview. The browser loads exact details when opening a truncated entry. It reads only saved media and never observes or mutates Live.
+256-note overview. The browser loads exact details when opening a truncated MIDI entry.
+These media reads use saved files without observing or mutating Live. Parameter
+cards use the authenticated read-only `/device-parameters` route for current
+device comparisons and restoration eligibility. Application results name their
+exact saved version; all open parameter cards refresh after a parameter command
+settles. Browser suspension cancels catalog, version and parameter reads, and
+resumption starts fresh reads without replaying commands.
 
 `export_artifact` and `attach_artifact` share a typed artifact reference and
 read original bytes from the existing MIDI/audio stores. Provider audio results
@@ -2078,6 +2128,12 @@ provider diagnostics remain original data. Model-facing audio tool results forma
 descriptor messages into English without translating raw parameters. Storage and
 wire readers bound and validate descriptors before rendering them.
 
+Parameter comparison errors use the same descriptors. App-authored command and
+parameter-read failures may carry a validated `displayMessage` beside their
+English error text; command SSE errors preserve the same descriptor. The browser
+retains descriptors across locale changes and keeps bound device and parameter
+names literal. Unknown technical errors retain their original text.
+
 Action-confirmation headings and rows carry serializable `{ source, values }`
 messages rather than preformatted English. Nested messages describe application
 copy; string parameters remain raw names, identifiers, or JSON. The client
@@ -2447,8 +2503,11 @@ failed action, but does not prove that the device name is unavailable. The model
 re-inspects the target and continues only with missing work using a changed name,
 placement, or target only when observed evidence supports that repair. Repeating
 an insertion is a literal request for another instance; the executor never
-silently reuses a same-name device. Device parameters resolve by exact observed
-name after case/whitespace normalization, never by substring guessing.
+silently reuses a same-name device. Single parameter writes resolve by exact
+observed name after case/whitespace normalization. Bulk parameter writes bind
+observed indexes, exact names and parameter handles, allowing duplicate names
+without guessing. Ordered bulk actions inherit only verified values written by
+earlier actions in the same plan; unrelated changes still invalidate execution.
 
 Rack Chains use the existing Track plus Rack `devicePath` locator followed by a
 zero-based Chain index. `inspect_rack_chain` makes empty Chains observable and

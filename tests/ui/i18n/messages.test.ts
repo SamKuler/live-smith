@@ -39,6 +39,7 @@ test("explicit client messages and static template markers all have translations
     .filter((name): name is string => typeof name === 'string' && (name.endsWith('.script.html') || name.endsWith('.ts'))).map(name => '../../../src/ui/client/' + name);
   files.push('../../../src/ui/action-diff.ts');
   files.push('../../../src/app/audio/audio-generation.ts', '../../../src/app/audio/audio-processing.ts', '../../../src/app/audio/audio-job-runtime.ts', '../../../src/app/audio/suno/suno-human-verification.ts', '../../../src/app/agent-flow.ts');
+  files.push('../../../src/live/device-parameters.ts', '../../../src/app/parameters/parameter-artifacts.ts', '../../../src/app/parameters/parameter-application.ts', '../../../src/storage/device-parameter-artifacts.ts');
   for (const file of files) {
     const source = readFileSync(new URL(file, import.meta.url), 'utf8');
     const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, file.endsWith(".ts") ? ts.ScriptKind.TS : ts.ScriptKind.JS);

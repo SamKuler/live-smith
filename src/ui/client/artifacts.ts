@@ -7,6 +7,8 @@ import type { PluginResultActions } from "./plugin-results.js";
 import { createMidiArtifactDiffView } from "./midi-artifact-diff-view.js";
 import { isMidiPartPreview, isSessionArtifacts, isSessionArtifactDetail } from "./wire-contracts/artifacts.js";
 import { MAX_SEARCH_QUERY_LENGTH, normalizeSearchQuery } from "../../app/session/search-contracts.js";
+import { createParameterArtifactView } from "./parameter-artifacts.js";
+import type { ParameterArtifactRead, ParameterArtifactCommand } from "../../app/parameters/contracts.js";
 
 interface Dependencies {
   getState(): { activeSessionId?: string; events?: ArtifactHistoryEvent[] };
@@ -14,6 +16,8 @@ interface Dependencies {
   readArtifact(input: { sessionId: string; artifact: ArtifactRef }, signal?: AbortSignal): Promise<unknown>;
   readMidiArtifactDiff(input: { sessionId: string; artifactRef: string; baseArtifactRef?: string }, signal?: AbortSignal): Promise<unknown>;
   readMidiPartPreview(input: { sessionId: string; artifactRef: string; partId: string }, signal?: AbortSignal): Promise<unknown>;
+  readDeviceParameters(input: ParameterArtifactRead, signal?: AbortSignal): Promise<unknown>;
+  parameterCommand(input: ParameterArtifactCommand): Promise<boolean>;
   select(input: { sessionId: string; selection: ArtifactSelection }): Promise<boolean>;
   transfer(kind: "export_artifact" | "attach_artifact", input: { sessionId: string; artifact: ArtifactRef }): Promise<boolean>;
   useInChat(text: string): Promise<void>;
@@ -28,6 +32,8 @@ function createArtifactLibraryView(deps: Dependencies) {
   const panel = document.getElementById("sessionArtifacts")!;
   const launcher = document.getElementById("artifactsTab") as HTMLButtonElement;
   let visible = false;
+  let pageSuspended = false;
+  let revealRead: AbortController | undefined;
   const content = document.getElementById("artifactLibrary")!;
   let sessionId: string | undefined;
   let snapshot: SessionArtifacts | undefined;
@@ -62,8 +68,37 @@ function createArtifactLibraryView(deps: Dependencies) {
   const next = element("button", "secondary", () => t("Next page")); next.type = "button";
   previous.hidden = next.hidden = true;
   status.hidden = true;
+  const capture = element("details", "artifact-details parameter-capture");
+  capture.append(element("summary", "", () => t("Save device parameter snapshot")));
+  let captureView: ReturnType<typeof createParameterArtifactView> | undefined;
+  const parameterDependencies = (owner: string) => ({ sessionId: owner, isCurrent: () => current(owner) && visible,
+    read: deps.readDeviceParameters, command: deps.parameterCommand,
+    onCommandSettled: (source: HTMLElement, kind: ParameterArtifactCommand["kind"]) => {
+      if (!current(owner)) return;
+      if (kind !== "capture_device_parameters") { captureView?.invalidate(source); for (const row of rows.values()) row.invalidateParameters(source); }
+      void read(snapshot?.offset ?? 0);
+    },
+    openArtifact: async (id: string) => {
+      if (!current(owner)) return;
+      revealRead?.abort(); const controller = new window.AbortController(); revealRead = controller;
+      try {
+        const result = await deps.readArtifact({ sessionId: owner, artifact: { kind: "device-parameters", id } }, controller.signal);
+        if (!current(owner) || revealRead !== controller) return;
+        if (!isSessionArtifactDetail(result) || result.sessionId !== owner || result.artifact.ref.kind !== "device-parameters" || result.artifact.ref.id !== id) throw new Error(t("Saved version is unavailable."));
+        showArtifact(result.artifact);
+      } catch (error) {
+        if (current(owner) && revealRead === controller) { status.hidden = false; bindings.text(status, () => error instanceof Error ? error.message : t("Saved version is unavailable.")); }
+      } finally { if (revealRead === controller) revealRead = undefined; }
+    },
+  });
+  capture.addEventListener("toggle", () => {
+    if (!capture.open) { captureView?.suspend(); return; }
+    if (!sessionId) return;
+    if (!captureView) { captureView = createParameterArtifactView(parameterDependencies(sessionId)); capture.append(captureView.element); }
+    captureView.update(); captureView.setBusy(busy || pending);
+  });
   pages.append(load, previous, next);
-  controls.append(searchField, pages, status, context, clear, choices); content.append(controls);
+  controls.append(searchField, pages, status, context, clear, capture, choices); content.append(controls);
   const artifactLabel = (artifact: SessionArtifact) => artifact.version ? `${artifact.label} · v${artifact.version.number}` : artifact.label;
   function sourceLabel(ref: ArtifactRef): string {
     for (const item of [...rows.values()].map((row) => row.artifact()).concat(snapshot?.artifacts ?? [])) {
@@ -74,7 +109,7 @@ function createArtifactLibraryView(deps: Dependencies) {
     return t("Saved source artifact");
   }
   const groupKey = (artifact: SessionArtifact) => artifact.version ? `${artifact.ref.kind}:${artifact.version.groupId}` : artifactKey(artifact.ref);
-  const current = (id = sessionId) => Boolean(id) && id === deps.getState().activeSessionId;
+  const current = (id = sessionId) => !pageSuspended && Boolean(id) && id === deps.getState().activeSessionId;
   const operationPending = () => pending || Boolean(listRead);
   function syncBusy() {
     load.disabled = operationPending(); previous.disabled = operationPending() || !snapshot?.offset;
@@ -83,6 +118,7 @@ function createArtifactLibraryView(deps: Dependencies) {
     for (const button of choices.querySelectorAll<HTMLButtonElement>("[data-artifact-transfer]")) button.disabled = operationPending();
     for (const button of choices.querySelectorAll<HTMLButtonElement>("[data-artifact-write]")) button.disabled = operationPending() || busy;
     for (const row of rows.values()) row.syncBusy();
+    captureView?.setBusy(operationPending() || busy);
   }
   function cancelListRead() { listRead?.abort(); listRead = undefined; }
   function cancelSearchTimer() { if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchTimer = undefined; }
@@ -114,7 +150,7 @@ function createArtifactLibraryView(deps: Dependencies) {
       snapshot = result;
       renderSnapshot();
       status.hidden = !result.unavailableCount && result.total > 0;
-      bindings.text(status, () => result.unavailableCount ? t("Some saved artifacts are unavailable.") : result.total ? "" : t(requestedQuery ? "No matching artifacts." : "No saved audio or MIDI artifacts yet."));
+      bindings.text(status, () => result.unavailableCount ? t("Some saved artifacts are unavailable.") : result.total ? "" : t(requestedQuery ? "No matching artifacts." : "No saved artifacts yet."));
     } catch (error) { if (isCurrentRead()) { status.hidden = false; bindings.text(status, () => error instanceof Error ? error.message : t("Saved artifacts are unavailable.")); } }
     finally { if (isCurrentRead()) { listRead = undefined; syncBusy(); } }
   }
@@ -158,6 +194,7 @@ function createArtifactLibraryView(deps: Dependencies) {
       let previewRead: AbortController | undefined;
       let previewLoading = false;
       let previewError = "";
+      let cardSuspended = false;
       const previewStatus = element("p", "field-hint"); previewStatus.setAttribute("role", "status"); previewStatus.hidden = true;
       const retryPreview = button("Retry preview", () => { void readPart(); }); retryPreview.hidden = true;
       const previewMidi = (value: SessionArtifact) => {
@@ -201,7 +238,9 @@ function createArtifactLibraryView(deps: Dependencies) {
       transfers.append(button("Attach to message", () => { void transfer("attach_artifact", artifact); }),
         button(artifact.midi ? "Export MIDI" : "Export audio", () => { void transfer("export_artifact", artifact); }));
       for (const button of transfers.querySelectorAll("button")) button.dataset.artifactTransfer = "";
-      card.append(transfers);
+      if (artifact.ref.kind !== "device-parameters") card.append(transfers);
+      const parameterView = artifact.ref.kind === "device-parameters" ? createParameterArtifactView(parameterDependencies(sessionId!), artifact) : undefined;
+      if (parameterView) card.append(parameterView.element);
       let diff: ReturnType<typeof createMidiArtifactDiffView> | undefined;
       let midiPreview: HTMLElement | undefined;
       if (artifact.audio) {
@@ -253,6 +292,7 @@ function createArtifactLibraryView(deps: Dependencies) {
       generation.append(tool, parameters, shortened); card.append(generation);
       function update(value: SessionArtifact) {
           artifact = value; bindings.text(source, () => t(value.sourceLabel));
+          parameterView?.update(value);
           if (value.midi && (value.version?.derivedFromId || (value.versions?.length ?? 0) > 1)) {
             if (!diff) {
               diff = createMidiArtifactDiffView({ sessionId: sessionId!, artifact: value, read: deps.readMidiArtifactDiff,
@@ -264,11 +304,16 @@ function createArtifactLibraryView(deps: Dependencies) {
             diff.dispose(); diff.element.remove(); diff = undefined;
             if (midiPreview) midiPreview.hidden = false;
           }
+          if (cardSuspended && current() && visible) {
+            cardSuspended = false; diff?.resume();
+            if (partSelect?.value && !partPreview && !previewRead) void readPart();
+          }
           tool.hidden = !value.generation;
+          generation.hidden = !value.generation;
           bindings.text(tool, () => value.generation ? t("Tool: {name}", { name: value.generation.toolName }) : "");
-          bindings.text(parameters, () => value.generation?.parameters ?? t("Original generation parameters are unavailable."));
+          bindings.text(parameters, () => value.generation?.parameters ?? "");
           shortened.hidden = !value.generation?.parametersTruncated;
-          parentLabel.hidden = !value.parent || value.parent.kind === "midi" && value.version?.derivedFromId === value.parent.id;
+          parentLabel.hidden = !value.parent || value.parent.kind === value.ref.kind && value.version?.derivedFromId === value.parent.id;
           if (value.parent) {
             bindings.text(parentLabel, () => t("Source artifact: {name}", { name: sourceLabel(value.parent!) }));
           }
@@ -289,9 +334,15 @@ function createArtifactLibraryView(deps: Dependencies) {
           }
       }
       return { element: card, update,
+        syncBusy() { parameterView?.setBusy(busy || operationPending()); },
+        invalidateParameters(source: HTMLElement) { parameterView?.invalidate(source); },
         notify(message: LocalizedText) { actionStatus.hidden = false; bindings.text(actionStatus, message); },
-        pause() { player?.media.pause(); },
-        dispose() { previewRead?.abort(); diff?.dispose(); player?.dispose(); card.remove(); },
+        pause() { player?.media.pause(); parameterView?.suspend(); },
+        suspend() {
+          cardSuspended = true; player?.media.pause(); parameterView?.suspend(); diff?.dispose();
+          previewRead?.abort(); previewRead = undefined; previewLoading = false;
+        },
+        dispose() { previewRead?.abort(); diff?.dispose(); parameterView?.dispose(); player?.dispose(); card.remove(); },
       };
   }
   function createRow(initial: SessionArtifact) {
@@ -330,7 +381,7 @@ function createArtifactLibraryView(deps: Dependencies) {
     retryRead.classList.add("artifact-version-retry"); retryRead.hidden = true;
     body.append(toolbar, readStatus, retryRead); row.append(expand, body);
     function cancelRead() { versionRead?.abort(); versionRead = undefined; version.value = artifact.ref.id; readStatus.hidden = true; retryRead.hidden = true; }
-    function syncRowBusy() { primary.disabled = operationPending() || busy || Boolean(versionRead); }
+    function syncRowBusy() { primary.disabled = operationPending() || busy || Boolean(versionRead); card?.syncBusy(); }
     function render() {
       syncRowBusy();
       const versions = head.versions ?? [];
@@ -396,7 +447,14 @@ function createArtifactLibraryView(deps: Dependencies) {
       },
       open(value: SessionArtifact) { cancelRead(); artifact = value; opened = true; render(); expand.focus({ preventScroll: true }); row.scrollIntoView?.({ block: "nearest" }); },
       notify(message: LocalizedText) { card?.notify(message); },
+      invalidateParameters(source: HTMLElement) { card?.invalidateParameters(source); },
       pause() { card?.pause(); },
+      suspend() { cancelRead(); card?.suspend(); },
+      resume() {
+        if (!opened) return;
+        render();
+        if (artifact.midi?.omittedNoteCount && !versionRead) void readVersion(artifact.ref.id);
+      },
       dispose() { cancelRead(); card?.dispose(); row.remove(); },
     };
   }
@@ -433,12 +491,28 @@ function createArtifactLibraryView(deps: Dependencies) {
     if (event.key !== "Escape" || event.isComposing || composing || !search.value) return;
     event.preventDefault(); event.stopPropagation(); search.value = ""; changeQuery(true);
   });
+  window.addEventListener("pagehide", () => {
+    pageSuspended = true; revealRead?.abort(); revealRead = undefined;
+    cancelListRead(); captureView?.suspend(); for (const row of rows.values()) row.suspend();
+  });
+  window.addEventListener("pageshow", (event) => {
+    pageSuspended = false;
+    if (!event.persisted || !visible) return;
+    for (const row of rows.values()) row.resume();
+    void read(snapshot?.offset ?? 0); if (capture.open) captureView?.update();
+  });
+  function showArtifact(value: SessionArtifact) {
+    if (query || search.value) { search.value = ""; composing = false; changeQuery(true); }
+    revealedArtifact = value; renderSnapshot(); rows.get(groupKey(value))?.open(value);
+  }
   return {
     render() {
       if (bindings.refresh(content)) renderSnapshot();
       const continuation = pendingArtifactParentFromEvents(deps.getState().events ?? []);
       const identity = continuation ? artifactKey(continuation) : "";
       if (sessionId !== deps.getState().activeSessionId) {
+        revealRead?.abort(); revealRead = undefined;
+        captureView?.dispose(); captureView?.element.remove(); captureView = undefined; capture.open = false;
         cancelSearchTimer(); cancelListRead(); query = ""; search.value = ""; composing = false; queryNeedsRead = false;
         serial++; pending = false; sessionId = deps.getState().activeSessionId; snapshot = undefined; revealedArtifact = undefined;
         bindings.text(status, ""); status.hidden = true; renderSnapshot();
@@ -452,15 +526,16 @@ function createArtifactLibraryView(deps: Dependencies) {
       panel.hidden = !sessionId; launcher.disabled = !sessionId; syncBusy();
     },
     openArtifact(value: SessionArtifact) {
-      if (query || search.value) { search.value = ""; composing = false; changeQuery(true); }
-      revealedArtifact = value; renderSnapshot(); rows.get(groupKey(value))?.open(value);
+      showArtifact(value);
     },
     setBusy(value: boolean) { busy = value; syncBusy(); },
     setVisible(value: boolean) {
       const opening = value && !visible;
       visible = value;
+      if (opening) for (const row of rows.values()) row.resume();
       if (opening && !pending) void read(snapshot?.offset ?? 0);
-      if (!visible) for (const row of rows.values()) row.pause();
+      if (opening && capture.open) captureView?.update();
+      if (!visible) { captureView?.suspend(); for (const row of rows.values()) row.pause(); }
     },
   };
 }

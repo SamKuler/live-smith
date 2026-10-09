@@ -1,5 +1,6 @@
 import type { NoteDescription } from "@ableton-extensions/sdk";
 import type { DevicePath } from "../live/device-tree.js";
+import { isDeviceParameterWrites, MAX_DEVICE_PARAMETERS, type DeviceParameterWrite } from "./device-parameter-contracts.js";
 
 export type SampleSource =
   | { kind: "selected" }
@@ -358,6 +359,16 @@ const actionDescriptors = {
       parameterName: "Frequency",
       value: 0.6,
     },
+  ),
+  set_device_parameters: defineAction(
+    "set_device_parameters",
+    {
+      trackName: optionalString(), trackRef: optionalRef(), deviceName: requiredString(),
+      deviceIndex: optionalInteger(0), devicePath: optionalDevicePath(),
+      values: requiredDeviceParameterWrites(),
+    },
+    { type: "set_device_parameters", trackName: "Lead", deviceName: "Auto Filter", deviceIndex: 1,
+      values: [{ parameterIndex: 0, parameterName: "Frequency", value: 0.6 }] },
   ),
   duplicate_device: defineAction(
     "duplicate_device",
@@ -997,6 +1008,18 @@ function requiredSampleSource(): ActionField<SampleSource, true> {
     },
     parseSampleSource,
   );
+}
+
+function requiredDeviceParameterWrites(): ActionField<DeviceParameterWrite[], true> {
+  return requiredField({ type: "array", minItems: 1, maxItems: MAX_DEVICE_PARAMETERS, items: {
+    type: "object", properties: { parameterIndex: { type: "integer", minimum: 0, maximum: MAX_DEVICE_PARAMETERS - 1 },
+      parameterName: { type: "string", maxLength: 512 }, value: { type: "number" } },
+    required: ["parameterIndex", "parameterName", "value"], additionalProperties: false,
+  }, description: "Distinct observed parameter indexes with exact names and raw values. The complete set is validated before writing; partial failures are reported." },
+  (value) => {
+    if (!isDeviceParameterWrites(value)) throw new Error("Provide distinct observed device parameter indexes, exact names and finite values.");
+    return value.map((entry) => ({ ...entry }));
+  });
 }
 
 function requiredEnum<const Values extends readonly string[]>(

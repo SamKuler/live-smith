@@ -1386,6 +1386,23 @@ details.timeline-item > .timeline-content {
 .midi-preview-switch button { @apply min-h-0 border-transparent bg-transparent px-2 py-1 text-small text-muted; }
 .preview-coordinate, .preview-limits { @apply text-small text-muted; }
 .parameter-preview-values { font-variant-numeric: tabular-nums; }
+.parameter-artifact-view { @apply grid min-w-0 gap-3; }
+.parameter-artifact-view > label, .parameter-table-view > label { @apply grid min-w-0 gap-1 text-small text-muted; }
+.parameter-artifact-view input, .parameter-artifact-view select { @apply min-w-0 w-full; }
+.parameter-table-view { @apply grid min-w-0 gap-2; }
+.parameter-table-view > .parameter-changes-filter { @apply flex items-center gap-2; }
+.parameter-changes-filter input { width: auto; }
+.parameter-table-scroll { @apply max-h-80 overflow-auto; }
+.parameter-table-scroll table { @apply w-full border-collapse text-small; font-variant-numeric: tabular-nums; }
+.parameter-table-scroll th, .parameter-table-scroll td { @apply border-b border-divider px-2 py-2 text-left align-top; }
+.parameter-table-scroll thead th { @apply sticky top-0 bg-field text-muted; }
+.parameter-table-scroll tbody th { font-weight: 400; overflow-wrap: anywhere; min-width: 8rem; }
+.parameter-row-state { @apply block text-muted; }
+.parameter-table-scroll td { @apply whitespace-nowrap; }
+.parameter-table-scroll tr[data-changed="true"] td:nth-child(3) { @apply font-semibold; }
+.parameter-application { @apply grid gap-2; }
+.parameter-capture[open] > .parameter-artifact-view { @apply mt-3; }
+.parameter-artifact-view [hidden], .parameter-table-view[hidden], .parameter-table-view [hidden] { display: none !important; }
 .action-preview p[hidden] { display: none; }
 
 .bridge-status {

@@ -1,4 +1,5 @@
 import { deleteSessionPluginAudioArtifacts, listSessionPluginAudioDirectoryIds } from "../../storage/audio-artifacts.js";
+import { deleteSessionDeviceParameters, listSessionDeviceParameterDirectoryIds } from "../../storage/device-parameter-artifacts.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import {
   deleteSessionAttachments,
@@ -38,6 +39,7 @@ export function createSessionLifecycle(dependencies: SessionLifecycleOptions) {
     await deleteSessionAudio(storageDirectory, sessionId);
     await deleteSessionPluginAudioArtifacts(storageDirectory, sessionId);
     await deleteSessionMidiArtifacts(storageDirectory, sessionId);
+    await deleteSessionDeviceParameters(storageDirectory, sessionId);
   };
 
   const remove = async (
@@ -107,6 +109,7 @@ export function createSessionLifecycle(dependencies: SessionLifecycleOptions) {
       ...await listSessionAudioDirectoryIds(storageDirectory),
       ...await listSessionPluginAudioDirectoryIds(storageDirectory),
       ...await listSessionMidiArtifactDirectoryIds(storageDirectory),
+      ...await listSessionDeviceParameterDirectoryIds(storageDirectory),
       ...await listSessionAttachmentDirectoryIds(
         storageDirectory,
       ),

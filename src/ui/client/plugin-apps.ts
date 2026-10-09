@@ -1,3 +1,4 @@
+import type { UiMessage } from "../../i18n/ui-message.js";
 import {
   AppBridge,
   type McpUiResourceCsp,
@@ -39,7 +40,7 @@ interface PluginApps {
 declare global {
   interface Window {
     LiveSmithFactories?: Record<string, unknown> & { createPluginApps?: (deps: PluginAppsDependencies) => PluginApps };
-    LiveSmithI18n?: { t(source: string, values?: Record<string, string>): string };
+    LiveSmithI18n?: { t(source: string, values?: Record<string, string>): string; format(value: UiMessage): string };
   }
 }
 

@@ -353,6 +353,12 @@
           transfer: transferArtifact,
           getState, read: bridgeClient.readSessionArtifacts, readArtifact: bridgeClient.readSessionArtifact,
           readMidiArtifactDiff: bridgeClient.readMidiArtifactDiff, readMidiPartPreview: bridgeClient.readMidiPartPreview,
+          readDeviceParameters: bridgeClient.readDeviceParameters,
+          parameterCommand: async (input) => {
+            let known = false;
+            const completed = await bridgeClient.runCommand(input.kind, input, { cancellable: true, onOutcome: (outcome) => { known = outcome.known; } });
+            return completed && known;
+          },
           select: async (input) => {
             let known = false;
             const completed = await bridgeClient.runCommand("select_artifact", input, { onOutcome: (outcome) => { known = outcome.known; } });

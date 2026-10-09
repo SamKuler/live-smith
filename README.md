@@ -63,10 +63,11 @@ Tempo, meter and controller events remain in the saved file; import writes notes
 only and leaves the Set's tempo and meter unchanged. An interrupted import
 preserves recovery information and must be inspected before retrying.
 
-**Session → Artifacts** collects this Session's saved MIDI, downloaded service audio and Plugin WAV/MP3 results. Other supported
-file formats remain chat attachments. Each MIDI or audio work has one entry containing its
-versions. Open the entry and choose a version to inspect, export, attach or add
-to Live. The version's source is shown explicitly; the source can be an older
+**Session → Artifacts** collects this Session's saved MIDI, downloaded service audio,
+Plugin WAV/MP3 results and device parameter snapshots. Other supported
+file formats remain chat attachments. Each work has one entry containing its
+versions. Open the entry and choose a version to inspect or use its available
+actions. The version's source is shown explicitly; the source can be an older
 version in the same group. **Make primary** saves the work's default version;
 reopening its entry selects that version, while an explicitly selected version
 remains the target of export, attachment and further work. Clearing the primary
@@ -108,8 +109,8 @@ saved file or export; **Add to Live** carries the part choice into the import di
 They reuse the exact saved file without calling a model or audio provider.
 Repeated attachment of the same pending file reuses its existing reference;
 distinct MIDI versions and audio outputs remain separate. Model input support
-and attachment budgets still apply when sending. A missing historical tool call
-leaves its generation parameters unavailable. Refreshing the list retains the
+and attachment budgets still apply when sending. **Generation parameters** appears
+when the original tool call is available. Refreshing the list retains the
 selected version and audio playback; **Back to chat** pauses artifact audio and
 returns to the composer.
 
@@ -120,8 +121,31 @@ Steer and manual tool calls do not consume it. The resulting tool calls retain
 their parent artifact even if a later request uses another source. Clearing the
 next-request source leaves the original files intact. MIDI artifacts use the
 same mapped import preview; audio import is prepared in chat and uses the existing
-scoped audio action and approval preview. The artifact library does not audition
-Live instruments or roll back applied changes.
+scoped audio action and approval preview.
+
+**Save device parameter snapshot** captures all exposed parameters of one selected
+device, including devices inside Racks. Captured snapshots and AI-proposed versions
+have distinct source labels. Ask the model to capture a device or select a saved
+snapshot as the next-chat source to propose a new version. Saving and comparing
+versions do not change Live. The parameter table shows complete saved values and
+ranges, with filtering and a **Compare with** choice for current Live values or
+another version in the same work.
+
+**Apply to Live** writes the changed parameters after the Session's usual Scope,
+approval and state checks. Listen through Live, then choose **Keep current values**
+or **Restore previous values**. Application details retain the original values,
+verified readbacks and unfinished writes across browser reconnection. Restore
+rechecks the target and values; conflicting edits, parameter layout changes and
+unconfirmed writes require inspection before continuing. Parameter side effects
+are checked across the complete device. An operation can partially complete, and
+does not promise one Live Undo step. After the Live runtime changes, applying a
+saved version requires explicitly choosing a compatible destination; restoring an
+old application requires its original runtime binding.
+
+Snapshots contain raw SDK-exposed parameters. They do not contain automation,
+sample files or private plugin preset state, and value labels do not define units
+or numeric enum mappings. Complete snapshots are limited to 4,096 parameters and
+4 MiB; exceeding a storage limit fails the capture without truncating its values.
 
 Ask the current model to save a MIDI artifact to generate a file without changing
 Live; no external MIDI generator is required. MIDI revisions are grouped as
@@ -487,7 +511,7 @@ consecutive operations share a group. **Manual** shows Apply and Cancel; automat
 runs without those buttons. Applied, cancelled, failed, and partially applied
 operations have distinct states. Approval alone never counts as a completed edit.
 
-For a single supported MIDI Clip creation, note edit, or device/mixer parameter edit,
+For a single supported MIDI Clip creation, note edit, device parameter set, or device/mixer parameter edit,
 expand the card to view the observed **Before** and **Proposed after**.
 MIDI previews use Clip-relative beats and the same pitch/time scales on both
 sides. They retain the complete validated note set and draw notes in the visible

@@ -53,6 +53,7 @@ import {
 } from "./sample-source.js";
 import { findTrackAncestor, type LiveTarget } from "./target.js";
 import { midiClipHasAuthoringTiming } from "./midi-clip-timing.js";
+import type { DeviceParameterValue } from "../agent/device-parameter-contracts.js";
 
 type Api = ExtensionContext<"1.0.0">;
 
@@ -78,6 +79,7 @@ export interface AgentPlanBindings {
 
 /** Existing non-Track host objects resolved before a plan starts mutating Live. */
 export interface BoundActionObjects {
+  readonly parameterValues?: readonly DeviceParameterValue[];
   readonly scene?: Scene<"1.0.0">;
   readonly cuePoint?: CuePoint<"1.0.0">;
   readonly deviceTarget?: ResolvedDeviceTarget;
@@ -456,6 +458,7 @@ function bindActionObjects(
         }
         break;
       case "set_device_parameter":
+      case "set_device_parameters":
       case "duplicate_device":
       case "delete_device":
         if (track) {
