@@ -8,8 +8,9 @@ import { isMidiArtifactImportPreview } from "./wire-contracts/midi-import.js";
 interface Operation { busy: boolean; commandKind?: string | null; canStop: boolean; stopping: boolean }
 interface ParameterPanels {
   refreshLocale(): void;
+  hasUnsavedChanges(panel: PluginParameterPanel, initialValues?: Record<string, unknown>): boolean;
   create(panel: PluginParameterPanel, options: { initialValues?: Record<string, unknown>; submitLabel: string;
-    description: string; showResult: false; onSubmit(args: Record<string, unknown>): Promise<void> }): HTMLElement;
+    description: string; showResult: false; onChange(): void; onSubmit(args: Record<string, unknown>): Promise<void> }): HTMLElement;
 }
 interface Dependencies {
   getState(): Pick<ChatDialogState, "activeSessionId" | "midiContinuation" | "runtimeProfile" | "capabilities" | "configuredModelsReady">;
@@ -74,8 +75,28 @@ function createView(deps: Dependencies) {
   };
   const current = (owner = sessionId) => owner === deps.getState().activeSessionId;
   const choice = () => getView()?.generators.find((entry) => generatorKey(entry) === generator.value);
+  const generatorPanel = (entry: MidiContinuationGeneratorChoice): PluginParameterPanel => ({ ...entry.panel,
+    fields: entry.panel.fields.filter((field) => field.name !== entry.inputArgument && field.name !== entry.lengthArgument) });
+  const savedGeneratorArguments = (entry: MidiContinuationGeneratorChoice) => {
+    const saved = getView()?.buffer?.generator;
+    return saved?.kind === "plugin" && saved.toolName === entry.toolName && saved.signature === entry.signature ? saved.arguments : undefined;
+  };
   const modelReady = () => Boolean(deps.getState().runtimeProfile && deps.getState().configuredModelsReady && deps.getState().capabilities.tools);
   const conflict = () => dirty && baseBufferId !== (getView()?.buffer?.id ?? null);
+  function updateDraft() {
+    const view = getView(); const buffer = view?.buffer;
+    if (view && baseBufferId === (buffer?.id ?? null)) {
+      const sources = buffer?.sourceClips.map(clipKey).filter((key) => view.clips.some((clip) => clipKey(clip) === key)) ?? [];
+      const saved = buffer?.generator;
+      const savedGenerator = saved?.kind === "plugin"
+        ? view.generators.find((entry) => entry.toolName === saved.toolName && entry.signature === saved.signature) : undefined;
+      dirty = selected.size !== sources.length || sources.some((key) => !selected.has(key)) ||
+        Number(length.value) !== (buffer?.segmentBeats ?? 8) || Number(capacity.value) !== (buffer?.capacity ?? 2) ||
+        prompt.value !== (buffer?.prompt ?? "") || generator.value !== (savedGenerator ? generatorKey(savedGenerator) : "model") ||
+        view.generators.some((entry) => parameterPanels.hasUnsavedChanges(generatorPanel(entry), savedGeneratorArguments(entry)));
+    }
+    syncControls();
+  }
   const validSetup = () => {
     const view = getView(); const selectedClips = view?.clips.filter((clip) => selected.has(clipKey(clip))) ?? [];
     return Boolean(view && selectedClips.length && selectedClips.length <= 16 && selectedClips.length === selected.size &&
@@ -112,7 +133,7 @@ function createView(deps: Dependencies) {
       copy.append(node("strong", "", () => clip.clipName || t("Untitled MIDI Clip")), node("span", "field-hint",
         () => `${clip.trackName} · ${t(clip.location === "arrangement" ? "Arrangement" : "Session")} · ${t("Beats")} ${clip.startBeat + 1}–${clip.startBeat + clip.durationBeats + 1} · ${clip.noteCount} ${t("notes")}`));
       row.append(check, copy); sourceList.append(row);
-      check.addEventListener("change", () => { if (check.checked) selected.add(clipKey(clip)); else selected.delete(clipKey(clip)); dirty = true; syncControls(); });
+      check.addEventListener("change", () => { if (check.checked) selected.add(clipKey(clip)); else selected.delete(clipKey(clip)); updateDraft(); });
     }
     bindings.text(sourceHint, () => !view?.clips.length ? t("No MIDI Clips are available in this snapshot.")
       : view.clipsTruncated ? t("Source list is limited to 256 observed Clips. Select up to 16.") : t("Select up to 16 source MIDI Clips across tracks."));
@@ -120,12 +141,11 @@ function createView(deps: Dependencies) {
   function renderParameters() {
     parameters.replaceChildren(); promptField.hidden = generator.value !== "model";
     const selectedGenerator = choice(); if (!selectedGenerator) { syncControls(); return; }
-    const saved = getView()?.buffer?.generator;
-    const initialValues = saved?.kind === "plugin" && saved.toolName === selectedGenerator.toolName && saved.signature === selectedGenerator.signature ? saved.arguments : undefined;
-    parameters.append(parameterPanels.create({ ...selectedGenerator.panel, fields: selectedGenerator.panel.fields.filter((field) =>
-      field.name !== selectedGenerator.inputArgument && field.name !== selectedGenerator.lengthArgument) }, {
+    const initialValues = savedGeneratorArguments(selectedGenerator);
+    parameters.append(parameterPanels.create(generatorPanel(selectedGenerator), {
       ...(initialValues ? { initialValues } : {}), submitLabel: "Save continuation setup",
       description: "Stores these generation parameters without running the tool. Fill buffer starts generation.", showResult: false,
+      onChange: updateDraft,
       onSubmit: async (args) => { await configure(args); },
     }));
     syncControls();
@@ -241,10 +261,8 @@ function createView(deps: Dependencies) {
   stop.addEventListener("click", () => { if (!stop.disabled && continuationCommands.has(operation.commandKind ?? "")) void deps.stop(); });
   save.addEventListener("click", () => { void configure(); });
   reset.addEventListener("click", () => { hydrateSetup(); syncControls(); });
-  for (const control of [length, capacity, prompt]) control.addEventListener("input", () => { dirty = true; syncControls(); });
-  parameters.addEventListener("input", () => { dirty = true; syncControls(); });
-  parameters.addEventListener("change", () => { dirty = true; syncControls(); });
-  generator.addEventListener("change", () => { dirty = true; renderParameters(); });
+  for (const control of [length, capacity, prompt]) control.addEventListener("input", updateDraft);
+  generator.addEventListener("change", () => { renderParameters(); updateDraft(); });
   return { render, hasUnsavedChanges: () => dirty,
     setOperation(value: Operation) { operation = value; syncControls(); } };
 }

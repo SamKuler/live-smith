@@ -56,6 +56,67 @@ async function refresh(h: Harness, state: ChatBridgeState, ready: () => boolean)
   await waitForCondition(ready, "Expected the Plugin configuration snapshot to refresh.");
 }
 
+for (const edit of ["value", "secret", "optional", "clear-secret", "defaults"] as const) {
+  test(`Close protects hidden Plugin configuration ${edit} edits until discarded`, async () => {
+    const h = await createDialogHarness(configState());
+    try {
+      open(h);
+      if (edit === "value") h.input(field("directory"), "/Draft");
+      if (edit === "secret") h.input(field("token"), "synthetic-replacement");
+      if (edit === "optional") h.click(`${form} [aria-label="Include Config file"]`);
+      if (edit === "clear-secret") h.click(`${form} [aria-label="Clear Access token"]`);
+      if (edit === "defaults") h.click(`${form} [data-config-action="defaults"]`);
+      h.click("#skillsExtensionTab");
+      h.click("#closeButton");
+      assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, false);
+      assert.deepEqual(h.hostMessages, []);
+      h.click("#appConfirmationCancel"); await h.settle();
+      if (edit === "secret") assert.equal(control(h, "token").value, "synthetic-replacement");
+      h.click("#pluginsExtensionTab"); h.click(`${form} [data-config-action="discard"]`);
+      h.click("#closeButton"); await h.settle();
+      assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
+      assert.equal(h.hostMessages.length, 1);
+      assert.deepEqual(h.errors, []);
+    } finally { h.close(); }
+  });
+}
+
+for (const resolution of ["save", "revert", "delete"] as const) {
+  test(`Close sees clean Plugin configuration after ${resolution}`, async () => {
+    const state = configState(); const h = await createDialogHarness(state);
+    try {
+      open(h);
+      h.input(field("directory"), "/Draft");
+      h.input(field("amount"), "0.75");
+      if (resolution === "revert") {
+        h.input(field("directory"), "/Saved"); h.input(field("amount"), "0.500");
+        h.click(`${form} [aria-label="Include Config file"]`);
+        h.click(`${form} [aria-label="Include Config file"]`);
+        h.click(`${form} [aria-label="Clear Access token"]`);
+        h.click(`${form} [aria-label="Clear Access token"]`);
+      } else {
+        h.input(field("token"), "synthetic-replacement");
+        const saved = cloneState(state);
+        if (resolution === "delete") {
+          saved.plugins = [];
+          await refresh(h, saved, () => h.document.querySelector(panel) === null);
+        } else {
+          config(saved).revision = "2";
+          config(saved).values.directory = "/Draft"; config(saved).values.amount = 0.75;
+          h.setServerState(saved);
+          h.click(`${form} [data-config-action="save"]`); await idle(h);
+          assert.equal(control(h, "token").value, "");
+          assert.equal(control(h, "directory").value, "/Draft");
+        }
+      }
+      h.click("#closeButton"); await h.settle();
+      assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
+      assert.equal(h.hostMessages.length, 1);
+      assert.deepEqual(h.errors, []);
+    } finally { h.close(); }
+  });
+}
+
 test("Plugin configuration uses typed native controls and preserves independent multiline list values", async () => {
   const state = configState();
   const h = await createDialogHarness(state);

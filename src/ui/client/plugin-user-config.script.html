@@ -80,6 +80,26 @@
               fields: new Map(plugin.userConfig.fields.map((field) => [field.name, initialField(field, plugin.userConfig)])) };
           }
 
+          function fieldValue(field, value) {
+            if (field.type === "number" && typeof value === "string" && value.trim()) return Number(value);
+            if (field.sensitive && field.type === "boolean" && ["true", "false"].includes(value)) return value === "true";
+            return value;
+          }
+
+          function hasUnsavedChanges() {
+            prune();
+            return plugins().some((plugin) => {
+              const draft = drafts.get(plugin.id);
+              return draft && plugin.userConfig.fields.some((field) => {
+                const saved = draft.fields.get(field.name);
+                if (field.sensitive) return saved.clear ? plugin.userConfig.configuredSecrets.includes(field.name) : saved.changed;
+                const initial = initialField(field, plugin.userConfig);
+                return saved.included !== initial.included || saved.included &&
+                  JSON.stringify(fieldValue(field, saved.value)) !== JSON.stringify(fieldValue(field, initial.value));
+              });
+            });
+          }
+
           function current(plugin, draft) {
             return drafts.get(plugin.id) === draft && matches(plugins().find((entry) => entry.id === plugin.id), draft);
           }
@@ -336,8 +356,7 @@
                 if (field.sensitive && saved.clear) secretUpdates.push([field.name, null]);
                 else if (field.sensitive && !saved.changed) invalid = field.required && !config.configuredSecrets.includes(field.name);
                 else if (field.sensitive || saved.included) {
-                  let value = field.type === "number" && typeof saved.value === "string" && saved.value.trim() ? Number(saved.value) : saved.value;
-                  if (field.sensitive && field.type === "boolean" && ["true", "false"].includes(value)) value = value === "true";
+                  const value = fieldValue(field, saved.value);
                   invalid = !validValue(field, value);
                   (field.sensitive ? secretUpdates : values).push([field.name, copy(value)]);
                 }
@@ -375,6 +394,6 @@
             }
           }
 
-          return { create, setBusy };
+          return { create, setBusy, hasUnsavedChanges };
         };
       })();

@@ -6,8 +6,8 @@ import type { MidiContinuationView } from "../../../src/agent/midi-continuation-
 import { isWireMidiContinuation } from "../../../src/ui/client/wire-contracts/midi-continuation.js";
 import { cloneState, commandCalls, createDialogHarness, jsonCalls, stateFixture, waitForCondition } from "../support/chat-dialog.test-harness.js";
 
-function viewFixture(sessionId: string, count?: number): MidiContinuationView {
-  const panel = pluginParameterPanel("mcp_midi_generator", { type: "object", properties: {
+function viewFixture(sessionId: string, count?: number, toolName = "mcp_midi_generator"): MidiContinuationView {
+  const panel = pluginParameterPanel(toolName, { type: "object", properties: {
     source_midi: { type: "string" }, section_length: { type: "number" },
     style: { type: "string", title: "Style", default: "Legato" },
     density: { type: "number", title: "Density", minimum: 0, maximum: 1, default: .5 },
@@ -80,6 +80,117 @@ function button(h: Awaited<ReturnType<typeof setup>>["h"], text: string) {
 const midiCommands = (h: Awaited<ReturnType<typeof setup>>["h"]) => commandCalls(h).filter((call) => String((call.body as { kind: string }).kind).endsWith("midi_continuation"));
 async function settleCommand(h: Awaited<ReturnType<typeof setup>>["h"]) {
   await h.settle(); await waitForCondition(() => h.document.querySelector("#midiContinuationSection")!.getAttribute("aria-busy") === "false", "Expected settled continuation operation");
+}
+
+for (const edit of ["prompt", "length", "capacity", "source", "generator"] as const) {
+  test(`restoring continuation ${edit} values clears the draft and Close warning`, async () => {
+    const { h, view } = await setup({ initialCount: 0 });
+    try {
+      if (edit === "source") {
+        const source = ".midi-continuation-sources input";
+        h.click(source); h.click(source);
+      } else if (edit === "generator") {
+        const choice = view.generators[0]!;
+        h.select(".midi-continuation-generator", `${choice.toolName}:${choice.signature}`);
+        h.select(".midi-continuation-generator", "model");
+      } else {
+        const selector = `.midi-continuation-${edit}`;
+        h.input(selector, edit === "prompt" ? "Changed" : "4");
+        h.input(selector, edit === "prompt" ? "Keep the rhythm" : edit === "length" ? "8.0" : "2");
+      }
+      assert.equal(button(h, "Fill buffer").disabled, false);
+      h.click("#closeButton"); await h.settle();
+      assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
+      assert.equal(h.hostMessages.length, 1); assert.deepEqual(h.errors, []);
+    } finally { h.close(); }
+  });
+}
+
+for (const resolution of ["revert", "reset"] as const) {
+  test(`Plugin continuation parameters become clean after ${resolution}`, async () => {
+    const { h } = await setup({ initialCount: 0, plugin: true });
+    try {
+      const style = ".midi-continuation-parameters textarea";
+      const density = '.midi-continuation-parameters input[type="number"]';
+      h.input(style, "Staccato"); h.input(density, "0.75");
+      assert.equal(button(h, "Fill buffer").disabled, true);
+      if (resolution === "reset") button(h, "Reset parameters").click();
+      else {
+        h.input(style, "Saved style"); h.input(density, "0.250");
+        h.click('[aria-label="Include Density"]'); h.click('[aria-label="Include Density"]');
+      }
+      assert.equal(button(h, "Fill buffer").disabled, false);
+      h.click("#closeButton"); await h.settle();
+      assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
+      assert.equal(h.hostMessages.length, 1); assert.deepEqual(h.errors, []);
+    } finally { h.close(); }
+  });
+}
+
+test("Close preserves a model prompt retained behind a Plugin continuation generator", async () => {
+  const { h, view } = await setup({ initialCount: 0, plugin: true });
+  try {
+    h.select(".midi-continuation-generator", "model");
+    h.input(".midi-continuation-prompt", "Retain this model direction");
+    const choice = view.generators[0]!;
+    h.select(".midi-continuation-generator", `${choice.toolName}:${choice.signature}`);
+    h.click("#closeButton");
+    assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, false);
+    assert.deepEqual(h.hostMessages, []);
+    h.click("#appConfirmationCancel"); await h.settle();
+    h.select(".midi-continuation-generator", "model");
+    assert.equal(h.document.querySelector<HTMLTextAreaElement>(".midi-continuation-prompt")!.value, "Retain this model direction");
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+for (const resolution of ["revert", "reset", "saved setup"] as const) {
+  test(`Close protects every retained continuation generator draft until ${resolution}`, async () => {
+    const s = await setup({ initialCount: 0 }); const { h } = s;
+    try {
+      s.view.generators.push(viewFixture(s.state.activeSessionId, undefined, "mcp_other_midi_generator").generators[0]!);
+      h.click("#loadMidiContinuationButton"); await settleCommand(h);
+      const choices = s.view.generators.map((entry) => `${entry.toolName}:${entry.signature}`);
+      const style = ".midi-continuation-parameters textarea";
+      for (const [index, choice] of choices.entries()) {
+        h.select(".midi-continuation-generator", choice);
+        h.input(style, `Retained direction ${index + 1}`);
+      }
+      h.select(".midi-continuation-generator", "model");
+      h.click("#closeButton");
+      assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, false);
+      assert.deepEqual(h.hostMessages, []);
+      h.click("#appConfirmationCancel"); await h.settle();
+      if (resolution === "saved setup") {
+        button(h, "Use saved setup").click();
+        for (const choice of choices) {
+          h.select(".midi-continuation-generator", choice);
+          assert.equal(h.document.querySelector<HTMLTextAreaElement>(style)!.value, "Legato");
+        }
+      } else {
+        for (const [index, choice] of choices.entries()) {
+          h.select(".midi-continuation-generator", choice);
+          assert.equal(h.document.querySelector<HTMLTextAreaElement>(style)!.value, `Retained direction ${index + 1}`);
+          if (resolution === "revert") h.input(style, "Legato");
+          else button(h, "Reset parameters").click();
+          h.select(".midi-continuation-generator", "model");
+          if (index === 0) {
+            h.click("#closeButton");
+            assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, false);
+            assert.deepEqual(h.hostMessages, []);
+            h.click("#appConfirmationCancel"); await h.settle();
+          }
+        }
+      }
+      h.select(".midi-continuation-generator", "model");
+      assert.equal(button(h, "Fill buffer").disabled, false);
+      h.click("#closeButton"); await h.settle();
+      assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
+      assert.equal(h.hostMessages.length, 1);
+      assert.deepEqual(midiCommands(h).map((call) => (call.body as { kind: string }).kind), ["load_midi_continuation"]);
+      assert.deepEqual(h.errors, []);
+    } finally { h.close(); }
+  });
 }
 
 for (const action of ["Use saved setup", "Save continuation setup"]) test(`Close protects continuation setup until ${action}`, async () => {

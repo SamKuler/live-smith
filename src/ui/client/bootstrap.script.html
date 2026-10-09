@@ -1104,7 +1104,8 @@
             bridgeClient.hasAnySendInProgress();
           const profileDirty = profileEditor.getDraftState().dirty;
           const otherDraftDirty = creativeBriefEditor.hasUnsavedChanges() || bridgeClient.hasUnsavedChanges() ||
-            connectionsManager.hasUnsavedChanges() || midiContinuation.hasUnsavedChanges() || skillManager.hasUnsavedChanges();
+            connectionsManager.hasUnsavedChanges() || midiContinuation.hasUnsavedChanges() || skillManager.hasUnsavedChanges() ||
+            pluginUserConfig.hasUnsavedChanges();
           const draftDirty = profileDirty || otherDraftDirty;
           const queuedFollowUpCount = bridgeClient.getQueuedFollowUpCount();
           const queuedFollowUpWarning = queuedFollowUpCount
