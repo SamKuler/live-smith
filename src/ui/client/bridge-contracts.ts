@@ -5,11 +5,13 @@ import { createMidiContinuation } from "./midi-continuation.js";
 import { createAudioConnectionEditor } from "./audio-connection-editor.js";
 import { createConnectionState } from "./connection-state.js";
 import { createWireValidators } from "./wire-contracts.js";
+import { createSessionSearch } from "./session-search.js";
 
 const browser = window as typeof window & {
-  LiveSmithFactories?: { createActionPreview?: typeof createActionPreview; sessionInspectorTabs?: typeof sessionInspectorTabs; sessionShortcutIds?: typeof sessionShortcutIds; createMidiContinuation?: typeof createMidiContinuation; createCreativeBriefEditor?: typeof createCreativeBriefEditor; createAudioConnectionEditor?: typeof createAudioConnectionEditor; createWireValidators?: typeof createWireValidators; createConnectionState?: typeof createConnectionState };
+  LiveSmithFactories?: { createSessionSearch?: typeof createSessionSearch; createActionPreview?: typeof createActionPreview; sessionInspectorTabs?: typeof sessionInspectorTabs; sessionShortcutIds?: typeof sessionShortcutIds; createMidiContinuation?: typeof createMidiContinuation; createCreativeBriefEditor?: typeof createCreativeBriefEditor; createAudioConnectionEditor?: typeof createAudioConnectionEditor; createWireValidators?: typeof createWireValidators; createConnectionState?: typeof createConnectionState };
 };
 browser.LiveSmithFactories ??= {};
+browser.LiveSmithFactories.createSessionSearch = createSessionSearch;
 browser.LiveSmithFactories.createActionPreview = createActionPreview;
 browser.LiveSmithFactories.createCreativeBriefEditor = createCreativeBriefEditor;
 browser.LiveSmithFactories.createMidiContinuation = createMidiContinuation;

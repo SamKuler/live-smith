@@ -438,6 +438,7 @@
           editMessageDraft: bridgeClient.editMessageDraft,
           isMessageEditLocked: bridgeClient.isDraftEditLocked,
           hasSessionLocalWork: (sessionId) => bridgeClient.hasSessionLocalWork(sessionId) || creativeBriefEditor.hasDraft(sessionId),
+          readSessionSearch: bridgeClient.readSessionSearch,
           isCommandInProgress: bridgeClient.isCommandInProgress,
           isConfirmationLocked: bridgeClient.isConfirmationLocked,
           resolveConfirm: bridgeClient.resolveConfirm,
@@ -1441,8 +1442,9 @@
 
         function syncSessionControlsLock(locked) {
           const pane = document.querySelector(".sessions-pane");
+          const mutationControls = "#newSessionButton, #sessions button, #sessions input";
           const changed = sessionControlsLocked !== locked;
-          if (locked && changed && pane?.contains(document.activeElement)) {
+          if (locked && changed && document.activeElement?.matches(mutationControls)) {
             const control = document.activeElement;
             const selector = [
               ".session-rename-input",
@@ -1457,7 +1459,7 @@
             };
           }
           sessionControlsLocked = locked;
-          document.querySelectorAll(".sessions-pane button, .sessions-pane input")
+          document.querySelectorAll(mutationControls)
             .forEach((control) => {
               control.disabled = locked;
           });
@@ -1846,6 +1848,7 @@
 
         bridgeClient.connectView({
           announceAssistantMessage: sessionTimeline.announceAssistantMessage,
+          invalidateSessionSearch: sessionTimeline.invalidateSessionSearch,
           clearGlobalSettingsFieldError:
             profileEditor.clearGlobalSettingsFieldError,
           clearFieldErrors: profileEditor.clearFieldErrors,

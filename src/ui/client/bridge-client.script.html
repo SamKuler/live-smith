@@ -6255,6 +6255,9 @@
       }
 
       function appendSessionEvent(sessionId, event, reconcileTransient) {
+        if (event.kind === "user" || event.kind === "assistant") {
+          requireView().invalidateSessionSearch();
+        }
         if (event.kind === "compaction") {
           recordIncrementalCompactionBoundary(sessionId, event.id);
         }
@@ -6651,6 +6654,7 @@
           }
           cancelEventStreamRecovery(refresh);
           eventStreamStateRefresh = null;
+          requireView().invalidateSessionSearch();
           presentStatus({ source: "event-stream" });
           syncOperationState();
           const state = getState();
@@ -6741,7 +6745,9 @@
               !isWireStorageId(payload.sessionId)
             ) return;
             const received = receiveStateChangeRevision(payload);
-            if (!received || received.covered) return;
+            if (!received) return;
+            requireView().invalidateSessionSearch();
+            if (received.covered) return;
             refreshInvalidatedSessionState(
               payload.sessionId,
               received.revision,
@@ -7818,9 +7824,17 @@
           if (!response.ok) throw new Error(result.error || t("Saved artifacts are unavailable."));
           return result;
         },
-        readSessionArtifacts: async (input) => {
+        readSessionSearch: async (input, signal) => {
+          const response = await fetch(bridgeUrl("/session-search"), {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input), signal,
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || t("Session search failed. Try again."));
+          return result;
+        },
+        readSessionArtifacts: async (input, signal) => {
           const response = await fetch(bridgeUrl("/session-artifacts"), {
-            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input), signal,
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || t("Saved artifacts are unavailable."));

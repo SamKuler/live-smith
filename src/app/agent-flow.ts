@@ -45,6 +45,7 @@ import { integrationConnectionsView } from "../storage/settings.js";
 import { AudioArtifactNotFoundError, readSessionAudioArtifact } from "../storage/audio-artifacts.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
 import { hasSessionMidiContent } from "../storage/midi-artifacts.js";
+import { searchSessions } from "./session/session-search.js";
 import {
   type AgentConfirmationDecision,
 } from "../agent/loop.js";
@@ -3290,6 +3291,7 @@ export async function createAgentRuntime(
     });
     bridge = await createChatBridge({
       readAttachment,
+      searchSessions: (input, signal) => searchSessions({ ...input, storageDirectory, signal }),
       handlePluginAppRequest: (input, signal) => pluginApps.request(input, signal),
       prepareMidiImport: async (input, signal) => {
         if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("Choose the active Session before preparing MIDI import.");

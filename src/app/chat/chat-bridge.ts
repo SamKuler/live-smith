@@ -21,6 +21,7 @@ import type { SessionEvent } from "../../storage/events.js";
 import { isArtifactRef, type ArtifactRef } from "../../agent/artifact-contracts.js";
 import type { MidiArtifactDiff } from "../midi/midi-artifact-diff.js";
 import type { MidiPartPreview, SessionArtifactDetail } from "../session/session-artifacts.js";
+import { MAX_SEARCH_QUERY_LENGTH, normalizeSearchQuery, type SessionSearchInput, type SessionSearchResult } from "../session/search-contracts.js";
 import type { SessionAttachmentRef } from "../../storage/attachments.js";
 import type { SessionModelSelection } from "../../storage/sessions.js";
 import { isSafeStorageId } from "../../storage/id.js";
@@ -385,7 +386,8 @@ export interface ChatBridge {
 
 interface ChatBridgeOptions {
   readMidiArtifact?(sessionId: string, artifactRef: string, signal: AbortSignal): Promise<{ bytes: Uint8Array; fileName: string }>;
-  readSessionArtifacts?(input: { sessionId: string; offset: number }, signal: AbortSignal): Promise<unknown>;
+  searchSessions?(input: SessionSearchInput, signal: AbortSignal): Promise<SessionSearchResult>;
+  readSessionArtifacts?(input: { sessionId: string; offset: number; query?: string }, signal: AbortSignal): Promise<unknown>;
   readSessionArtifact?(input: { sessionId: string; artifact: ArtifactRef }, signal: AbortSignal): Promise<SessionArtifactDetail>;
   readMidiArtifactDiff?(input: { sessionId: string; artifactRef: string; baseArtifactRef?: string }, signal: AbortSignal): Promise<MidiArtifactDiff>;
   readMidiPartPreview?(input: { sessionId: string; artifactRef: string; partId: string }, signal: AbortSignal): Promise<MidiPartPreview>;
@@ -1627,6 +1629,7 @@ export async function createChatBridge(
         "/session-tools",
         "/midi-import-preview",
         "/session-artifacts",
+        "/session-search",
         "/session-artifact",
         "/midi-artifact-diff",
         "/midi-artifact-preview",
@@ -2126,16 +2129,34 @@ export async function createChatBridge(
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/session-search") {
+        if (!options.searchSessions) { request.resume(); response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token"], "Session search");
+        const input = await readRequestBody(request) as Record<string, unknown>;
+        if (!input || typeof input !== "object" || Array.isArray(input) ||
+            Object.keys(input).some(key => !["query", "offset"].includes(key)) ||
+            typeof input.query !== "string" || input.query.length > MAX_SEARCH_QUERY_LENGTH ||
+            input.offset !== undefined && (!Number.isSafeInteger(input.offset) || (input.offset as number) < 0)) {
+          throw new ChatBridgeRequestValidationError("Session search query or page is invalid.");
+        }
+        sendJson(response, await options.searchSessions({ query: normalizeSearchQuery(input.query), offset: input.offset as number ?? 0 },
+          beginReadOnlyBuild(response, handlerTerminal)));
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/session-artifacts") {
         if (!options.readSessionArtifacts) { request.resume(); response.writeHead(404).end("Not found"); return; }
         assertExactQueryParameters(url, ["token"], "Session artifacts");
         const input = await readRequestBody(request) as Record<string, unknown>;
         if (!input || typeof input !== "object" || Array.isArray(input) ||
-            Object.keys(input).some((key) => !["sessionId", "offset"].includes(key)) || !isSafeStorageId(input.sessionId) ||
+            Object.keys(input).some((key) => !["sessionId", "offset", "query"].includes(key)) || !isSafeStorageId(input.sessionId) ||
+            input.query !== undefined && (typeof input.query !== "string" || input.query.length > MAX_SEARCH_QUERY_LENGTH) ||
             input.offset !== undefined && (!Number.isSafeInteger(input.offset) || (input.offset as number) < 0)) {
           throw new ChatBridgeRequestValidationError("Choose a Session artifact page.");
         }
-        sendJson(response, await options.readSessionArtifacts({ sessionId: input.sessionId, offset: input.offset as number ?? 0 }, beginReadOnlyBuild(response, handlerTerminal)));
+        const query = typeof input.query === "string" ? normalizeSearchQuery(input.query) : "";
+        sendJson(response, await options.readSessionArtifacts({ sessionId: input.sessionId, offset: input.offset as number ?? 0,
+          ...(query ? { query } : {}) }, beginReadOnlyBuild(response, handlerTerminal)));
         return;
       }
 
@@ -2811,7 +2832,7 @@ export async function createChatBridge(
       if (pluginBodyMayBeUnread) request.resume();
       if (
         request.method === "POST" &&
-        ["/command", "/session-model-capabilities", "/session-tools", "/midi-import-preview", "/session-artifacts", "/session-artifact", "/midi-artifact-diff", "/midi-artifact-preview", "/confirm", "/send", "/steer", "/stop",
+        ["/command", "/session-model-capabilities", "/session-tools", "/midi-import-preview", "/session-artifacts", "/session-search", "/session-artifact", "/midi-artifact-diff", "/midi-artifact-preview", "/confirm", "/send", "/steer", "/stop",
           "/plugin-apps/open", "/plugin-apps/call", "/plugin-apps/resource", "/plugin-apps/close", "/plugin-apps/resources", "/plugin-apps/resource-templates"].includes(
           requestPath,
         )

@@ -54,6 +54,16 @@
               <button id="newSessionButton" class="icon-button" type="button" title="New Session" aria-label="New Session" data-idle-label="+" onclick="LiveSmithUI.runCommand('new_session')" data-i18n-title="New Session" data-i18n-aria-label="New Session">+</button>
             </div>
           </div>
+          <div class="session-search">
+            <label for="sessionSearch" class="visually-hidden" data-i18n="Search sessions">Search sessions</label>
+            <input id="sessionSearch" type="search" maxlength="200" placeholder="Search titles and messages" data-i18n-placeholder="Search titles and messages" autocomplete="off" aria-controls="sessions" />
+            <p id="sessionSearchStatus" class="field-hint" role="status" hidden></p>
+            <div id="sessionSearchControls" class="session-search-controls" hidden>
+              <button id="sessionSearchPrevious" class="secondary" type="button" data-i18n="Previous page">Previous page</button>
+              <button id="sessionSearchNext" class="secondary" type="button" data-i18n="Next page">Next page</button>
+              <button id="sessionSearchRetry" class="secondary" type="button" data-i18n="Retry">Retry</button>
+            </div>
+          </div>
           <div id="sessions" class="sessions"></div>
         </aside>
 

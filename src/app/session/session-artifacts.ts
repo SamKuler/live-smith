@@ -7,6 +7,8 @@ import { appendSessionEvent, loadSessionEvents, type SessionEvent } from "../../
 import { MAX_MIDI_ARTIFACT_NOTES, inspectMidiArtifacts, readMidiArtifact, midiArtifactPartSummaries, midiArtifactVersion, type MidiArtifactPartSummary } from "../../storage/midi-artifacts.js";
 import { listSessions } from "../../storage/sessions.js";
 import { throwIfAborted } from "../../runtime/host.js";
+import { normalizeSearchQuery, searchTextMatches } from "./search-contracts.js";
+import { uiCatalogs } from "../../ui/i18n/messages.js";
 
 export const ARTIFACT_PAGE_SIZE = 24;
 export interface ArtifactGeneration {
@@ -34,6 +36,7 @@ export interface SessionArtifact {
 export interface SessionArtifactDetail { sessionId: string; artifact: SessionArtifact }
 export interface SessionArtifacts {
   sessionId: string;
+  query?: string;
   artifacts: SessionArtifact[];
   total: number;
   offset: number;
@@ -246,9 +249,16 @@ export function defaultSessionArtifact(group: readonly SessionArtifact[]): Sessi
   return primary ? group.find((artifact) => artifactKey(artifact.ref) === artifactKey(primary)) ?? group[0] : group[0];
 }
 
-export async function listSessionArtifacts(input: SessionInput & { offset?: number }): Promise<SessionArtifacts> {
+export async function listSessionArtifacts(input: SessionInput & { offset?: number; query?: string }): Promise<SessionArtifacts> {
   const catalog = await readSessionArtifactCatalog(input);
-  const summaries = groupSessionArtifacts(catalog.artifacts);
+  const query = normalizeSearchQuery(input.query ?? "");
+  const summaries = groupSessionArtifacts(catalog.artifacts).map((group) => {
+    if (!query) return group;
+    const matches = group.filter((artifact) => [artifact.label, artifact.sourceLabel, artifact.version ? `v${artifact.version.number}` : "",
+      ...Object.values(uiCatalogs).map((catalog) => catalog[artifact.sourceLabel] ?? "")]
+      .some((text) => searchTextMatches(text, query)));
+    return matches.length ? matches : group.some((artifact) => searchTextMatches(artifact.version?.groupLabel ?? "", query)) ? group : [];
+  }).filter((group) => group.length > 0);
   const offset = input.offset ?? 0;
   const artifacts: SessionArtifact[] = [];
   let unavailableCount = catalog.unavailableCount;
@@ -264,6 +274,7 @@ export async function listSessionArtifacts(input: SessionInput & { offset?: numb
   }
   await requireSession(input);
   return { sessionId: input.sessionId, artifacts, total: summaries.length, offset, unavailableCount,
+    ...(query ? { query } : {}),
     ...(catalog.continuation ? { continuation: catalog.continuation } : {}) };
 }
 

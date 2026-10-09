@@ -88,8 +88,15 @@ main {
 
 .sessions-pane {
   @apply grid overflow-hidden;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
+
+.session-search { @apply grid min-w-0 gap-2 px-3 pb-2; }
+.session-search input, .artifact-search-input { @apply min-w-0 w-full; }
+.session-search .field-hint { @apply m-0; }
+.session-search-controls { @apply flex flex-wrap gap-1; }
+.session-search-excerpt { @apply block min-w-0 whitespace-normal break-words text-small text-muted; }
+.artifact-search { @apply grid min-w-0 gap-1; }
 
 .sessions-pane[hidden] {
   @apply hidden;

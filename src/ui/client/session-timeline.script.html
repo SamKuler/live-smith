@@ -18,6 +18,7 @@
         isConfirmationLocked,
         resolveConfirm,
         runCommand,
+        readSessionSearch,
         showStatus,
         onInspectorTabChange = () => {},
       }) {
@@ -58,6 +59,11 @@
       let pendingTimelinePosition = null;
       const activeSessionIdsThisWindow = new Set([getState().activeSessionId]);
       const scrollbarIdleDelayMs = 650;
+      const sessionSearch = window.LiveSmithFactories.createSessionSearch({
+        readSessionSearch,
+        onFilterChange: () => { clearSessionSelection(); closeSessionMenus(); },
+        onResultsChange: () => renderSessions(),
+      });
 
       function retainActiveSessionForWindow() {
         activeSessionIdsThisWindow.add(getState().activeSessionId);
@@ -65,6 +71,7 @@
 
       function isSessionVisible(session, archived = false) {
         const state = getState();
+        if (sessionSearch.active) return sessionSearch.includes(session.id);
         return archived || session.id === state.activeSessionId ||
           activeSessionIdsThisWindow.has(session.id) ||
           session.hasContent !== false || hasSessionLocalWork(session.id) ||
@@ -1060,9 +1067,39 @@
         });
       }
 
+      function focusSessionSearchMatch(sessionId, eventId) {
+        if (!eventId || sessionId !== getState().activeSessionId ||
+          sessionSearch.getMatch(sessionId)?.eventId !== eventId ||
+          document.activeElement === document.getElementById("sessionSearch")) return false;
+        const item = [...document.querySelectorAll("#timeline [data-event-id]")]
+          .find((node) => node.dataset.eventId === eventId);
+        if (!item) return false;
+        cancelPendingTimelinePosition();
+        item.tabIndex = -1;
+        item.focus({ preventScroll: true });
+        item.scrollIntoView?.({ block: "center" });
+        return true;
+      }
+
+      function syncSessionSearchExcerpt(entry, session) {
+        const match = sessionSearch.getMatch(session.id);
+        let excerpt = entry.querySelector(".session-search-excerpt");
+        if (!sessionSearch.active || !match || match.excerpt === (session.title || session.scope.label)) {
+          excerpt?.remove();
+          return;
+        }
+        if (!excerpt) {
+          excerpt = document.createElement("span");
+          excerpt.className = "session-search-excerpt";
+          entry.querySelector(".session-row").append(excerpt);
+        }
+        if (excerpt.textContent !== match.excerpt) excerpt.textContent = match.excerpt;
+      }
+
       function renderSessions() {
         retainActiveSessionForWindow();
         const state = getState();
+        sessionSearch.syncState(state);
         const currentSessions = state.sessions.filter((session) => isSessionVisible(session));
         const previousSessions = (state.previousSessions || []).filter(
           (session) => isSessionVisible(session),
@@ -1146,7 +1183,7 @@
         );
         const desiredNodes = [];
 
-        if (!currentSessions.length) {
+        if (!currentSessions.length && !sessionSearch.active) {
           const empty = list.querySelector(".session-empty") ||
             document.createElement("div");
           if (!empty.classList.contains("session-empty")) {
@@ -1176,6 +1213,7 @@
               activity,
               isActive,
             );
+            syncSessionSearchExcerpt(existing, session);
             desiredNodes.push(existing);
             return;
           }
@@ -1220,11 +1258,18 @@
             if (mode === "current") {
               clearSessionSelection();
               sessionSelectionAnchorId = session.id;
-              if (session.id === getState().activeSessionId) return;
-              selectionPromise = selectCurrentSession();
-              if (event.detail === 0) {
-                selectionPromise.then(() => focusSessionRow(session.id));
+              const matchedEventId = sessionSearch.getMatch(session.id)?.eventId;
+              if (session.id === getState().activeSessionId) {
+                focusSessionSearchMatch(session.id, matchedEventId);
+                return;
               }
+              selectionPromise = selectCurrentSession();
+              selectionPromise.then((selected) => {
+                if (!selected || document.activeElement === document.getElementById("sessionSearch")) return;
+                if (!focusSessionSearchMatch(session.id, matchedEventId) && event.detail === 0) {
+                  focusSessionRow(session.id);
+                }
+              });
               return selectionPromise;
             }
             selectOnlySession(session.id);
@@ -1303,6 +1348,7 @@
             activity,
             isActive,
           );
+          syncSessionSearchExcerpt(entry, session);
           if (continueButton) entry.append(continueButton);
           entry.append(menuButton, menu);
           desiredNodes.push(entry);
@@ -1315,7 +1361,9 @@
           for (const session of previousSessions) appendSession(session, "history");
         }
 
-        const archivedSessions = state.archivedSessions || [];
+        const archivedSessions = (state.archivedSessions || []).filter(
+          (session) => isSessionVisible(session, true),
+        );
         if (archivedSessions.length) {
           desiredNodes.push(sessionSection("archived", t("Archived"), existingSections));
           for (const session of archivedSessions) appendSession(session, "archived");
@@ -1930,6 +1978,7 @@
       function renderTimeline() {
         attachmentViewer.sync();
         const state = getState();
+        sessionSearch.syncState(state);
         syncMessageActions();
         const assistantDraft = getAssistantDraft();
         const reasoningDraft = getReasoningDraft?.() ?? null;
@@ -3183,6 +3232,7 @@
 
       return {
         announceAssistantMessage,
+        invalidateSessionSearch: sessionSearch.invalidate,
         humanizeToolName,
         handleInspectorTabKeydown,
         renderAssistantDraft,

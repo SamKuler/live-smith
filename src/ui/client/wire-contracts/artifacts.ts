@@ -1,5 +1,6 @@
 import { isArtifactRef, isArtifactVersion, MAX_MIDI_ARTIFACT_OVERVIEW_NOTES } from "../../../agent/artifact-contracts.js";
 import type { MidiPartPreview, SessionArtifact, SessionArtifactDetail, SessionArtifacts } from "../../../app/session/session-artifacts.js";
+import { MAX_SEARCH_QUERY_LENGTH, normalizeSearchQuery } from "../../../app/session/search-contracts.js";
 // Mirrors MAX_MIDI_ARTIFACT_NOTES in storage/midi-artifacts.ts, which requires Node.
 const MAX_SOURCE_NOTES = 4096;
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -20,6 +21,7 @@ export function isSessionArtifactDetail(value: unknown): value is SessionArtifac
 }
 export function isSessionArtifacts(value: unknown): value is SessionArtifacts {
   return record(value) && text(value.sessionId, 128) && Array.isArray(value.artifacts) && value.artifacts.length <= 24 &&
+    (value.query === undefined || text(value.query, MAX_SEARCH_QUERY_LENGTH) && value.query.length > 0 && normalizeSearchQuery(value.query) === value.query) &&
     finite(value.total) && finite(value.offset) && finite(value.unavailableCount) &&
     (value.continuation === undefined || isArtifactRef(value.continuation)) && value.artifacts.every((artifact) => isSessionArtifact(artifact, MAX_MIDI_ARTIFACT_OVERVIEW_NOTES));
 }
