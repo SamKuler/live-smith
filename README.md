@@ -519,6 +519,9 @@ navigation and Continue actions remain available.
 Matching ignores letter case and treats the query as literal text. Clear the
 search or press Escape to restore the full list. Searches read local history;
 unreadable histories are reported separately from an empty result.
+Within Current, History and Archived, results are ordered by the latest saved
+user/assistant message or Session metadata update. The Session's Updated date
+uses the same activity time.
 
 **Sessions** keep conversation and action history with their Live context.
 Opening the dialog or choosing New Session does not save an untouched empty
@@ -527,6 +530,8 @@ With search cleared, the Sessions list keeps empty entries that were active in
 the current window and hides unvisited empty entries across tracks and History.
 Closing the window clears that temporary visibility. Conversations and unsent
 drafts remain visible; hiding empty entries does not delete existing data.
+The Live modal's **Close** button asks before discarding unsaved drafts, including
+messages and creative briefs from other Sessions used in that window.
 Previous Sessions can be restored explicitly; matching names alone do not make
 an old conversation the same Live object.
 

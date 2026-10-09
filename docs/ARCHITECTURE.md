@@ -91,6 +91,8 @@ src/
         Assemble Session tool views without invoking tools.
       session-search.ts, search-contracts.ts
         Search local Session names and chat messages with bounded result pages.
+      session-activity.ts
+        Derive chat activity time independently of Session metadata revisions.
       session-artifacts.ts
         Project saved MIDI/audio versions and filter the artifact catalog.
       session-lifecycle.ts
@@ -1023,6 +1025,9 @@ dialog closes before invoking the shared command/confirmation flow. Plugin
 results and buffered continuation use this same importer. `inspect_midi_artifact` in the host artifact toolset reads one exact
 source part with a 256-note page and `nextOffset`, allowing subsequent chat turns
 to inspect the saved material without first importing it into Live.
+Chat MIDI cards retain the tool's original input and output in a collapsed
+Tool details section. Plugin diagnostics and structured results remain available
+alongside the saved-file preview.
 
 The persisted `candidate`, `candidateSelection`, and `parentCandidate` names
 remain compatible with existing Session histories. The `candidate` event records
@@ -1938,6 +1943,12 @@ siblings; they do not turn completed generation into a failed generation.
 One process-local owner excludes concurrent execution of the
 same job. Remote processing does not acquire the Live mutation queue.
 
+Paid submission receipts that reach true response EOF may finish bounded local
+validation when cancellation or the request deadline arrives in the same turn.
+The validated remote identifier is saved before cancellation ends the local
+workflow. Partial responses and responses without EOF remain unconfirmed;
+ordinary status reads and downloads retain their cancellation checks.
+
 `storage/audio-jobs.ts` and `storage/audio-assets.ts` own bounded, private,
 Session-scoped metadata and create-only audio files. An input snapshot and each
 output are immutable and integrity-checked. The asset metadata receipt commits
@@ -2341,6 +2352,14 @@ and stored note ends; the visible Arrangement duration does not truncate that
 extent. Invalid output performs no mutation. Optional SDK note fields are
 preserved unchanged.
 
+Each preflight pass evaluates deterministic MIDI edits in plan order against
+temporary note state keyed by the bound Clip handle. Whole-Clip and segment
+replacement, transforms, and relevant Clip properties advance that state before
+later edits are checked. A known invalid result rejects the plan before approval
+or mutation, independently of whether a preview can be displayed. Drift
+fingerprints still describe the observed Live state. Actions that recreate a
+Clip require a fresh observation before a later action can target its replacement.
+
 ### Take Lane Clip creation
 
 `create_midi_clip` and `create_arrangement_audio_clip` can target an existing
@@ -2534,8 +2553,11 @@ reachable after switching until the dialog closes. With search cleared, unvisite
 empty Sessions stay hidden, and a new dialog does not inherit the prior dialog's
 visibility. Explicitly archived Sessions remain visible for management. Track identity, timestamps, and
 permission or model settings do not count as conversation content.
-The app derives `ChatSessionSummary.hasContent` under the storage transaction;
-this is UI metadata and is never persisted. MIDI content reads do not reacquire
+The app derives `ChatSessionSummary.hasContent` and `lastMessageAt` under the
+storage transaction; these are UI metadata and are never persisted.
+`lastMessageAt` comes from saved user/assistant events. Displayed activity time
+is the later of that timestamp and the Session's metadata `updatedAt`; metadata
+revision ordering retains its existing meaning. MIDI content reads do not reacquire
 the transaction held by the state snapshot. Unreadable content remains visible
 instead of being assumed empty. The complete Session membership stays in bridge
 state because the client uses missing IDs to reconcile deleted Sessions and
@@ -2548,12 +2570,19 @@ Session search is an authenticated read-only bridge operation over the same loca
 Session collection exposed by Current, History and Archived. It matches each
 Session's displayed name (`title || scope.label`) and saved user/assistant text,
 returning one bounded excerpt per matching
-Session with an optional message reference. Results are paginated after matching;
-unreadable histories are counted, and deleted Session IDs are removed before
-delivery. Search keeps no persistent index and does not inspect model settings,
+Session with an optional message reference. Results are sorted by activity and
+paginated after matching; the UI preserves that order within Current, History
+and Archived, including range selection.
+Unreadable histories are counted, and deleted Session IDs are removed before
+delivery. Results use the same activity time as Session timestamps, including
+historical messages without rewriting their Session metadata. A name match
+remains available when its history cannot be read. Search keeps no persistent
+index and does not inspect model settings,
 credentials, binary attachments or Live state. The browser owns query, pagination
 and cancellation, validates each response against its query receipt, and retains
 the existing list's navigation and mutation boundaries.
+The client combines message timestamps from events and authoritative snapshots
+by retaining the latest confirmed value, independently of metadata revisions.
 Committed chat messages from foreground or background Sessions, peer Session
 invalidations and successful event-stream recovery invalidate active searches.
 Input composition defers these refreshes until composition ends, even if the
@@ -2999,6 +3028,8 @@ does not silently discard history. The manual `compact_session` command acquires
 the same Session mutation boundary and saved Profile/model/OAuth requester as a
 Send, but disables tools and appends only a compaction event. Its optional
 instructions add one-time preservation priorities without becoming a user turn.
+Manual and automatic compaction both receive the admitted global Custom
+Instructions and Session creative brief.
 A new manual checkpoint requires conversation activity after the latest
 checkpoint, so repeated `/compact` commands cannot accumulate empty checkpoint
 markers. Model reconnect notices for a manual checkpoint use command-correlated,
@@ -3195,6 +3226,9 @@ The saved `interfaceMode` preference defaults to `modal` for historical settings
 its decimal revision orders command responses and peer publications. The document's
 host capability is fixed when created, so changing the preference only affects
 future invocations. Browser documents hide the modal Close control.
+The modal Close decision queries existing draft owners, including drafts in
+inactive Sessions and write-only credential inputs, before discarding edits.
+These checks do not persist drafts or credentials.
 
 Repeated browser invocations with the same Set, object and exact selection reuse
 the runtime and its Session claim owner, and restore its invocation Session even
@@ -3204,6 +3238,11 @@ A subsequent modal invocation owns a separate runtime without cancelling browser
 work. Set changes retire the old browser runtime on the next browser invocation.
 The SDK exposes no Extension deactivation hook; otherwise the retained runtime
 lasts for the Extension process. `close` remains idempotent and owns resource cleanup.
+
+A persisted `pagehide` suspends preview reads and media playback while retaining
+cached-page views. `pageshow` resumes preview loading; final page destruction
+disposes the views. Reconnection restores the bridge without leaving retained
+MIDI cards bound to disposed resources.
 
 Disconnecting browser HTTP/SSE connections does not cancel admitted sends or pending
 confirmations. Reopening replays authoritative activity, transient model output and
