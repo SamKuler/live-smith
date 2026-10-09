@@ -2168,6 +2168,7 @@ export async function createAgentRuntime(
                 : { skillContext: snapshot.skillContext }),
               editScopes: resolveEditScopes(session.editScopes),
               creativeBrief: session.creativeBrief ?? "",
+              customInstructions: snapshot.settings.customInstructions,
               agentMessages: [],
               ...(commandInput.instructions === undefined
                 ? {}

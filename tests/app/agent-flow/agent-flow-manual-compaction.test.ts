@@ -21,7 +21,7 @@ import {
   loadSessionEvents,
 } from "../../../src/storage/events.js";
 import { updateSession, listSessions } from "../../../src/storage/sessions.js";
-import { saveSavedProfile } from "../../../src/storage/settings.js";
+import { saveGlobalSettings, saveSavedProfile } from "../../../src/storage/settings.js";
 import type { ChatDialogState } from "../../../src/ui/chat-state.js";
 import { runAgentFlow } from "../../../src/app/agent-flow.js";
 import { liveContextPresentationFixture } from "../context/support/live-context.test-harness.js";
@@ -73,6 +73,8 @@ for (const provider of ["direct", "openai", "anthropic", "google"] as const) {
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const profile = profileFor(provider);
     await saveSavedProfile(directory, profile);
+    const customInstructions = "Keep exact chord voicings and source locations in summaries.";
+    await saveGlobalSettings(directory, { customInstructions });
     const requests: TransportRequest[] = [];
     const backend = backendFor(profile, requests);
     const modelBackendManager = backendManagerFor(backend);
@@ -159,6 +161,7 @@ for (const provider of ["direct", "openai", "anthropic", "google"] as const) {
           assert.equal(result.status, "Session context compacted.");
           assert.equal((await listSessions(directory)).find((entry) => entry.id === state.activeSessionId)?.creativeBrief, "Keep original vocal; introduce a contrasting bridge.");
           assert.match(JSON.stringify(requests[0]?.currentUserContent), /Keep original vocal/);
+          assert.ok(requests[0]?.systemInstructions.includes(customInstructions));
 
           const redundant = await fetch(endpoint(url, "/command"), {
             method: "POST",
