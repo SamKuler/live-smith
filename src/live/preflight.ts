@@ -62,7 +62,7 @@ export interface LiveActionPreflightObservation {
 }
 
 /** Ordered MIDI state for one complete preflight pass, keyed by existing Clip handle. */
-export type MidiClipPreflightStates = Map<string, MidiClipObservation | null>;
+export type MidiClipPreflightStates = Map<string, MidiClipObservation>;
 
 export async function captureLiveActionPreflightSnapshot(
   context: Api,
@@ -235,10 +235,10 @@ async function observeActionPreflight(
       const midiClip = clip instanceof MidiClip ? clipContentIdentity(clip) : undefined;
       if (midiClip) {
         const current = plannedMidiClip(midiClip, midiClipStates);
-        midiClipStates.set(current.id, midiClipHasAuthoringTiming(current, action.durationBeats)
-          ? { ...current, name: action.name ?? current.name,
-              notes: midiNotesEqual(current.notes, action.notes) ? current.notes : action.notes }
-          : null);
+        if (midiClipHasAuthoringTiming(current, action.durationBeats)) {
+          midiClipStates.set(current.id, { ...current, name: action.name ?? current.name,
+            notes: midiNotesEqual(current.notes, action.notes) ? current.notes : action.notes });
+        }
       }
       const state = {
         song: songIdentity,
@@ -1079,11 +1079,7 @@ function midiPreflightObservation(
 }
 
 function plannedMidiClip(observed: MidiClipObservation, states: MidiClipPreflightStates): MidiClipObservation {
-  const current = states.get(observed.id);
-  if (current === null) {
-    throw new Error(`MIDI clip "${observed.name}" is replaced by an earlier action in this plan. Inspect the resulting Clip and use a separate confirmed stage.`);
-  }
-  return current ?? observed;
+  return states.get(observed.id) ?? observed;
 }
 
 function midiNotesPreview(

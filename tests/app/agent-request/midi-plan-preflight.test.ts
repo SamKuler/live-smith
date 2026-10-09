@@ -169,18 +169,81 @@ test("case-sensitive refs on separate tracks can replace the same relative range
     new AbortController().signal, async () => "Observed"), /overlapping replacements/);
 });
 
-test("an earlier looping change that forces Session Clip recreation rejects later edits of the old Clip", async () => {
-  const fixture = midiPreviewFixture([{ pitch: 60, startTime: 3, duration: 1 }], true);
-  Object.assign(fixture.clip, { endMarker: 4, loopEnd: 8, looping: true });
-  const actions: AgentAction[] = [
+for (const laterTarget of ["clip", "slot"] as const) {
+  test(`an earlier looping change that forces Session Clip recreation rejects later ${laterTarget} dependencies`, async () => {
+    const fixture = midiPreviewFixture([{ pitch: 60, startTime: 3, duration: 1 }], true);
+    Object.assign(fixture.clip, { endMarker: 4, loopEnd: 8, looping: true });
+    const actions: AgentAction[] = [
+      { type: "set_clip_properties", slotIndex: 0, looping: false },
+      { type: "create_session_midi_clip", slotIndex: 0, durationBeats: 8,
+        notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 100 }] },
+    ];
+    await preflight(fixture, actions);
+    const laterAction: AgentAction = laterTarget === "clip"
+      ? { type: "transpose_midi_notes", slotIndex: 0, semitones: 1 }
+      : actions[1]!;
+    await assert.rejects(preflight(fixture, [...actions, laterAction]),
+      /Action 3 depends on Session (?:Clip|slot content).*invalidated by action 2/);
+    assert.equal(fixture.clip.looping, true);
+    assert.equal(fixture.writes, 0);
+  });
+}
+
+for (const looping of [false, true]) {
+  test(`an earlier looping change to ${looping} allows later edits when Session creation retains the Clip`, async () => {
+    const fixture = midiPreviewFixture([{ pitch: 60, startTime: 0, duration: 1, velocity: 100 }], true);
+    Object.assign(fixture.clip, {
+      endMarker: looping ? 4 : 8, loopEnd: looping ? 8 : 4, looping: !looping,
+    });
+    const clip = fixture.track.clipSlots[0]!.clip;
+    const plan = validateAgentPlan({ message: "Update the existing Session phrase",
+      targets: { bass: { trackName: "Bass" } }, actions: [
+        { type: "set_clip_properties", trackRef: "bass", slotIndex: 0, looping },
+        { type: "create_session_midi_clip", trackName: "Bass", slotIndex: 0, durationBeats: 8,
+          notes: [{ pitch: 61, startTime: 0, duration: 1, velocity: 100 }] },
+        { type: "transpose_midi_notes", slotIndex: 0, semitones: 1 },
+      ] });
+    const guard = await preflightAgentPlan(fixture.context, { target: { track: fixture.track } } as never,
+      plan, new AbortController().signal, async () => "Observed");
+    assert.equal(fixture.writes, 0);
+    assert.equal(fixture.clip.looping, !looping);
+    const outcome = await executeAgentPlanWithProgress(fixture.context, plan,
+      { track: fixture.track }, undefined, await guard());
+    assert.equal(outcome.mutationCount, 3);
+    assert.equal(fixture.track.clipSlots[0]!.clip, clip);
+    assert.equal(fixture.clip.looping, looping);
+    assert.equal(fixture.notes[0]!.pitch, 62);
+    assert.equal(fixture.writes, 2);
+  });
+}
+
+test("the latest looping change determines whether Session creation invalidates the Clip", async () => {
+  const fixture = midiPreviewFixture([{ pitch: 60, startTime: 0, duration: 1 }], true);
+  Object.assign(fixture.clip, { endMarker: 8, loopEnd: 4, looping: true });
+  await assert.rejects(preflight(fixture, [
     { type: "set_clip_properties", slotIndex: 0, looping: false },
-    { type: "create_session_midi_clip", slotIndex: 0, durationBeats: 8,
-      notes: [{ pitch: 60, startTime: 0, duration: 1, velocity: 100 }] },
-  ];
-  await preflight(fixture, actions);
-  await assert.rejects(preflight(fixture, [...actions,
+    { type: "set_clip_properties", slotIndex: 0, looping: true },
+    { type: "create_session_midi_clip", slotIndex: 0, durationBeats: 8, notes: [] },
     { type: "transpose_midi_notes", slotIndex: 0, semitones: 1 },
-  ]), /replaced.*earlier action.*separate confirmed stage/);
+  ]), /Action 4 depends on Session Clip.*invalidated by action 3/);
   assert.equal(fixture.clip.looping, true);
   assert.equal(fixture.writes, 0);
+});
+
+test("a looping edit on one Clip does not authorize reusing another Clip", async () => {
+  const bass = midiPreviewFixture([], true);
+  const lead = midiPreviewFixture([], true);
+  Object.assign(lead.track, { name: "Lead", handle: { id: 20n } });
+  Object.assign(lead.track.clipSlots[0]!, { handle: { id: 21n } });
+  Object.assign(lead.clip, { handle: { id: 22n } });
+  for (const fixture of [bass, lead]) Object.assign(fixture.clip, { endMarker: 8, loopEnd: 4, looping: true });
+  bass.context.application.song.tracks.push(lead.track);
+  await assert.rejects(preflight(bass, [
+    { type: "set_clip_properties", trackName: "Bass", slotIndex: 0, looping: false },
+    { type: "create_session_midi_clip", trackName: "Lead", slotIndex: 0, durationBeats: 8, notes: [] },
+    { type: "transpose_midi_notes", trackName: "Lead", slotIndex: 0, semitones: 1 },
+  ]), /Action 3 depends on Session Clip.*invalidated by action 2/);
+  assert.equal(bass.clip.looping, true);
+  assert.equal(lead.clip.looping, true);
+  assert.equal(bass.writes + lead.writes, 0);
 });
