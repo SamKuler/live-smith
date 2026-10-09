@@ -583,13 +583,16 @@ does not yet define a video attachment part.
 ## Input mapping
 
 Images are supported only when the saved runtime capability and evidence allow
-them. OpenAI Responses uses image data URLs, Anthropic uses base64 image source
+them. Direct API input evidence may include explicit per-model capability
+overrides; subscription input evidence comes from the current account catalog.
+OpenAI Responses uses image data URLs, Anthropic uses base64 image source
 blocks, and Antigravity uses inline data parts. Native PDF input uses OpenAI
-Responses, Anthropic Messages, or Antigravity inline data only when the loaded
-catalog or Direct API metadata supports `application/pdf`.
+Responses, Anthropic Messages, or Antigravity inline data only when the resolved
+runtime capability and evidence support PDF input.
 
 Audio input uses OpenAI Chat Completions or Antigravity inline data only when
-the loaded metadata explicitly supports WAV or MP3. Other subscription
+the resolved runtime capability and evidence support audio input. Catalog-derived
+audio evidence requires coverage of both WAV and MP3. Other subscription
 backends, OpenAI Responses, and Anthropic Messages reject audio locally. Plain
 text, code, rich documents, spreadsheets, presentations, and MIDI are extracted
 locally into bounded untrusted text and do not require native provider document

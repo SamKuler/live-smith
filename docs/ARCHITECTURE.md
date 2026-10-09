@@ -89,6 +89,10 @@ src/
         Serialize same-Session mutations and track active dialog ownership.
       session-tool-catalog.ts
         Assemble Session tool views without invoking tools.
+      session-search.ts, search-contracts.ts
+        Search local Session names and chat messages with bounded result pages.
+      session-artifacts.ts
+        Project saved MIDI/audio versions and filter the artifact catalog.
       session-lifecycle.ts
         Own metadata-first deletion, pending cleanup and startup orphan
         reconciliation through the shared Session mutation boundary.
@@ -347,6 +351,8 @@ src/
       Browser-safe validators for untrusted model, Session, Plugin and bridge
       state data. Inputs are unknown; output guards and allowed field names
       reference canonical public DTO types.
+    client/session-search.ts
+      Owns Session search queries, cancellation, refresh and pagination state.
     client/connection-state.ts
       Owns one confirmed Connection snapshot, audio drafts and editor selection.
       Audio form values are derived projections; the full snapshot retains
@@ -971,10 +977,11 @@ flow, including during an active model request.
 
 `app/session/session-artifacts.ts` projects Session-owned MIDI artifacts and
 committed provider audio results and standalone Plugin audio into the paginated
-artifact library. Version groups are assembled before pagination. Each work
-selects its saved primary when available, otherwise the latest available version;
-explicit references still resolve exactly. Audio catalog/detail reads use metadata
-and blob presence; consumption validates complete bytes. MIDI previews validate
+artifact library. Version groups are assembled before pagination. Without a
+search filter, each work selects its saved primary when available, otherwise the
+latest available version; explicit references still resolve exactly. Audio
+catalog/detail reads use metadata and blob presence; consumption validates
+complete bytes. MIDI previews validate
 the selected small SMF. `/session-artifact` reads one exact version
 with the same ownership and projection contract. It creates no media
 copies or artifact database. Audio bytes stay behind the existing authenticated
@@ -1045,6 +1052,16 @@ a composer draft, MIDI import uses the ordinary mapped import path, and audio
 import uses the existing chat action/preflight path. Read-only browsing, differences and
 playback remain available during generation; selection commands share the Session
 mutation fence and validate ownership again before writing their event.
+
+Artifact catalog search filters names, version labels and source labels before
+group pagination. Source labels include aliases from the supported UI catalogs;
+user-authored names remain literal. A matching exact version is selected even
+when the group's primary version does not match; the group's complete version
+and provenance metadata remains available. The query belongs to the library view and resets
+on Session changes. Read cancellation is independent of artifact mutations, so
+typing a new query cannot release an outstanding selection or transfer command.
+If a catalog shrinks beyond the requested page, the library reads the last valid
+page, including page zero for an empty catalog.
 
 `ui/client/plugin-parameters.script.html` renders the native controls inside
 Session Tools. Optional parameters have an explicit inclusion control; omitted
@@ -1983,9 +2000,9 @@ without routing or persisting its media. The top-level `integrationConnections`
 view is the sole browser projection of Connection settings; it includes only
 configuration and configured-secret names, while the private secret values and
 settings collection are omitted. Saved keys are omitted from full-state and
-incremental UI projections. Stop or window closure ends local processing and
-attempts bounded remote cancellation where available; retained remote tasks may
-be resumed explicitly, without replaying a stopped Live plan. Session deletion
+incremental UI projections. Stop or runtime shutdown cancels unfinished local
+work and attempts bounded remote cancellation where available; retained remote
+tasks may be resumed explicitly, without replaying a stopped Live plan. Session deletion
 and orphan cleanup remove private audio data alongside other Session data, while
 Live-managed imported copies remain owned by Live.
 
@@ -1996,8 +2013,9 @@ User settings, limits, and provider-specific behavior are documented under
 
 Only profile CRUD/activation and the dedicated global-settings command write the
 settings file. The global command owns the default Queue/Steer follow-up
-behavior, context-usage visibility, chat shortcut visibility, interface language,
-and network proxy selection. It applies exactly one setting per
+behavior, context-usage visibility, chat shortcut visibility, interface mode and
+language, network proxy selection, custom instructions, and Integration
+Connections. It applies exactly one setting per
 transaction, advances only that setting's revision, and is allowed while sends
 are active. It broadcasts the complete committed global settings to every open
 dialog for the same storage directory. Sending,
@@ -2118,9 +2136,10 @@ collapsing history. On POSIX hosts, read paths as well as writes tighten storage
 directories to `0700` and private JSON/blob files to `0600`. Storage failures
 cross the attachment HTTP boundary only as fixed typed diagnostics; absolute
 paths and credential-bearing causes are never returned to the WebView.
-Session deletion durably removes its event log before metadata; if event
-removal fails or has an unknown commit outcome, the session remains visible and
-retryable instead of leaving an unreachable conversation log.
+Session deletion commits metadata removal before cleaning its event log and
+associated files. Uncertain deletion or cleanup enters the Session lifecycle's
+pending-cleanup path. Cleanup retries recheck that the Session is absent; startup
+reconciliation also removes orphaned Session data.
 
 ### Settings schema compatibility
 
@@ -2511,9 +2530,9 @@ Current and History lists keep Sessions with a title, creative brief, events,
 attachments, audio jobs, MIDI artifacts or continuation settings, or window-local
 draft/queued/running work. The current dialog also keeps every
 Session that has been active in that dialog, so an untouched empty Session remains
-reachable after switching until the dialog closes. Unvisited empty Sessions stay
-hidden, and a new dialog does not inherit the prior dialog's visibility. Explicitly
-archived Sessions remain visible for management. Track identity, timestamps, and
+reachable after switching until the dialog closes. With search cleared, unvisited
+empty Sessions stay hidden, and a new dialog does not inherit the prior dialog's
+visibility. Explicitly archived Sessions remain visible for management. Track identity, timestamps, and
 permission or model settings do not count as conversation content.
 The app derives `ChatSessionSummary.hasContent` under the storage transaction;
 this is UI metadata and is never persisted. MIDI content reads do not reacquire
@@ -2524,6 +2543,23 @@ their local drafts. Only list rendering and bulk selection omit inactive empty
 records; hiding them never deletes or rewrites their saved data.
 
 ### Session context, concurrency, and Approval
+
+Session search is an authenticated read-only bridge operation over the same local
+Session collection exposed by Current, History and Archived. It matches each
+Session's displayed name (`title || scope.label`) and saved user/assistant text,
+returning one bounded excerpt per matching
+Session with an optional message reference. Results are paginated after matching;
+unreadable histories are counted, and deleted Session IDs are removed before
+delivery. Search keeps no persistent index and does not inspect model settings,
+credentials, binary attachments or Live state. The browser owns query, pagination
+and cancellation, validates each response against its query receipt, and retains
+the existing list's navigation and mutation boundaries.
+Committed chat messages from foreground or background Sessions, peer Session
+invalidations and successful event-stream recovery invalidate active searches.
+Input composition defers these refreshes until composition ends, even if the
+query text is unchanged. Active-message tracking excludes tool and reasoning
+events; generic peer invalidations still refresh search because their payload
+does not identify which Session fields changed.
 
 Bulk Skill disable submits a remove-one-Skill intent for each confirmed Session.
 The server filters the current saved selection inside its Session/storage
@@ -2550,7 +2586,8 @@ Concurrency boundaries have distinct ownership:
 | Boundary | Scope | Responsibility |
 | --- | --- | --- |
 | Storage transaction | Canonical storage directory | Serialize durable settings, Session, event, attachment, and Skill mutations. |
-| Session mutation fence | Storage directory and Session ID | Hold one Session's send, attachment, Skill activation, and lifecycle boundary through reconciliation. |
+| Session mutation fence | Storage directory and Session ID | Hold one Session's send, Skill activation, and lifecycle boundary through reconciliation. |
+| Attachment mutation fence | Storage directory and Session ID | Serialize uploads, pending-file deletion, and admission of attachment snapshots for Send and Steer. Lifecycle operations acquire the Session fence first. |
 | OAuth auth/send fence | Canonical storage directory and Profile ID | Keep one editable connection lifecycle coherent with its sends while tracking pending login, activity, and generations per provider. |
 | Live mutation queue | Extension activation | Execute one validated Live plan at a time across dialogs, including request-audio import and revalidation after import. |
 
@@ -2573,8 +2610,9 @@ active send per Session while different Sessions may observe and plan in
 parallel. A process-wide lease keyed by normalized storage directory and
 Session ID spans exact Session lookup, attachment consumption, the provider/tool
 loop, all trace/error persistence, and the final authoritative state snapshot.
-Upload/delete, Skill activation, and Session rename/archive/unarchive/delete use
-the same lease, so
+Skill activation and Session rename/archive/unarchive/delete use the same
+Session lease. Pending-file upload/deletion uses the separate short attachment
+fence; lifecycle operations acquire both in Session-then-attachment order, so
 another dialog cannot delete a Session and then have a running send recreate its
 event log. A send never falls back to another Session when its requested ID is
 missing. Waiting operations recheck cancellation immediately after acquiring
@@ -3237,9 +3275,9 @@ reconciliation, only the byte-identical guidance may retry
 with the retained ID; edited Steer text and Queue submission cannot abandon the
 possibly committed receipt. Queue starts another request through the unchanged
 Send contract; its mode is never added to that body. The global-settings command
-accepts `kind: "save_global_settings"` plus exactly one of
-`defaultFollowUpBehavior: "queue" | "steer"` or
-`showContextUsage: boolean` or a validated `networkProxy` selection.
+accepts `kind: "save_global_settings"` plus exactly one validated field:
+`defaultFollowUpBehavior`, `showContextUsage`, `networkProxy`, `interfaceMode`,
+`uiLanguage`, `integrationConnections`, `customInstructions`, or `sessionTabs`.
 Session, Profile, and subscription-auth commands accept only their
 command-specific fields; confirmation and Stop reject body fields they do not
 own. Stop targets the exact send ID in its header. While that send is active it
@@ -3258,7 +3296,8 @@ cannot reopen the send's terminal activity; a durable late Session event may
 still publish, but it carries the stopped activity. If a Stop-first terminal
 classification is `unknown` while the original Send response is outstanding,
 the client waits up to the five-second reconciliation budget for a
-definitive Send outcome before falling back to unknown recovery. Every JSON
-body is bounded
-to 1 MiB before parsing. User Skill Markdown source is never a JSON field; it
-uses the separate authenticated raw route described above.
+definitive Send outcome before falling back to unknown recovery. JSON bodies
+are bounded to 1 MiB before parsing, except for the MCP App resource-pagination
+requests described above, whose budget accommodates opaque MCP cursors. User
+Skill Markdown source is never a JSON field; it uses the separate authenticated
+raw route described above.

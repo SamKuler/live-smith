@@ -63,7 +63,7 @@ npm run build
 Both build variants type-check the source, compile the Tailwind entries under
 `src/ui/styles/` to static CSS, and verify Extension Host runtime compatibility
 before writing the bundle to `dist/extension.js`. The compiled styles are
-embedded into each data-URL dialog; the WebView does not load Tailwind, a CDN,
+embedded into the generated dialog HTML; the WebView does not load Tailwind, a CDN,
 or a separate stylesheet at runtime.
 
 The Suno verification helper is our own macOS AppKit/WebKit application, not a

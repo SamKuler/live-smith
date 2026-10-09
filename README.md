@@ -72,6 +72,11 @@ reopening its entry selects that version, while an explicitly selected version
 remains the target of export, attachment and further work. Clearing the primary
 returns the default to the latest available version.
 
+**Search artifacts** searches names, version labels and localized sources across
+this Session's complete saved catalog. Results are grouped and paginated after
+matching; opening a match selects its matching version. Clear the search to
+return to the full catalog. Searching does not call a model or audio provider.
+
 For MIDI, **Version comparison** defaults to the source version and allows any other
 version in the same work as the comparison baseline. It reads both complete MIDI files and
 shows a short change summary and an overlaid piano roll for the selected part.
@@ -485,8 +490,8 @@ operations have distinct states. Approval alone never counts as a completed edit
 For a single supported MIDI Clip creation, note edit, or device/mixer parameter edit,
 expand the card to view the observed **Before** and **Proposed after**.
 MIDI previews use Clip-relative beats and the same pitch/time scales on both
-sides. Large previews show at most 256 notes per side and state how many were
-omitted. Parameter previews show raw SDK values and observed ranges; they do not
+sides. They retain the complete validated note set and draw notes in the visible
+time range. Parameter previews show raw SDK values and observed ranges; they do not
 guess display units or map value labels to numbers. The full action list remains
 visible. MIDI creation previews cover empty Arrangement or Session destinations
 and exact reusable MIDI Clips. Plans involving several actions, other new
@@ -507,13 +512,21 @@ rename, duplicate, and delete-track actions.
 
 ## Sessions, Skills, and attachments
 
+**Search sessions** finds displayed Session names and saved user/assistant messages
+across current, historical and archived Sessions. Untitled Sessions use their
+saved Live context label. Message matches show an excerpt; the existing Session
+navigation and Continue actions remain available.
+Matching ignores letter case and treats the query as literal text. Clear the
+search or press Escape to restore the full list. Searches read local history;
+unreadable histories are reported separately from an empty result.
+
 **Sessions** keep conversation and action history with their Live context.
 Opening the dialog or choosing New Session does not save an untouched empty
-conversation. Messages, Session settings, and attachments are saved when used;
-the Sessions list keeps empty entries that were active in the current window and
-hides unvisited empty entries across tracks and History. Closing the window clears
-that temporary visibility. Conversations and unsent drafts remain visible; hiding
-empty entries does not delete existing data.
+conversation. Messages, Session settings, and attachments are saved when used.
+With search cleared, the Sessions list keeps empty entries that were active in
+the current window and hides unvisited empty entries across tracks and History.
+Closing the window clears that temporary visibility. Conversations and unsent
+drafts remain visible; hiding empty entries does not delete existing data.
 Previous Sessions can be restored explicitly; matching names alone do not make
 an old conversation the same Live object.
 
@@ -527,7 +540,7 @@ local draft and **Save brief** explicitly accepts it. Suggestions never save
 preferences automatically. Unsaved drafts remain separate for each Session in
 that window. If another window changes the saved brief, review its current text
 before keeping or replacing your draft. The brief records creative intent;
-current BPM, meter, and other Live facts are read from the Set.
+current BPM and other SDK-exposed Live facts come from fresh observations.
 
 Hover over a message, or focus its controls with the keyboard, to copy its
 original text. **Use as draft** puts a user message back in the composer;
@@ -541,7 +554,7 @@ generation and attachment upload.
 **Skills** provide musical workflow guidance. Three built-ins cover section
 energy, musical variation, and instrument roles. They start disabled; **View**
 opens the full instructions without enabling them. Import and manage standalone
-[SKILL.md](docs/MODEL_PROVIDERS.md#skill-instructions) files in
+[SKILL.md](docs/ARCHITECTURE.md#definitions-and-presentation) files in
 **Settings → Extensions → Skills**. The library groups built-in, user, and
 Plugin-provided Skills by source, including disabled Plugin packages. Enable up to four Skills in
 **Session → Skills**, or use `$skill-id` for one request.
