@@ -86,7 +86,7 @@
             <div id="composerAutocomplete" class="composer-autocomplete floating-surface" role="listbox" aria-label="Composer suggestions" hidden data-i18n-aria-label="Composer suggestions"></div>
             <div class="composer-surface">
             <div id="composerShortcuts" class="composer-shortcuts" role="group" aria-label="Chat shortcuts" data-i18n-aria-label="Chat shortcuts" hidden>
-              <button id="liveContextSummaryButton" class="composer-shortcut live-context-summary" data-session-shortcut="context" type="button" aria-controls="contextPanel" onclick="LiveSmithUI.openInspector('context')" hidden><span class="context-caption" data-i18n="Context">Context</span><span id="liveContextTitle" class="context-title"></span><span id="liveContextLocation" class="context-location"></span></button>
+              <button id="liveContextSummaryButton" class="composer-shortcut live-context-summary" data-session-shortcut="context" type="button" aria-controls="context" onclick="LiveSmithUI.openInspectorSection('context', 'context')" hidden><span class="context-caption" data-i18n="Context">Context</span><span id="liveContextTitle" class="context-title"></span><span id="liveContextLocation" class="context-location"></span></button>
               <button id="briefShortcut" class="composer-shortcut" data-session-shortcut="brief" type="button" aria-controls="creativeBriefSection" onclick="LiveSmithUI.openInspectorSection('context', 'creativeBriefSection')" hidden data-i18n="Brief">Brief</button>
               <button id="artifactsShortcut" class="composer-shortcut" data-session-shortcut="artifacts" type="button" aria-controls="artifactsPanel" onclick="LiveSmithUI.openInspector('artifacts')" hidden data-i18n="Artifacts">Artifacts</button>
               <button id="skillsShortcut" class="composer-shortcut" data-session-shortcut="skills" type="button" aria-controls="skillsPanel" onclick="LiveSmithUI.openInspector('skills')" hidden data-i18n="Skills">Skills</button>
@@ -894,7 +894,7 @@
                   <button id="useCreativeBriefProposalButton" class="secondary" type="button" data-i18n="Edit suggestion">Edit suggestion</button>
                 </details>
               </section>
-              <div id="context" class="context"></div>
+              <div id="context" class="context" tabindex="-1"></div>
               <section class="settings-scope" aria-labelledby="contextInputsHeading">
                 <div class="inspector-scope-header"><h2 id="contextInputsHeading" data-i18n="Message context">Message context</h2></div>
                 <p id="inspectorContextUsage" class="field-hint"></p>

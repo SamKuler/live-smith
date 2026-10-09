@@ -40,6 +40,27 @@ test("composer shortcuts open full Inspector panels and preserve message and bri
   assert.deepEqual(h.errors, []);
 });
 
+test("the Context shortcut locates Live context while Brief retains its own section", async (t) => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state); t.after(() => h.close());
+  const context = element(h, "context");
+  const brief = element(h, "creativeBriefSection");
+  const locations: string[] = [];
+  context.scrollIntoView = () => { locations.push(context.id); };
+  brief.scrollIntoView = () => { locations.push(brief.id); };
+  h.input("#prompt", "Unsent music request");
+  h.click("#briefShortcut"); h.input("#creativeBrief", "Unfinished brief");
+  h.click("#settingsButton"); h.click("#liveContextSummaryButton");
+  assert.deepEqual(locations, ["creativeBriefSection", "context"]);
+  assert.equal(element(h, "contextPanel").hidden, false);
+  assert.equal(h.document.activeElement, context);
+  h.click("#settingsButton"); h.click("#briefShortcut");
+  assert.equal(h.document.activeElement, element(h, "creativeBrief"));
+  assert.equal(element<HTMLTextAreaElement>(h, "creativeBrief").value, "Unfinished brief");
+  assert.equal(element<HTMLTextAreaElement>(h, "prompt").value, "Unsent music request");
+  assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
+});
+
 test("hiding every composer shortcut preserves the complete Inspector navigation and Skill activation", async (t) => {
   const state = stateFixture(); state.settings.sessionTabs = [...sessionShortcutIds];
   state.sessions[0]!.activeSkillIds = [state.availableSkills[0]!.id];
