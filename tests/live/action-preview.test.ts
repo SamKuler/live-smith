@@ -67,13 +67,12 @@ test(`MIDI transforms preview all ${noteCount} notes and retain complete drift d
 });
 }
 
-test("unsupported or invalid predictions omit previews without rejecting valid preflight", async () => {
+test("invalid MIDI edits reject preflight even when previews are disabled", async () => {
   const fixture = midiPreviewFixture([{ pitch: 127, startTime: 0, duration: 1 }]);
   const target = { track: fixture.track };
   const transform: AgentAction = { type: "transpose_midi_notes", clipName: "Phrase", startBeat: 32, semitones: 1 };
-  const invalid = await captureLiveActionPreflightObservation(fixture.context, transform, target);
-  assert.equal(invalid.preview, undefined);
-  assert.equal(invalid.fingerprint, await captureLiveActionPreflightSnapshot(fixture.context, transform, target));
+  await assert.rejects(captureLiveActionPreflightObservation(fixture.context, transform, target), /pitch 128.*outside/);
+  await assert.rejects(captureLiveActionPreflightSnapshot(fixture.context, transform, target), /pitch 128.*outside/);
   const rename = await captureLiveActionPreflightObservation(fixture.context, { type: "rename_track", newName: "New" }, target);
   assert.equal(rename.preview, undefined);
   assert.equal(fixture.writes, 0);

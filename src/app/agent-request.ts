@@ -74,6 +74,7 @@ import { MAX_REQUEST_DOCUMENT_TEXT_CHARACTERS } from "../attachments/document-te
 import {
   captureLiveActionPreflightObservation,
   type LiveActionPreflightObservation,
+  type MidiClipPreflightStates,
 } from "../live/preflight.js";
 import {
   requiredEditScopesForAction,
@@ -1094,6 +1095,7 @@ export async function preflightAgentPlan(
     target: LiveInteractionContext["target"],
     requestAudioSources?: RequestAudioSampleSources,
     includePreview?: boolean,
+    midiClipStates?: MidiClipPreflightStates,
   ) => string | LiveActionPreflightObservation | Promise<string | LiveActionPreflightObservation> = captureLiveActionPreflightObservation,
   authorization?: {
     refresh(): Promise<unknown>;
@@ -1234,12 +1236,14 @@ async function captureAgentPlanPreflightSnapshots(
     target: LiveInteractionContext["target"],
     requestAudioSources?: RequestAudioSampleSources,
     includePreview?: boolean,
+    midiClipStates?: MidiClipPreflightStates,
   ) => string | LiveActionPreflightObservation | Promise<string | LiveActionPreflightObservation>,
   bindings: AgentPlanBindings,
   requestAudioSources?: RequestAudioSampleSources,
   includePreview = false,
 ): Promise<LiveActionPreflightObservation[]> {
   const snapshots: LiveActionPreflightObservation[] = [];
+  const midiClipStates: MidiClipPreflightStates = new Map();
   for (const [actionIndex, action] of plan.actions.entries()) {
     throwIfAborted(signal);
     const boundTrack = boundTrackForAction(action, actionIndex, bindings);
@@ -1262,6 +1266,7 @@ async function captureAgentPlanPreflightSnapshots(
       actionTarget,
       requestAudioSources,
       includePreview,
+      midiClipStates,
     );
     snapshots.push(typeof captured === "string" ? { fingerprint: captured } : captured);
     throwIfAborted(signal);

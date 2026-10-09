@@ -554,6 +554,18 @@ test("one plan rejects overlapping replacements of the same MIDI clip", () => {
   }));
 });
 
+test("MIDI segment overlap keeps case-sensitive reference identities", () => {
+  const segment = { type: "replace_midi_clip_segment", clipName: "Phrase", startBeat: 0,
+    segmentStartTime: 0, segmentDurationBeats: 4, notes: [] };
+  const plan = validateAgentPlan({ message: "Edit two tracks", targets: {
+    A: { trackName: "Bass" }, a: { trackName: "Lead" },
+  }, actions: [{ ...segment, trackRef: "A" }, { ...segment, trackRef: "a" }] });
+  assert.deepEqual(plan.actions.map((action) => "trackRef" in action ? action.trackRef : undefined), ["A", "a"]);
+  assert.throws(() => validateAgentPlan({ ...plan,
+    actions: [{ ...segment, trackRef: "A" }, { ...segment, trackRef: "A" }],
+  }), /overlapping replacements/);
+});
+
 test("invalid actions identify their position and type for model repair", () => {
   assert.throws(
     () => validateAgentPlan({
@@ -1326,6 +1338,16 @@ test("new clip edits on a newly created track require staging only when observat
     }),
     /newly created.*inspect.*staged/i,
   );
+
+  assert.throws(() => validateAgentPlan({
+    message: "Replace a segment before observation",
+    actions: [
+      { type: "create_midi_track", ref: "lead", name: "Lead" },
+      { type: "create_midi_clip", trackRef: "lead", name: "Phrase", startBeat: 0, durationBeats: 4, notes: [] },
+      { type: "replace_midi_clip_segment", trackRef: "lead", clipName: "Phrase", startBeat: 0,
+        segmentStartTime: 0, segmentDurationBeats: 8, notes: [] },
+    ],
+  }), /action 3.*newly created.*inspect.*staged/i);
 });
 
 test("Scene, Cue Point, and Take Lane actions use stable indexes and expected names", () => {

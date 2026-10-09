@@ -21,8 +21,9 @@ import {
   type MidiActionPreview,
   type ParameterActionPreview,
 } from "../agent/action-preview.js";
-import { calculateMidiNoteEdit, type MidiNoteEditAction, type MidiNoteEditClip } from "./midi-transform.js";
+import { calculateMidiNoteEdit, midiNotesEqual, type MidiNoteEditAction, type MidiNoteEditClip } from "./midi-transform.js";
 import { sessionMidiClipCanBeReused } from "./action-bindings.js";
+import { midiClipHasAuthoringTiming } from "./midi-clip-timing.js";
 import {
   assertParameterValueInObservedRange,
   findExactParameterMatch,
@@ -60,14 +61,19 @@ export interface LiveActionPreflightObservation {
   preview?: AgentActionPreview;
 }
 
+/** Ordered MIDI state for one complete preflight pass, keyed by existing Clip handle. */
+export type MidiClipPreflightStates = Map<string, MidiClipObservation | null>;
+
 export async function captureLiveActionPreflightSnapshot(
   context: Api,
   action: AgentAction,
   target: LiveTarget,
   requestAudioSources?: ManagedSampleSources,
+  _includePreview = false,
+  midiClipStates: MidiClipPreflightStates = new Map(),
 ): Promise<string> {
   return (await captureLiveActionPreflightObservation(
-    context, action, target, requestAudioSources, false,
+    context, action, target, requestAudioSources, false, midiClipStates,
   )).fingerprint;
 }
 
@@ -77,8 +83,9 @@ export async function captureLiveActionPreflightObservation(
   target: LiveTarget,
   requestAudioSources?: ManagedSampleSources,
   includePreview = true,
+  midiClipStates: MidiClipPreflightStates = new Map(),
 ): Promise<LiveActionPreflightObservation> {
-  const observed = await observeActionPreflight(context, action, target, requestAudioSources, includePreview);
+  const observed = await observeActionPreflight(context, action, target, requestAudioSources, includePreview, midiClipStates);
   return typeof observed === "string" ? { fingerprint: observed } : observed;
 }
 
@@ -88,6 +95,7 @@ async function observeActionPreflight(
   target: LiveTarget,
   requestAudioSources: ManagedSampleSources | undefined,
   includePreview: boolean,
+  midiClipStates: MidiClipPreflightStates,
 ): Promise<string | LiveActionPreflightObservation> {
   const song = context.application.song;
   const songIdentity = requireHandleIdentity(song, "Live Set");
@@ -194,6 +202,12 @@ async function observeActionPreflight(
           : {}),
       };
       const clipName = state.matchingClip?.name ?? action.name;
+      if (state.matchingClip) {
+        const current = plannedMidiClip(state.matchingClip, midiClipStates);
+        midiClipStates.set(current.id, {
+          ...current, notes: midiNotesEqual(current.notes, action.notes) ? current.notes : action.notes,
+        });
+      }
       const preview = includePreview && !state.overlappingClips?.length
         ? midiNotesPreview(
             `MIDI clip${clipName ? ` "${clipName}"` : ""} on track "${state.track.name}"${state.takeLane ? ` in Take Lane "${state.takeLane.name}"` : ""}`,
@@ -219,6 +233,13 @@ async function observeActionPreflight(
         );
       }
       const midiClip = clip instanceof MidiClip ? clipContentIdentity(clip) : undefined;
+      if (midiClip) {
+        const current = plannedMidiClip(midiClip, midiClipStates);
+        midiClipStates.set(current.id, midiClipHasAuthoringTiming(current, action.durationBeats)
+          ? { ...current, name: action.name ?? current.name,
+              notes: midiNotesEqual(current.notes, action.notes) ? current.notes : action.notes }
+          : null);
+      }
       const state = {
         song: songIdentity,
         track: trackIdentity(track),
@@ -251,7 +272,7 @@ async function observeActionPreflight(
         track: trackIdentity(track),
         clip: clipContentIdentity(clip),
       };
-      return midiPreflightObservation(action, state, includePreview);
+      return midiPreflightObservation(action, state, includePreview, midiClipStates);
     }
     case "transpose_midi_notes":
     case "quantize_midi_notes":
@@ -269,7 +290,7 @@ async function observeActionPreflight(
         track: trackIdentity(track),
         clip: clipContentIdentity(clip),
       };
-      return midiPreflightObservation(action, state, includePreview);
+      return midiPreflightObservation(action, state, includePreview, midiClipStates);
     }
     case "insert_device": {
       const track = resolveTrack(context, action.trackName, target);
@@ -649,10 +670,17 @@ async function observeActionPreflight(
     case "set_clip_properties": {
       const track = resolveTrack(context, action.trackName, target);
       const clip = resolveClipLocator(track, action);
+      const observed = clip instanceof MidiClip ? clipContentIdentity(clip) : undefined;
+      if (observed) {
+        const current = plannedMidiClip(observed, midiClipStates);
+        midiClipStates.set(current.id, {
+          ...current, name: action.newName ?? current.name, looping: action.looping ?? current.looping,
+        });
+      }
       return fingerprint(action.type, {
         song: songIdentity,
         track: trackIdentity(track),
-        clip: clipContentIdentity(clip),
+        clip: observed ?? clipContentIdentity(clip),
       });
     }
     case "set_audio_clip_warp": {
@@ -982,7 +1010,9 @@ async function trackContentIdentity(track: Track<"1.0.0">): Promise<object> {
 }
 
 interface MidiClipObservation extends MidiNoteEditClip {
+  id: string;
   duration: number;
+  startMarker: number;
 }
 
 function clipContentIdentity(clip: MidiClip<"1.0.0">): MidiClipObservation;
@@ -1033,22 +1063,27 @@ function midiPreflightObservation(
   action: MidiNoteEditAction,
   state: { track: { name: string }; clip: MidiClipObservation },
   includePreview: boolean,
+  midiClipStates: MidiClipPreflightStates,
 ): LiveActionPreflightObservation {
   const result: LiveActionPreflightObservation = { fingerprint: fingerprint(action.type, state) };
+  const clip = plannedMidiClip(state.clip, midiClipStates);
+  const after = calculateMidiNoteEdit(clip, action).notes;
+  midiClipStates.set(clip.id, { ...clip, notes: after });
   if (!includePreview) return result;
-  try {
-    const clip = state.clip;
-    if (!Number.isFinite(clip.duration) || clip.duration <= 0 ||
-        typeof clip.name !== "string" || typeof state.track.name !== "string") return result;
-    const after = calculateMidiNoteEdit(clip, action).notes;
-    const preview = midiNotesPreview(
-      `MIDI clip "${clip.name}" on track "${state.track.name}"`, clip.duration, clip.notes, after,
-    );
-    if (preview) result.preview = preview;
-  } catch {
-    // Prediction is optional; the executor retains its own validation and errors.
-  }
+  if (typeof clip.name !== "string" || typeof state.track.name !== "string") return result;
+  const preview = midiNotesPreview(
+    `MIDI clip "${clip.name}" on track "${state.track.name}"`, clip.duration, clip.notes, after,
+  );
+  if (preview) result.preview = preview;
   return result;
+}
+
+function plannedMidiClip(observed: MidiClipObservation, states: MidiClipPreflightStates): MidiClipObservation {
+  const current = states.get(observed.id);
+  if (current === null) {
+    throw new Error(`MIDI clip "${observed.name}" is replaced by an earlier action in this plan. Inspect the resulting Clip and use a separate confirmed stage.`);
+  }
+  return current ?? observed;
 }
 
 function midiNotesPreview(

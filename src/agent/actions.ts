@@ -854,7 +854,7 @@ export function validateMidiSegmentRanges(
 
 function midiSegmentLocatorIdentity(action: Extract<AgentAction, { type: "replace_midi_clip_segment" }>): string {
   const target = action.trackRef
-    ? `ref:${action.trackRef.toLocaleLowerCase()}`
+    ? `ref:${action.trackRef}`
     : action.trackName ? `name:${action.trackName.toLocaleLowerCase()}` : "selected-track";
   return [target, action.clipName.toLocaleLowerCase(), String(action.startBeat)].join("\u0000");
 }
@@ -1207,6 +1207,7 @@ function requiresObservedExistingTrack(action: AgentAction): boolean {
     action.type === "set_chain_mixer_parameter" ||
     action.type === "set_clip_properties" ||
     action.type === "set_audio_clip_warp" ||
+    action.type === "replace_midi_clip_segment" ||
     isMidiTransformAction(action) ||
     action.type === "delete_session_clip" ||
     action.type === "rename_take_lane" ||
