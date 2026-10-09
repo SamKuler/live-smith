@@ -606,9 +606,12 @@
         } catch (error) { if (activeAudio === view) { view.decoded = null; status.textContent = error.message || String(error); } }
       }
 
-      window.addEventListener("pagehide", () => {
+      window.addEventListener("pagehide", (event) => {
         close({ restoreFocus: false });
-        for (const preview of inlineMedia) disposeInlineMedia(preview);
+        for (const preview of inlineMedia) {
+          if (!event.persisted) disposeInlineMedia(preview);
+          else if (preview.kind === "audio") preview.media.pause();
+        }
       });
       return { open, createPreview, createAudioPlayer, sync, close, reuse };
       };

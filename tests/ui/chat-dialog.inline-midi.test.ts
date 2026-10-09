@@ -100,6 +100,119 @@ test("artifact-looking tool text cannot create a chat preview without a host-own
   } finally { h.close(); }
 });
 
+test("MIDI artifacts retain tool input, warnings and structured results in a secondary disclosure", async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state);
+  const original = h.window.fetch;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === "/session-artifact") return { ok: true, json: async () => ({ sessionId: "session-1", artifact: saved }) };
+    return original(input, init);
+  } });
+  try {
+    const input = JSON.stringify({ requestedBars: 16 });
+    const output = JSON.stringify({ content: [{ type: "text", text: "Only 8 of the requested 16 bars were generated." }],
+      structuredContent: { generatedBars: 8 }, artifacts: [{ kind: "midi", artifactRef: saved.ref.id }] });
+    await publish(h, [event("call", "tool_call", input, { name: "external_midi_generator" }),
+      event("result", "tool_result", output, { name: "external_midi_generator", outcome: "success", artifacts: [saved.ref] })]);
+    await waitForCondition(() => Boolean(h.document.querySelector(".chat-midi-preview .piano-roll-note")), "Expected saved MIDI");
+    const step = h.document.querySelector<HTMLDetailsElement>(".timeline-activity-step")!;
+    step.querySelector<HTMLElement>(":scope > summary")!.click();
+    const details = [...step.querySelectorAll<HTMLDetailsElement>("details")].find((node) => node.querySelector(":scope > summary")?.textContent === "Tool details");
+    assert.ok(details, "Generated MIDI must keep a disclosure for additional tool output");
+    assert.equal(details.open, false);
+    details.querySelector<HTMLElement>(":scope > summary")!.click();
+    assert.equal(details.open, true);
+    assert.equal(details.querySelector('[data-event-id="call"] .timeline-activity-detail-content')?.textContent, input);
+    assert.equal(details.querySelector('[data-event-id="result"] .timeline-activity-detail-content')?.textContent, output);
+    assert.match(step.querySelector(":scope > summary")!.textContent!, /External midi generator/);
+    assert.match(step.querySelector(":scope > summary")!.textContent!, /Only 8 of the requested 16 bars/);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("cached pages retain saved MIDI actions and viewport, while final pagehide disposes them", async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state, { baseUrl: "http://bridge.test", token: "test-token", hostMode: "browser" } as never);
+  const original = h.window.fetch;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === "/session-artifact") return { ok: true, json: async () => ({ sessionId: "session-1", artifact: saved }) };
+    return original(input, init);
+  } });
+  try {
+    await publish(h, [event("saved-result", "tool_result", "Saved", { outcome: "success", artifacts: [saved.ref] })]);
+    await waitForCondition(() => Boolean(h.document.querySelector(".chat-midi-preview .piano-roll-note")), "Expected inline saved notes");
+    const card = h.document.querySelector<HTMLElement>(".chat-midi-preview")!;
+    h.select(".chat-artifact-part select", "part-2"); h.click(".chat-midi-preview .piano-roll-zoom-in");
+    const span = card.querySelector(".piano-roll-span")!.textContent;
+    const exportButton = button(card, "Export MIDI");
+    exportButton.click(); await h.settle();
+    assert.equal(jsonCalls(h, "/command").filter((call) => (call.body as { kind: string }).kind === "export_artifact").length, 1);
+    h.window.dispatchEvent(new h.window.PageTransitionEvent("pagehide", { persisted: true }));
+    h.window.dispatchEvent(new h.window.PageTransitionEvent("pageshow", { persisted: true }));
+    h.emitServerEventOpen(); await h.settle();
+    assert.equal(h.document.querySelector(".chat-midi-preview"), card);
+    assert.equal(card.querySelector<HTMLSelectElement>("select")!.value, "part-2");
+    assert.equal(card.querySelector(".piano-roll-span")!.textContent, span);
+    exportButton.click(); await h.settle();
+    assert.equal(jsonCalls(h, "/command").filter((call) => (call.body as { kind: string }).kind === "export_artifact").length, 2);
+    h.window.dispatchEvent(new h.window.PageTransitionEvent("pagehide", { persisted: false }));
+    exportButton.click(); await h.settle();
+    assert.equal(jsonCalls(h, "/command").filter((call) => (call.body as { kind: string }).kind === "export_artifact").length, 2);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("cached pagehide aborts pending MIDI reads and resumes without accepting a late response", async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state);
+  const original = h.window.fetch;
+  let reads = 0; let signal: AbortSignal | null | undefined; let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === "/session-artifact") {
+      const first = ++reads === 1;
+      if (first) { signal = init?.signal; await pending; }
+      return { ok: true, json: async () => ({ sessionId: "session-1", artifact: first ? { ...saved, label: "Stale read" } : saved }) };
+    }
+    return original(input, init);
+  } });
+  try {
+    await publish(h, [event("loading-result", "tool_result", "Saved", { artifacts: [saved.ref] })]);
+    assert.equal(reads, 1);
+    h.window.dispatchEvent(new h.window.PageTransitionEvent("pagehide", { persisted: true }));
+    assert.equal(signal?.aborted, true);
+    h.window.dispatchEvent(new h.window.PageTransitionEvent("pageshow", { persisted: true }));
+    h.emitServerEventOpen(); await h.settle();
+    await waitForCondition(() => Boolean(h.document.querySelector(".chat-midi-preview .piano-roll-note")), "Expected resumed preview");
+    assert.equal(reads, 2);
+    release(); await h.settle();
+    assert.match(h.document.querySelector(".chat-midi-preview h4")!.textContent!, /低音变奏/);
+    assert.doesNotMatch(h.document.querySelector(".chat-midi-preview")!.textContent!, /Stale read/);
+    assert.deepEqual(h.errors, []);
+  } finally { release(); h.close(); }
+});
+
+test("artifact-only results use the saved MIDI card while tool input remains in secondary details", async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state);
+  try {
+    const input = JSON.stringify({ durationBeats: 32, notes: [{ pitch: 48, duration: 4 }] });
+    const output = JSON.stringify({ artifacts: [{ kind: "midi", artifactRef: saved.ref.id, noteCount: 2 }] });
+    await publish(h, [event("author-input", "tool_call", input, { name: "save_midi_artifact" }),
+      event("author-result", "tool_result", output,
+        { name: "save_midi_artifact", outcome: "success", artifacts: [saved.ref] })]);
+    const step = h.document.querySelector<HTMLDetailsElement>(".timeline-activity-step")!;
+    assert.match(step.querySelector(":scope > summary")!.textContent!, /Saved MIDI/);
+    step.querySelector<HTMLElement>(":scope > summary")!.click();
+    const details = [...step.querySelectorAll<HTMLDetailsElement>("details")].find((node) => node.querySelector(":scope > summary")?.textContent === "Tool details")!;
+    assert.equal(details.open, false);
+    details.querySelector<HTMLElement>(":scope > summary")!.click();
+    assert.equal(details.querySelector('[data-event-id="author-input"] .timeline-activity-detail-content')?.textContent, input);
+    assert.equal(details.querySelector('[data-event-id="author-result"] .timeline-activity-detail-content')?.textContent, output);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
 for (const status of ["applied", "partial", "cancelled", "failed"] as const) test(`durable ${status} Live edits retain a proposed preview and separate actual outcome`, async () => {
   const state = stateFixture(); state.openSettingsOnLoad = false;
   state.events = [proposal(), event("approved", "apply_auto_approved", "Automatic approval", { applyOperation: { id: "operation-1", status: "approved" } }),

@@ -735,6 +735,7 @@
 
         return {
           render,
+          hasUnsavedChanges: () => Boolean(draft && isDirty(draft)),
           addAudio: () => { if (!busy && !saving) showAudio(addAudioConnection); },
           clearSecrets,
           selectAudio,

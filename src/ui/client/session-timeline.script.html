@@ -2435,11 +2435,20 @@
             const midiRefs = step.events.flatMap((event) => event.artifacts || []).filter((ref) => ref.kind === "midi");
             if (midiRefs.length) {
               for (const ref of midiRefs) { const preview = artifactPreviews.render(ref); if (preview) content.push(preview); }
-            } else for (const event of step.events) {
+            }
+            const eventDetails = [];
+            for (const event of step.events) {
               const section = document.createElement("section"); section.className = "timeline-activity-detail-section"; section.dataset.eventId = event.id;
               const label = document.createElement("div"); label.className = "timeline-activity-detail-label"; label.textContent = activityEventLabel(event);
               const body = document.createElement("div"); body.className = "timeline-activity-detail-content"; body.textContent = event.content || "";
-              section.append(label, body); content.push(section);
+              section.append(label, body); eventDetails.push(section);
+            }
+            if (midiRefs.length && eventDetails.length) {
+              const details = document.createElement("details");
+              const summary = document.createElement("summary"); summary.textContent = t("Tool details");
+              details.append(summary, ...eventDetails); content.push(details);
+            } else {
+              content.push(...eventDetails);
             }
           }
           reconcileChildNodes(view.detail, content); view.snapshot = snapshot;
@@ -2538,7 +2547,7 @@
           if (status === "waiting") return t("Needs approval");
           if (["approved", "unconfirmed"].includes(status)) return t("Live changes");
         }
-        if (step.events.some((event) => event.artifacts?.some((ref) => ref.kind === "midi"))) return t("Saved MIDI");
+        if (isSavedMidiStep(step)) return t("Saved MIDI");
         const call = step.events.find((event) => event.kind === "tool_call");
         const terminal = [...step.events].reverse().find(
           (event) =>
@@ -2579,7 +2588,7 @@
           return step.events.find((event) => event.applyOperation?.previews?.length)?.applyOperation.previews[0].targetLabel ||
             step.events.find((event) => event.kind === "apply_requested")?.content.split("\n")[0] || "";
         }
-        if (step.events.some((event) => event.artifacts?.some((ref) => ref.kind === "midi"))) return "";
+        if (isSavedMidiStep(step)) return "";
         const call = step.events.find((event) => event.kind === "tool_call");
         const applyLifecycle = call?.name === "apply_live_actions" || (
           !call && step.events.some((event) => event.kind.startsWith("apply_"))
@@ -2605,6 +2614,13 @@
       function activityEventPreview(event) {
         const value = (event?.content || "").trim();
         if (!value || value === "{}") return "";
+        if (event?.kind === "tool_result") {
+          try {
+            const parsed = JSON.parse(value);
+            const text = Array.isArray(parsed?.content) && parsed.content.find((entry) => entry?.type === "text" && typeof entry.text === "string" && entry.text.trim());
+            if (text) return text.text.trim();
+          } catch { /* Plain-text tool results already supply their own preview. */ }
+        }
         if (event?.kind === "tool_call") {
           try {
             const parsed = JSON.parse(value);
@@ -2616,6 +2632,19 @@
           }
         }
         return value.split("\n")[0]?.trim() || "";
+      }
+
+      function isMidiArtifactOnlyResult(event) {
+        if (event.kind !== "tool_result" || !event.artifacts?.length || event.artifacts.some((ref) => ref.kind !== "midi")) return false;
+        try {
+          const value = JSON.parse(event.content);
+          return value && Object.keys(value).length === 1 && Array.isArray(value.artifacts);
+        } catch { return false; }
+      }
+
+      function isSavedMidiStep(step) {
+        const results = step.events.filter((event) => event.kind !== "tool_call");
+        return results.length > 0 && results.every(isMidiArtifactOnlyResult);
       }
 
       function activityStepChangeCount(step) {

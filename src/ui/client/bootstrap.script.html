@@ -370,7 +370,11 @@
             artifactLibrary.openArtifact(artifact);
           },
         });
-        window.addEventListener("pagehide", () => chatArtifactPreviews.dispose());
+        window.addEventListener("pagehide", (event) => {
+          if (event.persisted) chatArtifactPreviews.suspend();
+          else chatArtifactPreviews.dispose();
+        });
+        window.addEventListener("pageshow", (event) => { if (event.persisted) chatArtifactPreviews.resume(); });
         const pluginApps = factories.createPluginApps({
           resultActions: pluginResults,
           getState,
@@ -1098,17 +1102,24 @@
           if (!hostAdapter.canClose) return;
           const operationActive = bridgeClient.isOperationInProgress() ||
             bridgeClient.hasAnySendInProgress();
-          const draftDirty = profileEditor.getDraftState().dirty;
+          const profileDirty = profileEditor.getDraftState().dirty;
+          const otherDraftDirty = creativeBriefEditor.hasUnsavedChanges() || bridgeClient.hasUnsavedChanges() ||
+            connectionsManager.hasUnsavedChanges() || midiContinuation.hasUnsavedChanges() || skillManager.hasUnsavedChanges();
+          const draftDirty = profileDirty || otherDraftDirty;
           const queuedFollowUpCount = bridgeClient.getQueuedFollowUpCount();
           const queuedFollowUpWarning = queuedFollowUpCount
             ? (queuedFollowUpCount === 1 ? i18n.message(" {count} queued follow-up will be discarded.", { count: queuedFollowUpCount }) : i18n.message(" {count} queued follow-ups will be discarded.", { count: queuedFollowUpCount }))
             : "";
           const warning = operationActive && draftDirty
-            ? i18n.message("Close Live Smith and discard unsaved Profile changes? The current operation will stop where possible; completed changes stay saved.{queuedFollowUpWarning}", { queuedFollowUpWarning: queuedFollowUpWarning })
+            ? otherDraftDirty
+              ? i18n.message("Close Live Smith and discard unsaved drafts? The current operation will stop where possible; completed changes stay saved.{queuedFollowUpWarning}", { queuedFollowUpWarning })
+              : i18n.message("Close Live Smith and discard unsaved Profile changes? The current operation will stop where possible; completed changes stay saved.{queuedFollowUpWarning}", { queuedFollowUpWarning: queuedFollowUpWarning })
             : operationActive
               ? i18n.message("Close Live Smith? The current operation will stop where possible; completed changes stay saved.{queuedFollowUpWarning}", { queuedFollowUpWarning: queuedFollowUpWarning })
               : draftDirty
-                ? i18n.message("Discard unsaved Profile changes and close Live Smith?")
+                ? otherDraftDirty
+                  ? i18n.message("Discard unsaved drafts and close Live Smith?")
+                  : i18n.message("Discard unsaved Profile changes and close Live Smith?")
                 : "";
           if (warning) {
             bridgeClient.setCloseDecisionPending(true);

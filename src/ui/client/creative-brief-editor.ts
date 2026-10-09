@@ -122,8 +122,13 @@ export function createCreativeBriefEditor(deps: Dependencies) {
       }
     });
   }
-  return { initialize, render, hasDraft: (sessionId: string) => {
+  function hasDraft(sessionId: string) {
     const draft = drafts.get(sessionId);
-    return Boolean(draft && draft.value !== draft.base);
-  } };
+    const state = deps.getState();
+    const session = [...state.sessions, ...state.previousSessions, ...state.archivedSessions].find((entry) => entry.id === sessionId);
+    return Boolean(draft && session && draft.value !== draft.base && draft.value !== (session.creativeBrief ?? ""));
+  }
+  return { initialize, render, hasDraft,
+    hasUnsavedChanges: () => [...drafts.keys()].some(hasDraft),
+  };
 }

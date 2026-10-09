@@ -7757,6 +7757,9 @@
         getPendingConfirmation: activePendingConfirmation,
         getPendingUserMessage: activePendingUserMessage,
         getComposerAttachments: composerAttachments,
+        hasUnsavedChanges: () => Boolean(currentComposerDraft(activeSessionId()).trim()) ||
+          [...composerDraftsBySession.values()].some((value) => value.trim()) ||
+          hasNetworkProxyChanges() || hasCustomInstructionsChanges() || audioConnectionEditor.hasUnsavedChanges(),
         isDraftEditLocked,
         hasSessionLocalWork,
         getSubscriptionSendGateMessage: subscriptionSendGateMessage,

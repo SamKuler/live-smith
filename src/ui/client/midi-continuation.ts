@@ -245,7 +245,8 @@ function createView(deps: Dependencies) {
   parameters.addEventListener("input", () => { dirty = true; syncControls(); });
   parameters.addEventListener("change", () => { dirty = true; syncControls(); });
   generator.addEventListener("change", () => { dirty = true; renderParameters(); });
-  return { render, setOperation(value: Operation) { operation = value; syncControls(); } };
+  return { render, hasUnsavedChanges: () => dirty,
+    setOperation(value: Operation) { operation = value; syncControls(); } };
 }
 
 export function createMidiContinuation(deps: Dependencies) {
@@ -253,6 +254,7 @@ export function createMidiContinuation(deps: Dependencies) {
   let operation: Operation = { busy: false, canStop: false, stopping: false };
   return {
     render() { if (!view) { view = createView(deps); view.setOperation(operation); } view.render(); },
+    hasUnsavedChanges: () => view?.hasUnsavedChanges() ?? false,
     setOperation(value: Operation) { operation = value; view?.setOperation(value); },
   };
 }

@@ -574,5 +574,7 @@
         if (viewedSkillOrigin?.containerId === "skillLibrary") closeSkillViewer(false);
       }
 
-      return { initialize, render, setBusy, showLibrary };
+      return { initialize, render, setBusy, showLibrary,
+        hasUnsavedChanges: () => Boolean(document.getElementById("skillPasteText")?.value.trim()),
+      };
       };

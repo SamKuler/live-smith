@@ -388,6 +388,8 @@ export const mainMessages: Record<string, string> = {
   "Close Live Smith and discard unsaved Profile changes? The current operation will stop where possible; completed changes stay saved.{queuedFollowUpWarning}": "关闭 Live Smith 并放弃未保存的配置档案更改？当前操作将尽可能停止；已完成的更改会保留。{queuedFollowUpWarning}",
   "Close Live Smith? The current operation will stop where possible; completed changes stay saved.{queuedFollowUpWarning}": "关闭 Live Smith？当前操作将尽可能停止；已完成的更改会保留。{queuedFollowUpWarning}",
   "Discard unsaved Profile changes and close Live Smith?": "放弃未保存的配置档案更改并关闭 Live Smith？",
+  "Close Live Smith and discard unsaved drafts? The current operation will stop where possible; completed changes stay saved.{queuedFollowUpWarning}": "关闭 Live Smith 并放弃未保存的草稿？当前操作将尽可能停止；已完成的更改会保留。{queuedFollowUpWarning}",
+  "Discard unsaved drafts and close Live Smith?": "放弃未保存的草稿并关闭 Live Smith？",
   "Close Live Smith?": "关闭 Live Smith？",
   "Close": "关闭",
   "All": "全部",

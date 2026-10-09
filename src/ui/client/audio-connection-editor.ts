@@ -783,6 +783,9 @@ export function createAudioConnectionEditor(options: AudioEditorOptions) {
 
   return {
     render: renderAudioTools,
+    hasUnsavedChanges: () => Boolean(element("audioServiceApiKey").value) ||
+      [...connectionState.drafts.values()].some((draft) => !draft.baseConnection ||
+        !sameJsonValue(audioConnectionFields(draft.connection), audioConnectionFields(draft.baseConnection))),
     getAudioConnections,
     clearAudioConnectionSecrets,
     clearSunoCookieInput,

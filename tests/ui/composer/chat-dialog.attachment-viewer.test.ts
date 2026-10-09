@@ -306,6 +306,32 @@ test("pagehide stops inline audio and clears image sources without repeating tea
   } finally { harness.close(); }
 });
 
+test("cached pagehide pauses inline audio and preserves media for restored controls", async () => {
+  const state = stateFixture();
+  state.pendingAttachments = [pendingImage("cache-image", "reference.png"), pendingAudio("cache-audio", "take.wav")];
+  const { harness } = await viewerHarness(state);
+  try {
+    const audio = harness.document.querySelector<HTMLAudioElement>(".attachment-inline-audio")!;
+    const image = harness.document.querySelector<HTMLImageElement>(".attachment-preview-image")!;
+    const playback = observeAudio(audio);
+    const audioSource = audio.src; const imageSource = image.src;
+    await audio.play(); audio.currentTime = 1;
+    harness.window.dispatchEvent(new harness.window.PageTransitionEvent("pagehide", { persisted: true }));
+    assert.equal(audio.paused, true);
+    assert.equal(audio.src, audioSource); assert.equal(image.src, imageSource);
+    assert.equal(audio.currentTime, 1); assert.equal(playback.loads, 0);
+    harness.window.dispatchEvent(new harness.window.PageTransitionEvent("pageshow", { persisted: true }));
+    harness.emitServerEventOpen(); await harness.settle();
+    assert.equal(harness.document.querySelector(".attachment-inline-audio"), audio);
+    harness.click(".attachment-audio-toggle"); await harness.settle();
+    assert.equal(audio.paused, false);
+    harness.window.dispatchEvent(new harness.window.PageTransitionEvent("pagehide", { persisted: false }));
+    assert.equal(audio.hasAttribute("src"), false); assert.equal(image.hasAttribute("src"), false);
+    assert.equal(playback.loads, 1);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
 test("pending image preview loads authenticated bytes, opens its exact file, and restores focus on Escape", async () => {
   const state = imageCapableState();
   state.pendingAttachments = [pendingImage("pending-image", "reference.png")];

@@ -42,7 +42,8 @@ export function createChatArtifactPreviews(deps: Dependencies) {
     let controller: AbortController | undefined;
     let transferring = false;
     let disposed = false;
-    const current = () => !disposed && owner === deps.getState().activeSessionId;
+    let suspended = false;
+    const current = () => !disposed && !suspended && owner === deps.getState().activeSessionId;
     const button = (text: string, run: () => void) => {
       const value = node("button", "secondary", () => t(text)); value.type = "button";
       value.addEventListener("click", () => { if (current()) run(); }); controls.append(value); return value;
@@ -107,9 +108,12 @@ export function createChatArtifactPreviews(deps: Dependencies) {
     const observer = typeof window.IntersectionObserver === "function" ? new window.IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) { observer!.disconnect(); void load(); }
     }, { rootMargin: "200px" }) : undefined;
-    if (observer) observer.observe(root); else void load();
+    const observe = () => { if (observer) observer.observe(root); else void load(); };
+    observe();
     return { element: root, syncBusy,
       refreshLocale() { if (bindings.refresh(root)) renderNotes(); },
+      suspend() { suspended = true; controller?.abort(); controller = undefined; observer?.disconnect(); },
+      resume() { if (!suspended || disposed) return; suspended = false; if (!artifact) observe(); },
       dispose() { disposed = true; controller?.abort(); observer?.disconnect(); },
     };
   }
@@ -127,6 +131,8 @@ export function createChatArtifactPreviews(deps: Dependencies) {
       return row.element;
     },
     setBusy(value: boolean) { busy = value; for (const row of rows.values()) row.syncBusy(); },
+    suspend() { for (const row of rows.values()) row.suspend(); },
+    resume() { for (const row of rows.values()) row.resume(); },
     dispose() { for (const row of rows.values()) row.dispose(); rows.clear(); },
   };
 }

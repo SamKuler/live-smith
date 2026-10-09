@@ -82,6 +82,22 @@ async function settleCommand(h: Awaited<ReturnType<typeof setup>>["h"]) {
   await h.settle(); await waitForCondition(() => h.document.querySelector("#midiContinuationSection")!.getAttribute("aria-busy") === "false", "Expected settled continuation operation");
 }
 
+for (const action of ["Use saved setup", "Save continuation setup"]) test(`Close protects continuation setup until ${action}`, async () => {
+  const { h } = await setup({ initialCount: 0 });
+  try {
+    h.input(".midi-continuation-prompt", "Unsaved continuation direction");
+    h.click("#closeButton");
+    assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, false);
+    assert.deepEqual(h.hostMessages, []);
+    h.click("#appConfirmationCancel"); await h.settle();
+    assert.equal(h.document.querySelector<HTMLTextAreaElement>(".midi-continuation-prompt")!.value, "Unsaved continuation direction");
+    button(h, action).click(); await settleCommand(h);
+    h.click("#closeButton"); await h.settle();
+    assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
+    assert.equal(h.hostMessages.length, 1); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
 test("source selection and bounded setup save without generation; Fill uses the saved buffer", async () => {
   const s = await setup({ loaded: false }); const { h } = s;
   try {
