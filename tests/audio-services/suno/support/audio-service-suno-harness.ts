@@ -36,7 +36,7 @@ export function clip(id = A, status = "complete", extra: Record<string, unknown>
 }
 export const downloadPath = (id = A) => `/api/download/clip/${id}?format=mp3`;
 export function receipt(ids: string[] = [B, A]) { return { status: "submitted", clips: ids.map((id) => clip(id, "submitted")) }; }
-export type Step = { path: string; value?: unknown; response?: Response; run?: () => Promise<Response> };
+export type Step = { path: string; value?: unknown; response?: Response; run?: (url: string, init: RequestInit) => Promise<Response> };
 export function replay(steps: Step[] = [], modelId?: string,
   options: NonNullable<Parameters<typeof createSunoAudioAdapter>[1]> = {}) {
   const requests: Array<{ path: string; url: string; init: RequestInit; body: unknown; headers: Headers }> = [];
@@ -56,7 +56,7 @@ export function replay(steps: Step[] = [], modelId?: string,
     const step = pending.shift();
     assert.ok(step, `unexpected request ${path}`);
     assert.equal(path, step.path);
-    return step.run ? step.run() : step.response ?? Response.json(step.value);
+    return step.run ? step.run(url, init) : step.response ?? Response.json(step.value);
   }) as typeof fetch;
   return {
     adapter: createSunoAudioAdapter(session, { ...options, fetchImpl, ...(modelId === undefined ? {} : { modelId }) }),

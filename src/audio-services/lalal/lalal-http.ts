@@ -113,8 +113,9 @@ export function createLalalHttp(apiKey: string, injected?: typeof fetch) {
       }
       const bytes = await readAudioResponseBytes(response, {
         maximumBytes, signal: controller.signal, active: assertLalalActive, fail: lalalError,
+        preserveCompletedOnAbort: preserveSubmitReceipt,
       });
-      assertLalalActive(controller.signal);
+      if (!preserveSubmitReceipt) assertLalalActive(controller.signal);
       return bytes;
     } catch (error) {
       controller.abort();

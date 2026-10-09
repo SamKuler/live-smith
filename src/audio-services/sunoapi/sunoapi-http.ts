@@ -104,8 +104,9 @@ export function createSunoApiHttp(apiKey: string, injected?: typeof fetch) {
       }
       const bytes = await readAudioResponseBytes(response, {
         maximumBytes, signal: controller.signal, active, fail,
+        preserveCompletedOnAbort: preserveReceipt,
       });
-      active(controller.signal);
+      if (!preserveReceipt) active(controller.signal);
       return bytes;
     } catch (error) {
       controller.abort();

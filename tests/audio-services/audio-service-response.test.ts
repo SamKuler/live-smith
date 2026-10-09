@@ -12,9 +12,12 @@ import { MAX_AUDIO_ASSET_BYTES } from "../../src/audio-services/contracts.js";
 import { createElevenLabsAudioAdapter } from "../../src/audio-services/elevenlabs/elevenlabs.js";
 import { createLalalAudioAdapter } from "../../src/audio-services/lalal/lalal.js";
 import { createMurekaAudioAdapter } from "../../src/audio-services/mureka/mureka.js";
+import { createSunoHttp } from "../../src/audio-services/suno/suno-http.js";
 import { createSunoPlatformAudioAdapter } from "../../src/audio-services/suno-platform/suno-platform.js";
 import { createSunoApiAudioAdapter } from "../../src/audio-services/sunoapi/sunoapi.js";
 import { createHostAbortController } from "../../src/runtime/host.js";
+import { A, B, MANIFEST, MUSIC as SUNO_MUSIC, accountStep, clip, gateStep,
+  receipt, replay, session } from "./suno/support/audio-service-suno-harness.js";
 
 const KEY = "synthetic-response-test-key";
 const TASK = "2fe8f214-1771-4900-9e7e-570f823bd359";
@@ -30,6 +33,27 @@ const PLATFORM_OUTPUT = { key: TASK, role: "music", url: "https://audiopipe.suno
 const MUREKA_OUTPUT = { key: "song-a", role: "music", url: "https://cdn.mureka.ai/fixture.mp3" } as const;
 
 const operations = {
+  "suno website receipt": {
+    bytes: Buffer.from(JSON.stringify(receipt())), mime: "application/json",
+    expected: { kind: "task", taskId: A, expectedOutputs: MANIFEST },
+    run: async (fetchImpl: typeof fetch, signal: AbortSignal) => {
+      const h = replay([accountStep(), gateStep(), { path: "/api/generate/v2-web/", run: fetchImpl }]);
+      const request = { ...SUNO_MUSIC };
+      await h.adapter.prepare!(request, signal);
+      return h.adapter.submit(request, signal);
+    },
+  },
+  "suno website poll": {
+    bytes: Buffer.from(JSON.stringify([clip(A, "submitted"), clip(B, "submitted")])),
+    mime: "application/json", expected: { status: "running" },
+    run: (fetchImpl: typeof fetch, signal: AbortSignal) =>
+      replay([{ path: `/api/feed/?ids=${A},${B}`, run: fetchImpl }]).adapter.inspect!(A, signal, MANIFEST),
+  },
+  "suno website download": {
+    bytes: MP3, mime: "audio/mpeg", expected: MP3,
+    run: (fetchImpl: typeof fetch, signal: AbortSignal) =>
+      createSunoHttp(session, fetchImpl).download(`https://cdn1.suno.ai/${A}.mp3`, signal),
+  },
   "sunoapi receipt": {
     bytes: Buffer.from(JSON.stringify({ code: 200, msg: "success", data: { taskId: TASK } })),
     mime: "application/json", expected: { kind: "task", taskId: TASK },
@@ -90,6 +114,13 @@ const operations = {
     bytes: Buffer.from(JSON.stringify({ task_id: TASK })), mime: "application/json", expected: TASK,
     run: (fetchImpl: typeof fetch, signal: AbortSignal) =>
       createLalalAudioAdapter(KEY, { fetchImpl }).submit(SOURCE, ["vocals"], TASK, signal),
+  },
+  "lalal poll": {
+    bytes: Buffer.from(JSON.stringify({ result: { [TASK]: {
+      status: "progress", source_id: SOURCE, presets: { stem_list: ["vocals"] }, progress: 42,
+    } } })), mime: "application/json", expected: { status: "running", progress: 42 },
+    run: (fetchImpl: typeof fetch, signal: AbortSignal) =>
+      createLalalAudioAdapter(KEY, { fetchImpl }).inspect(TASK, ["vocals"], signal),
   },
   "lalal download": {
     bytes: MP3, mime: "audio/mpeg", expected: MP3,
@@ -272,3 +303,99 @@ test("LALAL owns reused tiny chunks across block boundaries and empty reads", as
   }, { highWaterMark: 0 }) as never);
   assert.deepEqual(await operations["lalal download"].run(async () => response, createHostAbortController().signal), expected);
 });
+
+const receiptBoundaries = [
+  { label: "Stop", ageMs: 0, stop: true, remainingMs: 0 },
+  { label: "the original deadline", ageMs: 0, stop: false, remainingMs: 120_000 },
+  { label: "the Stop grace deadline", ageMs: 0, stop: true, remainingMs: 3_000 },
+  { label: "the original deadline during Stop grace", ageMs: 119_000, stop: true, remainingMs: 1_000 },
+] as const;
+
+function responseAtBoundary(t: TestContext, bytes: Buffer, mime: string,
+  boundary: { ageMs: number; stop: boolean; remainingMs: number }, eof: boolean) {
+  const controller = createHostAbortController();
+  let reads = 0; let cancels = 0; let requests = 0;
+  let requestSignal: AbortSignal | null | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    pull(stream) {
+      if (++reads === 1) { stream.enqueue(bytes); return; }
+      t.mock.timers.tick(boundary.ageMs);
+      if (boundary.stop) controller.abort(KEY);
+      // Only the remote stream can supply EOF. Reader cancellation must not
+      // turn already received JSON bytes into an acknowledged receipt.
+      if (eof) stream.close();
+      t.mock.timers.tick(boundary.remainingMs);
+    },
+    cancel() { cancels++; },
+  }, { highWaterMark: 0 });
+  const fetchImpl: typeof fetch = async (_input, init) => {
+    requests++;
+    requestSignal = init?.signal;
+    return new Response(body as never, { headers: { "Content-Type": mime } });
+  };
+  return { fetchImpl, controller, body,
+    counts: () => ({ requests, cancels }), aborted: () => requestSignal?.aborted };
+}
+
+for (const name of ["suno website receipt", "sunoapi receipt", "lalal receipt", "suno platform receipt", "mureka receipt"] as const) {
+  const operation = operations[name];
+  for (const boundary of receiptBoundaries) {
+    test(`${name}: real EOF retains the validated receipt at ${boundary.label}`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] }); syncBuiltinESMExports();
+      t.after(() => { t.mock.timers.reset(); syncBuiltinESMExports(); });
+      const h = responseAtBoundary(t, operation.bytes, operation.mime, boundary, true);
+      assert.deepEqual(await operation.run(h.fetchImpl, h.controller.signal), operation.expected);
+      assert.deepEqual(h.counts(), { requests: 1, cancels: 0 });
+      assert.equal(h.body.locked, false);
+      assert.equal(getEventListeners(h.controller.signal, "abort").length, 0);
+      t.mock.timers.tick(120_000);
+      assert.equal(h.aborted(), boundary.remainingMs !== 0);
+    });
+
+    if (!boundary.remainingMs) continue;
+    test(`${name}: complete JSON without EOF still expires at ${boundary.label}`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] }); syncBuiltinESMExports();
+      t.after(() => { t.mock.timers.reset(); syncBuiltinESMExports(); });
+      const h = responseAtBoundary(t, operation.bytes, operation.mime, boundary, false);
+      await assert.rejects(operation.run(h.fetchImpl, h.controller.signal), boundary.stop ? /cancelled/ : /timed out/);
+      assert.deepEqual(h.counts(), { requests: 1, cancels: 1 });
+      assert.equal(h.body.locked, false);
+      assert.equal(h.aborted(), true);
+      assert.equal(getEventListeners(h.controller.signal, "abort").length, 0);
+    });
+
+    test(`${name}: EOF still validates JSON and receipt identity at ${boundary.label}`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] }); syncBuiltinESMExports();
+      t.after(() => { t.mock.timers.reset(); syncBuiltinESMExports(); });
+      for (const payload of ["{", "{}"]) {
+        const h = responseAtBoundary(t, Buffer.from(payload), operation.mime, boundary, true);
+        await assert.rejects(operation.run(h.fetchImpl, h.controller.signal), (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.notEqual(error.name, "AbortError");
+          assert.doesNotMatch(error.message, /timed out|cancelled|synthetic-response-test-key/);
+          return true;
+        });
+        assert.deepEqual(h.counts(), { requests: 1, cancels: 0 });
+        assert.equal(h.body.locked, false);
+        assert.equal(getEventListeners(h.controller.signal, "abort").length, 0);
+      }
+    });
+  }
+}
+
+for (const name of ["suno website poll", "suno website download", "sunoapi poll", "sunoapi download", "lalal poll", "lalal download"] as const) {
+  const operation = operations[name];
+  for (const stop of [false, true]) {
+    test(`${name}: EOF does not bypass ${stop ? "Stop" : "the request deadline"}`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] }); syncBuiltinESMExports();
+      t.after(() => { t.mock.timers.reset(); syncBuiltinESMExports(); });
+      const h = responseAtBoundary(t, operation.bytes, operation.mime,
+        { ageMs: 0, stop, remainingMs: stop ? 0 : name.endsWith("download") ? 600_000 : 120_000 }, true);
+      await assert.rejects(operation.run(h.fetchImpl, h.controller.signal), stop ? /cancelled/ : /timed out/);
+      assert.equal(h.counts().requests, 1);
+      assert.equal(h.body.locked, false);
+      assert.equal(h.aborted(), true);
+      assert.equal(getEventListeners(h.controller.signal, "abort").length, 0);
+    });
+  }
+}
