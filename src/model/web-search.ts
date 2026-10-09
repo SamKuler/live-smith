@@ -3,6 +3,7 @@ import type {
   ModelHostedWebSearchAction,
 } from "./contracts.js";
 import { isModelCitation, normalizeModelCitations } from "./citations.js";
+import { HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND } from "./tools.js";
 
 export const MAX_MODEL_WEB_SEARCH_ID_CODE_POINTS = 128;
 export const MAX_MODEL_WEB_SEARCH_QUERY_COUNT = 8;
@@ -13,6 +14,20 @@ const actions = new Set<ModelHostedWebSearchAction>([
   "open_page",
   "find_in_page",
 ]);
+
+export function createModelWebSearchStreamReporter(
+  onUpdate: ((update: ModelHostedWebSearch) => Promise<void> | void) | undefined,
+): (update: ModelHostedWebSearch | undefined) => Promise<void> {
+  const reported = new Map<string, string>();
+  return async update => {
+    if (!update || (!reported.has(update.id) &&
+      reported.size >= HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND)) return;
+    const signature = JSON.stringify(update);
+    if (reported.get(update.id) === signature) return;
+    reported.set(update.id, signature);
+    await onUpdate?.(update);
+  };
+}
 
 export function normalizeModelHostedWebSearch(
   value: unknown,

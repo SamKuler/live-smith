@@ -406,7 +406,7 @@
         const overrides = subscription ? {} : capabilityOverridesFromForm();
         const advanced = {};
         if (Object.keys(overrides).length) advanced.capabilityOverrides = overrides;
-        if (!subscription && document.getElementById("webSearchEnabled").checked) {
+        if (document.getElementById("webSearchEnabled").checked) {
           advanced.hostedTools = { webSearch: true };
         }
         if (extraBody) advanced.extraBody = extraBody;
@@ -1102,7 +1102,6 @@
       function clearOAuthSubscriptionIncompatibleSettings() {
         document.getElementById("temperature").value = "";
         document.getElementById("maxOutputTokens").value = "";
-        document.getElementById("webSearchEnabled").checked = false;
         document.getElementById("extraBody").value = "";
         populateCapabilityOverrides({});
       }
@@ -1139,7 +1138,9 @@
                     : { temperature: entry.parameters.temperature }),
                   reasoning,
                 },
-            advanced: subscription ? {} : cloneValue(entry.advanced || {}),
+            advanced: subscription
+              ? (entry.advanced?.hostedTools?.webSearch ? { hostedTools: { webSearch: true } } : {})
+              : cloneValue(entry.advanced || {}),
           };
         });
         renderSelectedModelConfig();
@@ -1183,16 +1184,8 @@
 
       function handleApiModeChange() {
         const modeControl = document.getElementById("apiMode");
-        const webSearch = document.getElementById("webSearchEnabled");
-        const webSearchWasEnabled = webSearch.checked;
-        if (modeControl.value === "chat-completions") webSearch.checked = false;
-        if (modeControl.value === "chat-completions") {
-          for (const entry of draftProfile?.models || []) {
-            if (entry.advanced?.hostedTools) delete entry.advanced.hostedTools;
-          }
-        }
+        updateHostedToolControls();
         markDraftDirty(modeControl);
-        updateHostedToolControls(false, webSearchWasEnabled && !webSearch.checked);
       }
 
       function handleWebSearchChange(control) {
@@ -1200,20 +1193,26 @@
         updateHostedToolControls();
       }
 
-      function updateHostedToolControls(settingsLocked = false, wasTurnedOff = false) {
+      function updateHostedToolControls(settingsLocked = false) {
         const control = document.getElementById("webSearchEnabled");
         const hint = document.getElementById("webSearchHint");
         const mode = document.getElementById("apiMode").value;
         const subscription = isOAuthSubscription();
-        const supported = !subscription && (mode === "responses" || mode === "messages");
-        if (subscription) control.checked = false;
+        const supported = subscription || mode === "responses" || mode === "messages";
+        const wasTurnedOff = !supported && control.checked;
+        if (!supported) {
+          control.checked = false;
+          for (const entry of draftProfile?.models || []) {
+            if (entry.advanced?.hostedTools) delete entry.advanced.hostedTools;
+          }
+        }
         control.disabled = settingsLocked || !supported;
         control.dataset.protocolSupported = String(supported);
-        const showHint = subscription || !supported || control.checked;
-        const hintText = subscription
-          ? t("Unavailable for subscriptions. Use Direct API with Responses or Messages.")
-          : supported
-            ? t("Endpoint support isn’t verified.")
+        const showHint = !supported || control.checked;
+        const hintText = supported
+            ? (subscription
+              ? t("Availability depends on the provider and account.")
+              : t("Endpoint support isn’t verified."))
             : wasTurnedOff
               ? t("Turned off · unavailable with Chat Completions.")
               : t("Unavailable with Chat Completions.");

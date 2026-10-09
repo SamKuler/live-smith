@@ -29,6 +29,38 @@ function subscriptionProfile(): SavedProfile {
   });
 }
 
+for (const provider of ["openai", "anthropic", "google"] as const) {
+  test(`${provider} subscription saves, reloads and disables Web Search`, async () => {
+    const profile = profileFixture({
+      connection: { kind: "oauth-subscription", provider },
+      parameters: { reasoning: { mode: "default" } },
+      advanced: {},
+    });
+    const state = stateFixture();
+    state.settings.profiles = [profile];
+    state.settings.activeProfileId = profile.id;
+    const harness = await createDialogHarness(state);
+    try {
+      const control = harness.document.querySelector<HTMLInputElement>("#webSearchEnabled")!;
+      assert.equal(control.disabled, false);
+      harness.click("#webSearchEnabled");
+      harness.click("#saveProfileButton");
+      await harness.settle();
+      const saved = (commandCalls(harness).at(-1)?.body as { profile?: SavedProfile }).profile;
+      assert.deepEqual(saved?.models[0]?.advanced, { hostedTools: { webSearch: true } });
+      assert.equal(control.checked, true);
+      harness.click("#webSearchEnabled");
+      harness.click("#saveProfileButton");
+      await harness.settle();
+      const disabled = (commandCalls(harness).at(-1)?.body as { profile?: SavedProfile }).profile;
+      assert.deepEqual(disabled?.models[0]?.advanced, {});
+      assert.deepEqual(harness.errors, []);
+    } finally {
+      harness.close();
+    }
+  });
+}
+
 function submitFromComposer(
   harness: Awaited<ReturnType<typeof createDialogHarness>>,
 ): void {
@@ -41,6 +73,26 @@ function submitFromComposer(
     }),
   );
 }
+
+test("returning from a subscription to Chat Completions clears its unsupported search setting", async () => {
+  const state = stateFixture();
+  const harness = await createDialogHarness(state);
+  try {
+    harness.select("#apiFamily", "openai");
+    harness.select("#apiMode", "chat-completions");
+    harness.select("#connectionKind", "oauth-subscription");
+    harness.click("#webSearchEnabled");
+    harness.select("#connectionKind", "direct-api");
+    const control = harness.document.querySelector<HTMLInputElement>("#webSearchEnabled")!;
+    assert.equal(control.disabled, true);
+    assert.equal(control.checked, false);
+    harness.click("#saveProfileButton");
+    await harness.settle();
+    const saved = (commandCalls(harness).at(-1)?.body as { profile?: SavedProfile }).profile;
+    assert.equal(saved?.models[0]?.advanced.hostedTools, undefined);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
 
 test("ChatGPT sign-in crosses a concurrent unrelated Profile refresh", async () => {
   const state = stateFixture();
@@ -1110,8 +1162,8 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
         .some((option) => option.value === "disabled"),
       true,
     );
-    assert.equal(harness.document.querySelector<HTMLInputElement>("#webSearchEnabled")?.checked, false);
-    assert.equal(harness.document.querySelector<HTMLInputElement>("#webSearchEnabled")?.disabled, true);
+    assert.equal(harness.document.querySelector<HTMLInputElement>("#webSearchEnabled")?.checked, true);
+    assert.equal(harness.document.querySelector<HTMLInputElement>("#webSearchEnabled")?.disabled, false);
     assert.equal(harness.document.querySelector<HTMLSelectElement>("#overrideInputImage")?.value, "inherit");
     assert.equal(harness.document.querySelector<HTMLSelectElement>("#overrideInputImage")?.disabled, true);
     assert.equal(harness.document.querySelector<HTMLTextAreaElement>("#extraBody")?.value, "");

@@ -14,6 +14,7 @@ import {
   isHostedWebSearchRequestMaxUses,
 } from "../tools.js";
 import {
+  createModelWebSearchStreamReporter,
   normalizeModelHostedWebSearch,
   safeModelWebSearchId,
 } from "../web-search.js";
@@ -197,16 +198,20 @@ export function buildOpenAIResponsesBody(
   return body;
 }
 
-export function decodeOpenAIResponsesTerminalTurn(
+export async function decodeOpenAIResponsesTerminalTurn(
   value: unknown,
   expectedStatus: ResponsesTerminalStatus,
   label: string,
   contextWindowTokens: number | undefined,
-): ModelTurn {
+  onHostedWebSearch?: TransportRequest["onHostedWebSearch"],
+): Promise<ModelTurn> {
+  const terminal = requireResponsesTerminalResponse(value, label, expectedStatus);
+  const searches = webSearchesFromResponsesOutput(terminal.output);
+  for (const search of searches) await onHostedWebSearch?.(search);
   return turnFromResponse(
-    requireResponsesTerminalResponse(value, label, expectedStatus),
+    terminal,
     label,
-    [],
+    searches,
     contextWindowTokens,
   );
 }
@@ -410,20 +415,7 @@ async function streamResponsesTurn(
   const decodeReasoningUpdate = createOpenAIResponsesReasoningStreamDecoder(
     "OpenAI Responses",
   );
-  const reportedWebSearches = new Map<string, string>();
-  const reportWebSearch = async (update: ModelHostedWebSearch | undefined) => {
-    if (!update) return;
-    if (
-      !reportedWebSearches.has(update.id) &&
-      reportedWebSearches.size >= HOSTED_WEB_SEARCH_MAX_EVENTS_PER_SEND
-    ) {
-      return;
-    }
-    const signature = JSON.stringify(update);
-    if (reportedWebSearches.get(update.id) === signature) return;
-    reportedWebSearches.set(update.id, signature);
-    await request.onHostedWebSearch?.(update);
-  };
+  const reportWebSearch = createModelWebSearchStreamReporter(request.onHostedWebSearch);
   for await (const event of streamOpenAIEvents(
     request.runtimeProfile.profile,
     fetchImpl,
@@ -456,20 +448,12 @@ async function streamResponsesTurn(
         pendingError !== undefined,
         "OpenAI Responses",
       );
-      const terminal = requireResponsesTerminalResponse(
+      return decodeOpenAIResponsesTerminalTurn(
         event.response,
-        "OpenAI Responses",
         event.type === "response.completed" ? "completed" : "incomplete",
-      );
-      const hostedWebSearches = webSearchesFromResponsesOutput(terminal.output);
-      for (const search of hostedWebSearches) {
-        await reportWebSearch(search);
-      }
-      return turnFromResponse(
-        terminal,
         "OpenAI Responses",
-        hostedWebSearches,
         request.runtimeProfile.capabilities.contextWindowTokens,
+        reportWebSearch,
       );
     } else if (event.type === "response.failed") {
       const failedResponse = decodeOpenAIResponsesFailedResponse(
@@ -498,7 +482,7 @@ async function streamResponsesTurn(
   );
 }
 
-function webSearchUpdateFromOpenAIEvent(
+export function webSearchUpdateFromOpenAIEvent(
   event: Record<string, unknown>,
 ): ModelHostedWebSearch | undefined {
   if (

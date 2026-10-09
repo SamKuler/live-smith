@@ -802,6 +802,14 @@ export async function handleAgentRequest(
                       ...(value.providerState === undefined
                         ? {}
                         : { providerState: value.providerState }),
+                      ...(value.contextProjection ? {
+                        contextProjection: {
+                          ...value.contextProjection,
+                          messages: value.contextUsage
+                            ? value.contextProjection.messages.slice(0, value.contextProjection.usageMessageCount)
+                            : value.contextProjection.messages,
+                        },
+                      } : {}),
                     },
                   ],
                 }),

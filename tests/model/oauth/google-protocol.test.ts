@@ -9,7 +9,8 @@ import {
   ModelConnectionError,
   ModelRetryableError,
 } from "../../../src/model/connection-error.js";
-import type { TransportRequest } from "../../../src/model/provider.js";
+import type { ModelTool, TransportRequest } from "../../../src/model/provider.js";
+import type { ModelTurn } from "../../../src/model/contracts.js";
 import { decodeGoogleAntigravityCatalog } from "../../../src/model/oauth/google-catalog.js";
 import { createGoogleAntigravityProtocol } from "../../../src/model/oauth/google-protocol.js";
 
@@ -85,6 +86,306 @@ function streamResponse(
     },
   );
 }
+
+test("Antigravity searches separately and replays mixed search and Live calls", async () => {
+  const bodies: Record<string, any>[] = [];
+  const updates: any[] = [];
+  const initialParts = [
+    { functionCall: { name: "live_smith_web_search", args: { query: "Live manual" } }, thoughtSignature: "search-signature" },
+    { functionCall: { id: "inspect-1", name: "inspect", args: {} } },
+  ];
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (input, init) => {
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    if (String(input).endsWith(":fetchAvailableModels")) {
+      return new Response(JSON.stringify({
+        models: { "account-search-model": { displayName: "Search" } },
+        webSearchModelIds: ["account-search-model"],
+      }));
+    }
+    if (body.requestType === "web_search") {
+      return streamResponse([{ response: { candidates: [{
+        content: { parts: [{ text: "The manual explains Warp." }] },
+        groundingMetadata: { webSearchQueries: ["Live manual"], groundingChunks: [{ web: { uri: "https://www.ableton.com/en/manual/", title: "Live manual" } }] },
+        finishReason: "STOP",
+      }] } }]);
+    }
+    return streamResponse([{ response: { candidates: [{
+      content: { parts: bodies.length === 1 ? initialParts : [{ text: "Done" }] },
+      finishReason: "STOP",
+    }] } }]);
+  } });
+  const current = request();
+  current.tools.push({ type: "hosted_web_search", maxUses: 2 });
+  current.onHostedWebSearch = update => { updates.push(update); };
+  const turn = await protocol.createToolTurn(current, credential);
+  assert.deepEqual(turn.toolCalls, [{ id: "inspect-1", name: "inspect", arguments: "{}" }]);
+  assert.equal(bodies.length, 3);
+  assert.equal(bodies[0]?.request.tools[0].functionDeclarations.at(-1).name, "live_smith_web_search");
+  const searchBody = bodies[2]!;
+  assert.equal(searchBody.model, "account-search-model");
+  assert.equal(searchBody.project, "project-1");
+  assert.deepEqual(searchBody.request.tools, [{ googleSearch: {} }]);
+  assert.equal(searchBody.request.toolConfig, undefined);
+  assert.deepEqual(searchBody.request.contents, [{ role: "user", parts: [{ text: "Live manual" }] }]);
+  assert.deepEqual(updates.map(update => update.status), ["searching", "completed"]);
+  assert.deepEqual(turn.hostedWebSearches, [updates[1]]);
+  assert.deepEqual(turn.hostedWebSearches?.[0]?.sources, [{ url: "https://www.ableton.com/en/manual/", title: "Live manual" }]);
+  assert.equal(turn.citations, undefined);
+  current.agentMessages = [
+    { role: "assistant", content: turn.content, toolCalls: turn.toolCalls, providerState: turn.providerState },
+    { role: "tool", toolCallId: "inspect-1", content: "Live state" },
+  ];
+  current.tools = current.tools.filter(tool => tool.type === "function");
+  await protocol.createToolTurn(current, credential);
+  const replay = bodies.at(-1)!.request.contents;
+  assert.deepEqual(replay[1].parts, initialParts);
+  assert.equal(replay[2].parts[0].functionResponse.name, "live_smith_web_search");
+  assert.equal(replay[2].parts[0].functionResponse.id, undefined);
+  assert.equal(replay[2].parts[1].functionResponse.id, "inspect-1");
+  assert.equal(replay[2].parts[1].functionResponse.response.result, "Live state");
+});
+
+function searchCatalog(ids = ["search-only-model"]): Response {
+  return new Response(JSON.stringify({ models: {}, webSearchModelIds: ids }));
+}
+
+function googleTextResponse(text: string, grounded = false): Response {
+  return streamResponse([{ response: { candidates: [{
+    content: { parts: [{ text }] }, finishReason: "STOP",
+    ...(grounded ? { groundingMetadata: { webSearchQueries: ["Live manual"], groundingChunks: [{ web: { uri: "https://example.test/manual", title: "Manual" } }] } } : {}),
+  }] } }]);
+}
+
+function googleSearchCallResponse(count = 1, finishReason = "STOP"): Response {
+  return streamResponse([{ response: { candidates: [{
+    content: { parts: Array.from({ length: count }, (_, i) => ({ functionCall: { name: "live_smith_web_search", args: { query: `Live manual ${i}` } }, thoughtSignature: `signature-${i}` })) },
+    finishReason,
+  }] } }]);
+}
+
+function advanceHostedSearch(request: TransportRequest, turn: ModelTurn): void {
+  assert.equal(turn.continuation?.reason, "hosted_tools");
+  request.agentMessages.push({ role: "assistant", content: turn.content, toolCalls: turn.toolCalls, providerState: turn.providerState });
+  request.reconnectState = {};
+  const used = turn.hostedWebSearches?.length ?? 0;
+  request.tools = request.tools.flatMap<ModelTool>(tool => tool.type === "function"
+    ? [tool] : tool.maxUses > used ? [{ ...tool, maxUses: tool.maxUses - used }] : []);
+}
+
+test("Antigravity retains completed searches across a failed answer connection", async () => {
+  let modelCalls = 0;
+  let searchCalls = 0;
+  let catalogCalls = 0;
+  const bodies: Record<string, any>[] = [];
+  const updates: any[] = [];
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (input, init) => {
+    if (String(input).endsWith(":fetchAvailableModels")) { catalogCalls++; return searchCatalog(); }
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    if (body.requestType === "web_search") { searchCalls++; return googleTextResponse("Grounded summary", true); }
+    modelCalls++;
+    if (modelCalls === 1) return googleSearchCallResponse();
+    if (modelCalls === 2) throw new TypeError("connection interrupted");
+    return googleTextResponse("Final answer");
+  } });
+  const current = request();
+  current.reconnectState = {};
+  current.tools.push({ type: "hosted_web_search", maxUses: 2 });
+  current.onHostedWebSearch = update => { updates.push(update); };
+  const searched = await protocol.createToolTurn(current, credential);
+  advanceHostedSearch(current, searched);
+  current.tools = current.tools.filter(tool => tool.type === "function");
+  await assert.rejects(protocol.createToolTurn(current, credential), ModelConnectionError);
+  const result = await protocol.createToolTurn(current, credential);
+  assert.equal(result.content, "Final answer");
+  assert.equal(searchCalls, 1);
+  assert.equal(catalogCalls, 1);
+  assert.equal(modelCalls, 3);
+  assert.equal(bodies[2]?.requestId, bodies[3]?.requestId);
+  assert.deepEqual(bodies[2]?.request.contents, bodies[3]?.request.contents);
+  assert.equal(bodies[3]?.request.contents[1].parts[0].thoughtSignature, "signature-0");
+  assert.match(bodies[3]?.request.contents[2].parts[0].functionResponse.response.result, /Grounded summary/);
+  assert.equal(searched.hostedWebSearches?.length, 1);
+  assert.equal(new Set(updates.map(update => update.id)).size, 1);
+});
+
+for (const stage of ["request", "body"] as const) {
+  test(`Antigravity retries a disconnected search catalog ${stage} without repeating the model turn`, async () => {
+    let modelCalls = 0;
+    let catalogCalls = 0;
+    let searchCalls = 0;
+    const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (input, init) => {
+      if (String(input).endsWith(":fetchAvailableModels")) {
+        catalogCalls++;
+        if (catalogCalls === 1) {
+          if (stage === "request") throw new TypeError("disconnected");
+          return new Response(new ReadableStream({
+            start(controller) { controller.error(new TypeError("disconnected body")); },
+          }) as unknown as BodyInit, { headers: { "content-type": "application/json" } });
+        }
+        return searchCatalog();
+      }
+      if (JSON.parse(String(init?.body)).requestType === "web_search") {
+        searchCalls++;
+        return googleTextResponse("Result", true);
+      }
+      modelCalls++;
+      return modelCalls === 1 ? googleSearchCallResponse() : googleTextResponse("Answer");
+    } });
+    const current = request();
+    current.reconnectState = {};
+    current.tools.push({ type: "hosted_web_search", maxUses: 1 });
+    await assert.rejects(protocol.createToolTurn(current, credential), ModelConnectionError);
+    const turn = await protocol.createToolTurn(current, credential);
+    assert.equal(catalogCalls, 2);
+    assert.equal(searchCalls, 1);
+    assert.equal(modelCalls, 1);
+    assert.equal(turn.hostedWebSearches?.[0]?.status, "completed");
+  });
+}
+
+test("Antigravity search obeys the remaining allowance and removes its function afterward", async () => {
+  let normalCalls = 0;
+  let searches = 0;
+  let finalBody: Record<string, any> | undefined;
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (input, init) => {
+    if (String(input).endsWith(":fetchAvailableModels")) return searchCatalog();
+    const body = JSON.parse(String(init?.body));
+    if (body.requestType === "web_search") { searches++; return googleTextResponse("Result", true); }
+    normalCalls++;
+    if (normalCalls === 1) return googleSearchCallResponse(2);
+    finalBody = body;
+    return googleTextResponse("Answer");
+  } });
+  const current = request();
+  current.tools.push({ type: "hosted_web_search", maxUses: 1 });
+  const result = await protocol.createToolTurn(current, credential);
+  assert.equal(searches, 1);
+  assert.equal(result.hostedWebSearches?.length, 1);
+  advanceHostedSearch(current, result);
+  await protocol.createToolTurn(current, credential);
+  assert.deepEqual(finalBody?.request.tools[0].functionDeclarations.map((tool: any) => tool.name), ["inspect"]);
+  assert.match(finalBody?.request.contents[2].parts[1].functionResponse.response.result, /allowance exhausted/);
+});
+
+for (const failure of ["missing-model", "no-grounding", "http-error"] as const) {
+  test(`Antigravity reports ${failure} as a failed search without inventing evidence`, async () => {
+    let normalCalls = 0;
+    let searches = 0;
+    let replay: Record<string, any> | undefined;
+    const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (input, init) => {
+      if (String(input).endsWith(":fetchAvailableModels")) return searchCatalog(failure === "missing-model" ? [] : undefined);
+      const body = JSON.parse(String(init?.body));
+      if (body.requestType === "web_search") {
+        searches++;
+        if (failure === "http-error") return new Response(JSON.stringify({ error: { status: "INVALID_ARGUMENT", message: "private diagnostic" } }), { status: 400 });
+        return streamResponse([{ response: { candidates: [{ content: { parts: [{ text: "Unsupported factual claim" }] }, citationMetadata: { citationSources: [{ uri: "https://example.test/invented" }] }, finishReason: "STOP" }] } }]);
+      }
+      normalCalls++;
+      if (normalCalls === 1) return googleSearchCallResponse();
+      replay = body;
+      return googleTextResponse("Search unavailable");
+    } });
+    const current = request();
+    current.tools.push({ type: "hosted_web_search", maxUses: 1 });
+    const turn = await protocol.createToolTurn(current, credential);
+    assert.equal(searches, failure === "missing-model" ? 0 : 1);
+    assert.equal(turn.hostedWebSearches?.[0]?.status, "failed");
+    assert.deepEqual(turn.hostedWebSearches?.[0]?.sources, []);
+    assert.equal(turn.citations, undefined);
+    advanceHostedSearch(current, turn);
+    await protocol.createToolTurn(current, credential);
+    const result = JSON.parse(replay?.request.contents[2].parts[0].functionResponse.response.result);
+    assert.equal(typeof result.error, "string");
+    assert.equal(JSON.stringify(result).includes("private diagnostic"), false);
+    assert.equal(JSON.stringify(result).includes("Unsupported factual claim"), false);
+  });
+}
+
+test("Antigravity does not execute a truncated search call", async () => {
+  let calls = 0;
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async () => { calls++; return googleSearchCallResponse(1, "MAX_TOKENS"); } });
+  const current = request();
+  current.tools.push({ type: "hosted_web_search", maxUses: 1 });
+  const turn = await protocol.createToolTurn(current, credential);
+  assert.equal(calls, 1);
+  assert.equal(turn.continuation?.reason, "output_limit");
+  assert.deepEqual(turn.toolCalls, []);
+  assert.equal(turn.hostedWebSearches, undefined);
+});
+
+test("Antigravity cancellation after search prevents the next model request", async () => {
+  const controller = new AbortController();
+  let modelCalls = 0;
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (input, init) => {
+    if (String(input).endsWith(":fetchAvailableModels")) return searchCatalog();
+    if (JSON.parse(String(init?.body)).requestType === "web_search") return googleTextResponse("Result", true);
+    modelCalls++;
+    return googleSearchCallResponse();
+  } });
+  const current = request();
+  current.signal = controller.signal;
+  current.tools.push({ type: "hosted_web_search", maxUses: 1 });
+  current.onHostedWebSearch = update => { if (update.status === "completed") controller.abort(); };
+  await assert.rejects(protocol.createToolTurn(current, credential), /abort/i);
+  assert.equal(modelCalls, 1);
+});
+
+test("Antigravity authentication recovery during search preserves visible text and citations", async () => {
+  let normalCalls = 0;
+  let searches = 0;
+  const deltas: string[] = [];
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (input, init) => {
+    if (String(input).endsWith(":fetchAvailableModels")) return searchCatalog();
+    if (JSON.parse(String(init?.body)).requestType === "web_search") {
+      searches++;
+      return searches === 1 ? new Response("{}", { status: 401 }) : googleTextResponse("Result", true);
+    }
+    normalCalls++;
+    if (normalCalls === 1) return streamResponse([{ response: { candidates: [{
+      content: { parts: [{ text: "I will search." }, { functionCall: { name: "live_smith_web_search", args: { query: "Live manual" } } }] }, finishReason: "STOP",
+      citationMetadata: { citationSources: [{ uri: "https://example.test/background", title: "Background" }] },
+    }] } }]);
+    return googleTextResponse("Answer.");
+  } });
+  const current = request();
+  current.reconnectState = {};
+  current.tools.push({ type: "hosted_web_search", maxUses: 1 });
+  current.onDelta = delta => { deltas.push(delta); };
+  await assert.rejects(protocol.createToolTurn(current, credential), ModelAuthenticationError);
+  const turn = await protocol.createToolTurn(current, { ...credential, accessToken: "refreshed" });
+  assert.equal(searches, 2);
+  assert.equal(normalCalls, 1);
+  assert.equal(turn.content, "I will search.");
+  assert.equal(deltas.join(""), turn.content);
+  assert.deepEqual(turn.citations, [{ url: "https://example.test/background", title: "Background" }]);
+});
+
+test("Antigravity retries a pending search with a stable identity after authentication refresh", async () => {
+  let normalCalls = 0;
+  const searchIds: string[] = [];
+  const protocol = createGoogleAntigravityProtocol({ fetchImpl: async (input, init) => {
+    if (String(input).endsWith(":fetchAvailableModels")) return searchCatalog();
+    const body = JSON.parse(String(init?.body));
+    if (body.requestType === "web_search") {
+      searchIds.push(body.requestId);
+      if (searchIds.length === 1) return new Response("{}", { status: 401 });
+      return googleTextResponse("Result", true);
+    }
+    normalCalls++;
+    return normalCalls === 1 ? googleSearchCallResponse() : googleTextResponse("Answer");
+  } });
+  const current = request();
+  current.reconnectState = {};
+  current.tools.push({ type: "hosted_web_search", maxUses: 1 });
+  await assert.rejects(protocol.createToolTurn(current, credential), ModelAuthenticationError);
+  const turn = await protocol.createToolTurn(current, { ...credential, accessToken: "refreshed" });
+  assert.equal(turn.hostedWebSearches?.length, 1);
+  assert.equal(normalCalls, 1);
+  assert.equal(searchIds.length, 2);
+  assert.equal(searchIds[0], searchIds[1]);
+});
 
 async function settleBeforeDeadline<T>(operation: Promise<T>): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;

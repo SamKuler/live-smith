@@ -460,6 +460,10 @@ bounded result and lifecycle are described under external audio processing.
    encrypted reasoning, and other provider replay state remain transport-owned,
    never enter the visible reasoning contract, and hosted provider tools never
    enter the client tool executor.
+   Adapters that add internal tool results after sampling expose a normalized
+   context projection and its usage sampling boundary. Context estimation uses
+   that projection without interpreting opaque protocol state; the projection
+   never grants tool execution and does not alter reported provider usage.
 9. Before confirmation, `agent-request.ts` performs a fresh action-specific Live
    preflight observation and captures an opaque guard from actual SDK handle
    identities plus every current value the action can overwrite, including
@@ -571,9 +575,13 @@ provider-neutral tool union from client-executed Live function tools. A Saved
 Profile must explicitly opt in. The ordinary path exposes the tool with
 automatic selection and adds fixed policy instructions for explicit lookup
 requests and current or changing facts. The composer does not override provider
-tool choice. OpenAI Responses and Anthropic Messages map the hosted member to
-their native server tool; Chat Completions rejects it before HTTP. Search result
-blocks remain opaque replay state. Transports separately normalize bounded
+tool choice. OpenAI Responses and Anthropic Messages, including their OAuth
+subscription routes, map the hosted member to their native server tool; Chat
+Completions rejects it before HTTP. Antigravity resolves private search calls
+inside its protocol adapter with separate account-owned search requests. Its
+internal exchanges never enter the Live function executor and remain opaque
+replay state, including when an ordinary function shares a response with search.
+Search result blocks remain opaque replay state. Transports separately normalize bounded
 provider call IDs, actions, queries, returned result URLs, and answer citation
 annotations. OpenAI Responses explicitly requests
 `web_search_call.action.sources`; Anthropic result blocks supply the returned
@@ -675,7 +683,7 @@ Consequently no accepted tool result or Live mutation can be replayed.
 Terminal hosted-search events keep their existing durable-first semantics;
 every observed search ID reduces the allowance exposed to the rebuilt request.
 Output-limit continuations remain one unfinished logical response and do not
-advance the accepted-turn boundary until their final non-continuation turn.
+advance the accepted-turn boundary until a turn without an output-limit continuation.
 
 ## Model connection boundary
 
@@ -3057,8 +3065,9 @@ lower epochs, and uses the confirmation frontier plus each request's generation
 to prevent a resolved or steering-superseded decision from reopening.
 Background Sessions retain their own projection until selected.
 
-Context utilization is scoped to the latest accepted, non-continuation model
-turn. A transport attaches it only when both provider-reported used tokens and
+Context utilization is scoped to the latest accepted model turn, including
+hosted-tool continuations and excluding output-limit fragments. A transport
+attaches it only when both provider-reported used tokens and
 an authoritative context-window size are available. Direct API and OAuth
 protocol adapters normalize terminal protocol usage when their model metadata
 or the selected model's explicit local context setting supplies the denominator.

@@ -767,7 +767,6 @@ test("subscription Profiles reject direct credentials and unsupported request se
     { parameters: { reasoning: { mode: "default" }, maxOutputTokens: 8192 } },
     { parameters: { reasoning: { mode: "default" }, temperature: 0.2 } },
     { advanced: { capabilityOverrides: { tools: true } } },
-    { advanced: { hostedTools: { webSearch: true } } },
     { advanced: { extraBody: {} } },
     { advanced: { futureField: true } },
   ]) {
@@ -795,4 +794,34 @@ test("subscription Profiles reject direct credentials and unsupported request se
     mode: "enabled",
     budgetTokens: 4096,
   });
+});
+
+test("subscription Profiles save and discover an explicit Web Search opt-in", () => {
+  for (const provider of ["openai", "anthropic", "google"]) {
+    const draft = {
+      id: "subscription-search",
+      name: "Subscription search",
+      connection: { kind: "oauth-subscription", provider },
+      defaultModel: "account-model",
+      models: [{
+        model: "account-model",
+        parameters: { reasoning: { mode: "default" } },
+        advanced: { hostedTools: { webSearch: true } },
+      }],
+    };
+    const saved = validateDraftProfileForSave(draft);
+    assert.deepEqual(saved.models[0]?.advanced, { hostedTools: { webSearch: true } });
+    assert.deepEqual(validateDraftProfileForDiscovery(saved).models, saved.models);
+    for (const hostedTools of [{ webSearch: "yes" }, { webSearch: true, shell: true }]) {
+      assert.throws(() => validateDraftProfileForSave({
+        ...draft,
+        models: [{ ...draft.models[0], advanced: { hostedTools } }],
+      }), /hostedTools/);
+    }
+    const disabled = validateDraftProfileForSave({
+      ...draft,
+      models: [{ ...draft.models[0], advanced: { hostedTools: { webSearch: false } } }],
+    });
+    assert.deepEqual(disabled.models[0]?.advanced, {});
+  }
 });

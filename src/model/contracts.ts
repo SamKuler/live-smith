@@ -95,6 +95,13 @@ export function requireModelContextUsage(
   };
 }
 
+/** Normalized replay used only for context estimation, never for tool admission. */
+export interface ModelContextProjection {
+  messages: ModelConversationMessage[];
+  /** Prefix already accounted for by the turn's exact provider usage, when present. */
+  usageMessageCount: number;
+}
+
 export interface ModelTurn {
   content: string | null;
   toolCalls: ModelToolCall[];
@@ -102,8 +109,9 @@ export interface ModelTurn {
   reasoning?: ModelReasoning;
   /** Exact provider usage for this turn when an authoritative context window is known. */
   contextUsage?: ModelContextUsage;
+  contextProjection?: ModelContextProjection;
   /** The provider returned replayable state but needs another model turn to finish. */
-  continuation?: { reason: "output_limit" };
+  continuation?: { reason: "output_limit" | "hosted_tools" };
   /** The provider returned a valid partial turn that cannot safely continue. */
   termination?: { reason: "context_limit" | "output_limit" };
   citations?: ModelCitation[];
@@ -119,6 +127,7 @@ export type ModelConversationMessage =
       content: string | null;
       toolCalls: ModelToolCall[];
       providerState?: unknown;
+      contextProjection?: ModelContextProjection;
     }
   | {
       role: "tool";

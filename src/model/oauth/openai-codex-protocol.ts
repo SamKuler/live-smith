@@ -39,7 +39,9 @@ import {
   decodeOpenAIResponsesFailedResponse,
   decodeOpenAIResponsesTerminalTurn,
   openAIResponsesVisibleTextDelta,
+  webSearchUpdateFromOpenAIEvent,
 } from "../transports/openai-responses.js";
+import { createModelWebSearchStreamReporter } from "../web-search.js";
 import { createModelReasoningStreamReporter } from "../reasoning.js";
 import {
   openAIErrorDiagnostic,
@@ -113,6 +115,8 @@ export function createOpenAICodexProtocol(
         async () => {
           const body = buildOpenAIResponsesBody(directRequest);
           delete body.max_output_tokens;
+          // Codex rejects the Responses API's server-side tool-call limit.
+          delete body.max_tool_calls;
           if (
             request.runtimeProfile.capabilities.reasoning.supported &&
             request.runtimeProfile.model.parameters.reasoning.mode !== "disabled"
@@ -233,6 +237,7 @@ async function readCodexTurn(
   reconnectState: object | undefined,
 ): Promise<ModelTurn> {
   const completedOutputItems = new Map<number, Record<string, unknown>>();
+  const reportWebSearch = createModelWebSearchStreamReporter(request.onHostedWebSearch);
   let pendingError: OpenAIErrorDiagnostic | undefined;
   let malformedPendingError = false;
   const reportReasoning = createModelReasoningStreamReporter(
@@ -278,6 +283,7 @@ async function readCodexTurn(
       }
       continue;
     }
+    await reportWebSearch(webSearchUpdateFromOpenAIEvent(event));
     const reasoningUpdate = decodeReasoningUpdate(event);
     if (reasoningUpdate) await reportReasoning(reasoningUpdate);
     const metadataTurnState = codexTurnStateFromMetadata(event);
@@ -315,17 +321,29 @@ async function readCodexTurn(
       const expectedStatus = event.type === "response.completed"
         ? "completed"
         : "incomplete";
-      const turn = decodeOpenAIResponsesTerminalTurn(
+      const turn = await decodeOpenAIResponsesTerminalTurn(
         codexTerminalResponse(event.response, expectedStatus, completedOutputItems),
         expectedStatus,
         "ChatGPT Codex",
         request.runtimeProfile.capabilities.contextWindowTokens,
+        reportWebSearch,
       );
       return withCodexTurnState(turn, turnState);
     }
     if (event.type === "response.failed") {
       const retryAfterMs = providerRetryAfterMs(response.headers);
-      throw codexProviderFailure(event.response, retryAfterMs);
+      const failed = decodeOpenAIResponsesFailedResponse(event.response, "ChatGPT Codex");
+      if (Array.isArray(failed.output)) {
+        for (const [index, item] of failed.output.entries()) {
+          await reportWebSearch(webSearchUpdateFromOpenAIEvent({
+            type: "response.output_item.done", output_index: index, item,
+          }));
+        }
+      }
+      throw openAIProviderFailure(failed, "ChatGPT Codex", {
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+        unknownIsRetryable: true,
+      });
     }
     if (event.type === "response.cancelled") {
       throw new Error("ChatGPT Codex was cancelled.");
@@ -346,17 +364,6 @@ async function readCodexTurn(
     );
   }
   throw new ModelConnectionError("ChatGPT Codex stream ended without a terminal response.");
-}
-
-function codexProviderFailure(
-  value: unknown,
-  retryAfterMs: number | undefined,
-): Error {
-  const response = decodeOpenAIResponsesFailedResponse(value, "ChatGPT Codex");
-  return openAIProviderFailure(response, "ChatGPT Codex", {
-    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-    unknownIsRetryable: true,
-  });
 }
 
 function codexTerminalResponse(

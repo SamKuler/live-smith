@@ -12,6 +12,7 @@ import {
 } from "../../../src/model/connection-error.js";
 import type { TransportRequest } from "../../../src/model/provider.js";
 import { createOpenAICodexProtocol } from "../../../src/model/oauth/openai-codex-protocol.js";
+import { modelToolsForProfile } from "../../../src/model/tools.js";
 
 const credential: Extract<OAuthCredential, { provider: "openai" }> = {
   provider: "openai",
@@ -81,6 +82,62 @@ function streamResponse(
     },
   );
 }
+
+test("ChatGPT subscription search reports activity and preserves sources and tool replay", async () => {
+  const bodies: Record<string, any>[] = [];
+  const updates: unknown[] = [];
+  const search = {
+    id: "ws_1", type: "web_search_call", status: "completed",
+    action: { type: "search", query: "Live documentation", sources: [{ type: "url", url: "https://www.ableton.com/en/manual/", title: "Live manual" }] },
+  };
+  const call = { type: "function_call", id: "fc_1", call_id: "call_1", name: "inspect_live_set", arguments: "{}", status: "completed" };
+  const protocol = createOpenAICodexProtocol({ fetchImpl: async (_input, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return streamResponse([
+      { type: "response.web_search_call.searching", item_id: "ws_1" },
+      { type: "response.output_item.done", output_index: 0, item: search },
+      { type: "response.completed", response: { status: "completed", output: [search, call] } },
+    ]);
+  } });
+  const current = request();
+  current.runtimeProfile.model.advanced.hostedTools = { webSearch: true };
+  current.tools = modelToolsForProfile(current.runtimeProfile,
+    current.tools.filter(tool => tool.type === "function"), 3);
+  current.onHostedWebSearch = update => { updates.push(update); };
+  const turn = await protocol.createToolTurn(current, credential);
+  assert.deepEqual(bodies[0]?.tools.at(-1), { type: "web_search" });
+  assert.equal(bodies[0]?.max_tool_calls, undefined);
+  assert(bodies[0]?.include.includes("web_search_call.action.sources"));
+  assert.deepEqual(updates, [
+    { id: "ws_1", status: "searching", action: "search", queries: [], sources: [] },
+    { id: "ws_1", status: "completed", action: "search", queries: ["Live documentation"], sources: [{ url: "https://www.ableton.com/en/manual/", title: "Live manual" }] },
+  ]);
+  assert.deepEqual(turn.hostedWebSearches, [updates[1]]);
+  current.agentMessages = [
+    { role: "assistant", content: turn.content, toolCalls: turn.toolCalls, providerState: turn.providerState },
+    { role: "tool", toolCallId: "call_1", content: "Inspected" },
+  ];
+  await protocol.createToolTurn(current, credential);
+  assert(bodies[1]?.input.some((item: unknown) => JSON.stringify(item) === JSON.stringify(search)));
+  assert(bodies[1]?.input.some((item: any) => item.type === "function_call_output" && item.call_id === "call_1"));
+});
+
+test("ChatGPT persists terminal search activity before empty-answer parsing fails", async () => {
+  const activity: unknown[] = [];
+  const protocol = createOpenAICodexProtocol({ fetchImpl: async () => streamResponse([{
+    type: "response.completed",
+    response: { status: "completed", output: [{
+      id: "failed-search", type: "web_search_call", status: "failed",
+      action: { type: "search", query: "Live manual", sources: [] },
+    }] },
+  }]) });
+  const current = request();
+  current.tools.push({ type: "hosted_web_search", maxUses: 1 });
+  current.runtimeProfile.model.advanced.hostedTools = { webSearch: true };
+  current.onHostedWebSearch = update => { activity.push(update); };
+  await assert.rejects(protocol.createToolTurn(current, credential), /empty response/);
+  assert.deepEqual(activity, [{ id: "failed-search", status: "failed", action: "search", queries: ["Live manual"], sources: [] }]);
+});
 
 test("ChatGPT OAuth loads the signed-in Codex model catalog", async () => {
   let capturedUrl = "";

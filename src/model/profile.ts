@@ -147,7 +147,7 @@ export type OAuthSubscriptionModelConfig = ModelConfigFields & {
   };
   advanced: {
     capabilityOverrides?: never;
-    hostedTools?: never;
+    hostedTools?: HostedToolSettings;
     extraBody?: never;
   };
 };
@@ -647,16 +647,19 @@ function draftModelConfigs(
   }
   return value.map((entry) => {
     const record = isRecord(entry) ? entry : {};
+    const advanced = draftAdvanced(record.advanced);
     return connection.kind === "oauth-subscription"
       ? {
           model: draftString(record.model, "model"),
           parameters: draftOAuthSubscriptionParameters(record.parameters),
-          advanced: {},
+          advanced: advanced.hostedTools
+            ? { hostedTools: advanced.hostedTools }
+            : {},
         }
       : {
           model: draftString(record.model, "model"),
           parameters: draftDirectApiParameters(record.parameters),
-          advanced: draftAdvanced(record.advanced),
+          advanced,
         };
   });
 }
@@ -754,7 +757,8 @@ function savedModelConfig(
       );
 
   if (connection.kind === "oauth-subscription") {
-    assertOnlyKeys(advanced, [], advancedField);
+    assertOnlyKeys(advanced, ["hostedTools"], advancedField);
+    const { hostedTools } = advancedSettings(advanced, advancedField);
     const context = contextManagementParameters(parameters, parametersField);
     return {
       model,
@@ -762,7 +766,7 @@ function savedModelConfig(
         ...context,
         reasoning: reasoningSettings(reasoning, reasoningField),
       },
-      advanced: {},
+      advanced: hostedTools ? { hostedTools } : {},
     };
   }
 

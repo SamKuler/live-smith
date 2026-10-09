@@ -94,6 +94,22 @@ test("context estimation counts the actual provider-neutral request without secr
   assert.doesNotMatch(String(estimate), /test-key/);
 });
 
+test("context estimation uses normalized replay instead of counting both visible and hidden copies", () => {
+  const request = { systemInstructions: "System", history: [], currentUserContent: [], tools: [] };
+  const projected = [
+    { role: "assistant" as const, content: "Search started", toolCalls: [{ id: "s1", name: "search", arguments: "{}" }] },
+    { role: "tool" as const, toolCallId: "s1", content: "A".repeat(32_768) },
+  ];
+  assert.equal(
+    estimateTransportContextTokens({ ...request, agentMessages: [{
+      role: "assistant", content: "Search started", toolCalls: [],
+      providerState: { opaque: "X".repeat(100_000) },
+      contextProjection: { messages: projected, usageMessageCount: 1 },
+    }] }),
+    estimateTransportContextTokens({ ...request, agentMessages: projected }),
+  );
+});
+
 test("context estimation does not count binary wire encoding or duplicate provider replay state", () => {
   const oversizedWireValue = "A".repeat(1_000_000);
   const estimate = estimateTransportContextTokens({

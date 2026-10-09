@@ -137,7 +137,7 @@ export interface AgentLoopOptions<ExecutionBindings = undefined> {
   hasPendingSteering?(): boolean;
   /** Clears transient provider output after the new user guidance is installed. */
   onSteeringApplied?(messageCount: number): Promise<void> | void;
-  /** Advances transient output after one complete, non-continuation model turn. */
+  /** Advances transient output after sampling; output-limit fragments stay pending. */
   onModelTurnAccepted?(usage: ModelContextUsage | undefined): Promise<void> | void;
   /** Runs only after the text tool result has been accepted by the trace owner. */
   onModelInputPartAccepted?(part: ModelToolInputPart): void;
@@ -446,6 +446,7 @@ export async function runAgentLoop(
       ...(turn.providerState !== undefined
         ? { providerState: turn.providerState }
         : {}),
+      ...(turn.contextProjection ? { contextProjection: turn.contextProjection } : {}),
     });
 
     if (turn.hostedWebSearches !== undefined) {
@@ -473,13 +474,15 @@ export async function runAgentLoop(
 
     if (turn.continuation) {
       if (
-        turn.continuation.reason !== "output_limit" ||
+        (turn.continuation.reason !== "output_limit" && turn.continuation.reason !== "hosted_tools") ||
         turn.termination !== undefined ||
         turn.toolCalls.length !== 0 ||
         turn.providerState === undefined
       ) {
         throw new TypeError("Model continuation state is invalid.");
       }
+    }
+    if (turn.continuation?.reason === "output_limit") {
       pendingContinuationMessageStart ??= assistantMessageIndex;
       consecutiveModelContinuations += 1;
       pendingContinuationContent += turn.content ?? "";
@@ -595,7 +598,7 @@ export async function runAgentLoop(
       };
     }
 
-    if (!turn.toolCalls.length) {
+    if (!turn.toolCalls.length && !turn.continuation) {
       const finalText = completedTurnContent.trim();
       if (recoveryState.unresolvedFailure) {
         if (finalText) {

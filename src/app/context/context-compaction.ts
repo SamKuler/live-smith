@@ -128,7 +128,18 @@ export function estimateTransportContextTokens(
       : estimateInputParts(message.content);
   }
   tokens += estimateInputParts(request.currentUserContent) + 4;
-  for (const message of request.agentMessages) {
+  tokens += estimateAgentMessages(request.agentMessages);
+  tokens += estimateTextTokens(JSON.stringify(request.tools));
+  return tokens;
+}
+
+function estimateAgentMessages(messages: readonly ModelConversationMessage[]): number {
+  let tokens = 0;
+  for (const message of messages) {
+    if (message.role === "assistant" && message.contextProjection) {
+      tokens += estimateAgentMessages(message.contextProjection.messages);
+      continue;
+    }
     tokens += 4;
     if (message.role === "user") {
       tokens += typeof message.content === "string"
@@ -146,10 +157,10 @@ export function estimateTransportContextTokens(
           estimateTextTokens(call.arguments);
       }
       // Opaque replay state replaces these normalized fields in some transports.
-      // Exact provider usage accounts for it without double-counting the fallback.
+      // A transport can project extra replay messages and its usage sampling boundary.
+      // Otherwise exact provider usage accounts for opaque state without double-counting it.
     }
   }
-  tokens += estimateTextTokens(JSON.stringify(request.tools));
   return tokens;
 }
 

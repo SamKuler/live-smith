@@ -356,7 +356,8 @@ export function isWireSavedModelConfig(value: unknown, subscription: boolean): v
       isWireContextManagementParameters(value.parameters) &&
       value.parameters.reasoning.mode !== "disabled" &&
       value.parameters.reasoning.budgetTokens === undefined &&
-      hasOnlyWireKeys(value.advanced, []);
+      hasOnlyWireKeys(value.advanced, ["hostedTools"]) &&
+      isWireModelAdvanced(value.advanced);
   }
   return hasOnlyWireKeys(value.parameters, [
       "maxOutputTokens",

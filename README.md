@@ -252,8 +252,9 @@ unsent drafts and does not resend prompts or commands.
   shows Thinking while in progress and disappears when complete. See
   [visible reasoning output](docs/MODEL_PROVIDERS.md#visible-reasoning-output)
   for connection-specific summary behavior.
-- **Search when needed.** Compatible Direct API connections can enable hosted
-  Web Search, with search activity and citations visible in the conversation.
+- **Search when needed.** Compatible Direct API and subscription connections can
+  enable Web Search, with search activity and citations visible in the conversation.
+  See [provider support and limits](docs/MODEL_PROVIDERS.md#provider-hosted-web-search).
 - **Generate music and sound effects.** Add an ElevenLabs connection under
   **Settings → Extensions → Audio services**, then describe the music or sound you want.
   Multiple named audio connections, including separate accounts at the same
@@ -420,9 +421,12 @@ Messages, and Google uses the Antigravity product backend. Anthropic currently
 assigns third-party OAuth traffic to Claude Extra Usage when it is enabled.
 Antigravity uses the account's default entitlement and region; Live Smith does
 not import CLI-local license-tier or project-region overrides.
-Hosted Web Search is not exposed through subscription Profiles. If an account
-check is unavailable, use Sign out to clear its saved OAuth session before
-signing in again.
+Each subscription model can opt in to Web Search. ChatGPT and Claude use their
+native search tools. Antigravity uses a separate search request with a model
+advertised by the signed-in account, then returns the results to the selected
+conversation model. Availability depends on provider and account support.
+If an account check is unavailable, use Sign out to clear its saved OAuth
+session before signing in again.
 
 See [model connections](docs/MODEL_PROVIDERS.md) for setup requirements and
 provider-specific limitations.

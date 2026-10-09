@@ -64,7 +64,7 @@ export function oauthDraftAsDirect(
         maxOutputTokens: defaultOutputTokens[credential.provider],
         reasoning: model.parameters.reasoning,
       },
-      advanced: {},
+      advanced: { ...model.advanced },
     })),
   };
 }
@@ -80,7 +80,7 @@ function directRuntimeProfile(
         defaultOutputTokens[credential.provider],
       reasoning: runtime.model.parameters.reasoning,
     },
-    advanced: {},
+    advanced: { ...runtime.model.advanced },
   };
   return {
     profile: {

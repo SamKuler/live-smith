@@ -9,7 +9,7 @@ export const profileMessages: Record<string, string> = {
   "Enter a Model ID before setting the default.": "请先输入模型 ID，再设为默认模型。",
   "Hide": "隐藏",
   "Show": "显示",
-  "Unavailable for subscriptions. Use Direct API with Responses or Messages.": "订阅连接不可用。请使用 Direct API 的 Responses 或 Messages 模式。",
+  "Availability depends on the provider and account.": "可用性取决于服务商和账户。",
   "Endpoint support isn’t verified.": "尚未验证端点是否支持。",
   "Turned off · unavailable with Chat Completions.": "已关闭 · Chat Completions 不支持。",
   "Unavailable with Chat Completions.": "Chat Completions 不支持此功能。",

@@ -92,6 +92,36 @@ test("runAgentLoop rejects malformed context usage before the accepted callback"
   assert.equal(accepted, false);
 });
 
+test("hosted tool continuations accept usage and return to the normal model loop", async () => {
+  let turns = 0;
+  let clientCalls = 0;
+  const accepted: unknown[] = [];
+  const projection = { messages: [{ role: "tool" as const, toolCallId: "search-1", content: "Source text" }], usageMessageCount: 0 };
+  const result = await runAgentLoop({
+    maxConsecutiveFailures: 2,
+    maxModelContinuations: 1,
+    askModel: async ({ messages }) => {
+      turns++;
+      if (turns <= 3) return {
+        content: null, toolCalls: [], continuation: { reason: "hosted_tools" },
+        providerState: { kind: "private-search" }, contextProjection: projection,
+        contextUsage: { usedTokens: turns * 100, contextWindowTokens: 1_000 },
+      };
+      assert.equal(accepted.length, 3);
+      assert.equal(messages.filter(message => message.role === "assistant" && message.contextProjection === projection).length, 3);
+      return { content: "Done.", toolCalls: [] };
+    },
+    observe: async () => { clientCalls++; return ""; },
+    confirmActions: async () => false,
+    executeActions: async () => { clientCalls++; return { results: [], mutationCount: 0 }; },
+    onModelTurnAccepted: usage => { accepted.push(usage); },
+  });
+  assert.equal(result.message, "Done.");
+  assert.equal(turns, 4);
+  assert.equal(clientCalls, 0);
+  assert.deepEqual(accepted.slice(0, 3), [100, 200, 300].map(usedTokens => ({ usedTokens, contextWindowTokens: 1_000 })));
+});
+
 test("runAgentLoop preserves partial output when the model reaches its context limit", async () => {
   const events: Array<{ kind: string; content: string }> = [];
   const result = await runAgentLoop({

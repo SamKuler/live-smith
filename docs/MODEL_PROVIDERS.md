@@ -400,8 +400,8 @@ Direct API model configurations may store maximum output tokens, temperature,
 reasoning, capability overrides, hosted-tool policy, and Extra Body.
 Direct and subscription model configurations may both store a local context
 window and automatic compaction threshold. Subscription model configurations
-otherwise store only the selected model and reasoning settings: output-token
-requests, endpoint overrides, temperature, Extra Body, hosted tools, and manual
+also store reasoning settings and the Web Search opt-in: output-token
+requests, endpoint overrides, temperature, Extra Body, and manual
 capability overrides remain rejected.
 
 The configured context window supplies the denominator when provider metadata
@@ -630,8 +630,50 @@ The ordered-buffer workflow and persistence boundaries are described in
 
 ## Provider-hosted Web Search
 
-Hosted Web Search is an explicit per-model Direct API setting for OpenAI
-Responses and Anthropic Messages. OAuth subscription Profiles do not expose it.
+Hosted Web Search is an explicit per-model opt-in for Direct API OpenAI
+Responses and Anthropic Messages, and for all three OAuth subscription
+providers. OpenAI and Anthropic subscriptions use the same native server tools,
+bounded search activity and opaque result replay as their Direct API protocols.
+Codex rejects `max_tool_calls`, so its adapter omits that field. The local
+20-action tracking limit still applies and subsequent turns omit search when
+the allowance is exhausted; Codex controls the number of actions inside one
+upstream response.
+Support still depends on the selected endpoint, model and account; enabling the
+setting does not establish provider verification. Chat Completions does not
+expose hosted search.
+
+ChatGPT subscription search has an unresolved compatibility limitation: a search
+can return sources, then the Codex backend can fail with `server_error` before
+producing an answer. Search completion does not establish answer completion.
+Such failures follow the existing retry policy without switching accounts,
+models or connection types.
+
+Antigravity advertises a private search function alongside ordinary functions.
+The adapter executes that function through a separate `requestType: "web_search"`
+request containing only `googleSearch`, using the same Profile credential and
+project. It selects the conversation model when present in the account's
+`webSearchModelIds`, otherwise the first advertised search model. No model name
+is inferred and no other Profile or Direct API connection supplies the search.
+Only the search query enters this auxiliary request. Missing search models,
+provider rejection or absent grounding evidence return a failed search result
+to the conversation model. Ordinary function calls retain their original Live
+admission and approval path.
+
+Google search results and signed internal exchanges remain request-scoped
+protocol state. Connection retries retain accepted searches and their original
+allowance; OAuth refresh retains already-published text. Grounding queries and
+web sources produce search activity, while answer citations come from the
+conversation model. Sources returned by search are not automatically promoted
+to answer citations. Search results consume the existing per-send activity
+budget, and search is omitted from workflows that request no hosted tools.
+Provider-internal exchanges also supply normalized context-estimation messages
+and the message boundary covered by exact provider usage. Search text appended
+after that boundary contributes to the next compaction decision; text already
+covered by usage is not counted twice. Displayed provider usage remains exact.
+When only private search calls complete, the adapter returns a hosted-tool
+continuation to the Agent loop. Each subsequent conversation-model request
+therefore passes through the application's compaction, steering, cancellation
+and planning limits.
 Search results and citations are untrusted data and cannot authorize tools,
 approvals, filesystem access, or Live mutations.
 
