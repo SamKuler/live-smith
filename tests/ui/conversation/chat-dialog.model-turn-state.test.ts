@@ -710,7 +710,9 @@ test("connection overlay reveals the latest state, profile gate, command, Queue,
   await context.test("Queue and Stop", async () => {
     const state = stateFixture();
     state.openSettingsOnLoad = false;
-    const harness = await createDialogHarness(state);
+    const harness = await createDialogHarness(state, undefined, {
+      defaultStopTerminal: false,
+    });
     try {
       await startHeldSend(harness);
       harness.emitServerEventError();
@@ -723,10 +725,12 @@ test("connection overlay reveals the latest state, profile gate, command, Queue,
       harness.emitServerEventOpen();
       assert.equal(harness.document.querySelector("#status")?.textContent, "Follow-up queued.");
 
-      harness.queueStopOutcomes({ terminal: false });
       harness.emitServerEventError();
       harness.click("#sendButton");
-      await harness.settle();
+      await waitForCondition(
+        () => harness.stopIds.length >= 2,
+        "Expected Stop to keep polling its nonterminal outcome.",
+      );
       assert.match(
         harness.document.querySelector("#status")?.textContent ?? "",
         /Stop requested|Stopping/,

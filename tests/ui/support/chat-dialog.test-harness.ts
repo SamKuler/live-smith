@@ -456,6 +456,7 @@ async function createDialogHarness(
     initialCommandError?: string;
     holdInitialCommand?: boolean;
     holdInitialCommandResponse?: boolean;
+    defaultStopTerminal?: boolean;
     toolCatalogResponse?: (state: ChatBridgeState, signal?: AbortSignal | null) => Promise<ChatBridgeState>;
   } = {},
 ): Promise<DialogHarness> {
@@ -2294,7 +2295,8 @@ async function createDialogHarness(
                   commandId,
                 });
               }
-              const terminal = outcome?.terminal ?? stopTerminals.shift() ?? true;
+              const terminal = outcome?.terminal ?? stopTerminals.shift() ??
+                options.defaultStopTerminal ?? true;
               const sendId = outcome?.sendId ??
                 headers.get("X-Live-Smith-Send-Id") ?? "";
               return response({

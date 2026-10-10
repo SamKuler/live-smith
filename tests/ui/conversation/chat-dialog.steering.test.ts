@@ -5,6 +5,7 @@ import {
   createDialogHarness,
   jsonCalls,
   stateFixture,
+  waitForCondition,
 } from "../support/chat-dialog.test-harness.js";
 
 function header(call: { headers?: HeadersInit }, name: string): string {
@@ -293,7 +294,9 @@ test("a durable incremental steering acknowledgement resolves response loss", as
 });
 
 test("Stop locks confirmation and ignores late activity until the send is terminal", async () => {
-  const harness = await createSteeringDialogHarness();
+  const harness = await createDialogHarness(steeringState(), undefined, {
+    defaultStopTerminal: false,
+  });
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Prepare a change, then stop");
@@ -310,9 +313,11 @@ test("Stop locks confirmation and ignores late activity until the send is termin
       groups: [{ title: "Tracks", rows: ["Create track"] }],
     });
 
-    harness.queueStopOutcomes({ terminal: false });
     harness.click("#sendButton");
-    await harness.settle();
+    await waitForCondition(
+      () => harness.stopIds.length >= 2,
+      "Expected Stop to keep polling its nonterminal outcome.",
+    );
     const apply = harness.document.querySelector<HTMLButtonElement>(
       ".confirm-card button.primary",
     );

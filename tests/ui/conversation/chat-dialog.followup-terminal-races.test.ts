@@ -7,6 +7,7 @@ import {
   imageFile,
   jsonCalls,
   stateFixture,
+  waitForCondition,
 } from "../support/chat-dialog.test-harness.js";
 
 function submitFromComposer(
@@ -300,7 +301,9 @@ test("Stop remains monotonic across delayed full state, SSE loss, and steering i
     message: "Pre-Stop activity",
     unread: false,
   }];
-  const harness = await createDialogHarness(state);
+  const harness = await createDialogHarness(state, undefined, {
+    defaultStopTerminal: false,
+  });
   try {
     harness.holdNextSend();
     harness.input("#prompt", "Start the request to stop");
@@ -322,9 +325,12 @@ test("Stop remains monotonic across delayed full state, SSE loss, and steering i
     });
     await harness.settle();
 
-    harness.queueStopOutcomes({ terminal: false });
     harness.click("#sendButton");
     await harness.settle();
+    await waitForCondition(
+      () => harness.stopIds.length >= 2,
+      "Expected Stop to keep polling its nonterminal outcome.",
+    );
     assert.match(
       harness.document.querySelector("#status")?.textContent ?? "",
       /Stop requested|Stopping/i,
