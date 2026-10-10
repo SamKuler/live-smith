@@ -41,7 +41,7 @@ import {
   openAIResponsesVisibleTextDelta,
   webSearchUpdateFromOpenAIEvent,
 } from "../transports/openai-responses.js";
-import { createModelWebSearchStreamReporter } from "../web-search.js";
+import { createModelWebSearchStreamReporter, normalizeModelHostedWebSearch } from "../web-search.js";
 import { createModelReasoningStreamReporter } from "../reasoning.js";
 import {
   openAIErrorDiagnostic,
@@ -61,6 +61,7 @@ import {
   oauthRequestAsDirect,
 } from "./direct-transport-adapter.js";
 import type { OAuthModelProtocol } from "./protocol.js";
+import { createInternalWebSearchRunner, internalSearchReplayMessages } from "./internal-web-search.js";
 
 const codexBaseUrl = "https://chatgpt.com/backend-api/codex";
 // The catalog is filtered by Codex protocol compatibility, not product version.
@@ -77,6 +78,7 @@ export function createOpenAICodexProtocol(
   options: TransportFactoryOptions = {},
 ): OAuthModelProtocol {
   const fetchImpl = resolveFetchImplementation(options.fetchImpl);
+  const runSearchTurn = createInternalWebSearchRunner("ChatGPT Codex");
   return {
     async listModels(profile, credential, signal) {
       requireOpenAICredential(credential);
@@ -108,15 +110,17 @@ export function createOpenAICodexProtocol(
     async createToolTurn(request, credential) {
       requireOpenAICredential(credential);
       const directRequest = oauthRequestAsDirect(request, credential);
-      const priorTurnState = codexTurnStateForRequest(request);
       return withTransportContext(
         directRequest.runtimeProfile.profile,
         "request",
-        async () => {
+        () => runSearchTurn(request, async current => {
+          const directRequest = oauthRequestAsDirect({
+            ...current,
+            agentMessages: current.agentMessages.flatMap(internalSearchReplayMessages),
+          }, credential);
+          const priorTurnState = codexTurnStateForRequest(directRequest);
           const body = buildOpenAIResponsesBody(directRequest);
           delete body.max_output_tokens;
-          // Codex rejects the Responses API's server-side tool-call limit.
-          delete body.max_tool_calls;
           if (
             request.runtimeProfile.capabilities.reasoning.supported &&
             request.runtimeProfile.model.parameters.reasoning.mode !== "disabled"
@@ -167,7 +171,39 @@ export function createOpenAICodexProtocol(
             responseTurnState,
             request.reconnectState,
           );
-        },
+        }, async (query, id) => {
+          const response = await fetchCodex(fetchImpl, `${codexBaseUrl}/alpha/search`, {
+            method: "POST",
+            headers: {
+              ...codexHeaders(directRequest.runtimeProfile.profile as CodexRequestProfile),
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              id,
+              model: request.runtimeProfile.model.model,
+              input: [{ type: "message", role: "user", content: [{ type: "input_text", text: query }] }],
+              commands: { search_query: [{ q: query }], response_length: "short" },
+              settings: { allowed_callers: ["direct"], external_web_access: true },
+              max_output_tokens: 4096,
+            }),
+            ...(request.signal ? { signal: request.signal } : {}),
+          }, request.signal);
+          await assertCodexResponse(response, request.signal, true);
+          const result = await readBoundedJsonResponse(response, {
+            label: "ChatGPT Codex Web Search",
+            connectionFailureOnRead: true,
+            ...(request.signal ? { signal: request.signal } : {}),
+          });
+          if (!isRecord(result) || typeof result.output !== "string" ||
+              (result.results != null && !Array.isArray(result.results))) {
+            throw new Error("ChatGPT Codex returned invalid Web Search results.");
+          }
+          const activity = normalizeModelHostedWebSearch({
+            id, action: "search", status: "completed", queries: [query],
+            sources: (result.results ?? []).filter((item: unknown) => isRecord(item) && item.type === "text_result"),
+          })!;
+          return { content: result.output, toolCalls: [], hostedWebSearches: [activity] };
+        }),
         request.signal,
       );
     },

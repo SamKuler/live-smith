@@ -421,9 +421,10 @@ Messages, and Google uses the Antigravity product backend. Anthropic currently
 assigns third-party OAuth traffic to Claude Extra Usage when it is enabled.
 Antigravity uses the account's default entitlement and region; Live Smith does
 not import CLI-local license-tier or project-region overrides.
-Each subscription model can opt in to Web Search. ChatGPT and Claude use their
-native search tools. Antigravity uses a separate search request with a model
-advertised by the signed-in account, then returns the results to the selected
+Each subscription model can opt in to Web Search. Claude uses its native search
+tool. ChatGPT uses the Codex standalone search service with the selected model
+and returns the results to the conversation. Antigravity uses a separate search
+request with a model advertised by the signed-in account, then returns the results to the selected
 conversation model. Availability depends on provider and account support.
 If an account check is unavailable, use Sign out to clear its saved OAuth
 session before signing in again.

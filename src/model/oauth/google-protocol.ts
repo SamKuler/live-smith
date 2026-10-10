@@ -49,7 +49,7 @@ import {
 } from "./antigravity-identity.js";
 import { decodeGoogleAntigravityCatalog } from "./google-catalog.js";
 import { isDiscoveredModelId, MAX_DISCOVERED_MODEL_COUNT } from "../catalog.js";
-import { createGoogleWebSearchRunner, googleSearchReplayMessages } from "./google-web-search.js";
+import { createInternalWebSearchRunner, internalSearchReplayMessages } from "./internal-web-search.js";
 import { isRecord } from "./oauth-utils.js";
 import type { OAuthModelProtocol } from "./protocol.js";
 
@@ -111,7 +111,7 @@ export function createGoogleAntigravityProtocol(
   options: TransportFactoryOptions = {},
 ): OAuthModelProtocol {
   const fetchImpl = resolveFetchImplementation(options.fetchImpl);
-  const runSearchTurn = createGoogleWebSearchRunner();
+  const runSearchTurn = createInternalWebSearchRunner("Google Antigravity");
   return {
     async listModels(_profile, credential, signal) {
       requireGoogleCredential(credential);
@@ -383,7 +383,7 @@ function googleContents(request: TransportRequest): GoogleContent[] {
     name: string;
     providerId?: string;
   }>();
-  for (const message of request.agentMessages.flatMap(googleSearchReplayMessages)) {
+  for (const message of request.agentMessages.flatMap(internalSearchReplayMessages)) {
     if (message.role === "user") {
       appendGoogleContent(contents, "user", typeof message.content === "string"
         ? [{ text: message.content }]

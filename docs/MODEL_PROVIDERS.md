@@ -632,21 +632,24 @@ The ordered-buffer workflow and persistence boundaries are described in
 
 Hosted Web Search is an explicit per-model opt-in for Direct API OpenAI
 Responses and Anthropic Messages, and for all three OAuth subscription
-providers. OpenAI and Anthropic subscriptions use the same native server tools,
-bounded search activity and opaque result replay as their Direct API protocols.
-Codex rejects `max_tool_calls`, so its adapter omits that field. The local
-20-action tracking limit still applies and subsequent turns omit search when
-the allowance is exhausted; Codex controls the number of actions inside one
-upstream response.
+providers. Direct API OpenAI Responses and Anthropic Messages, including Claude
+OAuth, use native server tools with bounded activity and opaque result replay.
 Support still depends on the selected endpoint, model and account; enabling the
 setting does not establish provider verification. Chat Completions does not
 expose hosted search.
 
-ChatGPT subscription search has an unresolved compatibility limitation: a search
-can return sources, then the Codex backend can fail with `server_error` before
-producing an answer. Search completion does not establish answer completion.
-Such failures follow the existing retry policy without switching accounts,
-models or connection types.
+ChatGPT advertises a private query function and executes it through the Codex
+standalone `POST /alpha/search` protocol, using the same Profile credential,
+account and selected model. The auxiliary request contains the search query,
+explicit search commands and settings; full conversation history and Live tool
+results are not sent to it. The returned text becomes a function result for the
+next model turn. Validated text-result URLs supply search activity; encrypted
+search output is not replayed. Missing or null result metadata is allowed when
+the response contains valid output text. The request and output contract follows
+the [Codex search client](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/codex-api/src/endpoint/search.rs)
+and its [tool executor](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/ext/web-search/src/tool.rs).
+The Responses request contains ordinary functions without a native `web_search`
+tool or `max_tool_calls`; search execution obeys the local per-send allowance.
 
 Antigravity advertises a private search function alongside ordinary functions.
 The adapter executes that function through a separate `requestType: "web_search"`
@@ -659,11 +662,12 @@ provider rejection or absent grounding evidence return a failed search result
 to the conversation model. Ordinary function calls retain their original Live
 admission and approval path.
 
-Google search results and signed internal exchanges remain request-scoped
-protocol state. Connection retries retain accepted searches and their original
-allowance; OAuth refresh retains already-published text. Grounding queries and
-web sources produce search activity, while answer citations come from the
-conversation model. Sources returned by search are not automatically promoted
+ChatGPT and Antigravity expose query-only functions. Their search results and
+internal exchanges remain request-scoped protocol state. Connection retries
+retain accepted searches and their original allowance; OAuth refresh retains
+already-published text. Antigravity grounding metadata and Codex result records
+produce search activity, while answer citations come from the conversation
+model. Sources returned by search are not automatically promoted
 to answer citations. Search results consume the existing per-send activity
 budget, and search is omitted from workflows that request no hosted tools.
 Provider-internal exchanges also supply normalized context-estimation messages

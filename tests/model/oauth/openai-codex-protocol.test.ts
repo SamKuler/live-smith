@@ -6,6 +6,7 @@ import test from "node:test";
 import type { OAuthCredential } from "../../../src/storage/oauth-credentials.js";
 import { NetworkProxyError } from "../../../src/runtime/network-proxy-error.js";
 import {
+  ModelAuthenticationError,
   ModelConnectionError,
   ModelInputTooLargeError,
   ModelRetryableError,
@@ -83,21 +84,24 @@ function streamResponse(
   );
 }
 
-test("ChatGPT subscription search reports activity and preserves sources and tool replay", async () => {
+test("ChatGPT subscription search uses the standalone endpoint and preserves mixed tool replay", async () => {
   const bodies: Record<string, any>[] = [];
+  const searches: Record<string, any>[] = [];
   const updates: unknown[] = [];
-  const search = {
-    id: "ws_1", type: "web_search_call", status: "completed",
-    action: { type: "search", query: "Live documentation", sources: [{ type: "url", url: "https://www.ableton.com/en/manual/", title: "Live manual" }] },
-  };
+  const source = { url: "https://www.ableton.com/en/manual/", title: "Live manual" };
+  const search = { type: "function_call", id: "fc_search", call_id: "search_1", name: "live_smith_web_search", arguments: '{"query":"Live documentation"}', status: "completed" };
   const call = { type: "function_call", id: "fc_1", call_id: "call_1", name: "inspect_live_set", arguments: "{}", status: "completed" };
-  const protocol = createOpenAICodexProtocol({ fetchImpl: async (_input, init) => {
+  const protocol = createOpenAICodexProtocol({ fetchImpl: async (input, init) => {
+    if (String(input).endsWith("/alpha/search")) {
+      searches.push(JSON.parse(String(init?.body)));
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer openai-access");
+      assert.equal(new Headers(init?.headers).get("chatgpt-account-id"), "account-1");
+      return new Response(JSON.stringify({ output: "The Live manual is at https://www.ableton.com/en/manual/", encrypted_output: "private-search-state",
+        results: [{ type: "text_result", ref_id: "turn0search0", ...source }, { type: "text_result", url: "file:///private", title: "Invalid link" }] }));
+    }
     bodies.push(JSON.parse(String(init?.body)));
-    return streamResponse([
-      { type: "response.web_search_call.searching", item_id: "ws_1" },
-      { type: "response.output_item.done", output_index: 0, item: search },
-      { type: "response.completed", response: { status: "completed", output: [search, call] } },
-    ]);
+    return streamResponse([{ type: "response.completed", response: { status: "completed", output: bodies.length === 1 ? [search, call]
+      : [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Finished." }] }] } }]);
   } });
   const current = request();
   current.runtimeProfile.model.advanced.hostedTools = { webSearch: true };
@@ -105,20 +109,30 @@ test("ChatGPT subscription search reports activity and preserves sources and too
     current.tools.filter(tool => tool.type === "function"), 3);
   current.onHostedWebSearch = update => { updates.push(update); };
   const turn = await protocol.createToolTurn(current, credential);
-  assert.deepEqual(bodies[0]?.tools.at(-1), { type: "web_search" });
+  assert.equal(bodies[0]?.tools.at(-1).name, "live_smith_web_search");
+  assert(bodies[0]?.tools.every((tool: any) => tool.type === "function"));
   assert.equal(bodies[0]?.max_tool_calls, undefined);
-  assert(bodies[0]?.include.includes("web_search_call.action.sources"));
-  assert.deepEqual(updates, [
-    { id: "ws_1", status: "searching", action: "search", queries: [], sources: [] },
-    { id: "ws_1", status: "completed", action: "search", queries: ["Live documentation"], sources: [{ url: "https://www.ableton.com/en/manual/", title: "Live manual" }] },
-  ]);
+  assert(!bodies[0]?.include.includes("web_search_call.action.sources"));
+  assert.equal(searches.length, 1);
+  assert.deepEqual(searches[0]?.commands, { search_query: [{ q: "Live documentation" }], response_length: "short" });
+  assert.deepEqual(searches[0]?.settings, { allowed_callers: ["direct"], external_web_access: true });
+  assert.equal(searches[0]?.model, current.runtimeProfile.model.model);
+  assert.deepEqual(searches[0]?.input, [{ type: "message", role: "user", content: [{ type: "input_text", text: "Live documentation" }] }]);
+  const id = turn.hostedWebSearches![0]!.id;
+  assert.deepEqual(updates, [{ id, status: "searching", action: "search", queries: ["Live documentation"], sources: [] },
+    { id, status: "completed", action: "search", queries: ["Live documentation"], sources: [source] }]);
   assert.deepEqual(turn.hostedWebSearches, [updates[1]]);
+  assert.deepEqual(turn.toolCalls.map(tool => tool.name), ["inspect_live_set"]);
+  assert.equal(turn.citations, undefined);
   current.agentMessages = [
     { role: "assistant", content: turn.content, toolCalls: turn.toolCalls, providerState: turn.providerState },
     { role: "tool", toolCallId: "call_1", content: "Inspected" },
   ];
+  current.tools = current.tools.filter(tool => tool.type === "function");
   await protocol.createToolTurn(current, credential);
   assert(bodies[1]?.input.some((item: unknown) => JSON.stringify(item) === JSON.stringify(search)));
+  assert(bodies[1]?.input.some((item: any) => item.type === "function_call_output" && item.call_id === "search_1" && item.output.includes(source.url)));
+  assert(!JSON.stringify(bodies[1]).includes("private-search-state"));
   assert(bodies[1]?.input.some((item: any) => item.type === "function_call_output" && item.call_id === "call_1"));
 });
 
@@ -137,6 +151,104 @@ test("ChatGPT persists terminal search activity before empty-answer parsing fail
   current.onHostedWebSearch = update => { activity.push(update); };
   await assert.rejects(protocol.createToolTurn(current, credential), /empty response/);
   assert.deepEqual(activity, [{ id: "failed-search", status: "failed", action: "search", queries: ["Live manual"], sources: [] }]);
+});
+
+for (const failure of ["request", "body", "server", "auth"] as const) test(`ChatGPT standalone search resumes only its pending query after ${failure} failure`, async () => {
+  let modelCalls = 0;
+  const searches: Array<{ id: string; query: string; authorization: string | null }> = [];
+  const protocol = createOpenAICodexProtocol({ fetchImpl: async (input, init) => {
+    const body = JSON.parse(String(init?.body));
+    if (String(input).endsWith("/alpha/search")) {
+      searches.push({ id: body.id, query: body.commands.search_query[0].q, authorization: new Headers(init?.headers).get("authorization") });
+      if (searches.length === 2) {
+        if (failure === "request") throw new TypeError("private connection diagnostic");
+        if (failure === "body") return new Response(new ReadableStream({ start(controller) { controller.error(new Error("private body diagnostic")); } }) as unknown as BodyInit);
+        return new Response("{}", { status: failure === "auth" ? 401 : 503 });
+      }
+      return new Response(JSON.stringify({ output: `Result for ${body.commands.search_query[0].q}`, results: [] }));
+    }
+    modelCalls++;
+    return streamResponse([{ type: "response.completed", response: { status: "completed", output: modelCalls === 1
+      ? ["First", "Second"].map((query, index) => ({ type: "function_call", call_id: `search_${index}`, name: "live_smith_web_search", arguments: JSON.stringify({ query }) }))
+      : [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Both searches completed." }] }] } }]);
+  } });
+  const current = request();
+  current.reconnectState = {};
+  current.runtimeProfile.model.advanced.hostedTools = { webSearch: true };
+  current.tools = [{ type: "hosted_web_search", maxUses: 2 }];
+  await assert.rejects(protocol.createToolTurn(current, credential), failure === "auth" ? ModelAuthenticationError : ModelRetryableError);
+  // The application has already charged the completed search to this send.
+  current.tools = [{ type: "hosted_web_search", maxUses: 1 }];
+  const turn = await protocol.createToolTurn(current, { ...credential, accessToken: "refreshed" });
+  assert.equal(modelCalls, 1);
+  assert.deepEqual(searches.map(search => search.query), ["First", "Second", "Second"]);
+  assert.equal(searches[1]!.id, searches[2]!.id);
+  assert.equal(searches[2]!.authorization, "Bearer refreshed");
+  assert.equal(turn.continuation?.reason, "hosted_tools");
+  assert.equal(turn.contextProjection?.messages.length, 3);
+  assert.equal(turn.contextProjection?.usageMessageCount, 1);
+  assert.deepEqual(turn.hostedWebSearches?.map(search => search.status), ["completed", "completed"]);
+  assert.deepEqual(turn.toolCalls, []);
+  current.agentMessages = [{ role: "assistant", content: turn.content, toolCalls: [], providerState: turn.providerState }];
+  current.tools = []; current.reconnectState = {};
+  const answer = await protocol.createToolTurn(current, credential);
+  assert.equal(answer.content, "Both searches completed.");
+  assert.equal(searches.length, 3);
+});
+
+test("ChatGPT standalone search observes cancellation without requesting an answer or publishing completion", async () => {
+  const controller = new AbortController();
+  const updates: string[] = [];
+  let modelCalls = 0;
+  const protocol = createOpenAICodexProtocol({ fetchImpl: async input => {
+    if (String(input).endsWith("/alpha/search")) {
+      controller.abort(new Error("Stopped search"));
+      throw new TypeError("private abort diagnostic");
+    }
+    modelCalls++;
+    return streamResponse([{ type: "response.completed", response: { status: "completed", output: [{ type: "function_call", call_id: "search", name: "live_smith_web_search", arguments: '{"query":"Live manual"}' }] } }]);
+  } });
+  const current = request(); current.signal = controller.signal;
+  current.runtimeProfile.model.advanced.hostedTools = { webSearch: true };
+  current.tools = [{ type: "hosted_web_search", maxUses: 1 }];
+  current.onHostedWebSearch = update => { updates.push(update.status); };
+  await assert.rejects(protocol.createToolTurn(current, credential), /Stopped search/);
+  assert.equal(modelCalls, 1); assert.deepEqual(updates, ["searching"]);
+});
+
+test("ChatGPT standalone search keeps account rejection private and obeys the local search allowance", async () => {
+  let searches = 0;
+  const protocol = createOpenAICodexProtocol({ fetchImpl: async input => {
+    if (String(input).endsWith("/alpha/search")) {
+      searches++;
+      return new Response(JSON.stringify({ error: { code: "permission_denied", message: "private credential-bearing error" } }), { status: 403 });
+    }
+    return streamResponse([{ type: "response.completed", response: { status: "completed", output: [0, 1].map(index => ({
+      type: "function_call", call_id: `search_${index}`, name: "live_smith_web_search", arguments: '{"query":"Live manual"}',
+    })) } }]);
+  } });
+  const current = request(); current.runtimeProfile.model.advanced.hostedTools = { webSearch: true };
+  current.tools = [{ type: "hosted_web_search", maxUses: 1 }];
+  const turn = await protocol.createToolTurn(current, credential);
+  assert.equal(searches, 1); assert.equal(turn.continuation?.reason, "hosted_tools");
+  assert.deepEqual(turn.hostedWebSearches?.map(search => search.status), ["failed"]);
+  assert.deepEqual(turn.toolCalls, []);
+  const replay = JSON.stringify(turn.providerState);
+  assert.match(replay, /allowance exhausted/); assert.doesNotMatch(replay, /private credential-bearing/);
+});
+
+for (const results of [undefined, null, []]) test(`ChatGPT standalone search accepts the optional results field: ${JSON.stringify(results)}`, async () => {
+  const protocol = createOpenAICodexProtocol({ fetchImpl: async input => String(input).endsWith("/alpha/search")
+    ? new Response(JSON.stringify({ output: "No matching pages.", results }))
+    : streamResponse([{ type: "response.completed", response: { status: "completed", output: [{ type: "function_call", call_id: "search", name: "live_smith_web_search", arguments: '{"query":"Live manual"}' }] } }]),
+  });
+  const current = request(); current.runtimeProfile.model.advanced.hostedTools = { webSearch: true };
+  current.tools = [{ type: "hosted_web_search", maxUses: 1 }];
+  const turn = await protocol.createToolTurn(current, credential);
+  assert.equal(turn.continuation?.reason, "hosted_tools");
+  assert.equal(turn.hostedWebSearches?.[0]?.status, "completed");
+  assert.deepEqual(turn.hostedWebSearches?.[0]?.sources, []);
+  assert.match(JSON.stringify(turn.providerState), /No matching pages/);
 });
 
 test("ChatGPT OAuth loads the signed-in Codex model catalog", async () => {

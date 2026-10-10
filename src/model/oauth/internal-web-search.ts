@@ -31,7 +31,7 @@ interface SearchTurnState {
 }
 
 /** Keeps provider-internal search exchanges out of the Live tool executor. */
-export function createGoogleWebSearchRunner() {
+export function createInternalWebSearchRunner(providerName: string) {
   const states = new WeakMap<object, SearchTurnState>();
   return async (
     request: TransportRequest,
@@ -42,9 +42,10 @@ export function createGoogleWebSearchRunner() {
     let state = states.get(key);
     const limit = state?.limit ?? request.tools.find(tool => tool.type === "hosted_web_search")?.maxUses;
     if (limit === undefined) return createTurn(request);
+    if (!request.runtimeProfile.model.advanced.hostedTools?.webSearch) throw new Error(`${providerName} Web Search is not enabled in this Profile.`);
     if (!isHostedWebSearchRequestMaxUses(limit)) throw new Error("Hosted Web Search request limit is invalid.");
     if (request.tools.some(tool => tool.type === "function" && tool.function.name === searchToolName)) {
-      throw new Error("Google Web Search conflicts with a client tool name.");
+      throw new Error(`${providerName} Web Search conflicts with a client tool name.`);
     }
     if (state?.replayOnResume) {
       // Connection recovery resets transient output; native OAuth refresh does not.
@@ -74,7 +75,7 @@ export function createGoogleWebSearchRunner() {
         });
         state.messages.push({ role: "assistant", content: turn.content, toolCalls: turn.toolCalls, providerState: turn.providerState });
         const calls = turn.toolCalls.filter(call => call.name === searchToolName);
-        state.pending = { turn, calls, ids: calls.map(() => `google-search-${randomUUID()}`), next: 0 };
+        state.pending = { turn, calls, ids: calls.map(() => `web-search-${randomUUID()}`), next: 0 };
       }
       const pending = state.pending;
       while (pending.next < pending.calls.length) {
@@ -99,12 +100,12 @@ export function createGoogleWebSearchRunner() {
                 update = evidence;
                 result = { content: found.content, queries: evidence.queries, sources: evidence.sources };
               } else {
-                result = { error: "Google Web Search returned no complete grounded result." };
+                result = { error: `${providerName} Web Search returned no complete result.` };
               }
             } catch (error) {
               throwIfAborted(request.signal);
               if (error instanceof ModelAuthenticationError || error instanceof ModelRetryableError) throw error;
-              result = { error: "Google Web Search is unavailable for this account or request." };
+              result = { error: `${providerName} Web Search is unavailable for this account or request.` };
             }
           }
         }
@@ -136,7 +137,7 @@ function combinedTurn(state: SearchTurnState, last: ModelTurn, toolCalls: ModelT
     toolCalls,
     ...(toolCalls.length ? {} : { continuation: { reason: "hosted_tools" as const } }),
     hostedWebSearches: state.searches.slice(),
-    providerState: { kind: "google-antigravity-search", messages },
+    providerState: { kind: "internal-web-search", messages },
     contextProjection: {
       messages,
       usageMessageCount: 1,
@@ -144,9 +145,9 @@ function combinedTurn(state: SearchTurnState, last: ModelTurn, toolCalls: ModelT
   };
 }
 
-export function googleSearchReplayMessages(message: ModelConversationMessage): ModelConversationMessage[] {
+export function internalSearchReplayMessages(message: ModelConversationMessage): ModelConversationMessage[] {
   if (message.role === "assistant" && isRecord(message.providerState) &&
-    message.providerState.kind === "google-antigravity-search" && Array.isArray(message.providerState.messages)) {
+    message.providerState.kind === "internal-web-search" && Array.isArray(message.providerState.messages)) {
     return message.providerState.messages as ModelConversationMessage[];
   }
   return [message];

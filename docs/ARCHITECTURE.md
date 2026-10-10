@@ -575,15 +575,16 @@ provider-neutral tool union from client-executed Live function tools. A Saved
 Profile must explicitly opt in. The ordinary path exposes the tool with
 automatic selection and adds fixed policy instructions for explicit lookup
 requests and current or changing facts. The composer does not override provider
-tool choice. OpenAI Responses and Anthropic Messages, including their OAuth
-subscription routes, map the hosted member to their native server tool; Chat
-Completions rejects it before HTTP. Antigravity resolves private search calls
-inside its protocol adapter with separate account-owned search requests. Its
-internal exchanges never enter the Live function executor and remain opaque
+tool choice. Direct API OpenAI Responses and Anthropic Messages, including Claude
+OAuth, map the hosted member to their native server tool; Chat Completions rejects
+it before HTTP. ChatGPT and Antigravity resolve private search calls inside their
+protocol adapters with separate account-owned search requests. Their shared
+internal search runner owns retries, completed results and continuation state.
+These exchanges never enter the Live function executor and remain adapter-owned
 replay state, including when an ordinary function shares a response with search.
 Search result blocks remain opaque replay state. Transports separately normalize bounded
 provider call IDs, actions, queries, returned result URLs, and answer citation
-annotations. OpenAI Responses explicitly requests
+annotations. Direct API OpenAI Responses explicitly requests
 `web_search_call.action.sources`; Anthropic result blocks supply the returned
 pages. Streaming activity crosses the bridge as a correlated
 `web_search_update`, then the agent loop durably persists each terminal action

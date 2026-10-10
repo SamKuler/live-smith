@@ -23,7 +23,7 @@ const credential = {
   accountLabel: null,
 };
 
-function request(): TransportRequest {
+function request(search = false): TransportRequest {
   return {
     runtimeProfile: {
       profile: {
@@ -36,7 +36,7 @@ function request(): TransportRequest {
         parameters: {
           reasoning: { mode: "default" },
         },
-        advanced: {},
+        advanced: search ? { hostedTools: { webSearch: true } } : {},
       },
       capabilities: {
         tools: true,
@@ -115,7 +115,7 @@ test("Antigravity searches separately and replays mixed search and Live calls", 
       finishReason: "STOP",
     }] } }]);
   } });
-  const current = request();
+  const current = request(true);
   current.tools.push({ type: "hosted_web_search", maxUses: 2 });
   current.onHostedWebSearch = update => { updates.push(update); };
   const turn = await protocol.createToolTurn(current, credential);
@@ -189,7 +189,7 @@ test("Antigravity retains completed searches across a failed answer connection",
     if (modelCalls === 2) throw new TypeError("connection interrupted");
     return googleTextResponse("Final answer");
   } });
-  const current = request();
+  const current = request(true);
   current.reconnectState = {};
   current.tools.push({ type: "hosted_web_search", maxUses: 2 });
   current.onHostedWebSearch = update => { updates.push(update); };
@@ -233,7 +233,7 @@ for (const stage of ["request", "body"] as const) {
       modelCalls++;
       return modelCalls === 1 ? googleSearchCallResponse() : googleTextResponse("Answer");
     } });
-    const current = request();
+    const current = request(true);
     current.reconnectState = {};
     current.tools.push({ type: "hosted_web_search", maxUses: 1 });
     await assert.rejects(protocol.createToolTurn(current, credential), ModelConnectionError);
@@ -258,7 +258,7 @@ test("Antigravity search obeys the remaining allowance and removes its function 
     finalBody = body;
     return googleTextResponse("Answer");
   } });
-  const current = request();
+  const current = request(true);
   current.tools.push({ type: "hosted_web_search", maxUses: 1 });
   const result = await protocol.createToolTurn(current, credential);
   assert.equal(searches, 1);
@@ -287,7 +287,7 @@ for (const failure of ["missing-model", "no-grounding", "http-error"] as const) 
       replay = body;
       return googleTextResponse("Search unavailable");
     } });
-    const current = request();
+    const current = request(true);
     current.tools.push({ type: "hosted_web_search", maxUses: 1 });
     const turn = await protocol.createToolTurn(current, credential);
     assert.equal(searches, failure === "missing-model" ? 0 : 1);
@@ -306,7 +306,7 @@ for (const failure of ["missing-model", "no-grounding", "http-error"] as const) 
 test("Antigravity does not execute a truncated search call", async () => {
   let calls = 0;
   const protocol = createGoogleAntigravityProtocol({ fetchImpl: async () => { calls++; return googleSearchCallResponse(1, "MAX_TOKENS"); } });
-  const current = request();
+  const current = request(true);
   current.tools.push({ type: "hosted_web_search", maxUses: 1 });
   const turn = await protocol.createToolTurn(current, credential);
   assert.equal(calls, 1);
@@ -324,7 +324,7 @@ test("Antigravity cancellation after search prevents the next model request", as
     modelCalls++;
     return googleSearchCallResponse();
   } });
-  const current = request();
+  const current = request(true);
   current.signal = controller.signal;
   current.tools.push({ type: "hosted_web_search", maxUses: 1 });
   current.onHostedWebSearch = update => { if (update.status === "completed") controller.abort(); };
@@ -349,7 +349,7 @@ test("Antigravity authentication recovery during search preserves visible text a
     }] } }]);
     return googleTextResponse("Answer.");
   } });
-  const current = request();
+  const current = request(true);
   current.reconnectState = {};
   current.tools.push({ type: "hosted_web_search", maxUses: 1 });
   current.onDelta = delta => { deltas.push(delta); };
@@ -376,7 +376,7 @@ test("Antigravity retries a pending search with a stable identity after authenti
     normalCalls++;
     return normalCalls === 1 ? googleSearchCallResponse() : googleTextResponse("Answer");
   } });
-  const current = request();
+  const current = request(true);
   current.reconnectState = {};
   current.tools.push({ type: "hosted_web_search", maxUses: 1 });
   await assert.rejects(protocol.createToolTurn(current, credential), ModelAuthenticationError);
