@@ -108,6 +108,8 @@ test("Anthropic subscription protocol uses OAuth bearer identity, not x-api-key"
 
   assert.equal(headers?.get("authorization"), "Bearer sk-ant-oat-access");
   assert.equal(headers?.has("x-api-key"), false);
+  assert.equal(headers?.get("user-agent"), "claude-cli/2.1.296");
+  assert.equal(headers?.get("anthropic-version"), "2023-06-01");
   assert.match(headers?.get("anthropic-beta") ?? "", /oauth-2025-04-20/u);
   assert.match(String(body?.system), /Claude Code/u);
   assert.equal(turn.content, "Ready");
@@ -195,6 +197,8 @@ test("Anthropic OAuth model discovery also uses bearer identity", async () => {
   });
   assert.equal(headers?.get("authorization"), "Bearer sk-ant-oat-access");
   assert.equal(headers?.has("x-api-key"), false);
+  assert.equal(headers?.get("user-agent"), "claude-cli/2.1.296");
+  assert.equal(headers?.get("anthropic-version"), "2023-06-01");
   assert.deepEqual(models.map((model) => model.id), ["claude-sonnet-4-6"]);
 });
 

@@ -5,7 +5,7 @@ export const antigravitySetupBaseUrl =
 export const antigravityApiBaseUrl =
   "https://daily-cloudcode-pa.googleapis.com";
 
-const antigravityCliVersion = "1.1.22";
+const antigravityCliVersion = "1.3.1";
 
 export function antigravityUserAgent(): string {
   const osType = platform === "win32" ? "windows" : platform;

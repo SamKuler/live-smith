@@ -120,7 +120,7 @@ test("Google Antigravity OAuth resolves the managed project and account", async 
   ));
   assert.match(
     setupHeaders?.get("user-agent") ?? "",
-    /^antigravity\/cli\/1\.1\.22 \(aidev_client; os_type=(?:darwin|linux|windows); arch=(?:amd64|arm64); auth_method=consumer\)$/u,
+    /^antigravity\/cli\/1\.3\.1 \(aidev_client; os_type=(?:darwin|linux|windows); arch=(?:amd64|arm64); auth_method=consumer\)$/u,
   );
   assert.equal(setupHeaders?.has("x-goog-api-client"), false);
   assert.equal(setupHeaders?.has("client-metadata"), false);

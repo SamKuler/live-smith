@@ -252,6 +252,20 @@ gate unless OAuth state for that Profile actually needs retirement.
 
 #### Provider request mapping
 
+Subscription client identifiers are pinned protocol metadata:
+
+| Provider | Request identifier | Pinned version |
+| --- | --- | --- |
+| ChatGPT | Codex catalog `client_version` | [0.162.1](https://github.com/openai/codex/releases/tag/rust-v0.162.1) |
+| Claude | `claude-cli` User-Agent | [2.1.296](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md) |
+| Google | Antigravity CLI consumer User-Agent | [1.3.1](https://www.antigravity.google/docs/changelog?tab=cli#rel-cli-1.3.1) |
+
+These identifiers are independent of locally installed CLIs and the Live Smith
+release version. Updates require request-contract checks and catalog validation.
+Anthropic's `anthropic-version: 2023-06-01` selects the Messages API contract;
+dated beta headers select implemented features and are versioned separately
+from Claude Code releases. OpenAI's User-Agent identifies Live Smith itself.
+
 OpenAI OAuth sends Responses requests to
 `https://chatgpt.com/backend-api/codex/responses`. Requests use Bearer auth,
 the token-derived `chatgpt-account-id`, the Codex Responses beta header,
@@ -300,7 +314,7 @@ Account bootstrap uses `cloudcode-pa.googleapis.com`; Antigravity catalog and
 generation traffic use its `daily-cloudcode-pa.googleapis.com` product route.
 Generation sends SSE requests to
 `https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`
-with Antigravity CLI 1.1.22's consumer HTTP identity. The request envelope
+with Antigravity CLI's pinned consumer HTTP identity. The request envelope
 contains `requestType: "agent"`, `userAgent: "antigravity"`, and one opaque
 `requestId` in `agent/<UUID>` form for each logical model request. Only physical
 connection retries reuse that ID; tool-result and output-limit continuations

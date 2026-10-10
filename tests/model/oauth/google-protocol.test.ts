@@ -466,7 +466,7 @@ test("Google Antigravity loads the signed-in account model catalog", async () =>
   assert.equal(capturedHeaders?.get("authorization"), "Bearer google-access");
   assert.match(
     capturedHeaders?.get("user-agent") ?? "",
-    /^antigravity\/cli\/1\.1\.22 \(aidev_client; os_type=(?:darwin|linux|windows); arch=(?:amd64|arm64); auth_method=consumer\)$/u,
+    /^antigravity\/cli\/1\.3\.1 \(aidev_client; os_type=(?:darwin|linux|windows); arch=(?:amd64|arm64); auth_method=consumer\)$/u,
   );
   assert.deepEqual(capturedBody, { project: "project-1" });
   assert.deepEqual(models.map((model) => model.id), [
@@ -654,7 +654,7 @@ test("Google Antigravity maps streaming text, tools, usage, and request auth", a
   assert.equal(capturedHeaders?.get("authorization"), "Bearer google-access");
   assert.match(
     capturedHeaders?.get("user-agent") ?? "",
-    /^antigravity\/cli\/1\.1\.22 \(aidev_client; os_type=(?:darwin|linux|windows); arch=(?:amd64|arm64); auth_method=consumer\)$/u,
+    /^antigravity\/cli\/1\.3\.1 \(aidev_client; os_type=(?:darwin|linux|windows); arch=(?:amd64|arm64); auth_method=consumer\)$/u,
   );
   assert.equal(capturedHeaders?.has("client-metadata"), false);
   assert.equal(capturedHeaders?.has("x-goog-api-client"), false);

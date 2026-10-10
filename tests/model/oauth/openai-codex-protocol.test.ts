@@ -301,10 +301,11 @@ test("ChatGPT OAuth loads the signed-in Codex model catalog", async () => {
 
   assert.equal(
     capturedUrl,
-    "https://chatgpt.com/backend-api/codex/models?client_version=0.155.0",
+    "https://chatgpt.com/backend-api/codex/models?client_version=0.162.1",
   );
   assert.equal(capturedHeaders?.get("authorization"), "Bearer openai-access");
   assert.equal(capturedHeaders?.get("chatgpt-account-id"), "account-1");
+  assert.equal(capturedHeaders?.get("user-agent"), "live-smith");
   assert.deepEqual(models, [
     {
       id: "gpt-6-astra",
