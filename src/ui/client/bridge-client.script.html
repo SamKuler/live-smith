@@ -2598,8 +2598,9 @@
         if (!bridgeConfig || !bridgeConfig.baseUrl) {
           throw new Error(t("Live Smith bridge configuration is missing."));
         }
+        if (!bridgeConfig.token) return `${bridgeConfig.baseUrl}${path}`;
         const separator = path.includes("?") ? "&" : "?";
-        return `${bridgeConfig.baseUrl}${path}${separator}token=${encodeURIComponent(bridgeConfig.token || "")}`;
+        return `${bridgeConfig.baseUrl}${path}${separator}token=${encodeURIComponent(bridgeConfig.token)}`;
       }
 
       async function loadSessionTools(signal) {

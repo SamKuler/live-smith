@@ -371,7 +371,8 @@
           useInChat: useResultInChat, resultActions: pluginResults,
           createAudioPlayer: (...args) => attachmentViewer.createAudioPlayer(...args),
           audioUrl: (sessionId, id) => bridgeConfig.baseUrl + "/audio-assets/" + encodeURIComponent(id) +
-            "?token=" + encodeURIComponent(bridgeConfig.token) + "&sessionId=" + encodeURIComponent(sessionId),
+            (bridgeConfig.token ? "?token=" + encodeURIComponent(bridgeConfig.token) + "&" : "?") +
+            "sessionId=" + encodeURIComponent(sessionId),
         });
         const chatArtifactPreviews = factories.createChatArtifactPreviews({
           getState, readArtifact: bridgeClient.readSessionArtifact, transfer: transferArtifact, resultActions: pluginResults,

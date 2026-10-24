@@ -87,7 +87,7 @@ extension bundle; Tailwind does not run in the WebView.
 
 ## Network client
 
-### `undici` 7.29.1
+### `undici` 7.30.1
 
 Copyright (c) Matteo Collina and Undici contributors
 
@@ -96,8 +96,8 @@ section above.
 
 ### Model Context Protocol
 
-- `@modelcontextprotocol/client` 2.2.0
-- `@modelcontextprotocol/core` 2.2.0
+- `@modelcontextprotocol/client` 2.4.0
+- `@modelcontextprotocol/core` 2.4.0
 - `@modelcontextprotocol/ext-apps` 2.0.0
 - `@modelcontextprotocol/server` 2.3.1
 - `@modelcontextprotocol/node` 2.1.1
@@ -163,7 +163,7 @@ The MCP transport dependencies are:
 - `eventsource-parser` 3.1.1 — Copyright (c) 2026 Espen Hovlandsdal
 - `jose` 6.2.12 — Copyright (c) 2018 Filip Skokan
 - `pkce-challenge` 5.0.1 — Copyright (c) 2019
-- `zod` 4.6.5 — Copyright (c) 2025 Colin McDonnell
+- `zod` 4.6.7 — Copyright (c) 2025 Colin McDonnell
 - `cross-spawn` 7.0.6 — Copyright (c) 2018 Made With MOXY Lda
 - `path-key` 3.1.1 and `shebang-regex` 3.0.0 — Copyright (c) Sindre Sorhus
 - `shebang-command` 2.0.0 — Copyright (c) Kevin Mårtensson
@@ -200,7 +200,7 @@ PERFORMANCE OF THIS SOFTWARE.
   2018-2021 Josh Junon
 - `ms` 2.1.3 — Copyright (c) 2020 Vercel, Inc.
 - `socks` 2.8.10 — Copyright (c) 2013 Josh Glazebrook
-- `ip-address` 10.7.2 — Copyright (c) 2011 Beau Gunderson
+- `ip-address` 10.7.4 — Copyright (c) 2011 Beau Gunderson
 - `smart-buffer` 4.2.0 — Copyright (c) 2013-2017 Josh Glazebrook
 
 Each WebSocket and proxy-routing package above is distributed under the MIT
@@ -327,7 +327,7 @@ Redistribution and use in source and binary forms, with or without modification,
 This software is provided by the copyright holders and contributors “as is” and any express or implied warranties, including, but not limited to, the implied warranties of merchantability and fitness for a particular purpose are disclaimed. In no event shall the copyright owner or contributors be liable for any direct, indirect, incidental, special, exemplary, or consequential damages (including, but not limited to, procurement of substitute goods or services; loss of use, data, or profits; or business interruption) however caused and on any theory of liability, whether in contract, strict liability, or tort (including negligence or otherwise) arising in any way out of the use of this software, even if advised of the possibility of such damage.
 ```
 
-### `dompurify` 3.4.16
+### `dompurify` 3.4.17
 
 Copyright (c) Cure53 and other contributors
 

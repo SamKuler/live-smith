@@ -17,6 +17,8 @@ import {
 } from "./live/context.js";
 import { openOAuthAuthorizationUrl } from "./runtime/oauth-browser.js";
 import { createMcpService } from "./app/mcp/service.js";
+import { createVst3DiscoveryPublisher } from "./runtime/vst3-discovery.js";
+import { error as logError } from "node:console";
 
 type Api = ExtensionContext<"1.0.0">;
 
@@ -26,8 +28,11 @@ export function activate(activation: ActivationContext) {
   const storageDirectory = context.environment.storageDirectory;
   const mcpService = storageDirectory ? createMcpService({ context, storageDirectory, liveMutationQueue,
     openSession: sessionId => windowHost.openSession(sessionId) }) : undefined;
+  const publishVst3 = createVst3DiscoveryPublisher(storageDirectory);
   const windowHost = createWindowHostController(context, { liveMutationQueue, openOAuthAuthorizationUrl,
+    ...(publishVst3 ? { publishVst3 } : {}),
     ...(mcpService ? { mcpService } : {}) });
+  void windowHost.start().catch(() => logError("Live Smith VST3 bridge startup failed."));
   if (mcpService) void mcpService.start().catch(error => showAgentError(context, error));
 
   context.commands.registerCommand("live-smith.ask-object", (arg: unknown) => {

@@ -3510,3 +3510,16 @@ are bounded to 1 MiB before parsing, except for the MCP App resource-pagination
 requests described above, whose budget accommodates opaque MCP cursors. User
 Skill Markdown source is never a JSON field; it uses the separate authenticated
 raw route described above.
+
+## Installed VST3 view lifecycle
+
+The installed Extension starts one neutral, Live Set-scoped browser ChatBridge
+from `activate()` and publishes a private, atomic local discovery descriptor.
+Each Live Smith View editor obtains a separate short-lived, single-use launch
+ticket from that bridge and uses a bridge cookie for its WebView requests. Plug-in
+state contains no bridge credentials. Right-click actions adopt Track, Clip, or
+Arrangement context on the same bridge when it is idle; a busy bridge rejects a
+context change. The existing MCP Session service remains owned by the Extension.
+A stale Live Set rejects ticket issuance and cookie requests. Bridge process
+lifetime follows Ableton ExtensionHost; the SDK does not provide a verified
+deactivation callback or a guarantee that in-flight work drains on quit.

@@ -311,6 +311,9 @@ export interface AgentFlowDependencies extends DialogModelStateDependencies {
 export interface AgentRuntime {
   readonly url: string;
   readonly busy: boolean;
+  readonly vst3Broker: { bridgeId: string; capability: string; port: number } | undefined;
+  readonly vst3ViewConnected: boolean;
+  adopt(interaction: LiveInteractionContext): void;
   reopen(sessionId?: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -3332,6 +3335,10 @@ export async function createAgentRuntime(
       },
     });
     bridge = await createChatBridge({
+      ...(hostMode === "browser" ? { authorizeVst3Ticket: () => {
+        assertLiveSetCurrent();
+        if (projectKeyForContext(context) !== projectKey) throw new Error("The Live Set changed.");
+      } } : {}),
       readAttachment,
       searchSessions: (input, signal) => searchSessions({ ...input, storageDirectory, signal }),
       handlePluginAppRequest: (input, signal) => pluginApps.request(input, signal),
@@ -3447,6 +3454,8 @@ export async function createAgentRuntime(
     assertLiveSetCurrent();
     return {
       url: bridge.url,
+      get vst3Broker() { return bridge!.vst3Broker; },
+      get vst3ViewConnected() { return bridge!.vst3ViewConnected; },
       get busy() { return bridge!.busy; },
       async reopen(sessionId?: string) {
         assertLiveSetCurrent();
@@ -3454,6 +3463,16 @@ export async function createAgentRuntime(
         activeSessionId = sessionId ?? invocationSessionId;
         invocationSessionId = (await resolveActiveSession()).id;
         assertLiveSetCurrent();
+        bridge!.publishGlobalStateInvalidation();
+      },
+      adopt(nextInteraction) {
+        assertLiveSetCurrent();
+        if (closePromise) throw new Error("This Live Smith window has closed.");
+        if (bridge!.busy) throw new Error("Live Smith is still working. Finish or Stop the current operation before changing context.");
+        interaction = nextInteraction;
+        activeSessionId = undefined;
+        invocationSessionId = undefined;
+        bindInvocationSelectionToNextSession = Boolean(nextInteraction.selectionContext);
         bridge!.publishGlobalStateInvalidation();
       },
       close,

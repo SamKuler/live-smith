@@ -210,7 +210,8 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
           audio = document.createElement("audio"); audio.controls = true; audio.preload = "none";
           audio.dataset.audioAssetId = result.asset.id;
           audio.src = bridgeConfig.baseUrl + "/audio-assets/" + encodeURIComponent(result.asset.id) +
-            "?token=" + encodeURIComponent(bridgeConfig.token) + "&sessionId=" + encodeURIComponent(activeSessionId());
+            (bridgeConfig.token ? "?token=" + encodeURIComponent(bridgeConfig.token) + "&" : "?") +
+            "sessionId=" + encodeURIComponent(activeSessionId());
           region.append(audio);
         }
         audio.setAttribute("aria-label", t("Local audio preview · {output} · {job}", {

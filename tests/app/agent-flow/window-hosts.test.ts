@@ -177,6 +177,10 @@ test('reopening a busy browser preserves its bounded selection and rejects anoth
     await assert.rejects(controller.open({ ...selected, selectionContext: { ...selected.selectionContext!, identity: '24-32' } }), /finish or Stop/);
     assert.equal(aborted, false);
     assert.equal(observed, selected.summary);
+    context.application.song.handle.id = 2n;
+    await assert.rejects(controller.open(selected), /previous Set/);
+    assert.equal(aborted, false);
+    context.application.song.handle.id = 1n;
     await saveGlobalSettings(directory, { interfaceMode: 'modal' });
     await controller.open(selected);
     assert.equal(aborted, false);

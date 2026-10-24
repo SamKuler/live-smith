@@ -3,7 +3,7 @@ import type { ChatCommandActivity } from "../../ui/chat-state.js";
 import { isInterfaceMode, type InterfaceMode } from "../../model/interface-mode.js";
 import { Buffer } from "node:buffer";
 import { isParameterArtifactRead, type ParameterArtifactRead } from "../parameters/contracts.js";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { isSessionTabs, type SessionShortcutId } from "../../model/session-tabs.js";
 import { UiMessageError, type UiMessage } from "../../i18n/ui-message.js";
 import { sendMediaAssetResponse } from "./media-response.js";
@@ -357,6 +357,9 @@ export interface ChatBridgeStream {
 export interface ChatBridge {
   readonly busy: boolean;
   url: string;
+  /** Private capability for the installed VST3; never render this into HTML. */
+  readonly vst3Broker?: { bridgeId: string; capability: string; port: number };
+  readonly vst3ViewConnected: boolean;
   publishSessionApprovalMode(
     sessionId: string,
     approvalMode: ApprovalMode,
@@ -388,6 +391,8 @@ export interface ChatBridge {
 }
 
 interface ChatBridgeOptions {
+  /** Assert this runtime still owns the current Live Set before issuing a VST3 ticket. */
+  authorizeVst3Ticket?(): void;
   readMidiArtifact?(sessionId: string, artifactRef: string, signal: AbortSignal): Promise<{ bytes: Uint8Array; fileName: string }>;
   searchSessions?(input: SessionSearchInput, signal: AbortSignal): Promise<SessionSearchResult>;
   readSessionArtifacts?(input: { sessionId: string; offset: number; query?: string }, signal: AbortSignal): Promise<unknown>;
@@ -729,10 +734,15 @@ export async function createChatBridge(
   options: ChatBridgeOptions,
 ): Promise<ChatBridge> {
   const token = randomUUID();
+  const vst3BridgeId = randomUUID();
+  const vst3Capability = randomUUID() + randomUUID();
+  const vst3Tickets = new Map<string, number>();
+  const vst3CookieName = `LiveSmithBridge-${randomUUID()}`;
   let appSandbox: Promise<PluginAppSandbox> | undefined;
   const appSandboxRegistrations = new Map<string, { dispose(): void }>();
   const mediaDownloads = new Map<string, { kind: "audio" | "midi"; sessionId: string; assetId: string; expiresAt: number }>();
   const clients = new Set<ReturnType<typeof createSseClient>>();
+  const vst3ViewClients = new Set<ReturnType<typeof createSseClient>>();
   const pendingConfirmations = new Map<string, PendingConfirmation>();
   let pendingCommandConfirmation: PendingCommandConfirmation | undefined;
   const pendingRequestBodies = new Set<IncomingMessage>();
@@ -1661,6 +1671,63 @@ export async function createChatBridge(
         return;
       }
 
+      if (url.pathname === "/vst3/tickets") {
+        const origin = bridgeBaseUrl(server);
+        const supplied = request.headers.authorization;
+        const expected = `Bearer ${vst3Capability}`;
+        const validCapability = typeof supplied === "string" &&
+          Buffer.byteLength(supplied) === Buffer.byteLength(expected) &&
+          timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+        if (!options.authorizeVst3Ticket || request.method !== "POST" || url.search ||
+            request.headers.host !== new URL(origin).host ||
+            request.headers.origin !== undefined ||
+            request.headers["content-length"] && request.headers["content-length"] !== "0" ||
+            request.headers["transfer-encoding"] !== undefined || !validCapability) {
+          response.writeHead(403).end("Forbidden");
+          return;
+        }
+        try { options.authorizeVst3Ticket(); } catch {
+          response.writeHead(409).end("Stale Live Set");
+          return;
+        }
+        for (const [key, expires] of vst3Tickets) if (expires <= Date.now()) vst3Tickets.delete(key);
+        if (vst3Tickets.size >= 32) { response.writeHead(429).end("Too many tickets"); return; }
+        const launch = randomUUID();
+        vst3Tickets.set(launch, Date.now() + 30_000);
+        response.writeHead(200, { ...sensitiveResponseHeaders, "Content-Type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({ bridgeId: vst3BridgeId, launchUrl: `${origin}/chat?launch=${launch}` }));
+        return;
+      }
+
+      let vst3CookieAuthorized = requestHasBridgeCookie(request, vst3CookieName, token);
+      let vst3LaunchAuthorized = false;
+      if (request.method === "GET" && url.pathname === "/chat" && url.searchParams.has("launch")) {
+        const launches = url.searchParams.getAll("launch");
+        const launch = launches[0];
+        const expires = launch === undefined ? undefined : vst3Tickets.get(launch);
+        if (!options.authorizeVst3Ticket || url.searchParams.size !== 1 || launches.length !== 1 ||
+            !expires || expires <= Date.now() || request.headers.host !== new URL(bridgeBaseUrl(server)).host ||
+            request.headers.origin !== undefined) {
+          response.writeHead(403).end("Forbidden");
+          return;
+        }
+        try { options.authorizeVst3Ticket(); } catch {
+          response.writeHead(409).end("Stale Live Set");
+          return;
+        }
+        vst3Tickets.delete(launch!);
+        vst3LaunchAuthorized = true;
+        url.searchParams.delete("launch");
+        url.searchParams.set("token", token);
+        response.setHeader("Set-Cookie", `${vst3CookieName}=${token}; HttpOnly; SameSite=Strict; Path=/`);
+      } else if (vst3CookieAuthorized) {
+        try { options.authorizeVst3Ticket?.(); } catch {
+          response.writeHead(409).end("Stale Live Set");
+          return;
+        }
+        if (!url.searchParams.has("token")) url.searchParams.set("token", token);
+      }
+
       if ((request.method === "GET" || request.method === "HEAD") && ["/audio-download", "/midi-download"].includes(url.pathname)) {
         const kind = url.pathname === "/midi-download" ? "midi" : "audio";
         assertExactQueryParameters(url, ["token"], "Media download request");
@@ -1681,7 +1748,7 @@ export async function createChatBridge(
         return;
       }
 
-      if (tokenForRequest(url) !== token) {
+      if (tokenForRequest(url) !== token && !vst3LaunchAuthorized) {
         if (attachmentBodyMayBeUnread) request.resume();
         if (skillBodyMayBeUnread) request.resume();
         if (pluginBodyMayBeUnread) request.resume();
@@ -1741,7 +1808,8 @@ export async function createChatBridge(
         if (closing || response.destroyed) return;
         sendHtml(
           response,
-          options.renderHtml(state, { baseUrl: bridgeBaseUrl(server), token }),
+          options.renderHtml(state, { baseUrl: bridgeBaseUrl(server),
+            token: vst3LaunchAuthorized || vst3CookieAuthorized ? "" : token }),
         );
         return;
       }
@@ -1824,8 +1892,9 @@ export async function createChatBridge(
           Connection: "keep-alive",
           "Content-Type": "text/event-stream",
         });
-        const client = createSseClient(response, () => clients.delete(client));
+        const client = createSseClient(response, () => { clients.delete(client); vst3ViewClients.delete(client); });
         clients.add(client);
+        if (vst3CookieAuthorized) vst3ViewClients.add(client);
         const replayPayloads: SsePayload[] = [];
         const replay = (payload: SsePayload): void => {
           replayPayloads.push(payload);
@@ -3072,7 +3141,12 @@ export async function createChatBridge(
 
   return {
     get busy() { return pendingSendAdmissions.size > 0 || activeSendsById.size > 0 || activeCommandId !== null || inFlightMutationHandlers.size > 0; },
+    get vst3ViewConnected() { return vst3ViewClients.size > 0; },
     url: `${bridgeBaseUrl(server)}/chat?token=${token}`,
+    ...(options.authorizeVst3Ticket ? { vst3Broker: {
+      bridgeId: vst3BridgeId, capability: vst3Capability,
+      port: Number(new URL(bridgeBaseUrl(server)).port),
+    } } : {}),
     createAudioDownload: (sessionId, assetId, signal) => createMediaDownload("audio", sessionId, assetId, signal),
     createMidiDownload: (sessionId, assetId, signal) => createMediaDownload("midi", sessionId, assetId, signal),
     publishSessionApprovalMode: (sessionId, approvalMode, updatedAt) => {
@@ -3318,10 +3392,12 @@ export async function createChatBridge(
       for (const registration of appSandboxRegistrations.values()) registration.dispose();
       appSandboxRegistrations.clear();
       mediaDownloads.clear();
+      vst3Tickets.clear();
       const mutationTerminals = [...inFlightMutationHandlers];
       const pendingReads = [...readOnlyBuilds.entries()];
       const connectedClients = [...clients];
       clients.clear();
+      vst3ViewClients.clear();
       sendStopTombstones.clear();
       retainedCommandIds.clear();
       for (const request of pendingRequestBodies) request.destroy();
@@ -3490,4 +3566,9 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
 
 function isCommandAllowedDuringSend(input: ChatBridgeCommandInput): boolean {
   return isSessionCommand(input) || input.kind === "save_global_settings";
+}
+
+function requestHasBridgeCookie(request: IncomingMessage, name: string, value: string): boolean {
+  const cookie = request.headers.cookie;
+  return typeof cookie === "string" && cookie.split(";").some(entry => entry.trim() === `${name}=${value}`);
 }

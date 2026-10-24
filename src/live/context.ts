@@ -66,6 +66,15 @@ export interface LiveInteractionContext {
   };
 }
 
+export function setInteractionContext(context: Api): LiveInteractionContext {
+  return {
+    summary: "Live Smith is ready in this Live Set. No object or Arrangement selection was supplied.",
+    presentation: { origin: "object", objectKind: "other", title: "Live Set", details: [] },
+    target: {},
+    scope: { kind: "object", identity: context.application.song.handle.id.toString(), label: "Live Set" },
+  };
+}
+
 export function objectInteractionContext(
   context: Api,
   handle: Handle,
