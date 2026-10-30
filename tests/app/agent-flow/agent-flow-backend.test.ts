@@ -1,10 +1,10 @@
+import { openBridgeEvents, readEvent } from "../chat/support/bridge-events.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import { TextDecoder } from "node:util";
 
 import type { LiveInteractionContext } from "../../../src/live/context.js";
 import type {
@@ -369,8 +369,8 @@ test("draft OAuth login retains a browser failure arriving during command state 
     environment: { storageDirectory: directory },
     ui: {
       async showModalDialog(url: string) {
-        const events = await fetch(bridgeEndpoint(url, "/events"));
-        const publishedFailure = readSsePayload(events, "oauth_auth_changed");
+        const events = await openBridgeEvents(bridgeEndpoint(url, "/events"));
+        const publishedFailure = readEvent(events, "oauth_auth_changed");
         holdCommandState = true;
         const response = fetch(bridgeEndpoint(url, "/command"), {
           method: "POST", headers: bridgeJsonHeaders(),
@@ -391,7 +391,7 @@ test("draft OAuth login retains a browser failure arriving during command state 
         } finally {
           failBrowser.resolve(undefined);
           releaseStateAssembly.resolve(undefined);
-          await events.body?.cancel();
+          await events.close();
         }
       },
     },
@@ -510,8 +510,8 @@ test("browser failure stays retryable and Antigravity code submission notifies p
           headers: bridgeJsonHeaders(),
           body: JSON.stringify(body),
         });
-        const events = await fetch(bridgeEndpoint(url, "/events"));
-        const browserFailurePublished = readSsePayload(
+        const events = await openBridgeEvents(bridgeEndpoint(url, "/events"));
+        const browserFailurePublished = readEvent(
           events,
           "oauth_auth_changed",
         );
@@ -560,7 +560,7 @@ test("browser failure stays retryable and Antigravity code submission notifies p
           authorizationCodeInput: true,
           browserLaunchFailed: true,
         });
-        await events.body?.cancel();
+        await events.close();
 
         const invalidationsBeforeRetry = peerStateInvalidations;
         const fallback = await command({
@@ -1684,34 +1684,6 @@ test("every subscription send refreshes its catalog and rejects a missing model 
   assert.deepEqual(authReadiness, [false, true, true, true]);
 });
 
-async function readSsePayload(
-  response: Response,
-  type: string,
-): Promise<Record<string, unknown>> {
-  const reader = response.body?.getReader();
-  assert.ok(reader);
-  const decoder = new TextDecoder();
-  let pending = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      assert.equal(done, false, `SSE ended before ${type}.`);
-      pending += decoder.decode(value, { stream: true });
-      const frames = pending.split("\n\n");
-      pending = frames.pop() ?? "";
-      for (const frame of frames) {
-        const data = frame.split("\n")
-          .find((line) => line.startsWith("data: "))
-          ?.slice("data: ".length);
-        if (!data) continue;
-        const payload = JSON.parse(data) as { type?: string };
-        if (payload.type === type) return payload;
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
 
 function bridgeEndpoint(dialogUrl: string, pathname: string): string {
   const url = new URL(dialogUrl);

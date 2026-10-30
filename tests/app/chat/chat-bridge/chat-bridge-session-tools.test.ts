@@ -1,3 +1,4 @@
+import { openBridgeEvents } from "../support/bridge-events.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test from "node:test";
@@ -46,7 +47,7 @@ test("Session tool reads accept only authenticated, strict discovery inputs and 
   });
   const endpoint = route(bridge.url, "/session-tools");
   const headers = { "Content-Type": "application/json", "X-Live-Smith-Command-Id": "strict-tools-read" };
-  const events = await fetch(route(bridge.url, "/events"));
+  const events = await openBridgeEvents(route(bridge.url, "/events"));
   try {
     for (const body of [
       JSON.stringify({ kind: "new_session" }),
@@ -123,7 +124,7 @@ test("pending Session tool discovery permits sends, commands, and state reads wi
     handleSend: async (input) => { sends.push(input); },
   });
   const baseline = await (await fetch(route(bridge.url, "/state"))).json() as ChatBridgeState;
-  const events = await fetch(route(bridge.url, "/events"));
+  const events = await openBridgeEvents(route(bridge.url, "/events"));
   let readSettled = false;
   const read = post(bridge.url, "/session-tools", toolReadInput, "held-tools-read")
     .then((response) => { readSettled = true; return response; });
@@ -188,7 +189,7 @@ test("a failed Session tool read does not publish errors or terminate a concurre
     },
     handleSend: async () => {},
   });
-  const events = await fetch(route(bridge.url, "/events"));
+  const events = await openBridgeEvents(route(bridge.url, "/events"));
   const read = post(bridge.url, "/session-tools", toolReadInput, "failed-tools-read");
   let command: Promise<Response> | undefined;
   try {

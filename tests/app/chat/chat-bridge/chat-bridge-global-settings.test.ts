@@ -1,3 +1,4 @@
+import { openBridgeEvents, readEvent, type BridgeEvents } from "../support/bridge-events.js";
 import assert from "node:assert/strict";
 import { integrationConnectionsView } from "../../../../src/storage/settings.js";
 import test from "node:test";
@@ -40,34 +41,6 @@ function globalSettingsState(
   } as unknown as ChatDialogState;
 }
 
-async function readSsePayload(
-  response: Response,
-  type: string,
-): Promise<Record<string, unknown>> {
-  const reader = response.body?.getReader();
-  assert.ok(reader);
-  const decoder = new TextDecoder();
-  let pending = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      assert.equal(done, false, `SSE ended before ${type}.`);
-      pending += decoder.decode(value, { stream: true });
-      const frames = pending.split("\n\n");
-      pending = frames.pop() ?? "";
-      for (const frame of frames) {
-        const data = frame.split("\n")
-          .find((line) => line.startsWith("data: "))
-          ?.slice("data: ".length);
-        if (!data) continue;
-        const payload = JSON.parse(data) as Record<string, unknown>;
-        if (payload.type === type) return payload;
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
 
 test("global follow-up settings are strict commands allowed during an active send", async () => {
   let releaseSend!: () => void;
@@ -372,10 +345,10 @@ test("global settings replay and reconcile each field by its own revision", asyn
   const token = chatUrl.searchParams.get("token");
   const endpoint = (pathname: string) =>
     `${chatUrl.origin}${pathname}?token=${token}`;
-  let firstEvents: Response | undefined;
-  let mergedEvents: Response | undefined;
-  let correlatedEvents: Response | undefined;
-  let reconnectedEvents: Response | undefined;
+  let firstEvents: BridgeEvents | undefined;
+  let mergedEvents: BridgeEvents | undefined;
+  let correlatedEvents: BridgeEvents | undefined;
+  let reconnectedEvents: BridgeEvents | undefined;
 
   try {
     bridge.publishGlobalSettings({
@@ -396,8 +369,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       commandId: "save-steer-2",
     });
 
-    firstEvents = await fetch(endpoint("/events"));
-    const firstEvent = await readSsePayload(
+    firstEvents = await openBridgeEvents(endpoint("/events"));
+    const firstEvent = await readEvent(
       firstEvents,
       "global_settings_changed",
     );
@@ -481,8 +454,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       sessionTabsRevision: "0",
       commandId: "stale-save",
     });
-    mergedEvents = await fetch(endpoint("/events"));
-    const mergedEvent = await readSsePayload(
+    mergedEvents = await openBridgeEvents(endpoint("/events"));
+    const mergedEvent = await readEvent(
       mergedEvents,
       "global_settings_changed",
     );
@@ -506,7 +479,7 @@ test("global settings replay and reconcile each field by its own revision", asyn
         sessionTabsRevision: "0",
         commandId: "bridge-state-snapshot",
     });
-    await mergedEvents.body?.cancel();
+    await mergedEvents.close();
     mergedEvents = undefined;
 
     bridge.publishGlobalSettings({
@@ -526,8 +499,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       sessionTabsRevision: "0",
       commandId: "save-queue-3",
     });
-    correlatedEvents = await fetch(endpoint("/events"));
-    const correlatedEvent = await readSsePayload(
+    correlatedEvents = await openBridgeEvents(endpoint("/events"));
+    const correlatedEvent = await readEvent(
       correlatedEvents,
       "global_settings_changed",
     );
@@ -551,7 +524,7 @@ test("global settings replay and reconcile each field by its own revision", asyn
       sessionTabsRevision: "0",
       commandId: "save-queue-3",
     });
-    await correlatedEvents.body?.cancel();
+    await correlatedEvents.close();
     correlatedEvents = undefined;
 
     bridge.publishGlobalSettings({
@@ -571,8 +544,8 @@ test("global settings replay and reconcile each field by its own revision", asyn
       sessionTabsRevision: "0",
       commandId: "show-context-9",
     });
-    reconnectedEvents = await fetch(endpoint("/events"));
-    const reconnectedEvent = await readSsePayload(
+    reconnectedEvents = await openBridgeEvents(endpoint("/events"));
+    const reconnectedEvent = await readEvent(
       reconnectedEvents,
       "global_settings_changed",
     );
@@ -597,10 +570,10 @@ test("global settings replay and reconcile each field by its own revision", asyn
         commandId: "show-context-9",
     });
   } finally {
-    await firstEvents?.body?.cancel();
-    await mergedEvents?.body?.cancel();
-    await correlatedEvents?.body?.cancel();
-    await reconnectedEvents?.body?.cancel();
+    await firstEvents?.close();
+    await mergedEvents?.close();
+    await correlatedEvents?.close();
+    await reconnectedEvents?.close();
     await bridge.close();
   }
 });
@@ -662,9 +635,9 @@ test("global follow-up reconciliation compares canonical revisions by decimal or
       sessionTabsRevision: "0",
       commandId: "lexically-larger-but-stale",
     });
-    const replay = await fetch(endpoint("/events"));
+    const replay = await openBridgeEvents(endpoint("/events"));
     try {
-      const replayEvent = await readSsePayload(
+      const replayEvent = await readEvent(
         replay,
         "global_settings_changed",
       );
@@ -689,7 +662,7 @@ test("global follow-up reconciliation compares canonical revisions by decimal or
           commandId: "larger-revision",
       });
     } finally {
-      await replay.body?.cancel();
+      await replay.close();
     }
   } finally {
     await bridge.close();
@@ -735,16 +708,15 @@ test("language revisions merge independently across stale publications and state
     assert.equal(merged.settings.contextUsageVisibilityRevision, "1");
     source = globalSettingsState("queue", "0");
     assert.equal((await state()).settings.uiLanguage, "en");
-    const abort = new AbortController();
-    const stream = await fetch(endpoint("/events"), { signal: abort.signal });
+    const stream = await openBridgeEvents(endpoint("/events"));
     try {
-      const replay = await readSsePayload(stream, "global_settings_changed");
+      const replay = await readEvent(stream, "global_settings_changed");
       assert.equal(replay.uiLanguage, "en");
       assert.equal(replay.uiLanguageRevision, "9007199254740993");
       assert.equal(replay.showContextUsage, false);
       assert.deepEqual(replay.networkProxy, { mode: "none", url: "" });
     } finally {
-      abort.abort();
+      await stream.close();
     }
   } finally {
     await bridge.close();
@@ -803,15 +775,14 @@ test("Session tab visibility merges and replays independently of stale settings 
     integrationConnections: integrationConnectionsView(merged.settings.integrationConnections),
     commandId: "correlated-tabs-publication",
   });
-  const abort = new AbortController();
-  const stream = await fetch(endpoint("/events"), { signal: abort.signal });
+  const stream = await openBridgeEvents(endpoint("/events"));
   try {
-    const replay = await readSsePayload(stream, "global_settings_changed");
+    const replay = await readEvent(stream, "global_settings_changed");
     assert.deepEqual(replay.sessionTabs, ["skills", "tools"]);
     assert.equal(replay.sessionTabsRevision, "9007199254740993");
     assert.equal(replay.commandId, "correlated-tabs-publication");
     assert.equal(replay.showContextUsage, false);
   } finally {
-    abort.abort();
+    await stream.close();
   }
 });

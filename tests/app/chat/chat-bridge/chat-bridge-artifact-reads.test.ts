@@ -1,3 +1,4 @@
+import { openBridgeEvents } from "../support/bridge-events.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setImmediate } from "node:timers";
@@ -41,7 +42,7 @@ for (const entry of cases) {
       readMidiArtifactDiff: async (input, signal) => { await read(input, signal); return diff; },
     });
     const target = route(bridge.url, entry.path);
-    const events = await fetch(route(bridge.url, "/events"));
+    const events = await openBridgeEvents(route(bridge.url, "/events"));
     const post = (body: string, url = target, requestHeaders = headers) => fetch(url, { method: "POST", headers: requestHeaders, body });
     try {
       for (const token of ["", "incorrect"]) {
@@ -62,7 +63,7 @@ for (const entry of cases) {
       const accepted = await post(JSON.stringify(entry.input));
       assert.equal(accepted.status, 200); assert.match(accepted.headers.get("cache-control")!, /no-store/u);
       assert.deepEqual(await accepted.json(), entry.result); assert.deepEqual(calls, [entry.input]);
-      await bridge.close(); assert.equal(await events.text(), "\n");
+      await bridge.close(); assert.deepEqual(await events.all(), []);
     } finally { await bridge.close(); }
   });
 

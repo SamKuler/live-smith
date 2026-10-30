@@ -1,3 +1,4 @@
+import { openBridgeEvents, type BridgeEvents } from "../support/bridge-events.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -70,30 +71,9 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   }
 }
 
-async function readSseTypes(
-  response: Response,
-  requiredTypes: readonly string[],
-): Promise<Record<string, unknown>[]> {
-  assert.ok(response.body);
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
+async function readEventTypes(response: BridgeEvents, requiredTypes: readonly string[]): Promise<Record<string, unknown>[]> {
   const events: Record<string, unknown>[] = [];
-  let buffer = "";
-  const deadline = Date.now() + 1_000;
-  while (requiredTypes.some((type) => !events.some((event) => event.type === type))) {
-    if (Date.now() >= deadline) throw new Error("Timed out waiting for SSE events.");
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    for (;;) {
-      const boundary = buffer.indexOf("\n\n");
-      if (boundary < 0) break;
-      const frame = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      const data = frame.split("\n").find((line) => line.startsWith("data: "));
-      if (data) events.push(JSON.parse(data.slice(6)) as Record<string, unknown>);
-    }
-  }
+  while (requiredTypes.some(type => !events.some(event => event.type === type))) events.push(await response.next());
   return events;
 }
 
@@ -224,7 +204,7 @@ test("a terminal steering receipt retry cannot rewrite a newer send activity", a
   }
 });
 
-test("steering waits for owner persistence and emits prompt-free acceptance SSE", async () => {
+test("steering waits for owner persistence and emits prompt-free acceptance events", async () => {
   const started = deferred();
   const consume = deferred();
   const startLaterConfirmation = deferred();
@@ -256,7 +236,7 @@ test("steering waits for owner persistence and emits prompt-free acceptance SSE"
       await finish.promise;
     },
   });
-  const eventsResponse = await fetch(bridgeEndpoint(bridge.url, "/events"));
+  const eventsResponse = await openBridgeEvents(bridgeEndpoint(bridge.url, "/events"));
   const sendId = "send-1";
   const send = postJson(
     bridgeEndpoint(bridge.url, "/send"),
@@ -285,7 +265,7 @@ test("steering waits for owner persistence and emits prompt-free acceptance SSE"
       message: "Guidance applied",
     });
 
-    const events = await readSseTypes(eventsResponse, [
+    const events = await readEventTypes(eventsResponse, [
       "assistant_reset",
       "steer_accepted",
     ]);

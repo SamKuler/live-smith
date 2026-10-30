@@ -79,7 +79,7 @@ src/
       for model providers, audio services and Plugin applications.
     chat/
       chat-bridge.ts, chat-bridge-http.ts
-        Own authenticated HTTP/SSE state, command admission, body bounds,
+        Own authenticated HTTP/WebSocket state, command admission, body bounds,
         correlation IDs and safe bridge errors.
       steering.ts, error-routing.ts, global-settings-events.ts
         Own follow-up admission, UI error routing and global settings notices.
@@ -721,7 +721,7 @@ output-limit continuation.
 `ModelConnection` is a closed discriminated union:
 
 - `DirectApiConnection` owns API family/mode, base URL, and API key. The
-  registry selects one of the three explicit HTTP/SSE transports.
+  registry selects one of the three explicit HTTP/WebSocket transports.
 - `OAuthSubscriptionConnection` owns an OpenAI, Anthropic, or Google provider
   identity. Its backend owns that provider's subscription protocol.
 
@@ -1489,7 +1489,7 @@ applicable, without a body, hash, archive byte, or path.
 For Skills, `ChatDialogState` and `ChatBridgeState` expose only summaries and
 active IDs. The composed dialog document separately embeds a script-safe snapshot of
 canonical built-in definitions for its local read-only viewer; those bodies are
-not part of generic state or HTTP/SSE state payloads. Viewing follows the
+not part of generic state or HTTP/WebSocket state payloads. Viewing follows the
 available-source discriminator, does not change activation, and reads only the
 bundled built-in bodies. User and Plugin Skill bodies never enter generic state.
 The viewer shares the conversation's sanitized Markdown
@@ -3069,13 +3069,15 @@ approval decision.
 
 `agent-flow.ts` produces an unversioned domain state. At the WebView boundary,
 each runtime bridge stamps every full `ChatBridgeState` exactly once with its own
-monotonic decimal publication revision; the matching HTTP and SSE payload share
+monotonic decimal publication revision; the matching HTTP and WebSocket payload share
 that identity. A full state also carries the publication revision captured
 before its asynchronous request work as `bridgeStateCoveredThroughRevision`.
-Read-only `/state` captures its cut after waiting for pending mutation handlers
-and before building the snapshot; mutation responses retain their request cut.
+Read-only `/state` captures its cut after waiting for the requesting view’s pending
+command, attachment, and navigation handlers and before building the snapshot; mutation
+responses retain their request cut. Other views can read committed state while a peer
+command waits for approval.
 That cut, not the later publication identity, says which projection patches the
-snapshot is guaranteed to include. Incremental SSE patches that change the
+snapshot is guaranteed to include. Incremental WebSocket patches that change the
 client-held projection carry revisions from the same local sequence, including
 reconnect replays. The sequence is neither persisted nor compared across runtimes
 and is not a storage freshness clock: an async snapshot can finish after a newer
@@ -3089,7 +3091,10 @@ before reconnecting to the admitted peer. Peer command activity and pending
 approval remain deferred while a local command outcome is pending; terminal
 or replacement activity invalidates the deferred approval.
 
-Each SSE connection has one ordered writer for initial replay and live publications.
+`/events` 使用现有 `ws` 库升级为 WebSocket；握手校验精确 loopback Host、Origin
+和 bridge token。HTTP 请求继续承载 Send、命令、确认与 Stop。升级后的事件连接
+独立于浏览器的普通 HTTP 连接池。每个文本消息承载事件数组，初始回放与后续
+事件使用同一有序写入器。客户端发来的消息关闭事件连接。
 A write that reaches Node's high-water mark is already accepted; the writer waits
 for `drain` and queues subsequent frames. Pending work is limited to 4 MiB and
 4096 frames per client, with a 15-second drain deadline. Overflow or a stalled
@@ -3097,7 +3102,7 @@ socket retires only that client. One large accepted snapshot or initial replay
 can drain without being treated as a failed connection. Closing a connection
 releases its queue, timer and listeners.
 
-EventSource reconnection alone is not treated as recovery: the client blocks new
+WebSocket reconnection alone is not treated as recovery: the client blocks new
 work until one authoritative full state is validated for the current connection.
 Disconnect, timeout and page disposal cancel the old read; its late response
 cannot apply state, settle Sends or release queued work. A recovery read has a
@@ -3106,10 +3111,10 @@ up to three retries after 500, 1000 and 2000 milliseconds. Invalid state and oth
 HTTP failures remain blocked. After recovery fails, **Retry connection** starts a
 new read sequence without resubmitting commands or prompts. Page restoration
 opens a fresh stream and reconciles state. A recovered snapshot also settles
-completed Sends whose HTTP and terminal SSE deliveries were both lost.
+completed Sends whose HTTP and terminal WebSocket deliveries were both lost.
 Durable steering correlation is represented in both incremental and full-state
 Session-event projections, so either one can reconcile an unresolved steer. The
-client runs every authoritative HTTP/SSE state through one complete wire
+client runs every authoritative HTTP/WebSocket state through one complete wire
 decoder, including nested Session, Profile, model, auth, attachment, and
 activity records. State-change and terminal envelopes are decoded before a
 revision is consumed, a request is settled, or a projection is mutated. A
@@ -3126,19 +3131,19 @@ without claiming coverage for fields that the client preserved. Patches that cha
 activity carry the exact status and message written by the bridge; the client
 does not invent a second activity projection for confirmations or steering.
 Confirmation and steering HTTP acknowledgements echo the same revision and
-activity as their SSE publication, so either delivery path is idempotent and a
+activity as their WebSocket publication, so either delivery path is idempotent and a
 later response cannot erase a newer visible status. A point HTTP receipt advances
 only the observed publication identity and its named projection frontier; it
 never advances the dialog-wide snapshot cut. An acknowledgement without an
 activity projection leaves the current canonical activity unchanged. An exact
-confirmation-resolution SSE also completes the matching in-flight UI decision;
+confirmation-resolution WebSocket also completes the matching in-flight UI decision;
 after an HTTP transport loss, the client waits a bounded interval for that
 authoritative event before falling back to Stop reconciliation. A different,
 later confirmation for the same send is also authoritative forward progress:
 it releases the prior wait before presenting the new decision. Every
 confirmation carries a safe-integer generation that increases without gaps
 within its active
-send and is shared by its request, resolution SSE, and HTTP receipt. The client
+send and is shared by its request, resolution WebSocket, and HTTP receipt. The client
 keeps only the highest resolved generation on the attempt, so an older same-ID
 reconnect replay cannot restore a completed or steering-superseded decision and
 the replay guard uses constant space. Queue entries have a separate logical
@@ -3236,7 +3241,7 @@ Instructions and Session creative brief.
 A new manual checkpoint requires conversation activity after the latest
 checkpoint, so repeated `/compact` commands cannot accumulate empty checkpoint
 markers. Model reconnect notices for a manual checkpoint use command-correlated,
-transient SSE updates. They are neither Session activity nor durable state and are
+transient WebSocket updates. They are neither Session activity nor durable state and are
 not replayed after reconnect. Stop is definitive only while cancellation is
 observed before checkpoint persistence begins. Once the checkpoint append starts,
 an acknowledged durable commit wins; an indeterminate commit continues through
@@ -3244,7 +3249,7 @@ the existing unknown-outcome state reconciliation path.
 
 `model_turn_state` is an ephemeral recovery snapshot: it neither advances the
 dialog-wide state cut nor claims durable Session history. The bridge does not
-retain an SSE event log, accept a durable cursor, or replay arbitrary missed
+retain an WebSocket event log, accept a durable cursor, or replay arbitrary missed
 frames. Durable events and command outcomes still converge through their
 existing Session/state reconciliation paths. The EventSource connection error
 is only a status overlay; opening the replacement stream reveals the latest
@@ -3359,7 +3364,7 @@ ledger leaves Live unchanged.
 Host observation, preflight, and execution failures are classified separately
 and returned for evidence-based recovery rather than being counted as malformed
 arguments. Observation argument objects reject unknown fields and invalid
-optional values instead of silently falling back to the selected object. Command and send SSE
+optional values instead of silently falling back to the selected object. Command and send WebSocket
 events carry the initiating request's correlation ID, and Stop identifies its
 target send, so delayed state, completion, error, or cancellation traffic cannot
 affect a later operation. State reads that arrive during a command wait for the
@@ -3434,8 +3439,33 @@ acquisition through later initialization, event persistence and execution. Once
 the complete tool registry is available it owns that cleanup; earlier setup
 failures still release the admitted Plugin connections.
 
-`createAgentRuntime` owns an authenticated loopback HTTP/SSE bridge, Session claims,
-subscriptions and provider resources independently of a page. `runAgentFlow` owns
+`createAgentRuntime` 拥有共享的认证 loopback HTTP/WebSocket bridge、订阅、
+Provider 资源和任务。每次打开页面创建独立视图，视图闭包拥有当前 Session、状态
+提示、工具目录、MIDI continuation 展示缓存、Session claims 与 Plugin App 实例。
+每个视图独立持有模型发现目录、OAuth 草稿与登录 owner，回收时执行临时认证清理；
+底层 backend manager 和 Profile/provider/auth generation 互斥继续共享。
+Session 数据、Send、待审批操作、Stop、存储互斥和 Live 写入队列属于共享运行环境。
+
+`viewId` 通过 `X-Live-Smith-View-Id` HTTP 头与 `/events` 查询参数选择展示视图，
+它沿用 bridge 的认证边界。Send 保持 `{ prompt, sessionId }`；Session 命令保持
+各自字段。`POST /view-session` 处理选择与新建 Session，其他页面的业务命令或
+待审批操作可以继续运行。选择已有 Session 读取一致快照，运行中的 Send 保持
+其原 Session 绑定。
+
+共享数据提交会通知其他视图。bridge 为每个视图保留外来失效的覆盖水位，Send
+入场及请求快照读取后继续检查这两个覆盖水位。发起视图通过自己的操作响应
+收敛状态；其他视图从各自 `/state` 获取当前选择对应的完整快照。命令终态携带的
+发起页状态按操作归属合并共享字段；其他页保留自己的选择和展示缓存。
+
+每次 `GET /chat` 创建独立文档视图。页面 URL 中的可选 `sessionId` 恢复当前工程内
+有效、未归档的 Session 选择。Session ID 格式错误返回请求错误；不存在、其他工程
+或已归档的选择沿用默认 Session 解析。
+客户端随当前 Session 更新 URL，刷新或复制页面时创建新 owner 并恢复该选择。
+`viewId` 仅由页面配置、HTTP 头和事件连接持有；`/chat` 查询参数接受 `token` 与
+`sessionId`。同一文档短暂断线后继续连接自己的视图。
+最后一个事件连接断开且全部在途请求结束后，视图保留五分钟，再释放 claims、
+Plugin Apps 与展示缓存。在途 Send 和待审批请求保留其视图资源直到结束；
+共享 Session 与任务数据继续保留。 `runAgentFlow` owns
 the modal wrapper and closes that runtime when `showModalDialog` returns.
 `window-hosts.ts` retains one browser runtime per Extension activation and launches
 its exact tokenized URL through the loopback-enabled system browser opener. An
@@ -3450,11 +3480,11 @@ inactive Sessions and write-only credential inputs, before discarding edits.
 These checks do not persist drafts or credentials.
 
 Repeated browser invocations with the same Set, object and exact selection reuse
-the runtime and its Session claim owner, and restore its invocation Session even
-if the page selected another Session. A different invocation retires an idle
+the runtime. Each newly opened page starts from the invocation Session; existing
+pages retain their own Session selections. A different invocation retires an idle
 runtime; a busy runtime rejects that change until its work finishes or is stopped.
 A subsequent modal invocation owns a separate runtime without cancelling browser
-work. Set changes retire the old browser runtime on the next browser invocation.
+work. A changed SDK Song handle retires the old browser runtime on the next invocation.
 The SDK exposes no Extension deactivation hook; otherwise the retained runtime
 lasts for the Extension process. `close` remains idempotent and owns resource cleanup.
 
@@ -3463,16 +3493,25 @@ cached-page views. `pageshow` resumes preview loading; final page destruction
 disposes the views. Reconnection restores the bridge without leaving retained
 MIDI cards bound to disposed resources.
 
-Disconnecting browser HTTP/SSE connections does not cancel admitted sends or pending
+Disconnecting browser HTTP/WebSocket connections does not cancel admitted sends or pending
 confirmations. Reopening replays authoritative activity, transient model output and
-pending confirmation state. The authenticated `command_activity` SSE projection
+pending confirmation state. The authenticated `command_activity` WebSocket projection
 publishes the admitted command ID, optional Session ID and stopping flag, and
 replays its current value before command confirmations. A terminal null clears
 remote command ownership on reconnect. Its independent revision ordering rejects
 stale activity; fresh pages consume the same command confirmation, progress,
 terminal state and Stop protocol as the initiating page.
 Stop and runtime shutdown still cancel work. Page-local
-drafts and queued follow-ups are not durable background jobs. Set identity is captured before asynchronous opening and checked before exposing
+drafts and queued follow-ups are not durable background jobs.
+
+当前工程身份由 ExtensionContext 和 SDK Song handle 建立。SDK 1.0.0 beta.1
+在打开另一个 `.als` 时可以沿用 Song 与 Main Track handle，且缺少文档代次或
+加载、关闭事件。此时自动工程身份检查仍保留原值，旧授权与无具体对象绑定的
+待执行计划可能继续适用。对象级 preflight 能检查已绑定对象的失效；创建轨道、
+修改 tempo 等操作需要独立的工程生命周期信号才能保证跨 Set 隔离。切换工程前
+停止当前任务，切换后重新启动 Extension，以新的运行环境建立工程绑定。
+
+The available SDK identity is captured before asynchronous opening and checked before exposing
 the runtime. It is checked again at send admission, observation, preflight, queued mutation acquisition
 and between executor actions; MIDI import consumes the same runtime guard.
 Managed sample staging checks that authority immediately before importing into

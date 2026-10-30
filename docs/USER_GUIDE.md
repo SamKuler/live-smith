@@ -487,9 +487,11 @@ Live 的已完成步骤和部分失败记录保留在历史中。结果尚未确
 上传和读取沿用 Session 文件格式、大小和完整性校验。
 外部上传记录在对应操作中；聊天消息使用用户明确选择的附件。
 
-切换 Live Set 后，旧绑定可查询历史和已保存资源。当前工程的 Live 读写使用为该
-工程创建的客户端授权。服务仅监听本机回环地址，凭据只授予绑定 Session 的工具
-与资源访问。Profile 登录、连接设置和审批策略仍通过 Live Smith 界面管理。
+外部客户端凭据绑定 Session 的工具与资源访问，服务仅监听本机回环地址。
+工程身份沿用 Extension 与 SDK 的生命周期；切换工程前停止外部操作，切换后
+重新启动 Extension 并建立当前工程的客户端授权。具体流程见
+[界面与浏览器设置](#interface-preferences)。Profile 登录、连接设置和审批策略
+通过 Live Smith 界面管理。
 
 ### Installing Plugins
 
@@ -706,9 +708,17 @@ to the next invocation. The browser lets you keep working in Live; closing its t
 preserves admitted tasks and pending approvals while the Extension is running.
 Use **Ask Live Smith** on the same object or selection to reopen its Session, or
 use **Stop** to cancel its current task. Asking about a different selection replaces
-an idle browser runtime; finish or Stop its work first when it is busy. Switching
-Live Sets prevents the old runtime from applying further edits. Drafts and queued
-follow-ups belong to the page and are lost when its tab closes.
+an idle browser runtime; finish or Stop its work first when it is busy.
+
+每个页面独立选择当前 Session。同一 Session 的消息、审批、编辑范围和任务状态
+在各页共享；一页切换 Session 时，其他页保留各自选择。刷新或复制页面会创建
+独立视图，并恢复地址中仍有效的 Session 选择；短暂断线继续使用当前页面的视图。
+关闭页面后，视图在全部在途任务结束后保留五分钟，再释放其临时资源；
+重新打开的新页面从调用时的 Session 开始。草稿和待发送队列属于页面，关页后清除。
+
+切换 Live Set 前，先 Stop 所有任务并处理待审批操作；切换后重新启动 Live Smith
+Extension。当前 Ableton SDK 可能在切换 `.als` 时沿用工程句柄，自动工程身份检查
+存在覆盖缺口。重新启动后使用新运行环境重新绑定 Session 与外部客户端。
 
 After a connection interruption, Live Smith refreshes the current state before
 accepting new work. Temporary failures retry automatically; if recovery still

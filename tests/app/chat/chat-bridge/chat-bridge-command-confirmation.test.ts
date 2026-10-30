@@ -1,8 +1,8 @@
+import { openBridgeEvents, readEvent } from "../support/bridge-events.js";
 import { createDialogHarness, jsonCalls, stateFixture } from "../../../ui/support/chat-dialog.test-harness.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { URL } from "node:url";
-import { TextDecoder } from "node:util";
 import type { ChatDialogState } from "../../../../src/ui/chat-state.js";
 import { createChatBridge } from "../../../../src/app/chat/chat-bridge.js";
 
@@ -20,25 +20,8 @@ function deferred() {
   return { promise, resolve };
 }
 async function bridgeEvent(url: string, type: string) {
-  const response = await fetch(endpoint(url, "/events"));
-  const reader = response.body!.getReader();
-  const decoder = new TextDecoder();
-  let text = "";
-  try {
-    while (true) {
-      const next = await reader.read();
-      assert.equal(next.done, false);
-      text += decoder.decode(next.value, { stream: true });
-      const frames = text.split("\n\n");
-      text = frames.pop()!;
-      for (const frame of frames) {
-        const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
-        if (!data) continue;
-        const event = JSON.parse(data) as Record<string, unknown>;
-        if (event.type === type) return event;
-      }
-    }
-  } finally { await reader.cancel(); }
+  const events = await openBridgeEvents(endpoint(url, "/events"));
+  try { return await readEvent(events, type); } finally { await events.close(); }
 }
 
 const confirmationEvent = (url: string) => bridgeEvent(url, "command_confirm_request");

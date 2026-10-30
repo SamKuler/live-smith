@@ -22,8 +22,8 @@ test("real script boots and Add then Discard restores the saved profile", async 
   try {
     const selector = harness.document.querySelector<HTMLSelectElement>("#profileSelector");
     assert.equal(selector?.value, "profile-1");
-    assert.deepEqual(harness.eventSourceUrls, [
-      "http://bridge.test/events?token=test-token",
+    assert.deepEqual(harness.eventStreamUrls, [
+      "ws://bridge.test/events?token=test-token",
     ]);
     assert.equal(harness.document.activeElement?.id, "profileName");
 

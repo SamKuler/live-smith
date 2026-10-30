@@ -1,3 +1,4 @@
+import { openBridgeEvents, readEvent } from "../chat/support/bridge-events.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
@@ -1629,8 +1630,8 @@ test("selecting a Track Session refreshes its own context and remains sendable a
         context.application.song.tracks.splice(1, 1);
         const unavailable = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
         assert.match(unavailable.contextSummary, /Live object.*unavailable/i);
-        const events = await fetch(endpoint("/events"));
-        const doneEvent = readSsePayload(
+        const events = await openBridgeEvents(endpoint("/events"));
+        const doneEvent = readEvent(
           events,
           "done",
           (payload) => payload.sendId === "unavailable-track-send",
@@ -2197,32 +2198,6 @@ function attachmentRequestBody(bytes: Uint8Array): ArrayBuffer {
   ) as ArrayBuffer;
 }
 
-async function readSsePayload(
-  response: Response,
-  type: string,
-  matches: (payload: Record<string, unknown>) => boolean = () => true,
-): Promise<Record<string, unknown>> {
-  assert.ok(response.body);
-  const reader = response.body.getReader();
-  let received = "";
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) throw new Error(`Event stream ended before ${type}.`);
-      received += NodeBuffer.from(chunk.value).toString("utf8");
-      for (const block of received.split("\n\n")) {
-        const data = block.split("\n")
-          .find((line) => line.startsWith("data: "))
-          ?.slice("data: ".length);
-        if (!data) continue;
-        const payload = JSON.parse(data) as Record<string, unknown>;
-        if (payload.type === type && matches(payload)) return payload;
-      }
-    }
-  } finally {
-    await reader.cancel();
-  }
-}
 
 interface CrossBridgeEndpoint {
   endpoint(pathname: string): string;

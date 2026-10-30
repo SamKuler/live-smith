@@ -1,3 +1,4 @@
+import { openBridgeEvents } from "../../app/chat/support/bridge-events.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createChatBridge } from "../../../src/app/chat/chat-bridge.js";
@@ -179,7 +180,7 @@ test("retired send ownership stays terminal across reconnect while a newer owner
   } finally { harness.close(); }
 });
 
-for (const connection of ['live', 'replay'] as const) test(`a peer Send owns Stop and approval through ${connection} SSE`, async () => {
+for (const connection of ['live', 'replay'] as const) test(`a peer Send owns Stop and approval through ${connection} WebSocket`, async () => {
   const state = stateFixture(); state.openSettingsOnLoad = false;
   const ready = Promise.withResolvers<void>();
   const bridge = await createChatBridge({ buildState: async () => state, renderHtml: () => '', handleCommand: async () => state,
@@ -196,30 +197,25 @@ for (const connection of ['live', 'replay'] as const) test(`a peer Send owns Sto
   const endpoint = (path: string) => `${url.origin}${path}${url.search}`;
   const initial = await (await fetch(endpoint('/state'))).json();
   const h = await createDialogHarness(initial);
-  const source = connection === 'live' ? await fetch(endpoint('/events')) : null;
+  const source = connection === 'live' ? await openBridgeEvents(endpoint('/events')) : null;
   const send = fetch(endpoint('/send'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Live-Smith-Send-Id': 'peer-send' }, body: JSON.stringify({ prompt: 'Peer request', sessionId: 'session-1' }) });
   const sendResult = send.then(response => response.json(), () => null);
   await ready.promise;
-  const reader = (source ?? await fetch(endpoint('/events'))).body!.getReader();
+  const events = source ?? await openBridgeEvents(endpoint('/events'));
   const publications: string[] = [];
   try {
-    const decoder = new TextDecoder(); let pending = ''; let confirmed = false;
+    let confirmed = false;
     while (!confirmed) {
-      const chunk = await reader.read(); assert.equal(chunk.done, false);
-      pending += decoder.decode(chunk.value, { stream: true });
-      let end: number;
-      while ((end = pending.indexOf('\n\n')) >= 0) {
-        const frame = pending.slice(0, end); pending = pending.slice(end + 2);
-        const data = frame.split('\n').find(line => line.startsWith('data: '));
-        if (data) { const payload = JSON.parse(data.slice(6)); publications.push(payload.type); h.emitRawServerEvent(payload); confirmed ||= payload.type === 'confirm_request'; }
-      }
+      const payload = await events.next();
+      publications.push(payload.type); h.emitRawServerEvent(payload);
+      confirmed = payload.type === "confirm_request";
     }
     await h.settle(); h.flushAnimationFrames();
     assert.ok(publications.indexOf('send_activity') < publications.indexOf('confirm_request'));
     if (connection === 'replay') assert.ok(publications.indexOf('send_activity') < publications.indexOf('model_turn_state'));
     assert.equal(h.document.querySelector('#sendButton')?.textContent, 'Stop');
     assert.match(h.document.querySelector('.confirm-card')?.textContent ?? '', /Apply peer plan/);
-  } finally { h.close(); await reader.cancel(); await bridge.close(); await sendResult; }
+  } finally { h.close(); await events.close(); await bridge.close(); await sendResult; }
 });
 
 
@@ -254,12 +250,12 @@ test("a competing peer Send is replayed after the rejected local Send restores i
     h.holdNextSend(); h.failNextSend("This Session already has an active agent request.", "not_persisted");
     h.input("#prompt", "Preserve rejected local prompt"); h.click("#sendButton"); await h.settle();
     h.emitServerEvent({ ...owner, bridgeStateRevision: "100" });
-    assert.equal(h.eventSourceUrls.length, 1, "Pending local outcome must retain its own attempt");
+    assert.equal(h.eventStreamUrls.length, 1, "Pending local outcome must retain its own attempt");
     const running = stateFixture(); running.openSettingsOnLoad = false;
     running.sessionActivities = [{ sessionId: "session-1", sendId: "peer-send", status: "running", message: "Peer work", unread: false }];
     h.setServerState(running);
     h.releaseHeldSend(); released = true; await h.settle();
-    assert.equal(h.eventSourceUrls.length, 2);
+    assert.equal(h.eventStreamUrls.length, 2);
     h.emitServerEventOpen();
     h.emitServerEvent({ ...owner, bridgeStateRevision: "200" });
     h.emitServerEvent(modelState({ sendId: "peer-send", assistantDraft: "Peer response" }));

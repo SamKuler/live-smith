@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import type { ServerResponse } from "node:http";
+import type { Writable } from "node:stream";
 import { clearTimeout, setTimeout } from "node:timers";
 
 const maxPendingBytes = 4 * 1024 * 1024;
@@ -7,7 +7,7 @@ const maxPendingFrames = 4096;
 const drainTimeoutMs = 15_000;
 
 /** Owns ordered, bounded writes and socket cleanup for one event stream. */
-export function createSseClient(response: ServerResponse, onClose: () => void) {
+export function createEventStreamClient(response: Writable, onClose: () => void) {
   const pending: string[] = [];
   let pendingBytes = 0;
   let waitingForDrain = false;
@@ -25,8 +25,6 @@ export function createSseClient(response: ServerResponse, onClose: () => void) {
     pending.length = 0;
     pendingBytes = 0;
     response.off("drain", flush);
-    response.off("close", retire);
-    response.off("error", destroy);
     onClose();
   };
   const destroy = () => {
@@ -52,7 +50,10 @@ export function createSseClient(response: ServerResponse, onClose: () => void) {
     }
   }
   response.on("drain", flush);
-  response.once("close", retire);
+  response.once("close", () => {
+    retire();
+    response.off("error", destroy);
+  });
   response.once("error", destroy);
 
   return {
@@ -71,7 +72,7 @@ export function createSseClient(response: ServerResponse, onClose: () => void) {
     close() {
       if (closed) return;
       retire();
-      response.end();
+      response.destroy();
     },
   };
 }

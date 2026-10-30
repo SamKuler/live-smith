@@ -167,6 +167,7 @@ import {
   ChatBridgeSkillValidationError,
   createChatBridge,
   type ChatBridgeCommandContext,
+  type ChatBridgeOptions,
   type ChatBridgeCommandInput,
   type ChatBridgeAttachmentSelectionInput,
   type ChatBridgeAttachmentDeleteInput,
@@ -289,7 +290,7 @@ export interface AgentFlowDependencies extends DialogModelStateDependencies {
   updateSessionInTransaction?: typeof updateSessionInTransaction;
   renderHtml?(
     state: ChatBridgeState,
-    bridge: { baseUrl: string; token: string; hostMode?: InterfaceMode },
+    bridge: { baseUrl: string; token: string; viewId?: string; hostMode?: InterfaceMode },
   ): string;
   /** Shared by every dialog opened from one extension activation. */
   liveMutationQueue?: LiveMutationQueue;
@@ -333,17 +334,7 @@ export async function createAgentRuntime(
 ): Promise<AgentRuntime> {
   const assertLiveSetCurrent = createLiveSetGuard(context);
   const projectKey = projectKeyForContext(context);
-  let status: UiMessage | undefined;
-  let openSettingsOnLoad = false;
-  let activeSessionId: string | undefined = dependencies.initialSessionId;
-  let loadedMidiContinuation: { owner: string; value: MidiContinuationView } | undefined;
-  const midiContinuationOwner = (state: Pick<ChatDialogState, "integrationConnections" | "plugins">) =>
-    JSON.stringify([state.integrationConnections?.revision ?? "0", state.plugins]);
-  let loadedSessionToolCatalog: {
-    owner: string;
-    value: NonNullable<ChatDialogState["sessionToolCatalog"]>;
-  } | undefined;
-  const modalSessionOwner = Symbol("Live Smith modal Session owner");
+  const modalSessionOwner = Symbol("Live Smith runtime state owner");
   const storageDirectory = context.environment.storageDirectory === undefined
     ? undefined
     : await canonicalStorageDirectory(context.environment.storageDirectory);
@@ -361,9 +352,6 @@ export async function createAgentRuntime(
     string,
     LiveInteractionContext
   >();
-  let bindInvocationSelectionToNextSession = Boolean(
-    interaction.selectionContext,
-  );
   const withAttachmentMutation = <T>(
     sessionId: string,
     signal: AbortSignal | undefined,
@@ -415,9 +403,11 @@ export async function createAgentRuntime(
       source: modalSessionOwner,
       ...change,
     });
+    if (change.target !== "tools") bridge?.publishSessionStateInvalidation(sessionId, "");
   };
   const notifyGlobalStateChanged = (change: Omit<GlobalStateInvalidation, "source"> = {}): void => {
     invalidateGlobalState(storageDirectory, { source: modalSessionOwner, ...change });
+    if (change.target !== "tools") bridge?.publishGlobalStateInvalidation("");
   };
   const sessionLifecycle = createSessionLifecycle({
     storageDirectory, withSessionMutation, notifySessionStateChanged,
@@ -435,59 +425,8 @@ export async function createAgentRuntime(
   const userSkillLifecycle = createUserSkillLifecycle({
     storageDirectory, withRequestConfiguration, notifyGlobalStateChanged,
   });
-  const publishOAuthPendingState = (
-    scope: OAuthProfileScope,
-    generation: number,
-    auth: OAuthAuthState,
-  ): void => {
-    if (auth.status !== "pending") return;
-    bridge?.publishOAuthAuthState(
-      scope.profileId,
-      scope.provider,
-      generation,
-      auth,
-    );
-  };
-  const notifyOAuthAuthStateChanged = (
-    scope: OAuthProfileScope,
-    generation: number,
-    auth: OAuthAuthState,
-  ): void => {
-    publishOAuthPendingState(scope, generation, auth);
-    notifyGlobalStateChanged();
-  };
-  const modelState = createDialogModelState({ storageDirectory, dependencies, withRequestConfiguration, notifyOAuthAuthStateChanged });
-  const {
-    modelProjectionForProfile,
-    synchronizeAuthGeneration,
-    readOAuthAuth,
-    reconcilePendingOAuthAuthWhileReading,
-    withPendingOAuthAuthReconciliation,
-    reconcileSavedProfileOAuthLifecycle,
-    reconcileUnknownProfileOAuthLifecycle,
-    retryPendingProfileOAuthLifecycle,
-    oauthProviderForSavedProfile,
-    acquireSessionModelRequester,
-  } = modelState;
   const modelAuthSendFenceFor = (profileId: string): ModelAuthSendFence => dependencies.modelAuthSendFence ??
     modelAuthSendFenceForStorage(storageDirectory, profileId);
-
-  const runSessionStateChange = async <T>(
-    sessionId: string,
-    operation: () => Promise<T>,
-    change: Pick<SessionStateInvalidation, "target"> = {},
-  ): Promise<T> => {
-    try {
-      const result = await operation();
-      notifySessionStateChanged(sessionId, change);
-      return result;
-    } catch (error) {
-      if (isStorageCommitOutcomeUnknownError(error)) {
-        notifySessionStateChanged(sessionId, change);
-      }
-      throw error;
-    }
-  };
 
   const resolveSessionInteraction = (
     session: { id: string; scope: LiveInteractionContext["scope"] },
@@ -519,6 +458,87 @@ export async function createAgentRuntime(
     return interactionContextForScope(context, interaction.scope);
   };
 
+  const renderHtml = dependencies.renderHtml ??
+    (await import("../ui/dialogs.js")).chatHtml;
+  const viewModelStates = new Set<ReturnType<typeof createDialogModelState>>();
+  let viewInitialSessionId = dependencies.initialSessionId;
+  const createRuntimeView = (initialSessionId = viewInitialSessionId, viewId = ""): ChatBridgeOptions & {
+    reopen(sessionId?: string): Promise<string>;
+  } => {
+  let status: UiMessage | undefined;
+  let openSettingsOnLoad = false;
+  let activeSessionId: string | undefined = initialSessionId;
+  let loadedMidiContinuation: { owner: string; value: MidiContinuationView } | undefined;
+  const midiContinuationOwner = (state: Pick<ChatDialogState, "integrationConnections" | "plugins">) =>
+    JSON.stringify([state.integrationConnections?.revision ?? "0", state.plugins]);
+  let loadedSessionToolCatalog: {
+    owner: string;
+    value: NonNullable<ChatDialogState["sessionToolCatalog"]>;
+  } | undefined;
+  let bindInvocationSelectionToNextSession = Boolean(
+    interaction.selectionContext,
+  );
+  const viewSessionOwner = Symbol("Live Smith view Session owner");
+  const notifySessionStateChanged = (sessionId: string, change: Pick<SessionStateInvalidation, "target"> = {}): void => {
+    invalidateSessionState(storageDirectory, { sessionId, source: modalSessionOwner, ...change });
+    if (change.target !== "tools") bridge?.publishSessionStateInvalidation(sessionId, viewId);
+  };
+  const notifyGlobalStateChanged = (change: Omit<GlobalStateInvalidation, "source"> = {}): void => {
+    invalidateGlobalState(storageDirectory, { source: modalSessionOwner, ...change });
+    if (change.target !== "tools") bridge?.publishGlobalStateInvalidation(viewId);
+  };
+  const publishOAuthPendingState = (
+    scope: OAuthProfileScope,
+    generation: number,
+    auth: OAuthAuthState,
+  ): void => {
+    if (auth.status !== "pending") return;
+    bridge?.publishOAuthAuthState(
+      scope.profileId,
+      scope.provider,
+      generation,
+      auth,
+    );
+  };
+  const notifyOAuthAuthStateChanged = (
+    scope: OAuthProfileScope,
+    generation: number,
+    auth: OAuthAuthState,
+  ): void => {
+    publishOAuthPendingState(scope, generation, auth);
+    notifyGlobalStateChanged();
+  };
+  const modelState = createDialogModelState({ storageDirectory, dependencies, withRequestConfiguration, notifyOAuthAuthStateChanged });
+  viewModelStates.add(modelState);
+  const {
+    modelProjectionForProfile,
+    synchronizeAuthGeneration,
+    readOAuthAuth,
+    reconcilePendingOAuthAuthWhileReading,
+    withPendingOAuthAuthReconciliation,
+    reconcileSavedProfileOAuthLifecycle,
+    reconcileUnknownProfileOAuthLifecycle,
+    retryPendingProfileOAuthLifecycle,
+    oauthProviderForSavedProfile,
+    acquireSessionModelRequester,
+  } = modelState;
+  const runSessionStateChange = async <T>(
+    sessionId: string,
+    operation: () => Promise<T>,
+    change: Pick<SessionStateInvalidation, "target"> = {},
+  ): Promise<T> => {
+    try {
+      const result = await operation();
+      notifySessionStateChanged(sessionId, change);
+      return result;
+    } catch (error) {
+      if (isStorageCommitOutcomeUnknownError(error)) {
+        notifySessionStateChanged(sessionId, change);
+      }
+      throw error;
+    }
+  };
+
   const resolveActiveSession = async (signal?: AbortSignal) => {
     for (;;) {
       throwIfAborted(signal);
@@ -531,7 +551,7 @@ export async function createAgentRuntime(
         projectKey,
         requestedSessionId,
         signal,
-        modalSessionOwner,
+        viewSessionOwner,
       );
       throwIfAborted(signal);
       if (
@@ -2311,7 +2331,7 @@ export async function createAgentRuntime(
         selectionInteractionsBySessionId.set(session.id, activeInteraction);
         bindInvocationSelectionToNextSession = false;
       }
-      claimSession(storageDirectory, session.id, modalSessionOwner);
+      claimSession(storageDirectory, session.id, viewSessionOwner);
       if (!reused) notifySessionStateChanged(session.id);
       activeSessionId = session.id;
       status = reused ? "Empty session ready." : "New session created.";
@@ -2320,27 +2340,16 @@ export async function createAgentRuntime(
     }
 
     if (commandInput.kind === "select_session") {
-      const selectedState = await withSessionMutation(
-        commandInput.sessionId,
-        signal,
-        async () => {
-          if (!(await sessionBelongsToProject(commandInput.sessionId))) return undefined;
-          throwIfAborted(signal);
-          claimSession(storageDirectory, commandInput.sessionId, modalSessionOwner);
-          activeSessionId = commandInput.sessionId;
-          status = undefined;
-          openSettingsOnLoad = false;
-          const state = await buildStateWhileHoldingSessionMutation(
-            commandInput.sessionId,
-          );
-          return state;
-        },
-      );
-      if (!selectedState) {
+      if (!(await sessionBelongsToProject(commandInput.sessionId))) {
         status = "That session is not available in this Live Set.";
         return buildState();
       }
-      return selectedState;
+      throwIfAborted(signal);
+      claimSession(storageDirectory, commandInput.sessionId, viewSessionOwner);
+      activeSessionId = commandInput.sessionId;
+      status = undefined;
+      openSettingsOnLoad = false;
+      return buildState();
     }
 
     if (commandInput.kind === "restore_session") {
@@ -2370,7 +2379,7 @@ export async function createAgentRuntime(
         status = "That historical Session cannot continue on the current Live object.";
         return buildState();
       }
-      claimSession(storageDirectory, restored.id, modalSessionOwner);
+      claimSession(storageDirectory, restored.id, viewSessionOwner);
       activeSessionId = restored.id;
       if (continueInteraction.selectionContext) {
         selectionInteractionsBySessionId.set(restored.id, continueInteraction);
@@ -2739,7 +2748,7 @@ export async function createAgentRuntime(
       if (sessionIsClaimedByAnotherOwner(
         storageDirectory,
         candidate.id,
-        modalSessionOwner,
+        viewSessionOwner,
       )) continue;
       const mutationKey = sessionMutationFenceKey(
         storageDirectory,
@@ -2782,7 +2791,7 @@ export async function createAgentRuntime(
         ),
       );
       if (reusable) {
-        claimSession(storageDirectory, reusable.id, modalSessionOwner);
+        claimSession(storageDirectory, reusable.id, viewSessionOwner);
         return reusable;
       }
     }
@@ -3254,63 +3263,6 @@ export async function createAgentRuntime(
     },
   );
 
-  const renderHtml = dependencies.renderHtml ??
-    (await import("../ui/dialogs.js")).chatHtml;
-  let unsubscribeApprovalModes: (() => void) | undefined;
-  let unsubscribeEditScopes: (() => void) | undefined;
-  let unsubscribeModelSelections: (() => void) | undefined;
-  let unsubscribeGlobalSettings: (() => void) | undefined;
-  let unsubscribeProfileSettings: (() => void) | undefined;
-  let unsubscribeSessionState: (() => void) | undefined;
-  let unsubscribeGlobalState: (() => void) | undefined;
-  const pendingSessionStateInvalidations = new Set<string>();
-  let pendingGlobalStateInvalidation = false;
-  let pendingProfileSettingsChange: ProfileSettingsChange | undefined;
-  let closePromise: Promise<void> | undefined;
-  const close = (): Promise<void> => closePromise ??= (async () => {
-    const bridgeClosed = bridge?.close();
-    attachmentOpener.close();
-    unsubscribeApprovalModes?.();
-    unsubscribeEditScopes?.();
-    unsubscribeModelSelections?.();
-    unsubscribeGlobalSettings?.();
-    unsubscribeProfileSettings?.();
-    unsubscribeSessionState?.();
-    unsubscribeGlobalState?.();
-    releaseSessionClaims(storageDirectory, modalSessionOwner);
-    await modelState.stopBrowserLaunches();
-    try {
-      await bridgeClosed;
-    } finally {
-      await modelState.close();
-    }
-  })();
-  try {
-    unsubscribeSessionState = subscribeSessionStateInvalidations(
-      storageDirectory,
-      ({ sessionId, source, target }) => {
-        if (source === modalSessionOwner || target === "tools") return;
-        if (bridge) bridge.publishSessionStateInvalidation(sessionId);
-        else pendingSessionStateInvalidations.add(sessionId);
-      },
-    );
-    unsubscribeGlobalState = subscribeGlobalStateInvalidations(
-      storageDirectory,
-      ({ source, sunoAuthServiceId, target }) => {
-        if (sunoAuthServiceId !== undefined) sunoModelCatalog.clear(sunoAuthServiceId);
-        if (source === modalSessionOwner || target === "tools") return;
-        if (bridge) bridge.publishGlobalStateInvalidation();
-        else pendingGlobalStateInvalidation = true;
-      },
-    );
-    unsubscribeProfileSettings = subscribeProfileSettingsChanges(
-      storageDirectory,
-      (change) => {
-        if (bridge) bridge.publishProfileSettingsChange(change);
-        else pendingProfileSettingsChange = change;
-      },
-    );
-    await sessionLifecycle.reconcileStartupOrphans();
     const pluginApps = createPluginAppSessions({
       storageDirectory, fetchImpl: providerFetch,
       withAuthorization: (signal, operation) => requestConfigurationFence.run(requestConfigurationFenceKey, signal, operation),
@@ -3327,11 +3279,11 @@ export async function createAgentRuntime(
         return withNamedSessionMutation(sessionId, "send", signal, operation);
       },
       sessionChanged: (sessionId) => {
-        notifySessionStateChanged(sessionId);
+        invalidateSessionState(storageDirectory, { sessionId, source: modalSessionOwner });
         bridge?.publishSessionStateInvalidation(sessionId);
       },
     });
-    bridge = await createChatBridge({
+    return {
       readAttachment,
       searchSessions: (input, signal) => searchSessions({ ...input, storageDirectory, signal }),
       handlePluginAppRequest: (input, signal) => pluginApps.request(input, signal),
@@ -3376,7 +3328,12 @@ export async function createAgentRuntime(
         if (input.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed while loading the MIDI part.");
         return result;
       },
-      closePluginApps: () => pluginApps.close(),
+      closeView: async () => {
+        releaseSessionClaims(storageDirectory, viewSessionOwner);
+        await modelState.stopBrowserLaunches();
+        try { await pluginApps.close(); }
+        finally { await modelState.close(); viewModelStates.delete(modelState); }
+      },
       readMidiArtifact: async (sessionId, artifactRef, signal) => {
         await attachmentSession(sessionId);
         return readMidiArtifactFile(storageDirectory, sessionId, artifactRef, signal);
@@ -3408,7 +3365,72 @@ export async function createAgentRuntime(
       ...(dependencies.pluginBodyReadOptions === undefined
         ? {}
         : { pluginBodyReadOptions: dependencies.pluginBodyReadOptions }),
-    });
+      async reopen(sessionId?: string) {
+        assertLiveSetCurrent();
+        activeSessionId = sessionId;
+        return (await resolveActiveSession()).id;
+      },
+    };
+
+  };
+
+  let unsubscribeApprovalModes: (() => void) | undefined;
+  let unsubscribeEditScopes: (() => void) | undefined;
+  let unsubscribeModelSelections: (() => void) | undefined;
+  let unsubscribeGlobalSettings: (() => void) | undefined;
+  let unsubscribeProfileSettings: (() => void) | undefined;
+  let unsubscribeSessionState: (() => void) | undefined;
+  let unsubscribeGlobalState: (() => void) | undefined;
+  const pendingSessionStateInvalidations = new Set<string>();
+  let pendingGlobalStateInvalidation = false;
+  let pendingProfileSettingsChange: ProfileSettingsChange | undefined;
+  let closePromise: Promise<void> | undefined;
+  const close = (): Promise<void> => closePromise ??= (async () => {
+    const bridgeClosed = bridge?.close();
+    attachmentOpener.close();
+    unsubscribeApprovalModes?.();
+    unsubscribeEditScopes?.();
+    unsubscribeModelSelections?.();
+    unsubscribeGlobalSettings?.();
+    unsubscribeProfileSettings?.();
+    unsubscribeSessionState?.();
+    unsubscribeGlobalState?.();
+    await Promise.allSettled([...viewModelStates].map(model => model.stopBrowserLaunches()));
+    try {
+      await bridgeClosed;
+    } finally {
+      await Promise.allSettled([...viewModelStates].map(model => model.close()));
+      viewModelStates.clear();
+    }
+  })();
+  try {
+    unsubscribeSessionState = subscribeSessionStateInvalidations(
+      storageDirectory,
+      ({ sessionId, source, target }) => {
+        if (source === modalSessionOwner || target === "tools") return;
+        if (bridge) bridge.publishSessionStateInvalidation(sessionId);
+        else pendingSessionStateInvalidations.add(sessionId);
+      },
+    );
+    unsubscribeGlobalState = subscribeGlobalStateInvalidations(
+      storageDirectory,
+      ({ source, sunoAuthServiceId, target }) => {
+        if (sunoAuthServiceId !== undefined) sunoModelCatalog.clear(sunoAuthServiceId);
+        if (source === modalSessionOwner || target === "tools") return;
+        if (bridge) bridge.publishGlobalStateInvalidation();
+        else pendingGlobalStateInvalidation = true;
+      },
+    );
+    unsubscribeProfileSettings = subscribeProfileSettingsChanges(
+      storageDirectory,
+      (change) => {
+        if (bridge) bridge.publishProfileSettingsChange(change);
+        else pendingProfileSettingsChange = change;
+      },
+    );
+    await sessionLifecycle.reconcileStartupOrphans();
+    const initialView = createRuntimeView();
+    bridge = await createChatBridge({ ...initialView, createView: (viewId, sessionId) => createRuntimeView(sessionId, viewId) });
     if (pendingGlobalStateInvalidation) {
       bridge.publishGlobalStateInvalidation();
     }
@@ -3443,7 +3465,7 @@ export async function createAgentRuntime(
       },
     );
     assertLiveSetCurrent();
-    let invocationSessionId = hostMode === "browser" ? (await resolveActiveSession()).id : undefined;
+    if (hostMode === "browser") viewInitialSessionId = await initialView.reopen(viewInitialSessionId);
     assertLiveSetCurrent();
     return {
       url: bridge.url,
@@ -3451,10 +3473,8 @@ export async function createAgentRuntime(
       async reopen(sessionId?: string) {
         assertLiveSetCurrent();
         if (closePromise) throw new Error("This Live Smith window has closed.");
-        activeSessionId = sessionId ?? invocationSessionId;
-        invocationSessionId = (await resolveActiveSession()).id;
+        viewInitialSessionId = await initialView.reopen(sessionId ?? viewInitialSessionId);
         assertLiveSetCurrent();
-        bridge!.publishGlobalStateInvalidation();
       },
       close,
     };

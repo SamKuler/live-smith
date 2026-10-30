@@ -1,5 +1,5 @@
+import { openBridgeEvents, readEvent } from "../chat/support/bridge-events.js";
 import assert from "node:assert/strict";
-import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -112,38 +112,13 @@ async function openApp(bridge: Bridge, sessionId: string, app: PluginAppDescript
 }
 
 async function eventStream(bridge: Bridge, signal: AbortSignal) {
-  const response = await fetch(bridge.endpoint("/events"), { signal });
-  assert.equal(response.status, 200);
-  assert.ok(response.body);
-  const reader = response.body.getReader();
-  const events: Array<Record<string, unknown>> = [];
-  const waiting = new Set<{ predicate: (value: Record<string, unknown>) => boolean; resolve(value: Record<string, unknown>): void; reject(error: unknown): void }>();
-  const reading = (async () => {
-    let pending = "";
-    try {
-      while (true) {
-        const part = await reader.read();
-        if (part.done) break;
-        pending += Buffer.from(part.value).toString("utf8");
-        let end;
-        while ((end = pending.indexOf("\n\n")) !== -1) {
-          const block = pending.slice(0, end);
-          pending = pending.slice(end + 2);
-          const data = block.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
-          if (!data) continue;
-          const event = JSON.parse(data) as Record<string, unknown>;
-          events.push(event);
-          for (const waiter of waiting) if (waiter.predicate(event)) { waiting.delete(waiter); waiter.resolve(event); }
-        }
-      }
-      for (const waiter of waiting) waiter.reject(new Error("The event stream closed before the expected event."));
-    } catch (error) { for (const waiter of waiting) waiter.reject(error); }
-  })();
-  return { events,
-    next(predicate: (value: Record<string, unknown>) => boolean) {
-      return new Promise<Record<string, unknown>>((resolve, reject) => { waiting.add({ predicate, resolve, reject }); });
-    },
-    async close() { await reader.cancel(); await reading; },
+  const stream = await openBridgeEvents(bridge.endpoint("/events"));
+  const abort = () => stream.socket.terminate();
+  signal.addEventListener("abort", abort, { once: true });
+  stream.socket.once("close", () => signal.removeEventListener("abort", abort));
+  return {
+    next: (predicate: (value: Record<string, unknown>) => boolean) => readEvent(stream, undefined, predicate),
+    close: () => stream.close(),
   };
 }
 

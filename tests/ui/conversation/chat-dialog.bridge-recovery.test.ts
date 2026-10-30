@@ -4,6 +4,72 @@ import { createDialogHarness, stateFixture, waitForCondition } from "../support/
 
 const stateReads = (harness: Awaited<ReturnType<typeof createDialogHarness>>) => harness.calls.filter(call => new URL(call.url).pathname === "/state").length;
 
+test("closed WebSockets reconnect with backoff and keep Send gated until the new state is confirmed", async () => {
+  const { installWindowClock } = await import("../support/window-clock.js");
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state);
+  const clock = installWindowClock(harness.window);
+  try {
+    harness.input("#prompt", "Keep the unsent draft");
+    harness.emitServerEventClose();
+    assert.equal(harness.document.querySelector<HTMLButtonElement>("#sendButton")!.disabled, true);
+    clock.advance(499);
+    assert.equal(harness.eventStreamUrls.length, 1);
+    clock.advance(1);
+    assert.equal(harness.eventStreamUrls.length, 2);
+    harness.emitServerEventClose();
+    clock.advance(999);
+    assert.equal(harness.eventStreamUrls.length, 2);
+    clock.advance(1);
+    assert.equal(harness.eventStreamUrls.length, 3);
+    harness.holdNextState(); harness.emitServerEventOpen(); await harness.settle();
+    assert.equal(stateReads(harness), 1);
+    assert.equal(harness.document.querySelector<HTMLButtonElement>("#sendButton")!.disabled, true);
+    harness.releaseHeldState(); await harness.settle();
+    assert.equal(harness.document.querySelector<HTMLButtonElement>("#sendButton")!.disabled, false);
+    assert.equal(harness.document.querySelector<HTMLTextAreaElement>("#prompt")!.value, "Keep the unsent draft");
+    assert.equal(harness.sendIds.length, 0);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); clock.restore(); }
+});
+
+test("page disposal cancels scheduled WebSocket reconnect and cached restoration opens one connection", async () => {
+  const { installWindowClock } = await import("../support/window-clock.js");
+  const harness = await createDialogHarness();
+  const clock = installWindowClock(harness.window);
+  try {
+    harness.emitServerEventClose();
+    harness.window.dispatchEvent(new harness.window.Event("pagehide"));
+    clock.advance(60_000);
+    assert.equal(harness.eventStreamUrls.length, 1);
+    harness.window.dispatchEvent(new harness.window.PageTransitionEvent("pageshow", { persisted: true }));
+    harness.window.dispatchEvent(new harness.window.PageTransitionEvent("pageshow", { persisted: true }));
+    assert.equal(harness.eventStreamUrls.length, 2);
+    harness.emitServerEventOpen(); await harness.settle();
+    assert.equal(stateReads(harness), 1);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); clock.restore(); }
+});
+
+test("view identity travels in event connection metadata and HTTP headers", async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const harness = await createDialogHarness(state, { baseUrl: "http://bridge.test", token: "test-token", viewId: "view-1" });
+  try {
+    const socketUrl = new URL(harness.eventStreamUrls[0]!);
+    assert.equal(socketUrl.protocol, "ws:");
+    assert.equal(socketUrl.searchParams.get("viewId"), "view-1");
+    harness.emitServerEventError(); harness.emitServerEventOpen(); await harness.settle();
+    const reads = harness.calls.filter(call => new URL(call.url).pathname === "/state");
+    assert.equal(reads.length, 1);
+    assert.equal(new Headers(reads[0]!.headers).get("X-Live-Smith-View-Id"), "view-1");
+    harness.input("#prompt", "Continue"); harness.click("#sendButton"); await harness.settle();
+    const send = harness.calls.find(call => new URL(call.url).pathname === "/send")!;
+    assert.equal(new Headers(send.headers).get("X-Live-Smith-View-Id"), "view-1");
+    assert.deepEqual(JSON.parse(String(send.body)), { prompt: "Continue", sessionId: state.activeSessionId });
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
 test("an obsolete recovery response cannot unlock Send or suppress the next reconnect refresh", async () => {
   const state = stateFixture(); state.openSettingsOnLoad = false;
   const harness = await createDialogHarness(state);
@@ -92,7 +158,7 @@ test("pagehide cancels pending recovery retries and a cached page resumes with a
     clock.advance(60_000); await harness.settle();
     assert.equal(stateReads(harness), 1);
     harness.window.dispatchEvent(new harness.window.PageTransitionEvent("pageshow", { persisted: true }));
-    assert.equal(harness.eventSourceUrls.length, 2);
+    assert.equal(harness.eventStreamUrls.length, 2);
     harness.emitServerEventOpen(); await harness.settle();
     assert.equal(stateReads(harness), 2);
     assert.deepEqual(harness.errors, []);

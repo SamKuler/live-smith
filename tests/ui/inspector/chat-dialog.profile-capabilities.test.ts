@@ -390,7 +390,7 @@ test("initial state rejects capability evidence that contradicts its values", as
       harness.document.querySelector(".app")?.hasAttribute("inert"),
       true,
     );
-    assert.deepEqual(harness.eventSourceUrls, []);
+    assert.deepEqual(harness.eventStreamUrls, []);
     assert.equal("LiveSmithUI" in harness.window, false);
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -411,7 +411,7 @@ test("initial state rejects a malformed model-catalog load receipt", async () =>
       harness.document.querySelector(".app")?.hasAttribute("inert"),
       true,
     );
-    assert.deepEqual(harness.eventSourceUrls, []);
+    assert.deepEqual(harness.eventStreamUrls, []);
     assert.equal("LiveSmithUI" in harness.window, false);
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -432,7 +432,7 @@ test("initial state rejects an invalid subscription auth generation", async () =
       harness.document.querySelector(".app")?.hasAttribute("inert"),
       true,
     );
-    assert.deepEqual(harness.eventSourceUrls, []);
+    assert.deepEqual(harness.eventStreamUrls, []);
     assert.equal("LiveSmithUI" in harness.window, false);
     assert.deepEqual(harness.errors, []);
   } finally {
@@ -459,7 +459,7 @@ test("initial state rejects partial OAuth auth scope projections", async () => {
         harness.document.querySelector(".app")?.hasAttribute("inert"),
         true,
       );
-      assert.deepEqual(harness.eventSourceUrls, []);
+      assert.deepEqual(harness.eventStreamUrls, []);
       assert.equal("LiveSmithUI" in harness.window, false);
       assert.deepEqual(harness.errors, []);
     } finally {

@@ -1,3 +1,4 @@
+import { openBridgeEvents, readEvent, readEventsThrough, type BridgeEvents } from "../support/bridge-events.js";
 import { MAX_ATTACHMENT_UPLOAD_BYTES } from "../../../../src/attachments/contracts.js";
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
@@ -228,7 +229,7 @@ test("chat bridge send errors report whether the prompt was persisted", async ()
     const token = chatUrl.searchParams.get("token");
 
     try {
-      const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+      const events = await openBridgeEvents(`${chatUrl.origin}/events?token=${token}`);
       const response = await fetch(`${chatUrl.origin}/send?token=${token}`, {
         method: "POST",
         headers: {
@@ -243,7 +244,7 @@ test("chat bridge send errors report whether the prompt was persisted", async ()
         error: "Model request failed.",
         promptPersistence,
       });
-      const errorEvent = await readSsePayload(events, "error");
+      const errorEvent = await readEvent(events, "error");
       assert.equal(errorEvent.promptPersistence, promptPersistence);
       assert.equal(errorEvent.sendId, sendId);
     } finally {
@@ -366,7 +367,7 @@ test("chat bridge publishes only the send failure state captured inside its Sess
   const token = chatUrl.searchParams.get("token");
 
   try {
-    const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+    const events = await openBridgeEvents(`${chatUrl.origin}/events?token=${token}`);
     const response = await fetch(`${chatUrl.origin}/send?token=${token}`, {
       method: "POST",
       headers: {
@@ -375,7 +376,7 @@ test("chat bridge publishes only the send failure state captured inside its Sess
       },
       body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
     });
-    const errorEvent = await readSsePayload(events, "error");
+    const errorEvent = await readEvent(events, "error");
     const errorBody = await response.json() as {
       state?: ChatDialogState;
     };
@@ -446,7 +447,7 @@ test("chat bridge success SSE uses the caller's send correlation ID", async () =
   const token = chatUrl.searchParams.get("token");
 
   try {
-    const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+    const events = await openBridgeEvents(`${chatUrl.origin}/events?token=${token}`);
     const response = await fetch(`${chatUrl.origin}/send?token=${token}`, {
       method: "POST",
       headers: {
@@ -460,7 +461,7 @@ test("chat bridge success SSE uses the caller's send correlation ID", async () =
     const responseBody = await response.json() as {
       state: ChatBridgeState;
     };
-    const doneEvent = await readSsePayload(events, "done");
+    const doneEvent = await readEvent(events, "done");
     assert.equal(doneEvent.sendId, sendId);
     assert.equal(doneEvent.sessionId, "s1");
     assert.deepEqual(
@@ -522,11 +523,11 @@ test("chat bridge projects steering storage hashes out of SSE and full state", a
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
-  let events: Response | undefined;
+  let events: BridgeEvents | undefined;
 
   try {
-    events = await fetch(endpoint("/events"));
-    const eventPayload = readSsePayload(events, "session_event");
+    events = await openBridgeEvents(endpoint("/events"));
+    const eventPayload = readEvent(events, "session_event");
     const send = await fetch(endpoint("/send"), {
       method: "POST",
       headers: {
@@ -551,7 +552,7 @@ test("chat bridge projects steering storage hashes out of SSE and full state", a
       /steeringReceipt|sha256/,
     );
   } finally {
-    await events?.body?.cancel().catch(() => {});
+    await events?.close().catch(() => {});
     await bridge.close();
   }
 });
@@ -573,13 +574,13 @@ test("bridge projection events precede later full-state revisions", async () => 
   const token = chatUrl.searchParams.get("token");
 
   try {
-    const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+    const events = await openBridgeEvents(`${chatUrl.origin}/events?token=${token}`);
     const send = fetch(`${chatUrl.origin}/send?token=${token}`, {
       method: "POST",
       headers: correlatedJsonHeaders("send"),
       body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
     });
-    const progress = await readSsePayload(events, "progress");
+    const progress = await readEvent(events, "progress");
     const body = await (await send).json() as { state: ChatBridgeState };
 
     assert.ok(
@@ -619,10 +620,10 @@ test("a late full-state publication exposes the patch cut captured before its bu
   const token = chatUrl.searchParams.get("token");
 
   try {
-    const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+    const events = await openBridgeEvents(`${chatUrl.origin}/events?token=${token}`);
     const stateRequest = fetch(`${chatUrl.origin}/state?token=${token}`);
     await buildStarted;
-    const approvalEvent = readSsePayload(events, "approval_mode_changed");
+    const approvalEvent = readEvent(events, "approval_mode_changed");
     bridge.publishSessionApprovalMode(
       "s1",
       "everything",
@@ -659,12 +660,12 @@ test("event stream reconnect replays the latest approval patch per Session", asy
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
-  let initialEvents: Response | undefined;
-  let reconnectedEvents: Response | undefined;
+  let initialEvents: BridgeEvents | undefined;
+  let reconnectedEvents: BridgeEvents | undefined;
 
   try {
-    initialEvents = await fetch(endpoint("/events"));
-    const firstPatch = readSsePayload(initialEvents, "approval_mode_changed");
+    initialEvents = await openBridgeEvents(endpoint("/events"));
+    const firstPatch = readEvent(initialEvents, "approval_mode_changed");
     bridge.publishSessionApprovalMode(
       "s1",
       "everything",
@@ -678,8 +679,8 @@ test("event stream reconnect replays the latest approval patch per Session", asy
       "manual",
       "2026-08-25T00:01:00.000Z",
     );
-    reconnectedEvents = await fetch(endpoint("/events"));
-    const replayed = await readSsePayload(
+    reconnectedEvents = await openBridgeEvents(endpoint("/events"));
+    const replayed = await readEvent(
       reconnectedEvents,
       "approval_mode_changed",
     );
@@ -692,8 +693,8 @@ test("event stream reconnect replays the latest approval patch per Session", asy
         BigInt(first.bridgeStateRevision as string),
     );
   } finally {
-    await initialEvents?.body?.cancel().catch(() => {});
-    await reconnectedEvents?.body?.cancel().catch(() => {});
+    await initialEvents?.close().catch(() => {});
+    await reconnectedEvents?.close().catch(() => {});
     await bridge.close();
   }
 });
@@ -709,12 +710,12 @@ test("event stream publishes and replays the latest Session model selection", as
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
-  let initialEvents: Response | undefined;
-  let reconnectedEvents: Response | undefined;
+  let initialEvents: BridgeEvents | undefined;
+  let reconnectedEvents: BridgeEvents | undefined;
 
   try {
-    initialEvents = await fetch(endpoint("/events"));
-    const firstPatch = readSsePayload(
+    initialEvents = await openBridgeEvents(endpoint("/events"));
+    const firstPatch = readEvent(
       initialEvents,
       "session_model_selection_changed",
     );
@@ -735,8 +736,8 @@ test("event stream publishes and replays the latest Session model selection", as
       profileId: "profile-a",
       model: "model-b",
     }, "2026-08-25T00:01:00.000Z");
-    reconnectedEvents = await fetch(endpoint("/events"));
-    const replayed = await readSsePayload(
+    reconnectedEvents = await openBridgeEvents(endpoint("/events"));
+    const replayed = await readEvent(
       reconnectedEvents,
       "session_model_selection_changed",
     );
@@ -752,8 +753,8 @@ test("event stream publishes and replays the latest Session model selection", as
         BigInt(first.bridgeStateRevision as string),
     );
   } finally {
-    await initialEvents?.body?.cancel().catch(() => {});
-    await reconnectedEvents?.body?.cancel().catch(() => {});
+    await initialEvents?.close().catch(() => {});
+    await reconnectedEvents?.close().catch(() => {});
     await bridge.close();
   }
 });
@@ -769,20 +770,20 @@ test("event stream publishes and replays the latest credential-free Profile chan
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
-  let initialEvents: Response | undefined;
-  let reconnectedEvents: Response | undefined;
+  let initialEvents: BridgeEvents | undefined;
+  let reconnectedEvents: BridgeEvents | undefined;
 
   try {
-    initialEvents = await fetch(endpoint("/events"));
-    const firstPatch = readSsePayload(initialEvents, "profile_settings_changed");
+    initialEvents = await openBridgeEvents(endpoint("/events"));
+    const firstPatch = readEvent(initialEvents, "profile_settings_changed");
     bridge.publishProfileSettingsChange({ commandId: "profile-command-a" });
     const first = await firstPatch;
     assert.equal(first.commandId, "profile-command-a");
     assert.equal(Object.hasOwn(first, "profile"), false);
 
     bridge.publishProfileSettingsChange({ commandId: "profile-command-b" });
-    reconnectedEvents = await fetch(endpoint("/events"));
-    const replayed = await readSsePayload(
+    reconnectedEvents = await openBridgeEvents(endpoint("/events"));
+    const replayed = await readEvent(
       reconnectedEvents,
       "profile_settings_changed",
     );
@@ -792,8 +793,8 @@ test("event stream publishes and replays the latest credential-free Profile chan
         BigInt(first.bridgeStateRevision as string),
     );
   } finally {
-    await initialEvents?.body?.cancel().catch(() => {});
-    await reconnectedEvents?.body?.cancel().catch(() => {});
+    await initialEvents?.close().catch(() => {});
+    await reconnectedEvents?.close().catch(() => {});
     await bridge.close();
   }
 });
@@ -809,12 +810,12 @@ test("event stream replays the latest Profile-scoped OAuth pending patch", async
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
-  let initialEvents: Response | undefined;
-  let reconnectedEvents: Response | undefined;
+  let initialEvents: BridgeEvents | undefined;
+  let reconnectedEvents: BridgeEvents | undefined;
 
   try {
-    initialEvents = await fetch(endpoint("/events"));
-    const firstPatch = readSsePayload(initialEvents, "oauth_auth_changed");
+    initialEvents = await openBridgeEvents(endpoint("/events"));
+    const firstPatch = readEvent(initialEvents, "oauth_auth_changed");
     bridge.publishOAuthAuthState("profile-a", "google", 7, {
       status: "pending",
       verificationUrl: "https://accounts.google.com/o/oauth2/auth?state=test",
@@ -830,8 +831,8 @@ test("event stream replays the latest Profile-scoped OAuth pending patch", async
       verificationUrl: "https://accounts.google.com/o/oauth2/auth?state=test",
       authorizationCodeInput: true,
     });
-    reconnectedEvents = await fetch(endpoint("/events"));
-    const replayed = await readSsePayload(
+    reconnectedEvents = await openBridgeEvents(endpoint("/events"));
+    const replayed = await readEvent(
       reconnectedEvents,
       "oauth_auth_changed",
     );
@@ -846,8 +847,8 @@ test("event stream replays the latest Profile-scoped OAuth pending patch", async
         BigInt(first.bridgeStateRevision as string),
     );
   } finally {
-    await initialEvents?.body?.cancel().catch(() => {});
-    await reconnectedEvents?.body?.cancel().catch(() => {});
+    await initialEvents?.close().catch(() => {});
+    await reconnectedEvents?.close().catch(() => {});
     await bridge.close();
   }
 });
@@ -867,10 +868,10 @@ test("the originating Profile command relies on its correlated state instead of 
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
-  const events = await fetch(endpoint("/events"));
+  const events = await openBridgeEvents(endpoint("/events"));
 
   try {
-    const nextPayload = readNextSsePayload(events, ["command_activity"]);
+    const nextPayload = readNextEvent(events, ["command_activity"]);
     const response = await fetch(endpoint("/command"), {
       method: "POST",
       headers: {
@@ -914,7 +915,7 @@ test("chat bridge reports commit-uncertain prompt persistence without downgradin
     const token = chatUrl.searchParams.get("token");
 
     try {
-      const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+      const events = await openBridgeEvents(`${chatUrl.origin}/events?token=${token}`);
       const response = await fetch(`${chatUrl.origin}/send?token=${token}`, {
         method: "POST",
         headers: {
@@ -930,7 +931,7 @@ test("chat bridge reports commit-uncertain prompt persistence without downgradin
         error: "Prompt storage commit could not be confirmed.",
         promptPersistence: expected,
       });
-      const errorEvent = await readSsePayload(events, "error");
+      const errorEvent = await readEvent(events, "error");
       assert.equal(errorEvent.sendId, sendId);
       assert.equal(errorEvent.sessionId, "s1");
       assert.equal(errorEvent.promptPersistence, expected);
@@ -988,8 +989,8 @@ test("chat bridge replays a pending confirmation to a newly connected event stre
 
   try {
     await confirmationPending;
-    const events = await fetch(endpoint("/events"));
-    const payload = await readSsePayload(events, "confirm_request");
+    const events = await openBridgeEvents(endpoint("/events"));
+    const payload = await readEvent(events, "confirm_request");
     assert.equal(payload.type, "confirm_request");
     assert.equal(payload.sendId, sendId);
     assert.equal(payload.sessionId, "s1");
@@ -1005,8 +1006,8 @@ test("chat bridge replays a pending confirmation to a newly connected event stre
     assert.equal(typeof payload.id, "string");
     assert.equal(payload.confirmationGeneration, 1);
 
-    const resolvedEvents = await fetch(endpoint("/events"));
-    const resolvedPayload = readSsePayload(
+    const resolvedEvents = await openBridgeEvents(endpoint("/events"));
+    const resolvedPayload = readEvent(
       resolvedEvents,
       "confirm_resolved",
     );
@@ -1036,14 +1037,14 @@ test("chat bridge replays a pending confirmation to a newly connected event stre
       },
     );
     await secondConfirmationPending;
-    const secondEvents = await fetch(endpoint("/events"));
-    const secondPayload = await readSsePayload(secondEvents, "confirm_request");
+    const secondEvents = await openBridgeEvents(endpoint("/events"));
+    const secondPayload = await readEvent(secondEvents, "confirm_request");
     assert.notEqual(secondPayload.id, payload.id);
     assert.equal(secondPayload.confirmationGeneration, 2);
     assert.equal(secondPayload.kind, "resolve_recovery");
     assert.deepEqual(secondPayload.groups, []);
-    const secondResolvedEvents = await fetch(endpoint("/events"));
-    const secondResolvedPayload = readSsePayload(
+    const secondResolvedEvents = await openBridgeEvents(endpoint("/events"));
+    const secondResolvedPayload = readEvent(
       secondResolvedEvents,
       "confirm_resolved",
     );
@@ -1112,7 +1113,7 @@ test("stop reports a non-terminal abort until the correlated send error complete
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
-  const events = await fetch(endpoint("/events"));
+  const events = await openBridgeEvents(endpoint("/events"));
   const send = fetch(endpoint("/send"), {
     method: "POST",
     headers: {
@@ -1140,7 +1141,7 @@ test("stop reports a non-terminal abort until the correlated send error complete
     });
 
     releaseCleanup();
-    const errorEvent = await readSsePayload(events, "error");
+    const errorEvent = await readEvent(events, "error");
     assert.equal(errorEvent.sendId, "send-stop-terminal-1");
     const sendResponse = await send;
     assert.equal(sendResponse.status, 500);
@@ -1296,7 +1297,7 @@ test("stop fences late stream publications without hiding durable Session events
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
-  const events = await fetch(endpoint("/events"));
+  const events = await openBridgeEvents(endpoint("/events"));
   const send = fetch(endpoint("/send"), {
     method: "POST",
     headers: {
@@ -1308,7 +1309,7 @@ test("stop fences late stream publications without hiding durable Session events
 
   try {
     await started;
-    const publications = readSsePayloadsThrough(events, "error");
+    const publications = readEventsThrough(events, "error");
     const stop = await fetch(endpoint("/stop"), {
       method: "POST",
       headers: {
@@ -1695,7 +1696,7 @@ test("chat bridge correlates command state with the request header without chang
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
-  const events = await fetch(endpoint("/events"));
+  const events = await openBridgeEvents(endpoint("/events"));
 
   try {
     const command = fetch(endpoint("/command"), {
@@ -1706,7 +1707,7 @@ test("chat bridge correlates command state with the request header without chang
       },
       body: JSON.stringify({ kind: "new_session" }),
     });
-    const stateEvent = await readSsePayload(events, "state");
+    const stateEvent = await readEvent(events, "state");
     const response = await command;
 
     assert.equal(response.status, 200);
@@ -1829,13 +1830,13 @@ test("closing the chat bridge aborts an active command", async () => {
     headers: correlatedJsonHeaders("command"),
     body: JSON.stringify({ kind: "new_session" }),
   });
-  const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+  const events = await openBridgeEvents(`${chatUrl.origin}/events?token=${token}`);
 
   await started;
   await bridge.close();
   assert.equal(commandSignal?.aborted, true);
   assert.equal((await command).status, 500);
-  const published = (await events.text()).split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6)));
+  const published = await events.all();
   assert.ok(published.every((event) => event.type === "command_activity"));
 });
 
@@ -1865,7 +1866,7 @@ test("closing the chat bridge aborts an active send with an event stream connect
     headers: correlatedJsonHeaders("send"),
     body: JSON.stringify({ prompt: "test", sessionId: "s1" }),
   });
-  const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+  const events = await openBridgeEvents(`${chatUrl.origin}/events?token=${token}`);
 
   await started;
   await bridge.close();
@@ -2657,7 +2658,7 @@ test("Skill install early validation drains its body and does not broadcast an u
   });
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
-  const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+  const events = await openBridgeEvents(`${chatUrl.origin}/events?token=${token}`);
   const originalResume = IncomingMessage.prototype.resume;
   IncomingMessage.prototype.resume = function trackedResume() {
     if (this.url?.startsWith("/skills")) resumedSkillRequests += 1;
@@ -2688,7 +2689,7 @@ test("Skill install early validation drains its body and does not broadcast an u
     assert.equal(invalidCommandId.status, 400);
     assert.ok(resumedSkillRequests >= 1);
 
-    const nextEvent = readNextSsePayload(events);
+    const nextEvent = readNextEvent(events);
     const valid = await fetch(`${chatUrl.origin}/skills?token=${token}`, {
       method: "POST",
       headers: {
@@ -2744,7 +2745,7 @@ test("Skill install early validation drains its body and does not broadcast an u
     }
   } finally {
     IncomingMessage.prototype.resume = originalResume;
-    await events.body?.cancel().catch(() => undefined);
+    await events.close().catch(() => undefined);
     await bridge.close();
   }
 });
@@ -3241,7 +3242,7 @@ test("different-Session attachment failures stay on their initiating HTTP respon
   });
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token")!;
-  const events = await fetch(`${chatUrl.origin}/events?token=${token}`);
+  const events = await openBridgeEvents(`${chatUrl.origin}/events?token=${token}`);
   const upload = (sessionId: string, fileName: string) => fetch(
     `${chatUrl.origin}/attachments?token=${token}` +
       `&sessionId=${sessionId}&fileName=${fileName}`,
@@ -3270,7 +3271,7 @@ test("different-Session attachment failures stay on their initiating HTTP respon
       body: JSON.stringify({ prompt: "probe", sessionId: "session-success" }),
     });
     assert.equal(send.status, 200);
-    const firstPayload = await readNextSsePayload(events, ["send_activity"]);
+    const firstPayload = await readNextEvent(events, ["send_activity"]);
     assert.equal(firstPayload.type, "progress");
     assert.equal(firstPayload.sessionId, "session-success");
     assert.equal(firstPayload.message, "correlated probe");
@@ -3790,92 +3791,14 @@ function withoutBridgeStateRevisions(value: unknown): unknown {
   );
 }
 
-async function readSsePayload(
-  response: Response,
-  type: string,
-): Promise<Record<string, unknown>> {
-  assert.ok(response.body);
-  const reader = response.body.getReader();
-  let received = "";
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) throw new Error(`Event stream ended before ${type}.`);
-      received += NodeBuffer.from(chunk.value).toString("utf8");
-      for (const block of received.split("\n\n")) {
-        const data = block.split("\n")
-          .find((line) => line.startsWith("data: "))
-          ?.slice("data: ".length);
-        if (!data) continue;
-        const payload = JSON.parse(data) as Record<string, unknown>;
-        if (payload.type === type) return payload;
-      }
-    }
-  } finally {
-    await reader.cancel();
+
+async function readNextEvent(response: BridgeEvents, ignoredTypes: readonly string[] = []): Promise<Record<string, unknown>> {
+  for (;;) {
+    const event = await response.next();
+    if (!ignoredTypes.includes(String(event.type))) return event;
   }
 }
 
-async function readNextSsePayload(
-  response: Response,
-  ignoredTypes: readonly string[] = [],
-): Promise<Record<string, unknown>> {
-  assert.ok(response.body);
-  const reader = response.body.getReader();
-  let received = "";
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) throw new Error("Event stream ended before a payload arrived.");
-      received += NodeBuffer.from(chunk.value).toString("utf8");
-      for (const block of received.split("\n\n")) {
-        const data = block.split("\n")
-          .find((line) => line.startsWith("data: "))
-          ?.slice("data: ".length);
-        if (data) {
-          const event = JSON.parse(data) as Record<string, unknown>;
-          if (!ignoredTypes.includes(String(event.type))) return event;
-        }
-      }
-    }
-  } finally {
-    await reader.cancel();
-  }
-}
-
-async function readSsePayloadsThrough(
-  response: Response,
-  terminalType: string,
-): Promise<Record<string, unknown>[]> {
-  assert.ok(response.body);
-  const reader = response.body.getReader();
-  const payloads: Record<string, unknown>[] = [];
-  let received = "";
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        throw new Error(`Event stream ended before ${terminalType}.`);
-      }
-      received += NodeBuffer.from(chunk.value).toString("utf8");
-      for (;;) {
-        const boundary = received.indexOf("\n\n");
-        if (boundary < 0) break;
-        const block = received.slice(0, boundary);
-        received = received.slice(boundary + 2);
-        const data = block.split("\n")
-          .find((line) => line.startsWith("data: "))
-          ?.slice("data: ".length);
-        if (!data) continue;
-        const payload = JSON.parse(data) as Record<string, unknown>;
-        payloads.push(payload);
-        if (payload.type === terminalType) return payloads;
-      }
-    }
-  } finally {
-    await reader.cancel();
-  }
-}
 
 async function rawHttpStatus(
   port: number,

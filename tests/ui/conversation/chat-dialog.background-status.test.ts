@@ -2986,7 +2986,7 @@ test("malformed initial state fails closed before UI factories or SSE start", as
       harness.document.querySelector(".app")?.hasAttribute("inert"),
       true,
     );
-    assert.deepEqual(harness.eventSourceUrls, []);
+    assert.deepEqual(harness.eventStreamUrls, []);
     assert.equal("LiveSmithUI" in harness.window, false);
     assert.deepEqual(harness.errors, []);
   } finally {

@@ -1,3 +1,4 @@
+import { openBridgeEvents } from "../support/bridge-events.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setImmediate } from "node:timers";
@@ -27,7 +28,7 @@ test("MIDI part preview authenticates exact bounded read inputs without foregrou
     readMidiPartPreview: async (request, signal) => { calls.push(request); assert.equal(signal.aborted, false); return preview; },
   });
   const target = route(bridge.url);
-  const events = await fetch(route(bridge.url, "/events"));
+  const events = await openBridgeEvents(route(bridge.url, "/events"));
   const post = (body: string, url: URL = target, requestHeaders = headers) => fetch(url, { method: "POST", headers: requestHeaders, body });
   try {
     for (const token of ["", "incorrect"]) {
@@ -58,7 +59,7 @@ test("MIDI part preview authenticates exact bounded read inputs without foregrou
     assert.deepEqual(await accepted.json(), preview);
     assert.deepEqual(calls, [input]);
     await bridge.close();
-    assert.equal(await events.text(), "\n");
+    assert.deepEqual(await events.all(), []);
   } finally { await bridge.close(); }
 });
 

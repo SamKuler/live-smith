@@ -1,3 +1,4 @@
+import { openBridgeEvents, readEventsThrough } from "../chat/support/bridge-events.js";
 import assert from "node:assert/strict";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -40,28 +41,15 @@ test("command owners distinguish catalog changes and tools-only events leave dia
       };
       const state = await fetch(endpoint(url, "/state")).then(response => response.json()) as ChatDialogState;
       const sessionId = state.activeSessionId!;
-      const stream = await fetch(endpoint(url, "/events"));
-      const reader = stream.body!.getReader();
+      const stream = await openBridgeEvents(endpoint(url, "/events"));
       try {
         const source = Symbol("peer");
         invalidateSessionState(storageDirectory, { sessionId, source, target: "tools" });
         invalidateGlobalState(storageDirectory, { source, target: "tools" });
         invalidateSessionState(storageDirectory, { sessionId, source });
-        const decoder = new TextDecoder();
-        let pending = "";
-        const events: Array<{ type: string }> = [];
-        while (!events.some(event => event.type === "session_state_invalidated")) {
-          const chunk = await reader.read(); assert.equal(chunk.done, false);
-          pending += decoder.decode(chunk.value, { stream: true });
-          let end: number;
-          while ((end = pending.indexOf("\n\n")) >= 0) {
-            const frame = pending.slice(0, end); pending = pending.slice(end + 2);
-            const data = frame.split("\n").find(line => line.startsWith("data: "));
-            if (data) events.push(JSON.parse(data.slice(6)));
-          }
-        }
+        const events = await readEventsThrough(stream, "session_state_invalidated");
         assert.deepEqual(events.map(event => event.type).filter(type => type.endsWith("_state_invalidated")), ["session_state_invalidated"]);
-      } finally { await reader.cancel(); }
+      } finally { await stream.close(); }
       globalTargets.length = 0; sessionTargets.length = 0;
       await command({ kind: "rename_session", sessionId, title: "Renamed" });
       await command({ kind: "set_session_edit_scopes", sessionId, editScopes: [] });

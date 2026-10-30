@@ -1,3 +1,4 @@
+import { openBridgeEvents, readEvent, type BridgeEvents } from "../support/bridge-events.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -45,35 +46,10 @@ function endpointFor(url: string): (pathname: string) => string {
     `${chatUrl.origin}${pathname}?token=${chatUrl.searchParams.get("token")}`;
 }
 
-async function readSsePayloads(
-  response: Response,
-  type: string,
-  count = 1,
-): Promise<Array<Record<string, unknown>>> {
-  const reader = response.body?.getReader();
-  assert.ok(reader);
-  const decoder = new TextDecoder();
-  let pending = "";
-  const payloads: Array<Record<string, unknown>> = [];
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      assert.equal(done, false, `SSE ended before ${type}.`);
-      pending += decoder.decode(value, { stream: true });
-      const frames = pending.split("\n\n");
-      pending = frames.pop() ?? "";
-      for (const frame of frames) {
-        const data = frame.split("\n")
-          .find((line) => line.startsWith("data: "))?.slice(6);
-        if (!data) continue;
-        const payload = JSON.parse(data) as Record<string, unknown>;
-        if (payload.type === type) payloads.push(payload);
-        if (payloads.length === count) return payloads;
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
+async function readEvents(response: BridgeEvents, type: string, count = 1): Promise<Array<Record<string, unknown>>> {
+  const events = [];
+  while (events.length < count) events.push(await readEvent(response, type));
+  return events;
 }
 
 test("Session edit-scope commands are strict, normalized, and available during a send", async () => {
@@ -177,12 +153,12 @@ test("late snapshots overlay only newer Session scope patches across every colle
     handleSend: async () => {},
   });
   const endpoint = endpointFor(bridge.url);
-  let events: Response | undefined;
+  let events: BridgeEvents | undefined;
   try {
-    events = await fetch(endpoint("/events"));
+    events = await openBridgeEvents(endpoint("/events"));
     const pendingState = fetch(endpoint("/state"));
     await started;
-    const published = readSsePayloads(events, "session_edit_scopes_changed", 4);
+    const published = readEvents(events, "session_edit_scopes_changed", 4);
     const updatedAt = "2026-08-26T00:01:00.000Z";
     bridge.publishSessionEditScopes("session-1", [], updatedAt);
     bridge.publishSessionEditScopes("session-previous", ["audio"], updatedAt);
@@ -212,7 +188,7 @@ test("late snapshots overlay only newer Session scope patches across every colle
     assert.ok(BigInt(readback.bridgeStateCoveredThroughRevision) >= BigInt(state.bridgeStateRevision));
   } finally {
     releaseBuild();
-    await events?.body?.cancel().catch(() => {});
+    await events?.close().catch(() => {});
     await bridge.close();
   }
 });
@@ -226,21 +202,21 @@ test("scope reconnect replays only the latest copied patch per Session", async (
     handleSend: async () => {},
   });
   const endpoint = endpointFor(bridge.url);
-  let initial: Response | undefined;
-  let reconnect: Response | undefined;
+  let initial: BridgeEvents | undefined;
+  let reconnect: BridgeEvents | undefined;
   try {
-    initial = await fetch(endpoint("/events"));
-    const initialPatch = readSsePayloads(initial, "session_edit_scopes_changed");
+    initial = await openBridgeEvents(endpoint("/events"));
+    const initialPatch = readEvents(initial, "session_edit_scopes_changed");
     bridge.publishSessionEditScopes("session-1", ["midi"], "2026-08-26T00:01:00.000Z");
     const [first] = await initialPatch;
-    await initial.body?.cancel();
+    await initial.close();
     const latestScopes: EditScope[] = ["mixer", "audio"];
     bridge.publishSessionEditScopes("session-1", latestScopes, "2026-08-26T00:02:00.000Z");
     bridge.publishSessionEditScopes("session-2", [], "2026-08-26T00:03:00.000Z");
     latestScopes.splice(0);
 
-    reconnect = await fetch(endpoint("/events"));
-    const replay = await readSsePayloads(reconnect, "session_edit_scopes_changed", 2);
+    reconnect = await openBridgeEvents(endpoint("/events"));
+    const replay = await readEvents(reconnect, "session_edit_scopes_changed", 2);
     assert.deepEqual(replay.map(({ sessionId, editScopes }) => ({ sessionId, editScopes })), [
       { sessionId: "session-1", editScopes: ["audio", "mixer"] },
       { sessionId: "session-2", editScopes: [] },
@@ -248,8 +224,8 @@ test("scope reconnect replays only the latest copied patch per Session", async (
     assert.equal(replay[0]?.updatedAt, "2026-08-26T00:02:00.000Z");
     assert.ok(BigInt(replay[0]?.bridgeStateRevision as string) > BigInt(first?.bridgeStateRevision as string));
   } finally {
-    await initial?.body?.cancel().catch(() => {});
-    await reconnect?.body?.cancel().catch(() => {});
+    await initial?.close().catch(() => {});
+    await reconnect?.close().catch(() => {});
     await bridge.close();
   }
 });
@@ -268,10 +244,10 @@ test("unknown scope-save outcomes preserve newer patches in their authoritative 
     handleSend: async () => {},
   });
   const endpoint = endpointFor(bridge.url);
-  let events: Response | undefined;
+  let events: BridgeEvents | undefined;
   try {
-    events = await fetch(endpoint("/events"));
-    const errorPatch = readSsePayloads(events, "error");
+    events = await openBridgeEvents(endpoint("/events"));
+    const errorPatch = readEvents(events, "error");
     const response = await fetch(endpoint("/command"), {
       method: "POST",
       headers: {
@@ -289,7 +265,7 @@ test("unknown scope-save outcomes preserve newer patches in their authoritative 
     assert.deepEqual(published?.state, body.state);
     assert.equal(published?.commandId, "scope-outcome-unknown");
   } finally {
-    await events?.body?.cancel().catch(() => {});
+    await events?.close().catch(() => {});
     await bridge.close();
   }
 });

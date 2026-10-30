@@ -94,7 +94,7 @@ for (const { stage, operation } of cancellationCases) for (const cancellation of
     const state = { status: "Ready" } as ChatDialogState;
     let settledRequests = 0;
     const bridge = await createChatBridge({ buildState: async () => state, renderHtml: () => "<html></html>",
-      handleCommand: async () => state, handleSend: async () => {}, closePluginApps: () => apps.close(),
+      handleCommand: async () => state, handleSend: async () => {}, closeView: () => apps.close(),
       async handlePluginAppRequest(request, signal) {
         try { return await apps.request(request, signal); }
         finally { if (request.operation === operation) settledRequests += 1; }

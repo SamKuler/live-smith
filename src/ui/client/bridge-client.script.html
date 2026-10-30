@@ -64,6 +64,15 @@
       if (!isWireChatBridgeState(getState())) {
         throw new Error(t("Initial Live Smith state is invalid."));
       }
+      function syncPageSession() {
+        if (!bridgeConfig?.viewId || window.location.pathname !== "/chat") return;
+        const url = new URL(window.location.href);
+        const sessionId = activeSessionId();
+        if (sessionId) url.searchParams.set("sessionId", sessionId);
+        else url.searchParams.delete("sessionId");
+        if (url.href !== window.location.href) window.history.replaceState(window.history.state, "", url);
+      }
+      syncPageSession();
       let view = null;
 
       function connectView(nextView) {
@@ -97,7 +106,10 @@
         return Boolean(activeSendAttemptForPayload(payload));
       }
 
-      let eventSource = null;
+      let eventSocket = null;
+      let eventReconnectTimer = null;
+      let eventReconnectAttempts = 0;
+      let eventStreamPaused = false;
       const assistantDraftsBySession = new Map();
       const reasoningDraftsBySession = new Map();
       const contextUsageBySession = new Map();
@@ -233,6 +245,7 @@
       let networkProxyDraft = null;
       let customInstructionsDraft = null;
       let commandInProgress = null;
+      let viewNavigationAttempt = null;
       let commandReconciliationBlocked = false;
       let renderedOperationState = null;
       let globalStateRefresh = null;
@@ -1046,6 +1059,7 @@
       function preserveNewerCausalState(state, attempt) {
         const baseline = attempt.causalStateSnapshot;
         const current = getState();
+        const ownsViewState = !attempt.remote && !attempt.restored;
         // A later snapshot cut includes every mutation published by this response.
         // Its named-field ownership cannot overwrite that already observed state.
         const snapshotAlreadyCovered = compareDecimalRevisions(
@@ -1072,7 +1086,8 @@
           attempt.kind === "load_session_model_capabilities" &&
           sameJsonValue(state.modelStateSource, current.modelStateSource)
         );
-        if (!currentChangedSinceBaseline) {
+        if (!currentChangedSinceBaseline && ownsViewState &&
+            (attempt.ownsActiveSessionSelection || state.activeSessionId === current.activeSessionId)) {
           if (
             attempt.ownsGlobalState || incomingProfileSettingsChanged ||
             ownsEditorModelProjection
@@ -1147,7 +1162,7 @@
         if (attempt.ownsPlugins) {
           merged.plugins = state.plugins;
         }
-        if (!attempt.ownsGlobalState && sameJsonValue(current.status, baseline.status)) {
+        if (ownsViewState && !attempt.ownsGlobalState && sameJsonValue(current.status, baseline.status)) {
           merged.status = state.status;
         }
         if (protectedSessionIds.size > 0) {
@@ -1333,7 +1348,7 @@
           current.sessionToolCatalog.loadedAt === state.sessionToolCatalog?.loadedAt &&
           sessionToolCatalogOwner(current) === sessionToolCatalogOwner(state) &&
           (contextCutOrder > 0 || contextCutOrder === 0 && incomingCurrentRevisionOrder >= 0);
-        const catalogSource = catalogUnchanged || incomingSuggestionsAreCurrent ? state : current;
+        const catalogSource = ownsViewState && (catalogUnchanged || incomingSuggestionsAreCurrent) ? state : current;
         if (catalogSource.sessionToolCatalog?.sessionId === merged.activeSessionId &&
           sessionToolCatalogOwner(catalogSource) === sessionToolCatalogOwner(merged)) {
           merged.sessionToolCatalog = catalogSource.sessionToolCatalog;
@@ -1689,7 +1704,7 @@
       }
 
       function decodeBridgeHttpSuccess(path, value, context) {
-        if (path === "/command" || path === "/session-model-capabilities" || path === "/session-tools") {
+        if (["/command", "/view-session", "/session-model-capabilities", "/session-tools"].includes(path)) {
           if (isWireChatBridgeState(value)) return value;
           throw invalidBridgeHttpResponse(path);
         }
@@ -1784,7 +1799,7 @@
         if (typeof value.error !== "string" || !value.error || value.displayMessage !== undefined && !isWireUiMessage(value.displayMessage)) {
           throw invalidBridgeHttpResponse(path);
         }
-        if (path === "/command" || path === "/session-model-capabilities" || path === "/session-tools") {
+        if (["/command", "/view-session", "/session-model-capabilities", "/session-tools"].includes(path)) {
           const hasOutcomeProjection = value.commandOutcome !== undefined ||
             value.state !== undefined ||
             value.reconciliationRequired !== undefined;
@@ -2513,8 +2528,17 @@
         }
       }
 
+      function isSessionNavigationBlocked() {
+        return Boolean(viewNavigationAttempt) || Boolean(commandInProgress &&
+          !(bridgeConfig?.viewId && activeCommandAttempt?.remote)) ||
+          commandReconciliationBlocked || attachmentOperationInProgress || skillOperationInProgress ||
+          globalStateRefresh !== null || eventStreamStateRefresh !== null ||
+          modelSelectionRefreshesBySession.has(activeSessionId()) ||
+          sessionStateRefreshesBySession.has(activeSessionId());
+      }
+
       function isOperationInProgress() {
-        return Boolean(activeSendAttempt()) || Boolean(commandInProgress) ||
+        return Boolean(viewNavigationAttempt) || Boolean(activeSendAttempt()) || Boolean(commandInProgress) ||
           commandReconciliationBlocked || attachmentOperationInProgress ||
           skillOperationInProgress ||
           globalStateRefresh !== null ||
@@ -2525,6 +2549,7 @@
 
       function isProfileSettingsOperationInProgress() {
         return Boolean(
+          viewNavigationAttempt ||
           globalStateRefresh ||
           eventStreamStateRefresh ||
           modelSelectionRefreshesBySession.has(activeSessionId()) ||
@@ -2553,7 +2578,8 @@
         const sessionStateReconciliation =
           sessionStateRefreshesBySession.get(activeSessionId());
         const operationState = {
-          commandKind: commandInProgress ||
+          navigationBlocked: isSessionNavigationBlocked(),
+          commandKind: commandInProgress || viewNavigationAttempt?.kind ||
             (globalStateRefresh
               ? globalStateRefresh.failed
                 ? "reconciliation_required"
@@ -2600,6 +2626,13 @@
         ) return;
         renderedOperationState = operationState;
         requireView().setOperationState(operationState);
+      }
+
+      function fetch(input, init) {
+        return window.fetch(input, bridgeConfig?.viewId ? {
+          ...init,
+          headers: { ...init?.headers, "X-Live-Smith-View-Id": bridgeConfig.viewId },
+        } : init);
       }
 
       function bridgeUrl(path) {
@@ -2773,6 +2806,7 @@
       }
 
       async function runCommand(kind, extra, options) {
+        const viewNavigation = Boolean(bridgeConfig?.viewId && ["select_session", "new_session"].includes(kind));
         const reportStatus = options?.statusPresenter || showStatus;
         if (attachmentOperationInProgress || skillOperationInProgress) {
           reportStatus(window.LiveSmithI18n.message("Wait for the current file or Skill operation to finish."), true);
@@ -2787,8 +2821,9 @@
           reportStatus(window.LiveSmithI18n.message("Profile settings cannot change while an agent request is active."));
           return false;
         }
-        if (commandInProgress || commandReconciliationBlocked) {
-          if (commandInProgress) {
+        if (viewNavigationAttempt || commandReconciliationBlocked ||
+            (viewNavigation ? isSessionNavigationBlocked() : commandInProgress)) {
+          if (commandInProgress || viewNavigationAttempt) {
             reportStatus(window.LiveSmithI18n.message("Wait for the current operation to finish."));
           }
           return false;
@@ -2893,8 +2928,11 @@
           }),
         };
 
-        activeCommandAttempt = attempt;
-        commandInProgress = kind;
+        if (viewNavigation) viewNavigationAttempt = attempt;
+        else {
+          activeCommandAttempt = attempt;
+          commandInProgress = kind;
+        }
         syncOperationState();
         if (["save_profile", "discover_models"].includes(kind)) {
           requireView().clearFieldErrors();
@@ -2934,7 +2972,7 @@
         };
         try {
           const httpOutcome = postBridge(
-            "/command",
+            viewNavigation ? "/view-session" : "/command",
             payload,
             { "X-Live-Smith-Command-Id": attempt.id },
           ).then(
@@ -2990,7 +3028,7 @@
               attempt,
               kind,
               networkError,
-              true,
+              !viewNavigation,
             );
           }
           if (
@@ -3005,7 +3043,7 @@
               attempt,
             );
           }
-          if (activeCommandAttempt !== attempt) return false;
+          if ((viewNavigation ? viewNavigationAttempt : activeCommandAttempt) !== attempt) return false;
           if (outcome.type === "state") {
             commandSucceeded = await applyOutcomeState(outcome.state, true);
             commandOutcomeKnown = commandSucceeded;
@@ -3052,9 +3090,13 @@
             delete extra.sessionValue;
           }
           attempt.confirmation?.controller.abort();
-          if (activeCommandAttempt === attempt) activeCommandAttempt = null;
-          commandInProgress = null;
-          if (pendingPeerCommand) {
+          if (viewNavigation) {
+            if (viewNavigationAttempt === attempt) viewNavigationAttempt = null;
+          } else {
+            if (activeCommandAttempt === attempt) activeCommandAttempt = null;
+            commandInProgress = null;
+          }
+          if (!viewNavigation && pendingPeerCommand) {
             const pending = pendingPeerCommand;
             pendingPeerCommand = null;
             if (pending.command) applyCommandActivity(pending.command);
@@ -3067,6 +3109,13 @@
         if (commandSucceeded) {
           syncActiveSessionUi();
           if (activeSessionId() !== activeSessionIdBeforeCommand) {
+            const peer = activeCommandAttempt;
+            if (viewNavigation && peer?.remote && peer.confirmation) {
+              const payload = peer.confirmation.payload;
+              peer.confirmation.controller.abort();
+              delete peer.confirmation;
+              receiveCommandConfirmation(payload);
+            }
             void requireView().ensureSessionModelCapabilities();
           }
         }
@@ -3423,10 +3472,10 @@
         reconcileWebSearchUpdatesFromState(reconciledState);
         if (
           canceledFollowUpCount &&
-          activeCommandAttempt?.kind === kind
+          causalAttempt?.kind === kind
         ) {
-          activeCommandAttempt.canceledFollowUpCount =
-            (activeCommandAttempt.canceledFollowUpCount || 0) +
+          causalAttempt.canceledFollowUpCount =
+            (causalAttempt.canceledFollowUpCount || 0) +
             canceledFollowUpCount;
         }
         reconcileCompactionBoundaryWithState(reconciledState);
@@ -3434,6 +3483,7 @@
         reconcileRuntimeSourceWithState(reconciledState);
         adoptGlobalSettingsFromState(reconciledState);
         setState(reconciledState);
+        syncPageSession();
         reconcileRetainedSends(reconciledState, state);
         requireView().syncModelStateSource(reconciledState.modelStateSource);
         recordFullStateProjectionCoverage(reconciledState);
@@ -3553,6 +3603,7 @@
           reconcileCompactionBoundaryWithState(reconciledState);
           reconcileRuntimeSourceWithState(reconciledState);
           setState(reconciledState);
+          syncPageSession();
           requireView().syncModelStateSource(reconciledState.modelStateSource);
           recordFullStateProjectionCoverage(reconciledState);
           refreshUncoveredActiveModelSelection(reconciledState);
@@ -5047,9 +5098,9 @@
         pendingConfirmationsBySession.delete(attempt.sessionId);
         clearConfirmationResolution(attempt.sessionId);
         sendAttemptsBySession.delete(attempt.sessionId);
-        if (pendingPeerSendSessions.delete(attempt.sessionId) && eventSource) {
-          const source = eventSource;
-          eventSource = null;
+        if (pendingPeerSendSessions.delete(attempt.sessionId) && eventSocket) {
+          const source = eventSocket;
+          eventSocket = null;
           source.close();
           markEventStreamDisconnected();
           startEventStream();
@@ -6723,23 +6774,34 @@
       }
 
       window.addEventListener("pagehide", () => {
-        if (!eventSource) return;
-        const source = eventSource;
-        eventSource = null;
-        source.close();
+        eventStreamPaused = true;
+        window.clearTimeout(eventReconnectTimer);
+        eventReconnectTimer = null;
         invalidateEventStreamRecovery();
+        if (!eventSocket) return;
+        const source = eventSocket;
+        eventSocket = null;
+        source.close();
       });
       window.addEventListener("pageshow", (event) => {
-        if (event.persisted) startEventStream();
+        if (!event.persisted) return;
+        eventStreamPaused = false;
+        startEventStream();
       });
 
       function startEventStream() {
-        if (eventSource) return;
-        const source = new EventSource(bridgeUrl("/events"));
-        eventSource = source;
+        if (eventSocket || eventStreamPaused) return;
+        window.clearTimeout(eventReconnectTimer);
+        eventReconnectTimer = null;
+        const url = new URL(bridgeUrl("/events"));
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        if (bridgeConfig.viewId) url.searchParams.set("viewId", bridgeConfig.viewId);
+        const source = new WebSocket(url.toString());
+        eventSocket = source;
         source.onopen = () => {
-          if (eventSource !== source) return;
+          if (eventSocket !== source) return;
           eventStreamConnected = true;
+          eventReconnectAttempts = 0;
           refreshAfterEventStreamReconnect();
           const statusWasPresented = presentStatus({ source: "event-stream" });
           if (
@@ -6752,13 +6814,17 @@
           }
         };
         source.onmessage = (message) => {
-          if (eventSource !== source) return;
-          let payload;
+          if (eventSocket !== source) return;
+          let payloads;
           try {
-            payload = JSON.parse(message.data);
+            payloads = JSON.parse(message.data);
           } catch {
             return;
           }
+          if (!Array.isArray(payloads)) return;
+          for (const payload of payloads) handleEvent(payload);
+        };
+        const handleEvent = (payload) => {
           if (!isWireRecord(payload) || typeof payload.type !== "string") return;
           if (payload.type === "send_activity") { adoptSendActivity(payload); return; }
           if (payload.type === "command_activity") { adoptCommandActivity(payload); return; }
@@ -7746,7 +7812,16 @@
           }
         };
         source.onerror = () => {
-          if (eventSource === source) markEventStreamDisconnected();
+          if (eventSocket === source) markEventStreamDisconnected();
+        };
+        source.onclose = () => {
+          if (eventSocket !== source) return;
+          eventSocket = null;
+          markEventStreamDisconnected();
+          if (eventStreamPaused) return;
+          const delay = Math.min(500 * 2 ** eventReconnectAttempts, 5000);
+          eventReconnectAttempts = Math.min(eventReconnectAttempts + 1, 4);
+          eventReconnectTimer = window.setTimeout(startEventStream, delay);
         };
       }
 
@@ -7806,7 +7881,8 @@
           runnableQueuedFollowUpCount() > 0,
         isOperationInProgress,
         isProfileSettingsOperationInProgress,
-        isCommandInProgress: () => Boolean(commandInProgress) ||
+        isSessionNavigationBlocked,
+        isCommandInProgress: () => Boolean(viewNavigationAttempt) || Boolean(commandInProgress) ||
           commandReconciliationBlocked ||
           globalStateRefresh !== null ||
           modelSelectionRefreshesBySession.has(activeSessionId()) ||

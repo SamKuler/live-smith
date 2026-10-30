@@ -462,6 +462,7 @@
           hasSessionLocalWork: (sessionId) => bridgeClient.hasSessionLocalWork(sessionId) || creativeBriefEditor.hasDraft(sessionId),
           readSessionSearch: bridgeClient.readSessionSearch,
           isCommandInProgress: bridgeClient.isCommandInProgress,
+          isSessionNavigationBlocked: bridgeClient.isSessionNavigationBlocked,
           isConfirmationLocked: bridgeClient.isConfirmationLocked,
           resolveConfirm: bridgeClient.resolveConfirm,
           onTimelineApproval: () => setInspectorOpen(false),
@@ -1493,7 +1494,8 @@
           sessionControlsLocked = locked;
           document.querySelectorAll(mutationControls)
             .forEach((control) => {
-              control.disabled = locked;
+              control.disabled = control.matches("#newSessionButton, .current-session-row")
+                ? bridgeClient.isSessionNavigationBlocked() : locked;
           });
           if (!locked && changed) {
             const retained = retainedSessionControlFocus;
@@ -1744,6 +1746,7 @@
           uiLanguageSaving,
           interfaceModeSaving,
           bridgeRecoveryCanRetry,
+          navigationBlocked,
         }) {
           document.getElementById("bridgeRetryButton").hidden = !bridgeRecoveryCanRetry;
           composerOperationState = {
@@ -1759,7 +1762,7 @@
           const operationBusy = Boolean(commandKind) || sendInProgress ||
             attachmentInProgress || skillInProgress;
           const sessionControlsBusy = Boolean(commandKind) || attachmentInProgress ||
-            skillInProgress;
+            skillInProgress || navigationBlocked;
           const settingsBusy = profileSettingsInProgress || anySendInProgress;
           const commandAdmissionBusy = Boolean(commandKind) ||
             attachmentInProgress || skillInProgress;

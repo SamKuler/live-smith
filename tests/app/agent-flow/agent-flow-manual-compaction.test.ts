@@ -1,5 +1,5 @@
+import { openBridgeEvents, readEvent, type BridgeEvents } from "../chat/support/bridge-events.js";
 import assert from "node:assert/strict";
-import { Buffer as NodeBuffer } from "node:buffer";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -243,10 +243,10 @@ test("/compact publishes correlated reconnect progress without persisting it", a
           kind: "user",
           content: "Preserve this context",
         });
-        const events = await fetch(endpoint(url, "/events"));
+        const events = await openBridgeEvents(endpoint(url, "/events"));
         commandSequence += 1;
         const commandId = `compact-progress-${commandSequence}`;
-        const progress = readSsePayloads(events, "command_progress", 2);
+        const progress = readMatchingEvents(events, "command_progress", 2);
         const response = await fetch(endpoint(url, "/command"), {
           method: "POST",
           headers: {
@@ -464,37 +464,10 @@ function endpoint(url: string, pathname: string): string {
   return `${parsed.origin}${pathname}?token=${parsed.searchParams.get("token")}`;
 }
 
-async function readSsePayloads(
-  response: Response,
-  type: string,
-  count: number,
-): Promise<Record<string, unknown>[]> {
-  assert.ok(response.body);
-  const reader = response.body.getReader();
-  const payloads: Record<string, unknown>[] = [];
-  let received = "";
-  try {
-    while (payloads.length < count) {
-      const chunk = await reader.read();
-      if (chunk.done) throw new Error(`Event stream ended before ${type}.`);
-      received += NodeBuffer.from(chunk.value).toString("utf8");
-      for (;;) {
-        const boundary = received.indexOf("\n\n");
-        if (boundary < 0) break;
-        const block = received.slice(0, boundary);
-        received = received.slice(boundary + 2);
-        const data = block.split("\n")
-          .find((line) => line.startsWith("data: "))
-          ?.slice("data: ".length);
-        if (!data) continue;
-        const payload = JSON.parse(data) as Record<string, unknown>;
-        if (payload.type === type) payloads.push(payload);
-      }
-    }
-    return payloads;
-  } finally {
-    await reader.cancel();
-  }
+async function readMatchingEvents(events: BridgeEvents, type: string, count: number): Promise<Record<string, unknown>[]> {
+  const payloads = [];
+  while (payloads.length < count) payloads.push(await readEvent(events, type));
+  return payloads;
 }
 
 function backendManagerFor(backend: ModelBackend) {

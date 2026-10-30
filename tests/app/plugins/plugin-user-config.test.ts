@@ -1,6 +1,6 @@
+import { openBridgeEvents, readEvent } from "../chat/support/bridge-events.js";
 import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
-import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { fstatSync } from "node:fs";
 import * as fs from "node:fs/promises";
@@ -8,7 +8,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import process from "node:process";
 import test, { type TestContext } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { URL } from "node:url";
 
 import { strToU8, zipSync } from "fflate/browser";
@@ -152,36 +151,12 @@ function assertPrivate(value: unknown): void {
 }
 
 async function collectEvents(bridge: Bridge) {
-  const response = await fetch(bridge.endpoint("/events"));
-  assert.equal(response.status, 200);
-  assert.ok(response.body);
-  const reader = response.body.getReader();
-  const events: Array<Record<string, unknown>> = [];
-  const reading = (async () => {
-    let pending = "";
-    while (true) {
-      const part = await reader.read();
-      if (part.done) return;
-      pending += Buffer.from(part.value).toString("utf8");
-      let end;
-      while ((end = pending.indexOf("\n\n")) !== -1) {
-        const block = pending.slice(0, end);
-        pending = pending.slice(end + 2);
-        const data = block.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
-        if (data) events.push(JSON.parse(data) as Record<string, unknown>);
-      }
-    }
-  })();
-  return { events,
-    async terminal(commandId: string) {
-      for (let attempts = 0; attempts < 100; attempts++) {
-        const event = events.find((entry) => entry.commandId === commandId && ["state", "error"].includes(String(entry.type)));
-        if (event) return event;
-        await delay(10);
-      }
-      assert.fail(`No terminal event arrived for ${commandId}.`);
-    },
-    async close() { await reader.cancel(); await reading; },
+  const stream = await openBridgeEvents(bridge.endpoint("/events"));
+  return {
+    events: stream.received,
+    terminal: (commandId: string) => readEvent(stream, undefined,
+      event => event.commandId === commandId && ["state", "error"].includes(String(event.type))),
+    close: () => stream.close(),
   };
 }
 

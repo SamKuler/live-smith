@@ -15,6 +15,7 @@
         isMessageEditLocked,
         hasSessionLocalWork,
         isCommandInProgress,
+        isSessionNavigationBlocked,
         isConfirmationLocked,
         resolveConfirm,
         runCommand,
@@ -1172,7 +1173,8 @@
             }
           }
         }
-        const navigationBlocked = isCommandInProgress();
+        const navigationBlocked = isSessionNavigationBlocked();
+        const mutationBlocked = isCommandInProgress();
         const activities = new Map(
           (state.sessionActivities || []).map((activity) => [activity.sessionId, activity]),
         );
@@ -1239,7 +1241,7 @@
             nextSessionSelectionStatusId++
           }`;
           row.setAttribute("aria-describedby", selectionStatus.id);
-          row.disabled = navigationBlocked;
+          row.disabled = mode === "current" ? navigationBlocked : mutationBlocked;
           if (mode === "current") {
             row.setAttribute("aria-pressed", isActive ? "true" : "false");
           }
@@ -1325,7 +1327,7 @@
             row,
             title,
           );
-          menuButton.disabled = navigationBlocked;
+          menuButton.disabled = mutationBlocked;
           const continueButton = canContinue
             ? document.createElement("button")
             : null;
@@ -1333,7 +1335,7 @@
             entry.classList.add("can-continue-session-entry");
             continueButton.className = "session-continue-button";
             continueButton.type = "button";
-            continueButton.disabled = navigationBlocked;
+            continueButton.disabled = mutationBlocked;
             continueButton.dataset.continueSessionId = session.id;
             continueButton.textContent = t("Continue");
             continueButton.setAttribute(

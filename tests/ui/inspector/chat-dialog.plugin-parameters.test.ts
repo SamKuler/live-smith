@@ -139,12 +139,16 @@ test("parameter drafts follow their Session and connection, and invalid remote p
     assert.equal(commandCalls(h).some((call) => (call.body as { kind: string }).kind === "run_plugin_tool"), false);
     h.input(field(h, "Bars"), "6");
     const changed = cloneState(state);
+    changed.activeSessionId = "session-2";
+    changed.liveContext = { ...changed.liveContext!, sessionId: "session-2" };
+    changed.approvalMode = changed.sessions.find(session => session.id === "session-2")!.approvalMode!;
     changed.integrationConnections!.revision = "2";
     delete changed.sessionToolCatalog;
     h.setServerState(changed);
     h.emitServerEvent({ type: "global_state_invalidated" });
     await waitForCondition(() => controlFor(h, "Bars")?.value === "4",
       "Expected a changed connection to discard its old parameter draft.");
+    assert.equal(h.document.querySelector('[data-session-id="session-2"] .session-row')?.getAttribute("aria-pressed"), "true");
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
   const invalid = cloneState(state);

@@ -250,7 +250,7 @@ function injectSessionContract(script: string): string {
 export function composeChatDocument(
   template: string,
   state: ChatBridgeState,
-  bridge: { baseUrl: string; token: string; hostMode?: "modal" | "browser" },
+  bridge: { baseUrl: string; token: string; viewId?: string; hostMode?: "modal" | "browser" },
   scripts: ChatClientScripts,
   styles = "",
 ): string {

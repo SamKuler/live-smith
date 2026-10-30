@@ -1,7 +1,7 @@
+import { openBridgeEvents, readEventsThrough, type BridgeEvents } from "../support/bridge-events.js";
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
 import test from "node:test";
-import { TextDecoder } from "node:util";
 import type { AgentActionPreview } from "../../../../src/agent/action-preview.js";
 
 import { ModelConnectionError } from "../../../../src/model/connection-error.js";
@@ -62,7 +62,7 @@ test("chat bridge reconnect snapshots transient model state before replaying its
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
   const sendId = "snapshot-send";
-  const liveEvents = await fetch(endpoint("/events"));
+  const liveEvents = await openBridgeEvents(endpoint("/events"));
   const send = fetch(endpoint("/send"), {
     method: "POST",
     headers: sendHeaders(sendId),
@@ -71,7 +71,7 @@ test("chat bridge reconnect snapshots transient model state before replaying its
 
   try {
     await confirmationPending.promise;
-    const initial = (await readSsePayloadsThrough(liveEvents, "confirm_request")).at(-1)!;
+    const initial = (await readEventsThrough(liveEvents, "confirm_request")).at(-1)!;
     assert.deepEqual(initial.previews, previews);
     assert.equal(initial.operationId, "apply-preview-history");
     bridge.publishGlobalSettings({
@@ -96,8 +96,8 @@ test("chat bridge reconnect snapshots transient model state before replaying its
       "manual",
       "2026-08-25T00:00:00.000Z",
     );
-    const events = await fetch(endpoint("/events"));
-    const publications = await readSsePayloads(events, 5);
+    const events = await openBridgeEvents(endpoint("/events"));
+    const publications = await readEvents(events, 5);
     assert.deepEqual(publications.map((payload) => payload.type), [
       "global_settings_changed",
       "approval_mode_changed",
@@ -179,7 +179,7 @@ test("chat bridge streams and reconnects a bounded reasoning draft", async () =>
   const url = new URL(bridge.url);
   const endpoint = (route: string) =>
     `${url.origin}${route}?token=${url.searchParams.get("token")}`;
-  const events = await fetch(endpoint("/events"));
+  const events = await openBridgeEvents(endpoint("/events"));
   const send = fetch(endpoint("/send"), {
     method: "POST",
     headers: sendHeaders("reasoning-draft-send"),
@@ -187,7 +187,7 @@ test("chat bridge streams and reconnects a bounded reasoning draft", async () =>
   });
 
   try {
-    const updates = (await readSsePayloads(events, 4)).slice(1);
+    const updates = (await readEvents(events, 4)).slice(1);
     assert.deepEqual(updates.map((payload) => {
       const update = payload.update as Record<string, unknown>;
       return {
@@ -234,8 +234,8 @@ test("chat bridge streams and reconnects a bounded reasoning draft", async () =>
     await published.promise;
     assert.ok(overflowError instanceof Error);
     assert.match(overflowError.message, /1048576/u);
-    const reconnect = await fetch(endpoint("/events"));
-    const [, snapshot] = await readSsePayloads(reconnect, 2);
+    const reconnect = await openBridgeEvents(endpoint("/events"));
+    const [, snapshot] = await readEvents(reconnect, 2);
     assert.equal(snapshot?.type, "model_turn_state");
     assert.equal(snapshot?.reasoningDraft, exactDraft);
   } finally {
@@ -268,7 +268,7 @@ test("chat bridge scopes reasoning replacement to the current continuation segme
   const url = new URL(bridge.url);
   const endpoint = (route: string) =>
     `${url.origin}${route}?token=${url.searchParams.get("token")}`;
-  const events = await fetch(endpoint("/events"));
+  const events = await openBridgeEvents(endpoint("/events"));
   const send = fetch(endpoint("/send"), {
     method: "POST",
     headers: sendHeaders("reasoning-continuation-send"),
@@ -276,7 +276,7 @@ test("chat bridge scopes reasoning replacement to the current continuation segme
   });
 
   try {
-    const updates = (await readSsePayloads(events, 6)).slice(1);
+    const updates = (await readEvents(events, 6)).slice(1);
     assert.deepEqual(
       updates.map((payload) => payload.update),
       [
@@ -291,8 +291,8 @@ test("chat bridge scopes reasoning replacement to the current continuation segme
       ],
     );
     await published.promise;
-    const reconnect = await fetch(endpoint("/events"));
-    const [, snapshot] = await readSsePayloads(reconnect, 2);
+    const reconnect = await openBridgeEvents(endpoint("/events"));
+    const [, snapshot] = await readEvents(reconnect, 2);
     assert.equal(
       snapshot?.reasoningDraft,
       "First stage\n\nSecond canonical",
@@ -339,7 +339,7 @@ test("chat bridge reconnect keeps prefixes completed before an output-limit retr
   const url = new URL(bridge.url);
   const endpoint = (route: string) =>
     `${url.origin}${route}?token=${url.searchParams.get("token")}`;
-  const events = await fetch(endpoint("/events"));
+  const events = await openBridgeEvents(endpoint("/events"));
   const send = fetch(endpoint("/send"), {
     method: "POST",
     headers: sendHeaders("continuation-retry-send"),
@@ -349,13 +349,13 @@ test("chat bridge reconnect keeps prefixes completed before an output-limit retr
   try {
     await rolledBack.promise;
     const liveRollback = (
-      await readSsePayloadsThrough(events, "model_turn_state")
+      await readEventsThrough(events, "model_turn_state")
     ).at(-1);
     assert.equal(liveRollback?.assistantDraft, "First ");
     assert.equal(liveRollback?.reasoningDraft, "First thought");
     assert.deepEqual(liveRollback?.webSearchUpdates, []);
-    const reconnect = await fetch(endpoint("/events"));
-    const [, snapshot] = await readSsePayloads(reconnect, 2);
+    const reconnect = await openBridgeEvents(endpoint("/events"));
+    const [, snapshot] = await readEvents(reconnect, 2);
     assert.equal(snapshot?.type, "model_turn_state");
     assert.equal(snapshot?.assistantDraft, "First ");
     assert.equal(snapshot?.reasoningDraft, "First thought");
@@ -390,13 +390,13 @@ test("a resolved preview cannot leak into the next recovery confirmation or its 
   });
   const url = new URL(bridge.url);
   const endpoint = (route: string) => `${url.origin}${route}?token=${url.searchParams.get("token")}`;
-  const events = await fetch(endpoint("/events"));
+  const events = await openBridgeEvents(endpoint("/events"));
   const send = fetch(endpoint("/send"), {
     method: "POST", headers: sendHeaders("preview-generation-send"),
     body: JSON.stringify({ prompt: "Edit", sessionId: "s1" }),
   });
   try {
-    const first = (await readSsePayloadsThrough(events, "confirm_request")).at(-1)!;
+    const first = (await readEventsThrough(events, "confirm_request")).at(-1)!;
     assert.equal(first.confirmationGeneration, 1);
     assert.ok(first.previews);
     await fetch(endpoint("/confirm"), {
@@ -404,8 +404,8 @@ test("a resolved preview cannot leak into the next recovery confirmation or its 
       body: JSON.stringify({ id: first.id, apply: false }),
     });
     await recoveryPending.promise;
-    const replay = await fetch(endpoint("/events"));
-    const second = (await readSsePayloadsThrough(replay, "confirm_request")).at(-1)!;
+    const replay = await openBridgeEvents(endpoint("/events"));
+    const second = (await readEventsThrough(replay, "confirm_request")).at(-1)!;
     assert.equal(second.kind, "resolve_recovery");
     assert.equal(second.confirmationGeneration, 2);
     assert.equal(second.sendId, first.sendId);
@@ -451,7 +451,7 @@ test("chat bridge silently advances accepted turns and converges durable transie
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
-  const liveEvents = await fetch(endpoint("/events"));
+  const liveEvents = await openBridgeEvents(endpoint("/events"));
   const send = fetch(endpoint("/send"), {
     method: "POST",
     headers: sendHeaders("accepted-send"),
@@ -459,7 +459,7 @@ test("chat bridge silently advances accepted turns and converges durable transie
   });
 
   try {
-    const publications = await readSsePayloadsThrough(liveEvents, "progress");
+    const publications = await readEventsThrough(liveEvents, "progress");
     assert.deepEqual(
       publications.map((payload) => payload.type),
       [
@@ -490,8 +490,8 @@ test("chat bridge silently advances accepted turns and converges durable transie
       usage: { usedTokens: 321, contextWindowTokens: 4_096 },
     });
     await published.promise;
-    const reconnect = await fetch(endpoint("/events"));
-    const [, snapshot] = await readSsePayloads(reconnect, 2);
+    const reconnect = await openBridgeEvents(endpoint("/events"));
+    const [, snapshot] = await readEvents(reconnect, 2);
     assert.deepEqual(snapshot, {
       type: "model_turn_state",
       sendId: "accepted-send",
@@ -533,7 +533,7 @@ test("chat bridge distinguishes send startup from an accepted turn without usage
   const chatUrl = new URL(bridge.url);
   const token = chatUrl.searchParams.get("token");
   const endpoint = (path: string) => `${chatUrl.origin}${path}?token=${token}`;
-  const events = await fetch(endpoint("/events"));
+  const events = await openBridgeEvents(endpoint("/events"));
   const send = fetch(endpoint("/send"), {
     method: "POST",
     headers: sendHeaders("tri-state-send"),
@@ -541,7 +541,7 @@ test("chat bridge distinguishes send startup from an accepted turn without usage
   });
 
   try {
-    const publications = (await readSsePayloads(events, 3)).slice(1);
+    const publications = (await readEvents(events, 3)).slice(1);
     assert.deepEqual(publications, [{
       type: "context_usage_update",
       sendId: "tri-state-send",
@@ -556,8 +556,8 @@ test("chat bridge distinguishes send startup from an accepted turn without usage
       usage: null,
     }]);
     await acceptedMissing.promise;
-    const reconnect = await fetch(endpoint("/events"));
-    const [, snapshot] = await readSsePayloads(reconnect, 2);
+    const reconnect = await openBridgeEvents(endpoint("/events"));
+    const [, snapshot] = await readEvents(reconnect, 2);
     assert.equal(snapshot?.type, "model_turn_state");
     assert.equal(snapshot?.contextUsage, null);
   } finally {
@@ -604,8 +604,8 @@ test("chat bridge reconnect omits stopped sends while retaining another Session'
       body: "{}",
     });
     assert.equal(stop.status, 200);
-    const reconnect = await fetch(endpoint("/events"));
-    const [, snapshot] = await readSsePayloads(reconnect, 2);
+    const reconnect = await openBridgeEvents(endpoint("/events"));
+    const [, snapshot] = await readEvents(reconnect, 2);
     assert.deepEqual(snapshot, {
       type: "model_turn_state",
       sendId: "background-send",
@@ -678,8 +678,8 @@ test("chat bridge bounds the UTF-8 transient draft atomically and clears its byt
       new RegExp(String(MAX_TRANSIENT_ASSISTANT_DRAFT_BYTES)),
     );
 
-    const reconnect = await fetch(endpoint("/events"));
-    const [, snapshot] = await readSsePayloads(reconnect, 2);
+    const reconnect = await openBridgeEvents(endpoint("/events"));
+    const [, snapshot] = await readEvents(reconnect, 2);
     assert.equal(snapshot?.type, "model_turn_state");
     assert.equal(snapshot?.assistantDraft === exactDraft, true);
 
@@ -721,69 +721,12 @@ function sessionEvent(
   };
 }
 
-async function readSsePayloads(
-  response: Response,
-  count: number,
-): Promise<Record<string, unknown>[]> {
-  assert.ok(response.body);
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  const payloads: Record<string, unknown>[] = [];
-  let received = "";
-  try {
-    while (payloads.length < count) {
-      const chunk = await reader.read();
-      if (chunk.done) throw new Error("Event stream ended before enough payloads arrived.");
-      received += decoder.decode(chunk.value, { stream: true });
-      for (;;) {
-        const boundary = received.indexOf("\n\n");
-        if (boundary < 0) break;
-        const block = received.slice(0, boundary);
-        received = received.slice(boundary + 2);
-        const data = block.split("\n")
-          .find((line) => line.startsWith("data: "))
-          ?.slice("data: ".length);
-        if (data) payloads.push(JSON.parse(data) as Record<string, unknown>);
-      }
-    }
-    return payloads.slice(0, count);
-  } finally {
-    await reader.cancel();
-  }
+async function readEvents(response: BridgeEvents, count: number): Promise<Record<string, unknown>[]> {
+  const events = [];
+  while (events.length < count) events.push(await response.next());
+  return events;
 }
 
-async function readSsePayloadsThrough(
-  response: Response,
-  terminalType: string,
-): Promise<Record<string, unknown>[]> {
-  assert.ok(response.body);
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  const payloads: Record<string, unknown>[] = [];
-  let received = "";
-  try {
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) throw new Error(`Event stream ended before ${terminalType}.`);
-      received += decoder.decode(chunk.value, { stream: true });
-      for (;;) {
-        const boundary = received.indexOf("\n\n");
-        if (boundary < 0) break;
-        const block = received.slice(0, boundary);
-        received = received.slice(boundary + 2);
-        const data = block.split("\n")
-          .find((line) => line.startsWith("data: "))
-          ?.slice("data: ".length);
-        if (!data) continue;
-        const payload = JSON.parse(data) as Record<string, unknown>;
-        payloads.push(payload);
-        if (payload.type === terminalType) return payloads;
-      }
-    }
-  } finally {
-    await reader.cancel();
-  }
-}
 
 test("disconnecting the send page preserves a draft and pending confirmation until explicit Stop", async () => {
   const pending = deferred();
@@ -810,7 +753,7 @@ test("disconnecting the send page preserves a draft and pending confirmation unt
     page.abort(); await send;
     assert.equal(cancelled, false);
     assert.equal(bridge.busy, true);
-    const replay = await readSsePayloadsThrough(await fetch(endpoint('/events')), 'confirm_request');
+    const replay = await readEventsThrough(await openBridgeEvents(endpoint('/events')), 'confirm_request');
     assert.ok(replay.some(payload => payload.type === 'model_turn_state' && JSON.stringify(payload).includes('Detached browser draft')));
     assert.equal(replay.at(-1)!.sendId, 'detached-send');
     assert.equal(cancelled, false);

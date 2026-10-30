@@ -1,9 +1,11 @@
-import { createSseClient } from "./sse-client.js";
+import { createEventStreamClient } from "./event-stream-client.js";
+import { createWebSocketStream, WebSocketServer } from "ws";
 import type { ChatCommandActivity } from "../../ui/chat-state.js";
 import { isInterfaceMode, type InterfaceMode } from "../../model/interface-mode.js";
 import { Buffer } from "node:buffer";
 import { isParameterArtifactRead, type ParameterArtifactRead } from "../parameters/contracts.js";
 import { randomUUID } from "node:crypto";
+import { setTimeout, clearTimeout } from "node:timers";
 import { isSessionTabs, type SessionShortcutId } from "../../model/session-tabs.js";
 import { UiMessageError, type UiMessage } from "../../i18n/ui-message.js";
 import { sendMediaAssetResponse } from "./media-response.js";
@@ -372,8 +374,8 @@ export interface ChatBridge {
     modelSelection: SessionModelSelection,
     updatedAt: string,
   ): void;
-  publishSessionStateInvalidation(sessionId: string): void;
-  publishGlobalStateInvalidation(): void;
+  publishSessionStateInvalidation(sessionId: string, sourceViewId?: string): void;
+  publishGlobalStateInvalidation(sourceViewId?: string): void;
   publishOAuthAuthState(
     profileId: string,
     provider: OAuthSubscriptionProvider,
@@ -387,7 +389,11 @@ export interface ChatBridge {
   close(): Promise<void>;
 }
 
-interface ChatBridgeOptions {
+export interface ChatBridgeOptions {
+  /** Each page owns its selection and presentation caches; jobs remain bridge-owned. */
+  createView?(viewId: string, initialSessionId?: string): ChatBridgeOptions;
+  /** Test seam for disconnected-view cleanup; production retains a view for five minutes. */
+  viewIdleTimeoutMs?: number;
   readMidiArtifact?(sessionId: string, artifactRef: string, signal: AbortSignal): Promise<{ bytes: Uint8Array; fileName: string }>;
   searchSessions?(input: SessionSearchInput, signal: AbortSignal): Promise<SessionSearchResult>;
   readSessionArtifacts?(input: { sessionId: string; offset: number; query?: string }, signal: AbortSignal): Promise<unknown>;
@@ -400,7 +406,7 @@ interface ChatBridgeOptions {
     attachment: SessionAttachmentRef; bytes: Uint8Array;
   }>;
   handlePluginAppRequest?(input: PluginAppRequest, signal: AbortSignal): Promise<unknown>;
-  closePluginApps?(): Promise<void>;
+  closeView?(): Promise<void>;
   readAudioAsset?(sessionId: string, assetId: string, signal: AbortSignal): Promise<{
     bytes: Uint8Array; mediaType: "audio/wav" | "audio/mpeg"; fileName?: string;
   }>;
@@ -409,7 +415,7 @@ interface ChatBridgeOptions {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<ChatDialogState>;
-  renderHtml(state: ChatBridgeState, bridge: { baseUrl: string; token: string }): string;
+  renderHtml(state: ChatBridgeState, bridge: { baseUrl: string; token: string; viewId?: string }): string;
   handleCommand(
     input: ChatBridgeCommandInput,
     signal: AbortSignal,
@@ -520,7 +526,7 @@ interface PendingSendAdmission {
   stopRequested: boolean;
 }
 
-type StateChangeSsePayloadBase =
+type StateChangeEventPayloadBase =
   | { type: "command_activity"; command: ChatCommandActivity | null }
   | { type: "send_activity"; sendId: string; sessionId: string; activity: StateChangeActivity }
   | {
@@ -624,27 +630,27 @@ type StateChangeSsePayloadBase =
       oauthAuth: Extract<OAuthAuthState, { status: "pending" }>;
     };
 
-type StateChangeSsePayload = StateChangeSsePayloadBase & {
+type StateChangeEventPayload = StateChangeEventPayloadBase & {
   bridgeStateRevision: string;
 };
 
-type ApprovalModeChangedSsePayload = Extract<
-  StateChangeSsePayload,
+type ApprovalModeChangedEventPayload = Extract<
+  StateChangeEventPayload,
   { type: "approval_mode_changed" }
 >;
 
-type SessionModelSelectionChangedSsePayload = Extract<
-  StateChangeSsePayload,
+type SessionModelSelectionChangedEventPayload = Extract<
+  StateChangeEventPayload,
   { type: "session_model_selection_changed" }
 >;
 
-type SessionEditScopesChangedSsePayload = Extract<
-  StateChangeSsePayload,
+type SessionEditScopesChangedEventPayload = Extract<
+  StateChangeEventPayload,
   { type: "session_edit_scopes_changed" }
 >;
 
-type ProfileSettingsChangedSsePayload = Extract<
-  StateChangeSsePayload,
+type ProfileSettingsChangedEventPayload = Extract<
+  StateChangeEventPayload,
   { type: "profile_settings_changed" }
 >;
 
@@ -653,7 +659,7 @@ interface StateChangeActivity {
   message: UiMessage;
 }
 
-type SsePayload =
+type BridgeEventPayload =
   | {
       type: "assistant_delta";
       sendId: string;
@@ -707,7 +713,7 @@ type SsePayload =
     }
   | ({ type: "command_confirm_request"; commandId: string; sessionId: string; id: string } & ChatBridgeConfirmationRequest)
   | { type: "command_confirm_resolved"; commandId: string; sessionId: string; id: string }
-  | StateChangeSsePayload
+  | StateChangeEventPayload
   | { type: "state"; commandId: string; state: ChatBridgeState }
   | { type: "done"; sendId: string; sessionId: string; state: ChatBridgeState }
   | {
@@ -730,13 +736,42 @@ export async function createChatBridge(
 ): Promise<ChatBridge> {
   const token = randomUUID();
   let appSandbox: Promise<PluginAppSandbox> | undefined;
-  const appSandboxRegistrations = new Map<string, { dispose(): void }>();
+  const appSandboxRegistrations = new Map<string, { dispose(): void; viewId: string }>();
   const mediaDownloads = new Map<string, { kind: "audio" | "midi"; sessionId: string; assetId: string; expiresAt: number }>();
-  const clients = new Set<ReturnType<typeof createSseClient>>();
+  const clients = new Map<ReturnType<typeof createEventStreamClient>, string>();
+  const sharedOptions = options;
+  type View = { options: ChatBridgeOptions; requests: number; connections: number; retirement?: ReturnType<typeof setTimeout> };
+  const views = new Map<string, View>();
+  const retiringViews = new Set<Promise<void>>();
+  const viewRetirementErrors: unknown[] = [];
+  const retainView = (view: View): void => {
+    if (view.retirement) clearTimeout(view.retirement);
+    delete view.retirement;
+  };
+  const scheduleViewRetirement = (id: string, view: View): void => {
+    retainView(view);
+    if (closing || view.requests || view.connections || views.get(id) !== view) return;
+    view.retirement = setTimeout(() => {
+      views.delete(id);
+      viewStateRequirements.delete(id);
+      for (const [appId, registration] of appSandboxRegistrations) if (registration.viewId === id) {
+        registration.dispose(); appSandboxRegistrations.delete(appId);
+      }
+      const cleanup = Promise.resolve().then(() => view.options.closeView?.()).catch(error => { viewRetirementErrors.push(error); });
+      retiringViews.add(cleanup);
+      void cleanup.finally(() => retiringViews.delete(cleanup));
+    }, options.viewIdleTimeoutMs ?? 5 * 60_000);
+    view.retirement.unref();
+  };
+  const viewStateRequirements = new Map<string, { global: string; sessions: Map<string, string> }>([
+    ["", { global: "0", sessions: new Map() }],
+  ]);
   const pendingConfirmations = new Map<string, PendingConfirmation>();
   let pendingCommandConfirmation: PendingCommandConfirmation | undefined;
   const pendingRequestBodies = new Set<IncomingMessage>();
   const inFlightMutationHandlers = new Set<Promise<void>>();
+  const mutationViews = new Map<Promise<void>, string>();
+  const viewNavigations = new Map<string, Promise<void>>();
   const readOnlyBuilds = new Map<ServerResponse, {
     controller: ReturnType<typeof createHostAbortController>;
     terminal: Promise<void>;
@@ -747,27 +782,27 @@ export async function createChatBridge(
   const pendingSendAdmissions = new Map<string, PendingSendAdmission>();
   const latestApprovalModeChanges = new Map<
     string,
-    ApprovalModeChangedSsePayload
+    ApprovalModeChangedEventPayload
   >();
   const latestSessionModelSelectionChanges = new Map<
     string,
-    SessionModelSelectionChangedSsePayload
+    SessionModelSelectionChangedEventPayload
   >();
   const latestSessionEditScopesChanges = new Map<
     string,
-    SessionEditScopesChangedSsePayload
+    SessionEditScopesChangedEventPayload
   >();
-  let latestProfileSettingsChange: ProfileSettingsChangedSsePayload | undefined;
+  let latestProfileSettingsChange: ProfileSettingsChangedEventPayload | undefined;
   const latestSessionStateInvalidations = new Map<
     string,
-    Extract<StateChangeSsePayload, { type: "session_state_invalidated" }>
+    Extract<StateChangeEventPayload, { type: "session_state_invalidated" }>
   >();
   let latestGlobalStateInvalidation:
-    | Extract<StateChangeSsePayload, { type: "global_state_invalidated" }>
+    | Extract<StateChangeEventPayload, { type: "global_state_invalidated" }>
     | undefined;
   const latestOAuthAuthChanges = new Map<
     string,
-    Extract<StateChangeSsePayload, { type: "oauth_auth_changed" }>
+    Extract<StateChangeEventPayload, { type: "oauth_auth_changed" }>
   >();
   const sendStopTombstones = new Map<string, PromptPersistence>();
   const retainedCommandIds = new Map<string, "stopped" | "used">();
@@ -834,10 +869,10 @@ export async function createChatBridge(
     readOnlyBuilds.delete(response);
   };
 
-  const broadcast = (payload: SsePayload) => {
+  const broadcast = (payload: BridgeEventPayload, excludedViewId?: string) => {
     if (closing || clients.size === 0) return;
-    const frame = `data: ${JSON.stringify(payload)}\n\n`;
-    for (const client of clients) client.send(frame);
+    const frame = JSON.stringify([payload]);
+    for (const [client, owner] of clients) if (owner !== excludedViewId) client.send(frame);
   };
 
   const nextStateRevision = (): string =>
@@ -850,24 +885,22 @@ export async function createChatBridge(
     sessionId: string,
     globalCoverage: string,
     sessionCoverage: string,
+    viewId = "",
   ): boolean =>
     BigInt(globalCoverage) >= BigInt(
-      latestProfileSettingsChange?.bridgeStateRevision ?? "0",
-    ) &&
-    BigInt(globalCoverage) >= BigInt(
-      latestGlobalStateInvalidation?.bridgeStateRevision ?? "0",
+      viewStateRequirements.get(viewId)?.global ?? "0",
     ) &&
     BigInt(sessionCoverage) >= BigInt(
-      latestSessionStateInvalidations.get(sessionId)?.bridgeStateRevision ?? "0",
+      viewStateRequirements.get(viewId)?.sessions.get(sessionId) ?? "0",
     );
 
-  const broadcastStateChange = (payload: StateChangeSsePayloadBase) => {
+  const broadcastStateChange = (payload: StateChangeEventPayloadBase, excludedViewId?: string) => {
     if (closing) return undefined;
-    const published: StateChangeSsePayload = {
+    const published: StateChangeEventPayload = {
       ...payload,
       bridgeStateRevision: nextStateRevision(),
     };
-    broadcast(published);
+    broadcast(published, excludedViewId);
     return published;
   };
 
@@ -971,15 +1004,17 @@ export async function createChatBridge(
     }
   };
 
-  const waitForStateMutations = async () => {
+  const waitForStateMutations = async (viewId?: string) => {
     for (;;) {
       const command = activeCommandTerminal;
-      const attachments = [...activeAttachmentTerminals.values()];
-      if (!command && attachments.length === 0) return;
-      await Promise.all([
+      const candidates = [
         ...(command ? [command] : []),
-        ...attachments,
-      ]);
+        ...activeAttachmentTerminals.values(),
+      ].filter(terminal => viewId === undefined || mutationViews.get(terminal) === viewId);
+      const navigation = viewNavigations.get(viewId ?? "");
+      if (navigation) candidates.push(navigation);
+      if (candidates.length === 0) return;
+      await Promise.all(candidates);
     }
   };
 
@@ -1194,9 +1229,10 @@ export async function createChatBridge(
   const buildBridgeState = async (
     bridgeStateCoveredThroughRevision: string,
     signal?: AbortSignal,
+    viewOptions = options,
   ): Promise<ChatBridgeState> =>
     finalizeBridgeState(
-      await options.buildState(signal),
+      await viewOptions.buildState(signal),
       bridgeStateCoveredThroughRevision,
     );
 
@@ -1260,7 +1296,7 @@ export async function createChatBridge(
   };
 
   const stateChangeReceipt = (
-    published: StateChangeSsePayload | undefined,
+    published: StateChangeEventPayload | undefined,
   ): {
     bridgeStateRevision?: string;
     confirmationGeneration?: number;
@@ -1280,7 +1316,7 @@ export async function createChatBridge(
 
   const modelTurnStatePayload = (
     activeSend: ActiveSend,
-  ): Extract<SsePayload, { type: "model_turn_state" }> => {
+  ): Extract<BridgeEventPayload, { type: "model_turn_state" }> => {
     const pendingConfirmation = [...pendingConfirmations.values()].find(
       (pending) => pending.sendId === activeSend.sendId,
     );
@@ -1603,6 +1639,9 @@ export async function createChatBridge(
   };
 
   const server = createServer(async (request, response) => {
+    let options = sharedOptions;
+    let viewId: string | undefined;
+    let requestView: View | undefined;
     // Capture before any async work. A later publication number describes only
     // response order; this cut is the part of the patch stream the snapshot
     // can safely claim to include.
@@ -1634,6 +1673,7 @@ export async function createChatBridge(
         "/command",
         "/session-model-capabilities",
         "/session-tools",
+        "/view-session",
         "/midi-import-preview",
         "/session-artifacts",
         "/session-search",
@@ -1697,6 +1737,37 @@ export async function createChatBridge(
         return;
       }
 
+      const requestedView = request.headers["x-live-smith-view-id"];
+      if (requestedView !== undefined && (typeof requestedView !== "string" || !isSafeStorageId(requestedView))) {
+        throw new ChatBridgeRequestValidationError("The page view reference is invalid.");
+      }
+      if (request.method === "GET" && url.pathname === "/chat") {
+        assertExactQueryParameters(url, ["token", "sessionId"], "Chat request");
+        const sessionIds = url.searchParams.getAll("sessionId");
+        if (sessionIds.length > 1 || sessionIds.length === 1 && !isSafeStorageId(sessionIds[0])) {
+          throw new ChatBridgeRequestValidationError("The page Session reference is invalid.");
+        }
+        if (sharedOptions.createView) {
+          viewId = randomUUID();
+          options = sharedOptions.createView(viewId, sessionIds[0]);
+          requestView = { options, requests: 0, connections: 0 };
+          views.set(viewId, requestView);
+          viewStateRequirements.set(viewId, {
+            global: String([latestGlobalStateInvalidation?.bridgeStateRevision, latestProfileSettingsChange?.bridgeStateRevision]
+              .reduce((maximum, revision) => BigInt(revision ?? "0") > maximum ? BigInt(revision!) : maximum, 0n)),
+            sessions: new Map([...latestSessionStateInvalidations].map(([id, event]) => [id, event.bridgeStateRevision])),
+          });
+        }
+      } else if (requestedView !== undefined) {
+        const existing = views.get(requestedView);
+        if (!existing) {
+          throw new ChatBridgeConflictError("This Live Smith view has expired. Reload the page to open a new view.");
+        }
+        viewId = requestedView; requestView = existing; options = existing.options;
+      }
+
+      if (requestView) { retainView(requestView); requestView.requests++; }
+
       if ((request.method === "GET" || request.method === "HEAD") && url.pathname.startsWith("/attachments/")) {
         if (!options.readAttachment) { response.writeHead(404).end("Not found"); return; }
         const input = parseAttachmentReferenceQuery(request, url);
@@ -1735,13 +1806,12 @@ export async function createChatBridge(
       }
 
       if (request.method === "GET" && url.pathname === "/chat") {
-        assertExactQueryParameters(url, ["token"], "Chat request");
         const signal = beginReadOnlyBuild(response, handlerTerminal);
-        const state = await buildBridgeState(stateSnapshotCutRevision, signal);
+        const state = await buildBridgeState(stateSnapshotCutRevision, signal, options);
         if (closing || response.destroyed) return;
         sendHtml(
           response,
-          options.renderHtml(state, { baseUrl: bridgeBaseUrl(server), token }),
+          options.renderHtml(state, { baseUrl: bridgeBaseUrl(server), token, ...(viewId ? { viewId } : {}) }),
         );
         return;
       }
@@ -1764,7 +1834,7 @@ export async function createChatBridge(
           );
         }
         const signal = beginReadOnlyBuild(response, handlerTerminal);
-        await waitForStateMutations();
+        await waitForStateMutations(viewId);
         if (closing || response.destroyed) return;
         // The read includes mutations that reached their terminal publication while
         // it waited; later changes during the state build remain outside this cut.
@@ -1784,6 +1854,35 @@ export async function createChatBridge(
             readStateSnapshotCutRevision,
           ),
         );
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/view-session") {
+        assertExactQueryParameters(url, ["token"], "View Session request");
+        assertJsonContentType(request);
+        commandId = commandIdForRequest(request);
+        response.setHeader("X-Live-Smith-Command-Id", commandId);
+        if (viewNavigations.has(viewId ?? "")) throw new ChatBridgeConflictError("A Session selection is already in progress in this view.");
+        viewNavigations.set(viewId ?? "", handlerTerminal);
+        inFlightMutationHandlers.add(handlerTerminal);
+        mutationViews.set(handlerTerminal, viewId ?? "");
+        const signal = beginReadOnlyBuild(response, handlerTerminal);
+        const input = parseCommandInput(await readRequestBody<unknown>(request));
+        if (input.kind !== "select_session" && input.kind !== "new_session") {
+          throw new ChatBridgeRequestValidationError("View Session requests only support selection and creation.");
+        }
+        if (retainedCommandIds.has(commandId)) throw new ChatBridgeConflictError("That command correlation ID was already used.");
+        retainCommandId(commandId, "used");
+        const state = finalizeBridgeState(await options.handleCommand(input, signal, {
+          commandId, progress: async () => {},
+        }), stateSnapshotCutRevision);
+        if (input.kind === "select_session") {
+          const activity = sessionActivities.get(input.sessionId);
+          if (activity) activity.unread = false;
+        }
+        if (closing || response.destroyed) return;
+        broadcast({ type: "state", commandId, state });
+        sendJson(response, state);
         return;
       }
 
@@ -1818,85 +1917,8 @@ export async function createChatBridge(
       }
 
       if (request.method === "GET" && url.pathname === "/events") {
-        assertExactQueryParameters(url, ["token"], "Event stream request");
-        response.writeHead(200, {
-          ...sensitiveResponseHeaders,
-          Connection: "keep-alive",
-          "Content-Type": "text/event-stream",
-        });
-        const client = createSseClient(response, () => clients.delete(client));
-        clients.add(client);
-        const replayPayloads: SsePayload[] = [];
-        const replay = (payload: SsePayload): void => {
-          replayPayloads.push(payload);
-        };
-        if (latestGlobalSettingsChange) {
-          replay({
-            type: "global_settings_changed",
-            ...latestGlobalSettingsChange,
-            bridgeStateRevision: nextStateRevision(),
-          });
-        }
-        for (const published of latestApprovalModeChanges.values()) {
-          replay(published);
-        }
-        for (const published of latestSessionModelSelectionChanges.values()) {
-          replay(published);
-        }
-        for (const published of latestSessionEditScopesChanges.values()) {
-          replay(published);
-        }
-        if (latestProfileSettingsChange) {
-          replay(latestProfileSettingsChange);
-        }
-        if (latestGlobalStateInvalidation) {
-          replay(latestGlobalStateInvalidation);
-        }
-        for (const published of latestOAuthAuthChanges.values()) {
-          replay(published);
-        }
-        for (const published of latestSessionStateInvalidations.values()) {
-          replay(published);
-        }
-        for (const activeSend of activeSendsById.values()) {
-          if (activeSend.stopRequested) continue;
-          const activity = sessionActivities.get(activeSend.sessionId)!;
-          replay({ type: "send_activity", sendId: activeSend.sendId, sessionId: activeSend.sessionId,
-            activity: stateChangeActivity(activity), bridgeStateRevision: nextStateRevision() });
-          replay(modelTurnStatePayload(activeSend));
-        }
-        for (const [id, pending] of pendingConfirmations) {
-          const activity = sessionActivities.get(pending.sessionId);
-          replay({
-            type: "confirm_request",
-            sendId: pending.sendId,
-            sessionId: pending.sessionId,
-            id,
-            confirmationGeneration: pending.confirmationGeneration,
-            modelTurnEpoch: pending.modelTurnEpoch,
-            kind: pending.request.kind,
-            message: pending.request.message,
-            groups: pending.request.groups,
-            ...(pending.request.plan === undefined ? {} : { plan: pending.request.plan }),
-            ...(pending.request.operationId === undefined ? {} : { operationId: pending.request.operationId }),
-            ...(pending.request.previews === undefined ? {} : { previews: pending.request.previews }),
-            activity: stateChangeActivity(activity ?? {
-              sessionId: pending.sessionId,
-              status: "waiting_confirmation",
-              message: "Waiting for confirmation",
-              unread: false,
-            }),
-            bridgeStateRevision: nextStateRevision(),
-          });
-        }
-        if (hasCommandActivity) replay({ type: "command_activity", command: commandActivity, bridgeStateRevision: nextStateRevision() });
-        if (pendingCommandConfirmation) {
-          const { id, commandId, sessionId, request: confirmation } = pendingCommandConfirmation;
-          replay({ type: "command_confirm_request", id, commandId, sessionId, ...confirmation });
-        }
-        // Replay is one initial write, so large retained state can drain before
-        // later live publications enter the bounded pending queue.
-        client.send("\n" + replayPayloads.map(payload => `data: ${JSON.stringify(payload)}\n\n`).join(""));
+        assertExactQueryParameters(url, ["token", "viewId"], "Event stream request");
+        response.writeHead(426, { ...sensitiveResponseHeaders, Upgrade: "websocket" }).end("WebSocket upgrade required");
         return;
       }
 
@@ -1919,6 +1941,7 @@ export async function createChatBridge(
           return;
         }
         inFlightMutationHandlers.add(handlerTerminal);
+        mutationViews.set(handlerTerminal, viewId ?? "");
         activeAttachmentTerminals.set(query.sessionId, handlerTerminal);
         const controller = createHostAbortController();
         activeAttachmentControllers.set(query.sessionId, controller);
@@ -1951,6 +1974,7 @@ export async function createChatBridge(
           request.resume(); sendJson(response, { error: "Another Live Smith operation is already in progress for this Session." }, 409); return;
         }
         inFlightMutationHandlers.add(handlerTerminal);
+        mutationViews.set(handlerTerminal, viewId ?? "");
         activeAttachmentTerminals.set(input.sessionId, handlerTerminal);
         const controller = createHostAbortController();
         activeAttachmentControllers.set(input.sessionId, controller);
@@ -1984,6 +2008,7 @@ export async function createChatBridge(
           return;
         }
         inFlightMutationHandlers.add(handlerTerminal);
+        mutationViews.set(handlerTerminal, viewId ?? "");
         activeAttachmentTerminals.set(input.sessionId, handlerTerminal);
         const controller = createHostAbortController();
         activeAttachmentControllers.set(input.sessionId, controller);
@@ -2018,6 +2043,7 @@ export async function createChatBridge(
           return;
         }
         inFlightMutationHandlers.add(handlerTerminal);
+        mutationViews.set(handlerTerminal, viewId ?? "");
         activeCommandTerminal = handlerTerminal;
         const controller = createHostAbortController();
         activeCommandAbort = controller;
@@ -2054,6 +2080,7 @@ export async function createChatBridge(
           return;
         }
         inFlightMutationHandlers.add(handlerTerminal);
+        mutationViews.set(handlerTerminal, viewId ?? "");
         activeCommandTerminal = handlerTerminal;
         const controller = createHostAbortController();
         activeCommandAbort = controller;
@@ -2193,7 +2220,7 @@ export async function createChatBridge(
             const sandbox = await appSandbox;
             if (closing || response.destroyed || signal.aborted) throw new Error("Plugin app window closed.");
             const registration = sandbox.register(app.csp);
-            appSandboxRegistrations.set(app.id, registration);
+            appSandboxRegistrations.set(app.id, { ...registration, viewId: viewId ?? "" });
             if (closing || response.destroyed || signal.aborted) throw new Error("Plugin app window closed.");
             sendJson(response, { ...(result as Record<string, unknown>), sandboxUrl: registration.url });
           } catch (error) {
@@ -2249,6 +2276,7 @@ export async function createChatBridge(
           return;
         }
         inFlightMutationHandlers.add(handlerTerminal);
+        mutationViews.set(handlerTerminal, viewId ?? "");
         activeCommandTerminal = handlerTerminal;
         const controller = createHostAbortController();
         activeCommandAbort = controller;
@@ -2289,6 +2317,7 @@ export async function createChatBridge(
         }
         retainCommandId(commandId, "used");
         inFlightMutationHandlers.add(handlerTerminal);
+        mutationViews.set(handlerTerminal, viewId ?? "");
         activeCommandTerminal = handlerTerminal;
         const controller = createHostAbortController();
         activeCommandAbort = controller;
@@ -2490,6 +2519,7 @@ export async function createChatBridge(
           input.sessionId,
           globalStateCoverage,
           sessionStateCoverage,
+          viewId,
         )) {
           sendJson(response, {
             error:
@@ -2512,6 +2542,7 @@ export async function createChatBridge(
           return;
         }
         inFlightMutationHandlers.add(handlerTerminal);
+        mutationViews.set(handlerTerminal, viewId ?? "");
         const controller = createHostAbortController();
         const steering = new SteeringChannel();
         const activeSend: ActiveSend = {
@@ -2567,6 +2598,7 @@ export async function createChatBridge(
                     input.sessionId,
                     globalStateCoverage,
                     sessionStateCoverage,
+                    viewId,
                   )) {
                     throw new ChatBridgeSendStateStaleError(
                       latestStateRevision(),
@@ -2920,7 +2952,7 @@ export async function createChatBridge(
             );
           }
         } else try {
-          commandState = await buildBridgeState(stateSnapshotCutRevision);
+          commandState = await buildBridgeState(stateSnapshotCutRevision, undefined, options);
         } catch {
           reconciliationRequired = true;
         }
@@ -3041,8 +3073,120 @@ export async function createChatBridge(
         activeAttachmentControllers.delete(attachmentSessionId);
       }
       inFlightMutationHandlers.delete(handlerTerminal);
+      mutationViews.delete(handlerTerminal);
+      if (viewNavigations.get(viewId ?? "") === handlerTerminal) viewNavigations.delete(viewId ?? "");
       finishReadOnlyBuild(response);
       resolveHandlerTerminal();
+      if (requestView && viewId) { requestView.requests--; scheduleViewRetirement(viewId, requestView); }
+    }
+  });
+
+  const eventServer = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 });
+  server.on("upgrade", (request, socket, head) => {
+    const reject = (status: number, reason: string): void => {
+      socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    };
+    try {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      const origin = bridgeBaseUrl(server);
+      if (closing) { reject(503, "Service Unavailable"); return; }
+      if (request.headers.host !== new URL(origin).host || request.headers.origin !== origin ||
+          tokenForRequest(url) !== token) {
+        reject(403, "Forbidden"); return;
+      }
+      if (url.pathname !== "/events") { reject(404, "Not Found"); return; }
+      assertExactQueryParameters(url, ["token", "viewId"], "Event stream request");
+      const viewIds = url.searchParams.getAll("viewId");
+      if (viewIds.length > 1 || viewIds.length === 1 && !isSafeStorageId(viewIds[0])) {
+        reject(400, "Bad Request"); return;
+      }
+      if (viewIds.length && !views.has(viewIds[0]!)) { reject(409, "Conflict"); return; }
+      eventServer.handleUpgrade(request, socket, head, (webSocket) => {
+        // Commands retain the authenticated HTTP admission and cancellation paths.
+        webSocket.on("message", () => webSocket.close(1008, "Server events only"));
+        const stream = createWebSocketStream(webSocket, { decodeStrings: false });
+        stream.resume();
+        stream.once("end", () => stream.destroy());
+        const ownerId = viewIds[0];
+        const owner = ownerId === undefined ? undefined : views.get(ownerId);
+        if (owner) { retainView(owner); owner.connections++; }
+        const client = createEventStreamClient(stream, () => {
+          clients.delete(client);
+          if (owner && ownerId) { owner.connections--; scheduleViewRetirement(ownerId, owner); }
+        });
+        clients.set(client, ownerId ?? "");
+        const replayPayloads: BridgeEventPayload[] = [];
+        const replay = (payload: BridgeEventPayload): void => {
+          replayPayloads.push(payload);
+        };
+        if (latestGlobalSettingsChange) {
+          replay({
+            type: "global_settings_changed",
+            ...latestGlobalSettingsChange,
+            bridgeStateRevision: nextStateRevision(),
+          });
+        }
+        for (const published of latestApprovalModeChanges.values()) {
+          replay(published);
+        }
+        for (const published of latestSessionModelSelectionChanges.values()) {
+          replay(published);
+        }
+        for (const published of latestSessionEditScopesChanges.values()) {
+          replay(published);
+        }
+        if (latestProfileSettingsChange) {
+          replay(latestProfileSettingsChange);
+        }
+        if (latestGlobalStateInvalidation) {
+          replay(latestGlobalStateInvalidation);
+        }
+        for (const published of latestOAuthAuthChanges.values()) {
+          replay(published);
+        }
+        for (const published of latestSessionStateInvalidations.values()) {
+          replay(published);
+        }
+        for (const activeSend of activeSendsById.values()) {
+          if (activeSend.stopRequested) continue;
+          const activity = sessionActivities.get(activeSend.sessionId)!;
+          replay({ type: "send_activity", sendId: activeSend.sendId, sessionId: activeSend.sessionId,
+            activity: stateChangeActivity(activity), bridgeStateRevision: nextStateRevision() });
+          replay(modelTurnStatePayload(activeSend));
+        }
+        for (const [id, pending] of pendingConfirmations) {
+          const activity = sessionActivities.get(pending.sessionId);
+          replay({
+            type: "confirm_request",
+            sendId: pending.sendId,
+            sessionId: pending.sessionId,
+            id,
+            confirmationGeneration: pending.confirmationGeneration,
+            modelTurnEpoch: pending.modelTurnEpoch,
+            kind: pending.request.kind,
+            message: pending.request.message,
+            groups: pending.request.groups,
+            ...(pending.request.plan === undefined ? {} : { plan: pending.request.plan }),
+            ...(pending.request.operationId === undefined ? {} : { operationId: pending.request.operationId }),
+            ...(pending.request.previews === undefined ? {} : { previews: pending.request.previews }),
+            activity: stateChangeActivity(activity ?? {
+              sessionId: pending.sessionId,
+              status: "waiting_confirmation",
+              message: "Waiting for confirmation",
+              unread: false,
+            }),
+            bridgeStateRevision: nextStateRevision(),
+          });
+        }
+        if (hasCommandActivity) replay({ type: "command_activity", command: commandActivity, bridgeStateRevision: nextStateRevision() });
+        if (pendingCommandConfirmation) {
+          const { id, commandId, sessionId, request: confirmation } = pendingCommandConfirmation;
+          replay({ type: "command_confirm_request", id, commandId, sessionId, ...confirmation });
+        }
+        client.send(JSON.stringify(replayPayloads));
+      });
+    } catch {
+      reject(400, "Bad Request");
     }
   });
 
@@ -3114,19 +3258,20 @@ export async function createChatBridge(
         latestSessionModelSelectionChanges.set(sessionId, published);
       }
     },
-    publishSessionStateInvalidation: (sessionId) => {
-      const published = broadcastStateChange({
-        type: "session_state_invalidated",
-        sessionId,
-      });
+    publishSessionStateInvalidation: (sessionId, sourceViewId) => {
+      const published = broadcastStateChange({ type: "session_state_invalidated", sessionId }, sourceViewId);
       if (published?.type === "session_state_invalidated") {
         latestSessionStateInvalidations.set(sessionId, published);
+        for (const [id, required] of viewStateRequirements) {
+          if (id !== sourceViewId) required.sessions.set(sessionId, published.bridgeStateRevision);
+        }
       }
     },
-    publishGlobalStateInvalidation: () => {
-      const published = broadcastStateChange({
-        type: "global_state_invalidated",
-      });
+    publishGlobalStateInvalidation: (sourceViewId) => {
+      const published = broadcastStateChange({ type: "global_state_invalidated" }, sourceViewId);
+      if (published) for (const [id, required] of viewStateRequirements) {
+        if (id !== sourceViewId) required.global = published.bridgeStateRevision;
+      }
       if (published?.type === "global_state_invalidated") {
         latestGlobalStateInvalidation = published;
       }
@@ -3303,13 +3448,17 @@ export async function createChatBridge(
       });
     },
     publishProfileSettingsChange: (change) => {
-      if (change.commandId === activeCommandId) return;
+      const sourceViewId = change.commandId === activeCommandId && activeCommandTerminal
+        ? mutationViews.get(activeCommandTerminal) : undefined;
       const published = broadcastStateChange({
         type: "profile_settings_changed",
         commandId: change.commandId,
-      });
+      }, sourceViewId);
       if (published?.type === "profile_settings_changed") {
         latestProfileSettingsChange = published;
+        for (const [id, required] of viewStateRequirements) {
+          if (id !== sourceViewId) required.global = published.bridgeStateRevision;
+        }
       }
     },
     close: () => {
@@ -3320,7 +3469,7 @@ export async function createChatBridge(
       mediaDownloads.clear();
       const mutationTerminals = [...inFlightMutationHandlers];
       const pendingReads = [...readOnlyBuilds.entries()];
-      const connectedClients = [...clients];
+      const connectedClients = [...clients.keys()];
       clients.clear();
       sendStopTombstones.clear();
       retainedCommandIds.clear();
@@ -3342,9 +3491,14 @@ export async function createChatBridge(
       }
       for (const [response] of pendingReads) response.destroy();
       for (const client of connectedClients) client.close();
+      eventServer.close();
 
       closePromise = (async () => {
-        await Promise.allSettled([options.closePluginApps?.(), appSandbox?.then((sandbox) => sandbox.close())]);
+        const viewCleanup = await Promise.allSettled([options.closeView?.(), ...retiringViews,
+          ...[...views.values()].map((view) => { retainView(view); return view.options.closeView?.(); }),
+          appSandbox?.then((sandbox) => sandbox.close())]);
+        views.clear();
+        viewStateRequirements.clear();
         await Promise.allSettled([
           ...mutationTerminals,
           ...pendingReads.map(([, read]) => read.terminal),
@@ -3356,6 +3510,9 @@ export async function createChatBridge(
           });
           server.closeAllConnections();
         });
+        const failure = viewCleanup.find(result => result.status === "rejected");
+        if (failure?.status === "rejected") throw failure.reason;
+        if (viewRetirementErrors.length) throw viewRetirementErrors[0];
       })();
       return closePromise;
     },

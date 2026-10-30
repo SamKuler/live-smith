@@ -60,9 +60,10 @@ interface DialogHarness {
   emitServerEvent(payload: unknown): void;
   emitRawServerEvent(payload: unknown): void;
   emitServerEventError(): void;
+  emitServerEventClose(): void;
   emitServerEventOpen(): void;
   errors: unknown[];
-  eventSourceUrls: string[];
+  eventStreamUrls: string[];
   windowOpenAttempts: string[];
   failNextCommand(
     error: string,
@@ -444,7 +445,7 @@ async function waitForCondition(
 
 async function createDialogHarness(
   initialState: ChatBridgeState = stateFixture(),
-  bridge = { baseUrl: "http://bridge.test", token: "test-token" },
+  bridge: { baseUrl: string; token: string; viewId?: string } = { baseUrl: "http://bridge.test", token: "test-token" },
   options: {
     beforeParse?: (window: JSDOM["window"]) => void;
     oauthLoginResult?: NonNullable<ChatBridgeState["oauthAuth"]>;
@@ -465,14 +466,15 @@ async function createDialogHarness(
   const commandIds: string[] = [];
   const commandStopIds: string[] = [];
   const errors: unknown[] = [];
-  const eventSourceUrls: string[] = [];
+  const eventStreamUrls: string[] = [];
   const windowOpenAttempts: string[] = [];
   const sendIds: string[] = [];
   const stopIds: string[] = [];
-  const eventSources: Array<{
+  const eventSockets: Array<{
     onmessage: ((event: { data: string }) => void) | null;
     onerror: (() => void) | null;
     onopen: (() => void) | null;
+    onclose: (() => void) | null;
   }> = [];
   const hostMessages: unknown[] = [];
   const animationFrames = new Map<number, FrameRequestCallback>();
@@ -1218,17 +1220,18 @@ async function createDialogHarness(
             },
           },
         });
-        Object.defineProperty(window, "EventSource", {
+        Object.defineProperty(window, "WebSocket", {
           configurable: true,
           value: class {
             onmessage: ((event: { data: string }) => void) | null = null;
             onerror: (() => void) | null = null;
             onopen: (() => void) | null = null;
+            onclose: (() => void) | null = null;
             constructor(url: string | URL) {
-              eventSourceUrls.push(String(url));
-              eventSources.push(this);
+              eventStreamUrls.push(String(url));
+              eventSockets.push(this);
             }
-            close(): void {}
+            close(): void { this.onclose?.(); }
           },
         });
         Object.defineProperty(window, "fetch", {
@@ -1250,7 +1253,7 @@ async function createDialogHarness(
               if (sendId !== null) stopIds.push(sendId);
               if (commandId !== null) commandStopIds.push(commandId);
             }
-            if (url.pathname === "/command") {
+            if (url.pathname === "/command" || url.pathname === "/view-session") {
               const headers = init?.headers as Record<string, string> | undefined;
               commandIds.push(headers?.["X-Live-Smith-Command-Id"] ?? "");
             }
@@ -1525,7 +1528,7 @@ async function createDialogHarness(
             }
 
             if (
-              url.pathname === "/command" ||
+              url.pathname === "/command" || url.pathname === "/view-session" ||
               url.pathname === "/session-model-capabilities"
             ) {
               if (nextCommandRejection) {
@@ -2369,8 +2372,8 @@ async function createDialogHarness(
     },
     document: window.document,
     emitServerEvent(payload) {
-      const source = eventSources.at(-1);
-      assert.ok(source?.onmessage, "Expected the EventSource to be connected");
+      const source = eventSockets.at(-1);
+      assert.ok(source?.onmessage, "Expected the WebSocket to be connected");
       const published = publishServerEvent(payload);
       if (
         published &&
@@ -2383,25 +2386,30 @@ async function createDialogHarness(
           (published as Record<string, unknown>).id as string,
         );
       }
-      source.onmessage({ data: JSON.stringify(published) });
+      source.onmessage({ data: JSON.stringify([published]) });
     },
     emitRawServerEvent(payload) {
-      const source = eventSources.at(-1);
-      assert.ok(source?.onmessage, "Expected the EventSource to be connected");
-      source.onmessage({ data: JSON.stringify(payload) });
+      const source = eventSockets.at(-1);
+      assert.ok(source?.onmessage, "Expected the WebSocket to be connected");
+      source.onmessage({ data: JSON.stringify([payload]) });
     },
     emitServerEventError() {
-      const source = eventSources.at(-1);
-      assert.ok(source?.onerror, "Expected the EventSource to be connected");
+      const source = eventSockets.at(-1);
+      assert.ok(source?.onerror, "Expected the WebSocket to be connected");
       source.onerror();
     },
+    emitServerEventClose() {
+      const socket = eventSockets.at(-1);
+      assert.ok(socket?.onclose, "Expected the WebSocket to be connected");
+      socket.onclose();
+    },
     emitServerEventOpen() {
-      const source = eventSources.at(-1);
-      assert.ok(source?.onopen, "Expected the EventSource to be connected");
+      const source = eventSockets.at(-1);
+      assert.ok(source?.onopen, "Expected the WebSocket to be connected");
       source.onopen();
     },
     errors,
-    eventSourceUrls,
+    eventStreamUrls,
     windowOpenAttempts,
     failNextCommand(error, field, details) {
       nextCommandError = {

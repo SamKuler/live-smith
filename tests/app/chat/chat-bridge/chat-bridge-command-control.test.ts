@@ -1,3 +1,4 @@
+import { openBridgeEvents, readEvent } from "../support/bridge-events.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { connect } from "node:net";
@@ -50,32 +51,6 @@ function stopCommand(bridgeUrl: string, commandId: string): Promise<Response> {
   });
 }
 
-async function readSsePayload(response: Response, expectedType?: string): Promise<Record<string, unknown>> {
-  const reader = response.body?.getReader();
-  assert.ok(reader);
-  const decoder = new TextDecoder();
-  let pending = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      assert.equal(done, false, "SSE ended before publishing a command event.");
-      pending += decoder.decode(value, { stream: true });
-      const frames = pending.split("\n\n");
-      pending = frames.pop() ?? "";
-      for (const frame of frames) {
-        const data = frame.split("\n")
-          .find((line) => line.startsWith("data: "))
-          ?.slice("data: ".length);
-        if (data) {
-          const event = JSON.parse(data) as Record<string, unknown>;
-          if (expectedType === undefined || event.type === expectedType) return event;
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
 
 async function remainsPending(promise: Promise<unknown>): Promise<boolean> {
   return await Promise.race([
@@ -122,11 +97,11 @@ test("an active command publishes correlated progress while its HTTP response re
     },
     handleSend: async () => {},
   });
-  const events = await fetch(endpoint(bridge.url, "/events"));
+  const events = await openBridgeEvents(endpoint(bridge.url, "/events"));
   const command = postCommand(bridge.url, commandId);
 
   try {
-    assert.deepEqual(await readSsePayload(events, "command_progress"), {
+    assert.deepEqual(await readEvent(events, "command_progress"), {
       type: "command_progress",
       commandId,
       message,
@@ -137,7 +112,7 @@ test("an active command publishes correlated progress while its HTTP response re
     assert.equal((await command).status, 200);
   } finally {
     finishCommand.resolve();
-    await events.body?.cancel().catch(() => undefined);
+    await events.close().catch(() => undefined);
     await Promise.allSettled([command, bridge.close()]);
   }
 });
@@ -290,7 +265,7 @@ test("Stop wins over malformed JSON that finishes during command admission", asy
   const commandId = "command-stop-during-body";
   const body = '{"kind":"new_session"]';
   const splitAt = Math.floor(body.length / 2);
-  const events = await fetch(endpoint(bridge.url, "/events"));
+  const events = await openBridgeEvents(endpoint(bridge.url, "/events"));
   const socket = connect(Number(chatUrl.port), chatUrl.hostname);
 
   try {
@@ -319,7 +294,7 @@ test("Stop wins over malformed JSON that finishes during command admission", asy
       commandId,
     });
 
-    const terminal = readSsePayload(events);
+    const terminal = readEvent(events);
     socket.end(body.slice(splitAt));
     assert.deepEqual(await terminal, {
       type: "error",
@@ -330,7 +305,7 @@ test("Stop wins over malformed JSON that finishes during command admission", asy
     assert.equal(commandCalls, 0);
   } finally {
     socket.destroy();
-    await events.body?.cancel().catch(() => undefined);
+    await events.close().catch(() => undefined);
     await bridge.close();
   }
 });
@@ -354,7 +329,7 @@ test("Stop releases the command fence while its request body remains unfinished"
   const commandId = "command-stop-unfinished-body";
   const body = JSON.stringify({ kind: "new_session" });
   const splitAt = Math.floor(body.length / 2);
-  const events = await fetch(endpoint(bridge.url, "/events"));
+  const events = await openBridgeEvents(endpoint(bridge.url, "/events"));
   const socket = connect(Number(chatUrl.port), chatUrl.hostname);
 
   try {
@@ -375,7 +350,7 @@ test("Stop releases the command fence while its request body remains unfinished"
     ].join("\r\n"));
     await new Promise<void>((resolve) => setTimeout(resolve, 30));
 
-    const terminal = readSsePayload(events);
+    const terminal = readEvent(events);
     const stop = await resolvesWithin(
       stopCommand(bridge.url, commandId),
       "command Stop acknowledgement",
@@ -385,7 +360,7 @@ test("Stop releases the command fence while its request body remains unfinished"
       terminal: false,
       commandId,
     });
-    assert.deepEqual(await resolvesWithin(terminal, "stopped command SSE"), {
+    assert.deepEqual(await resolvesWithin(terminal, "stopped command event"), {
       type: "error",
       commandId,
       message: "Command stopped by user.",
@@ -402,7 +377,7 @@ test("Stop releases the command fence while its request body remains unfinished"
     socket.destroy();
     await resolvesWithin(
       Promise.allSettled([
-        events.body?.cancel(),
+        events.close(),
         bridge.close(),
       ]),
       "stopped admission cleanup",

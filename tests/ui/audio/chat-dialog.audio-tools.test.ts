@@ -139,7 +139,7 @@ test("audio results preview large Arrangement assets using only authenticated se
     assert.equal(url.pathname, "/audio-assets/asset-one");
     assert.equal(url.searchParams.get("sessionId"), state.activeSessionId);
     assert.ok(url.searchParams.get("token"));
-    assert.equal(url.hostname, new URL(harness.eventSourceUrls[0]!).hostname);
+    assert.equal(url.hostname, new URL(harness.eventStreamUrls[0]!).hostname);
     assert.equal(harness.document.querySelector("#audioJobs img"), null);
     assert.match(harness.document.querySelector("#audioJobs")!.textContent!, /Vocals/);
     harness.emitServerEvent(broadcast(state, { connections: [{ ...service, name: "Updated studio" }], revision: "2" }));

@@ -1,3 +1,4 @@
+import { openBridgeEvents } from "../support/bridge-events.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { connect } from "node:net";
@@ -471,7 +472,7 @@ test("held capability reads allow Session navigation, state hydration, and sendi
   const { origin, token } = bridgeAddress(bridge.url);
   const baseline = await (await request(origin, `/state?token=${token}`))
     .json() as ChatBridgeState;
-  const events = await request(origin, `/events?token=${token}`);
+  const events = await openBridgeEvents(`${origin}/events?token=${token}`);
   let readSettled = false;
   const capabilityRead = request(origin, `/session-model-capabilities?token=${token}`, {
     method: "POST",
@@ -532,9 +533,7 @@ test("held capability reads allow Session navigation, state hydration, and sendi
     ]);
     assert.deepEqual(sends, [{ prompt: "Keep typing", sessionId: "session-2" }]);
     await bridge.close();
-    const publications = (await events.text()).split("\n")
-      .filter((line) => line.startsWith("data: "))
-      .map((line) => JSON.parse(line.slice(6)) as { commandId?: string });
+    const publications = await events.all();
     assert.ok(publications.some((entry) => entry.commandId === "parallel-navigation"));
     assert.equal(publications.some((entry) => entry.commandId === "capability-read"), false);
   } finally {
@@ -552,7 +551,7 @@ test("capability reads reject mutations, extra fields, oversized bodies, and inv
     "X-Live-Smith-Command-Id": "strict-capability-read",
   };
   const path = `/session-model-capabilities?token=${token}`;
-  const events = await request(origin, `/events?token=${token}`);
+  const events = await openBridgeEvents(`${origin}/events?token=${token}`);
 
   try {
     for (const body of [
@@ -598,7 +597,7 @@ test("capability reads reject mutations, extra fields, oversized bodies, and inv
     ]), 400);
     assert.equal(calls().commandCalls, 0);
     await bridge.close();
-    assert.equal(await events.text(), "\n", "Read failures must not become foreground command events.");
+    assert.equal(await events.text(), "", "Read failures must not become foreground command events.");
   } finally {
     await bridge.close();
   }
