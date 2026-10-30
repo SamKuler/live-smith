@@ -1,7 +1,8 @@
 import type { ToolActor } from "../../agent/tool-actor.js";
 import { agentActionJsonSchemas } from "../../agent/action-schema.js";
-import { isArtifactLabel } from "../../agent/artifact-contracts.js";
-import { isDeviceParameterWrites, sameParameterNumber } from "../../agent/device-parameter-contracts.js";
+import { isArtifactLabel, isArtifactRefs } from "../../agent/artifact-contracts.js";
+import { isDeviceParameterWrites, sameParameterNumber, sameParameterLayout, sameParameterTarget } from "../../agent/device-parameter-contracts.js";
+import { MAX_AUDIO_JOB_OUTPUTS } from "../../audio-services/contracts.js";
 import type { ModelTool } from "../../model/provider.js";
 import { cloneJsonValue } from "../../model/json-clone.js";
 import type { Toolset } from "../../plugins/registry.js";
@@ -29,9 +30,14 @@ export const parameterArtifactTools = [{ type: "function", function: {
   parameters: { type: "object", properties: { artifactRef: { type: "string" }, offset: { type: "integer", minimum: 0 } }, required: ["artifactRef"], additionalProperties: false },
 } }, { type: "function", function: {
   name: "save_device_parameter_artifact",
-  description: "Save a candidate device parameter version based on an existing captured snapshot. Supply only changed observed parameter indexes, exact names and raw values; all other saved parameters are preserved. The selected next-chat source is inherited; otherwise revisionOf is required. Saving never changes Live. The user can compare, apply and restore versions from the Artifact card.",
+  description: "Save a candidate device parameter version based on an existing captured snapshot. Supply only changed observed parameter indexes, exact names and raw values; all other saved parameters are preserved. The selected next-chat source is inherited; otherwise revisionOf is required. Saving never changes Live. The version is available in Artifacts. When finished sounds are ready for user audition, optionally call present_device_parameter_candidates with the chosen versions.",
   parameters: { type: "object", properties: { label: { type: "string", minLength: 1, maxLength: 120 }, revisionOf: { type: "string" }, values: properties.values },
     required: ["label", "values"], additionalProperties: false },
+} }, { type: "function", function: {
+  name: "present_device_parameter_candidates",
+  description: "Offer the user an inline sound-choice card for one device when finished saved sounds are ready to audition or compare. This optional presentation tool displays exactly the supplied Session parameter artifactRefs in order, plus Original for restoring the pre-audition state. Choose one or more versions to suit the conversation; collecting a source snapshot or saving intermediate work alone does not call for a presentation. All versions must belong to the same device and parameter layout. This returns immediately, without applying values or claiming the user has selected a sound. Clicking a choice supplies the user's confirmation; Live scope, binding and state checks still run.",
+  parameters: { type: "object", properties: { artifactRefs: { type: "array", items: { type: "string" }, minItems: 1, maxItems: MAX_AUDIO_JOB_OUTPUTS, uniqueItems: true } },
+    required: ["artifactRefs"], additionalProperties: false },
 } }] satisfies ModelTool[];
 
 export function createParameterArtifactToolset(input: ParameterArtifactContext & { target: LiveTarget; actor: ToolActor; revisionOf?: string }): Toolset {
@@ -44,6 +50,18 @@ export function createParameterArtifactToolset(input: ParameterArtifactContext &
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Provide device parameter arguments.");
         const args = raw as Record<string, unknown>;
         const only = (keys: string[]) => { if (Object.keys(args).some((key) => !keys.includes(key))) throw new Error("Unexpected device parameter argument."); };
+        if (call.name === "present_device_parameter_candidates") {
+          only(["artifactRefs"]);
+          const refs = Array.isArray(args.artifactRefs) ? args.artifactRefs.map(id => ({ kind: "device-parameters", id })) : undefined;
+          if (!isArtifactRefs(refs)) throw new Error("Choose distinct saved parameter artifact references for the sound choices.");
+          const artifacts = await Promise.all(refs.map(ref => readDeviceParameterArtifact(input.storageDirectory, input.sessionId, ref.id)));
+          const first = artifacts[0]!;
+          if (artifacts.some(artifact => !sameParameterTarget(first.target, artifact.target) || !sameParameterLayout(first.parameters, artifact.parameters))) {
+            throw new Error("Choose sound candidates for the same device and parameter layout.");
+          }
+          await requireParameterSession(input);
+          return { content: JSON.stringify({ candidates: artifacts.map(parameterArtifactView) }), artifacts: refs };
+        }
         if (call.name === "inspect_device_parameter_artifact") {
           only(["artifactRef", "offset"]);
           if (!isSafeStorageId(args.artifactRef) || args.offset !== undefined && (!Number.isSafeInteger(args.offset) || Number(args.offset) < 0)) throw new Error("Choose an exact parameter artifact and page.");

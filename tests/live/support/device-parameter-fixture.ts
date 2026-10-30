@@ -20,7 +20,7 @@ export function deviceParameterFixture(count = 3) {
     mute: false, solo: false, arm: false, mutedViaSolo: false, groupTrack: null, isGrouped: false, isFoldable: false, color: 0,
   }) as MidiTrack<"1.0.0">;
   const song = { handle: { id: 1n }, tempo: 120, tracks: [track], returnTracks: [], scenes: [] };
-  const context = { application: { song } } as unknown as ExtensionContext<"1.0.0">;
+  const context = { application: { song }, withinTransaction: <T>(operation: () => T): T => operation() } as unknown as ExtensionContext<"1.0.0">;
   const target = parameterDeviceTargets(context)[0]!.target;
   return { context, song, track, device, target, parameters, writes };
 }

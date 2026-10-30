@@ -1952,6 +1952,8 @@
       }
 
       function activeConfirmationIsLocked() {
+        const command = activeCommandConfirmation();
+        if (command) return Boolean(command.resolving);
         const attempt = activeSendAttempt();
         const confirmation = activePendingConfirmation();
         if (!attempt || confirmation?.sendId !== attempt.id) return false;
@@ -2378,8 +2380,14 @@
           composerAttachments().length === 0;
       }
 
+      function activeCommandConfirmation() {
+        const confirmation = activeCommandAttempt?.confirmation;
+        return activeCommandAttempt?.sessionId === activeSessionId() && confirmation?.resolve && !confirmation.controller.signal.aborted
+          ? confirmation : null;
+      }
+
       function activePendingConfirmation() {
-        return pendingConfirmationsBySession.get(activeSessionId()) || null;
+        return activeCommandConfirmation()?.payload || pendingConfirmationsBySession.get(activeSessionId()) || null;
       }
 
       function activeAssistantDraft() {
@@ -2745,11 +2753,15 @@
         }
         attempt.confirmation?.controller.abort();
         const controller = new window.AbortController();
-        attempt.confirmation = { id: payload.id, controller };
+        const confirmation = attempt.confirmation = { id: payload.id, controller, payload };
         void (async () => {
-          const apply = await confirmAction({ title: window.LiveSmithI18n.message("Confirm action"),
+          const apply = await (payload.operationId && activeSessionId() === payload.sessionId ? new Promise((resolve) => {
+            confirmation.resolve = resolve;
+            controller.signal.addEventListener("abort", () => { resolve(false); requireView().renderTimeline(); }, { once: true });
+            requireView().renderTimeline();
+          }) : confirmAction({ title: window.LiveSmithI18n.message("Confirm action"),
             message: payload.message, groups: payload.groups, previews: payload.previews, plan: payload.plan,
-            acceptLabel: window.LiveSmithI18n.message("Apply"), signal: controller.signal });
+            acceptLabel: window.LiveSmithI18n.message("Apply"), signal: controller.signal }));
           if (controller.signal.aborted || activeCommandAttempt !== attempt) return;
           try {
             await postBridge("/confirm", { id: payload.id, apply: apply && !attempt.stopRequested && (attempt.remote || activeSessionId() === payload.sessionId) });
@@ -6180,6 +6192,15 @@
       }
 
       async function resolveConfirm(id, apply) {
+        const command = activeCommandConfirmation();
+        if (command?.id === id) {
+          if (!command.resolving) {
+            command.resolving = true;
+            requireView().setConfirmationState(true);
+            command.resolve(apply === true);
+          }
+          return;
+        }
         const attempt = activeSendAttempt();
         const confirmation = activePendingConfirmation();
         const activeResolution = confirmationResolutionsBySession.get(activeSessionId());
@@ -6674,6 +6695,7 @@
           cancelEventStreamRecovery(refresh);
           eventStreamStateRefresh = null;
           requireView().invalidateSessionSearch();
+          requireView().invalidateParameterArtifacts(activeSessionId());
           presentStatus({ source: "event-stream" });
           syncOperationState();
           const state = getState();
@@ -6766,6 +6788,7 @@
             const received = receiveStateChangeRevision(payload);
             if (!received) return;
             requireView().invalidateSessionSearch();
+            requireView().invalidateParameterArtifacts(payload.sessionId);
             if (received.covered) return;
             refreshInvalidatedSessionState(
               payload.sessionId,

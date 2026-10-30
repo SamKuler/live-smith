@@ -1238,7 +1238,7 @@ or automatic replenishment; Fill/Refill and Use next are user actions.
 
 Device parameter snapshots use the `device-parameters` Artifact kind.
 `app/parameters/` owns capture, model authoring, comparisons and explicit
-Apply/Keep/Restore commands. Captures contain the complete SDK parameter layout,
+audition/Keep/Restore commands. Captures contain the complete SDK parameter layout,
 raw values and runtime/Set/Track/Device/parameter identities. Model revisions copy
 an exact saved source and replace validated indexed values; they preserve the
 remaining parameters and cannot invent a target binding. The same version,
@@ -1251,9 +1251,28 @@ Preflight observations validate the complete preparation snapshot before approva
 including parameters that need no write, and supply the approval table and internal
 execution baselines. The executor preserves those baselines, validates every
 parameter before the first write, and rechecks cancellation, authorization,
-identity and current value after asynchronous reads immediately before each
-write. Complete-device reconciliation detects changed layouts and side effects
-outside the explicitly written values.
+identity and current values before dispatch. Direct chat auditions prepare every
+write-ahead record, re-observe the complete device, then synchronously submit the
+changed parameters inside one SDK transaction. Acknowledgements, readbacks and
+durable results settle before releasing the mutation queue. Ordinary parameter
+edits retain per-write checks. Complete-device reconciliation detects changed
+layouts and side effects outside the explicitly written values. SDK transaction
+grouping supplies one undo step; audio-sample atomicity is not guaranteed.
+
+The first audition saves its complete starting values as a captured parameter
+Artifact. Each candidate switch creates an immutable application baseline linked
+to its predecessor by `previousApplicationId`, sharing `baselineArtifactId` and
+the original parameter values. Only the leaves of the application history can
+remain active. Publishing a successor transfers recovery ownership before any
+SDK write; its initial progress carries verified values from the previous
+candidate. Cancelled approval leaves the current application active. Switching
+requires a fully confirmed application on the same device and a fresh comparison
+of every parameter. Keep and Restore finish the chain; later auditions capture
+new starting values. A kept application can be restored while it remains the
+latest application for its device and no other audition is pending. Restoration
+creates a successor with its own progress and restore baseline, preserving the
+completed decision. Legacy receipts retain their original before values and can
+acquire an Artifact baseline when continuing into a new candidate or restoration.
 
 `storage/device-parameter-artifacts.ts` stores create-only snapshot JSON under
 `live-smith-device-parameters/<sessionId>/`. Snapshot bounds are 4,096 parameters,
@@ -1276,6 +1295,35 @@ explicit destination binding for a new application; old application receipts do
 not authorize writes to a replacement device. Parameter Artifacts offer native
 comparison/application controls and are rejected by binary export/attachment
 commands.
+
+`ui/client/parameter-artifacts.ts` owns the shared audition view.
+`present_device_parameter_candidates` validates an ordered set of saved Session
+references for one device and parameter layout. It exposes those choices without
+writing Live or creating new versions. Captures and saves remain tool history.
+`ui/client/parameter-candidates.ts` renders the explicit presentation result as
+a chat card with Original and exactly the chosen saved versions. Each card is
+owned by its presentation event, so reusing a version in another presentation
+preserves both sets of choices and their timeline positions.
+Candidate and Original clicks carry that presentation's event ID through the
+authenticated UI command route. The host checks the successful presentation in
+the same Session and validates the candidate membership or restoration device.
+The click supplies explicit user confirmation; preflight, Scope checks, the
+mutation queue, drift revalidation and cancellation still run. Artifact-library
+commands and model-authored plans retain the Session approval policy.
+An expandable detail area compares saved parameters with current Live values and owns destination controls,
+snapshots and application records. The artifact library retains its comparison
+and application controls. Both surfaces read
+the persisted application and invalidate their previews after commands, Session
+state notifications and bridge reconnection. Read cancellation and Session
+ownership prevent late previews from reactivating controls in another Session.
+Artifact previews expose the application for their resolved destination; the
+Session's open application separately controls admission to candidate switching.
+Choice highlights compare observed device identities, layouts and values with
+the saved application or its original baseline.
+Apply commands with an operation identity use the current Session's timeline
+review. Their command confirmation retains its existing ownership, cancellation
+and reconnect lifecycle. Confirmations belonging to another Session remain
+reachable through the shared application confirmation surface.
 
 #### Host authoring and version metadata
 
@@ -2797,7 +2845,8 @@ Session's Approval mode and Edit Scope selectors are exceptions: they remain
 writable during a send and are read again from that Session before each new Apply
 decision. A committed change is broadcast to other open dialogs for the same
 storage directory. Manual requests user
-approval for every plan. Low Risk automatically approves only plans outside the protected
+approval for every plan; an explicit sound-choice click supplies that approval
+through its validated presentation event. Low Risk automatically approves only plans outside the protected
 action set. Accept Everything automatically approves every authorized, validated
 plan, including deletes and replacement writes within Edit Scope. An automatic decision persists a
 distinct `apply_auto_approved` Session event with the selected mode; this

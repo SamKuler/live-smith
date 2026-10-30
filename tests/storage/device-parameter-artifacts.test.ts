@@ -89,3 +89,19 @@ test("per-write progress stays small and leaves the complete baseline file untou
   assert.deepEqual(loaded.entries.map((entry) => entry.state), ["pending", "applied", "pending"]);
   assert.deepEqual(loaded.entries[0]!.parameter, h.snapshot.parameters[0]);
 });
+
+test("audition lineage and its original artifact survive reload and remain immutable", async (t) => {
+  const h = await setup(t); const artifact = await h.save();
+  const original = { id: "parameter_audition_a", sessionId: h.session.id, artifactId: artifact.id, createdAt: new Date().toISOString(), target: h.snapshot.target,
+    artifactLabel: artifact.label, artifactVersion: artifact.version.number, baselineArtifactId: artifact.id,
+    status: "applied" as const, entries: h.snapshot.parameters.map((parameter) => ({ parameter, requested: 0.8, state: "applied" as const, after: 0.8 })) };
+  await saveDeviceParameterApplication(h.directory, original);
+  const next = { ...original, id: "parameter_audition_b", previousApplicationId: original.id };
+  await saveDeviceParameterApplication(h.directory, next);
+  const loaded = (await listDeviceParameterApplications(h.directory, h.session.id)).find((entry) => entry.id === next.id)!;
+  assert.equal(loaded.previousApplicationId, original.id); assert.equal(loaded.baselineArtifactId, artifact.id);
+  await assert.rejects(saveDeviceParameterApplication(h.directory, { ...loaded, baselineArtifactId: "changed_baseline" }), /baseline cannot be changed/);
+  await assert.rejects(saveDeviceParameterApplication(h.directory, { ...loaded, previousApplicationId: "changed_parent" }), /baseline cannot be changed/);
+  await saveDeviceParameterApplication(h.directory, { ...loaded, status: "kept" });
+  assert.deepEqual((await listDeviceParameterApplications(h.directory, h.session.id)).find((entry) => entry.id === next.id), { ...loaded, status: "kept" });
+});

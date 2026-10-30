@@ -151,11 +151,12 @@ test("MIDI result requests a scoped import with host confirmation and never reru
     h.emitRawServerEvent({ ...event, commandId: "wrong-command" });
     assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
     h.emitRawServerEvent(event);
-    await waitForCondition(() => !h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, "Expected import preview approval.");
-    assert.match(h.document.querySelector("#appConfirmationDetails")!.textContent!, /Create clip at beat 9/);
+    await waitForCondition(() => Boolean(h.document.querySelector('#timeline [data-pending-confirmation]')), "Expected import preview approval.");
+    assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
+    assert.match(h.document.querySelector('#timeline [data-pending-confirmation]')!.textContent!, /Create clip at beat 9/);
     assert.equal(h.document.querySelector(".midi-import-dialog"), null, "the import dialog releases the host approval UI");
     h.emitRawServerEvent(event);
-    await h.acceptAppConfirmation();
+    h.click('#timeline [data-pending-confirmation] .confirm-buttons .primary'); await h.settle();
     assert.deepEqual(jsonCalls(h, "/confirm").map((call) => call.body), [{ id: "approval-one", apply: true }]);
     assert.equal(commandCalls(h).length, 1);
     h.releaseHeldCommand(); held = false;

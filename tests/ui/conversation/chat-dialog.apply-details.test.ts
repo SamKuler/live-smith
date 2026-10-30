@@ -34,8 +34,11 @@ test("direct command approval uses the same ordered compact action disclosures a
     h.emitServerEvent({ ...request, plan: { ...orderedPlan, actions: [] } }); await h.settle();
     assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
     h.emitServerEvent(request); await h.settle();
-    assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, false);
-    const rows = [...h.document.querySelectorAll<HTMLDetailsElement>("#appConfirmation details[data-action-index]")];
+    assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
+    const review = h.document.querySelector<HTMLElement>('#timeline [data-operation-id="direct-operation"]')!;
+    assert.ok(review); assert.equal(review.getAttribute("role"), "alertdialog");
+    assert.equal(h.document.querySelector<HTMLElement>("#inspectorPane")!.hidden, true);
+    const rows = [...review.querySelectorAll<HTMLDetailsElement>("details[data-action-index]")];
     assert.equal(rows.length, orderedPlan.actions.length);
     for (const [index, row] of rows.entries()) {
       assert.equal(row.open, false);
@@ -55,8 +58,13 @@ test("direct command approval uses the same ordered compact action disclosures a
     assert.equal(parameters.scrollTop, 100);
     assert.equal(rows[4]!.open, true);
     assert.match(rows[4]!.querySelector("summary")!.textContent!, /设置参数.*70 个参数/);
-    await h.acceptAppConfirmation(); await h.settle();
+    review.querySelector<HTMLButtonElement>(".confirm-buttons .primary")!.click(); await h.settle();
     assert.deepEqual(jsonCalls(h, "/confirm").at(-1)?.body, { id: request.id, apply: true });
+    assert.equal(review.querySelector<HTMLButtonElement>(".confirm-buttons .primary")!.disabled, true);
+    review.querySelector<HTMLButtonElement>(".confirm-buttons .primary")!.click(); await h.settle();
+    assert.equal(jsonCalls(h, "/confirm").length, 1);
+    h.emitServerEvent({ type: "command_confirm_resolved", commandId: command.id, sessionId: command.sessionId, id: request.id }); await h.settle();
+    assert.equal(h.document.querySelector("[data-pending-confirmation]"), null);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });

@@ -112,6 +112,8 @@ export interface DeviceParameterApplication {
   artifactId: string;
   artifactLabel: string;
   artifactVersion: number;
+  baselineArtifactId?: string;
+  previousApplicationId?: string;
   createdAt: string;
   target: DeviceParameterTarget;
   status: "applying" | "applied" | "restoring" | "restored" | "partial" | "kept";
@@ -125,8 +127,10 @@ export interface DeviceParameterApplication {
 }
 
 export function isDeviceParameterApplication(value: unknown): value is DeviceParameterApplication {
-  return record(value) && keys(value, ["id", "sessionId", "artifactId", "artifactLabel", "artifactVersion", "createdAt", "target", "status", "entries", "restorationBaseline"]) &&
+  return record(value) && keys(value, ["id", "sessionId", "artifactId", "artifactLabel", "artifactVersion", "baselineArtifactId", "previousApplicationId", "createdAt", "target", "status", "entries", "restorationBaseline"]) &&
     id(value.id) && id(value.sessionId) && id(value.artifactId) && timestamp(value.createdAt) && isDeviceParameterTarget(value.target) &&
+    (value.baselineArtifactId === undefined || id(value.baselineArtifactId)) &&
+    (value.previousApplicationId === undefined || id(value.previousApplicationId) && value.previousApplicationId !== value.id && id(value.baselineArtifactId)) &&
     isArtifactLabel(value.artifactLabel) && Number.isSafeInteger(value.artifactVersion) && Number(value.artifactVersion) > 0 &&
     ["applying", "applied", "restoring", "restored", "partial", "kept"].includes(String(value.status)) &&
     Array.isArray(value.entries) && value.entries.length > 0 && value.entries.length <= MAX_DEVICE_PARAMETERS &&
@@ -140,3 +144,13 @@ export function isDeviceParameterApplication(value: unknown): value is DevicePar
 }
 
 export const parameterApplicationIsOpen = (value: DeviceParameterApplication): boolean => value.status !== "restored" && value.status !== "kept";
+
+/** A durable successor owns recovery even when its first SDK write was interrupted. */
+export function parameterApplicationLeaves(applications: readonly DeviceParameterApplication[]): DeviceParameterApplication[] {
+  const superseded = new Set(applications.map((application) => application.previousApplicationId));
+  return applications.filter((application) => !superseded.has(application.id));
+}
+
+export function sameParameterTarget(left: DeviceParameterTarget, right: DeviceParameterTarget): boolean {
+  return left.runtimeId === right.runtimeId && left.songId === right.songId && left.trackId === right.trackId && left.deviceId === right.deviceId;
+}

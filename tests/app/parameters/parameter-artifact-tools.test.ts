@@ -3,8 +3,8 @@ import * as fs from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import { createParameterArtifactToolset } from "../../../src/app/parameters/parameter-artifact-tools.js";
 import { createSessionArtifactToolset } from "../../../src/app/session/session-artifact-tools.js";
-import { listSessionArtifacts, readSessionArtifact, selectSessionArtifact } from "../../../src/app/session/session-artifacts.js";
-import { readDeviceParameterArtifact, listDeviceParameterArtifacts } from "../../../src/storage/device-parameter-artifacts.js";
+import { artifactGenerationsFromEvents, listSessionArtifacts, readSessionArtifact, selectSessionArtifact } from "../../../src/app/session/session-artifacts.js";
+import { readDeviceParameterArtifact, listDeviceParameterArtifacts, saveDeviceParameterArtifact } from "../../../src/storage/device-parameter-artifacts.js";
 import { createSession } from "../../../src/storage/sessions.js";
 import { createHostAbortController } from "../../../src/runtime/host.js";
 import { deviceParameterFixture } from "../../live/support/device-parameter-fixture.js";
@@ -65,12 +65,57 @@ test("parameter authoring rejects wrong names, duplicate indexes, out-of-range v
   assert.equal((await listDeviceParameterArtifacts(h.input.storageDirectory, h.input.sessionId)).length, 1); assert.deepEqual(h.writes, []);
 });
 
+test("presenting sound choices returns only the chosen saved versions in order without writes", async (t) => {
+  const h = await setup(t);
+  const captured = await h.call("capture_device_parameter_artifact", { label: "Original", deviceName: "Synth", trackName: "Lead" });
+  const original = captured.artifacts![0]!.id;
+  const saved = await h.call("save_device_parameter_artifact", { label: "Warm", revisionOf: original,
+    values: [{ parameterIndex: 1, parameterName: "Gain", value: 0.6 }] });
+  const candidate = saved.artifacts![0]!.id;
+  const before = await listDeviceParameterArtifacts(h.input.storageDirectory, h.input.sessionId);
+  for (const artifactRefs of [[candidate], [candidate, original]]) {
+    const result = await h.call("present_device_parameter_candidates", { artifactRefs });
+    assert.equal(result.failed, undefined, result.content);
+    assert.deepEqual(result.artifacts, artifactRefs.map(id => ({ kind: "device-parameters", id })));
+    assert.deepEqual(JSON.parse(result.content).candidates.map((entry: { artifactRef: string }) => entry.artifactRef), artifactRefs);
+    assert.equal(artifactGenerationsFromEvents([
+      { id: "present-call", kind: "tool_call", name: "present_device_parameter_candidates", content: JSON.stringify({ artifactRefs }), createdAt: "2026-10-23T00:00:00Z" },
+      { id: "present-result", kind: "tool_result", name: "present_device_parameter_candidates", content: result.content, artifacts: result.artifacts!, createdAt: "2026-10-23T00:00:01Z" },
+    ]).size, 0, "Presentation must preserve each saved version's generation provenance");
+  }
+  assert.deepEqual(await listDeviceParameterArtifacts(h.input.storageDirectory, h.input.sessionId), before);
+  assert.deepEqual(h.writes, []);
+});
+
+test("sound presentation validates exact Session references and a shared device layout", async (t) => {
+  const h = await setup(t);
+  const captured = await h.call("capture_device_parameter_artifact", { label: "Original", deviceName: "Synth", trackName: "Lead" });
+  const id = captured.artifacts![0]!.id;
+  const original = await readDeviceParameterArtifact(h.input.storageDirectory, h.input.sessionId, id);
+  const foreignSession = await createSession(h.input.storageDirectory, { title: "Other", projectKey: "set", scope: { kind: "selection", identity: "set", label: "Set" } });
+  const foreign = await saveDeviceParameterArtifact(h.input.storageDirectory, foreignSession.id, { ...original, signal: h.input.signal });
+  const otherDevice = await saveDeviceParameterArtifact(h.input.storageDirectory, h.input.sessionId,
+    { ...original, signal: h.input.signal, target: { ...original.target, deviceId: "other-device" } });
+  const otherLayout = await saveDeviceParameterArtifact(h.input.storageDirectory, h.input.sessionId,
+    { ...original, signal: h.input.signal, parameters: original.parameters.map((entry, index) => index === 0 ? { ...entry, name: "Changed" } : entry) });
+  for (const args of [{ artifactRefs: [] }, { artifactRefs: [id, id] }, { artifactRefs: ["../escape"] },
+    { artifactRefs: [foreign.id] }, { artifactRefs: [id, otherDevice.id] }, { artifactRefs: [id, otherLayout.id] },
+    { artifactRefs: [id], values: [] }, { artifactRefs: Array.from({ length: 25 }, (_, index) => `ref_${index}`) }]) {
+    const result = await h.call("present_device_parameter_candidates", args);
+    assert.equal(result.failed, true, JSON.stringify(args)); assert.equal(result.invalidArguments, true);
+    assert.equal(result.artifacts, undefined); assert.equal(result.content.includes(h.input.storageDirectory), false);
+  }
+  assert.deepEqual(h.writes, []);
+});
+
 test("parameter commands use exact references and cannot use binary artifact operations", () => {
   const target = { runtimeId: "runtime", songId: "1", trackId: "2", deviceId: "3" };
   for (const command of [
     { kind: "capture_device_parameters", sessionId: "session", target, label: "Original" },
     { kind: "apply_device_parameters", sessionId: "session", artifactId: "parameters_1" },
+    { kind: "apply_device_parameters", sessionId: "session", artifactId: "parameters_1", presentationId: "event_1", target },
     { kind: "restore_device_parameters", sessionId: "session", applicationId: "application" },
+    { kind: "restore_device_parameters", sessionId: "session", applicationId: "application", presentationId: "event_1" },
     { kind: "keep_device_parameters", sessionId: "session", applicationId: "application" },
   ]) {
     assert.deepEqual(parseCommandInput(command), command);
@@ -78,6 +123,8 @@ test("parameter commands use exact references and cannot use binary artifact ope
   }
   for (const kind of ["attach_artifact", "export_artifact"]) assert.throws(() => parseCommandInput({ kind, sessionId: "session", artifact: { kind: "device-parameters", id: "parameters_1" } }));
   assert.throws(() => parseCommandInput({ kind: "apply_device_parameters", sessionId: "session", artifactId: "../other" }));
+  assert.throws(() => parseCommandInput({ kind: "apply_device_parameters", sessionId: "session", artifactId: "parameters_1", presentationId: "../other" }));
+  assert.throws(() => parseCommandInput({ kind: "restore_device_parameters", sessionId: "session", applicationId: "application", approved: true }));
 });
 
 test("parameter read endpoint authenticates input and keeps reads outside command execution", async () => {

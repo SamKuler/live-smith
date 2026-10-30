@@ -5,8 +5,8 @@ import { isUiMessage, type UiMessage } from "../../i18n/ui-message.js";
 
 export type ParameterArtifactCommand =
   | { kind: "capture_device_parameters"; sessionId: string; target: DeviceParameterDestination; label: string }
-  | { kind: "apply_device_parameters"; sessionId: string; artifactId: string; target?: DeviceParameterDestination }
-  | { kind: "restore_device_parameters"; sessionId: string; applicationId: string }
+  | { kind: "apply_device_parameters"; sessionId: string; artifactId: string; target?: DeviceParameterDestination; presentationId?: string }
+  | { kind: "restore_device_parameters"; sessionId: string; applicationId: string; presentationId?: string }
   | { kind: "keep_device_parameters"; sessionId: string; applicationId: string };
 
 export interface ParameterArtifactRead {
@@ -24,6 +24,7 @@ export interface ParameterArtifactPreview {
   comparison?: DeviceParameterArtifact;
   bindingError?: UiMessage;
   restoreError?: UiMessage;
+  switchError?: UiMessage;
   application?: DeviceParameterApplication;
 }
 
@@ -41,12 +42,15 @@ export function isParameterArtifactCommand(value: unknown): value is ParameterAr
   if (!record(value) || !id(value.sessionId)) return false;
   if (value.kind === "capture_device_parameters") return Object.keys(value).length === 4 && isParameterDestination(value.target) &&
     typeof value.label === "string" && value.label.trim().length > 0 && value.label.length <= 120 && !/[\u0000-\u001f\u007f]/u.test(value.label);
-  if (value.kind === "apply_device_parameters") return Object.keys(value).every((key) => ["kind", "sessionId", "artifactId", "target"].includes(key)) && id(value.artifactId) &&
+  if (value.kind === "apply_device_parameters") return Object.keys(value).every((key) => ["kind", "sessionId", "artifactId", "target", "presentationId"].includes(key)) && id(value.artifactId) &&
+    (value.presentationId === undefined || id(value.presentationId)) &&
     (value.target === undefined || isParameterDestination(value.target));
-  return (value.kind === "restore_device_parameters" || value.kind === "keep_device_parameters") && Object.keys(value).length === 3 && id(value.applicationId);
+  if (value.kind === "restore_device_parameters") return Object.keys(value).every(key => ["kind", "sessionId", "applicationId", "presentationId"].includes(key)) && id(value.applicationId) &&
+    (value.presentationId === undefined || id(value.presentationId));
+  return value.kind === "keep_device_parameters" && Object.keys(value).length === 3 && id(value.applicationId);
 }
 export function isParameterArtifactPreview(value: unknown): value is ParameterArtifactPreview {
-  return record(value) && Object.keys(value).every((key) => ["sessionId", "devices", "artifact", "current", "comparison", "bindingError", "restoreError", "application"].includes(key)) &&
+  return record(value) && Object.keys(value).every((key) => ["sessionId", "devices", "artifact", "current", "comparison", "bindingError", "restoreError", "switchError", "application"].includes(key)) &&
     id(value.sessionId) && Array.isArray(value.devices) && value.devices.every(isDeviceParameterTarget) &&
     (value.artifact === undefined || isDeviceParameterArtifact(value.artifact) && value.artifact.sessionId === value.sessionId) &&
     (value.current === undefined || isDeviceParameterSnapshot(value.current)) &&
@@ -54,5 +58,6 @@ export function isParameterArtifactPreview(value: unknown): value is ParameterAr
       isDeviceParameterArtifact(value.artifact) && value.comparison.version.groupId === value.artifact.version.groupId) &&
     (value.bindingError === undefined || isUiMessage(value.bindingError)) &&
     (value.restoreError === undefined || isUiMessage(value.restoreError)) &&
+    (value.switchError === undefined || isUiMessage(value.switchError)) &&
     (value.application === undefined || isDeviceParameterApplication(value.application) && value.application.sessionId === value.sessionId);
 }

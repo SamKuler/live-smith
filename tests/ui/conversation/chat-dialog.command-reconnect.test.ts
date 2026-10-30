@@ -4,17 +4,17 @@ import { createDialogHarness, stateFixture, jsonCalls, cloneState } from '../sup
 const command = { id: 'retained-import', sessionId: 'session-1', stopping: false };
 const confirmation = { type: 'command_confirm_request', commandId: command.id, sessionId: command.sessionId, id: 'confirm-import', kind: 'apply', message: 'Import saved MIDI', groups: [{ title: 'MIDI track', rows: ['Create clip'] }], operationId: 'apply-midi' };
 
-for (const outcome of ['approve', 'stop'] as const) test(`a fresh page recovers a pending command and can ${outcome}`, async () => {
+for (const outcome of ['approve', 'cancel', 'stop'] as const) test(`a fresh page recovers a pending command and can ${outcome}`, async () => {
   const h = await createDialogHarness(stateFixture());
   try {
     h.emitServerEvent({ type: 'command_activity', command, bridgeStateRevision: '100' });
     await h.settle();
     assert.equal(h.document.querySelector('#sendButton')?.textContent, 'Stop');
-    if (outcome === 'approve') {
+    if (outcome !== 'stop') {
       h.emitServerEvent(confirmation); await h.settle();
-      assert.equal(h.document.querySelector<HTMLElement>('#appConfirmation')!.hidden, false);
-      await h.acceptAppConfirmation(); await h.settle();
-      assert.deepEqual(jsonCalls(h, '/confirm').at(-1)?.body, { id: confirmation.id, apply: true });
+      assert.equal(h.document.querySelector<HTMLElement>('#appConfirmation')!.hidden, true);
+      h.click(`#timeline [data-pending-confirmation] .confirm-buttons .${outcome === 'approve' ? 'primary' : 'secondary'}`); await h.settle();
+      assert.deepEqual(jsonCalls(h, '/confirm').at(-1)?.body, { id: confirmation.id, apply: outcome === 'approve' });
     } else {
       h.click('#sendButton'); await h.settle();
       assert.deepEqual(h.commandStopIds, [command.id]);
@@ -23,7 +23,22 @@ for (const outcome of ['approve', 'stop'] as const) test(`a fresh page recovers 
     }
     h.emitServerEvent({ type: 'command_activity', command: null, bridgeStateRevision: '101' }); await h.settle();
     assert.equal(h.document.querySelector<HTMLElement>('#appConfirmation')!.hidden, true);
+    assert.equal(h.document.querySelector('[data-pending-confirmation]'), null);
     assert.equal(h.document.querySelector('#sendButton')?.textContent, 'Send');
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test('a retained command for another Session keeps its approval reachable outside the current timeline', async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state);
+  try {
+    h.emitServerEvent({ type: 'command_activity', command: { ...command, sessionId: 'session-2' }, bridgeStateRevision: '100' });
+    h.emitServerEvent({ ...confirmation, sessionId: 'session-2' }); await h.settle();
+    assert.equal(h.document.querySelector('#timeline [data-pending-confirmation]'), null);
+    assert.equal(h.document.querySelector<HTMLElement>('#appConfirmation')!.hidden, false);
+    await h.cancelAppConfirmation(); await h.settle();
+    assert.deepEqual(jsonCalls(h, '/confirm').at(-1)?.body, { id: confirmation.id, apply: false });
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
@@ -86,8 +101,8 @@ for (const localOutcome of ['rejected', 'completed'] as const) {
       assert.equal(h.document.querySelector<HTMLElement>('#appConfirmation')!.hidden, true);
       release(); await h.settle();
       assert.equal(h.document.querySelector('#sendButton')?.textContent, 'Stop');
-      assert.equal(h.document.querySelector<HTMLElement>('#appConfirmation')!.hidden, false);
-      await h.acceptAppConfirmation(); await h.settle();
+      assert.equal(h.document.querySelector<HTMLElement>('#appConfirmation')!.hidden, true);
+      h.click('#timeline [data-pending-confirmation] .confirm-buttons .primary'); await h.settle();
       assert.deepEqual(jsonCalls(h, '/confirm').map(call => call.body), [{ id: confirmation.id, apply: true }]);
       assert.equal(jsonCalls(h, '/command').length, 1);
       h.emitServerEvent({ type: 'command_activity', command: null, bridgeStateRevision: '101' }); await h.settle();
@@ -119,6 +134,7 @@ for (const update of ['resolved', 'stopping', 'terminal'] as const) {
       h.emitRawServerEvent({ type: 'command_activity', command, bridgeStateRevision: '99' });
       h.releaseHeldCommand(); released = true; await h.settle();
       assert.equal(h.document.querySelector<HTMLElement>('#appConfirmation')!.hidden, true);
+      assert.equal(h.document.querySelector('[data-pending-confirmation]'), null);
       assert.deepEqual(jsonCalls(h, '/confirm'), []);
       if (update === 'terminal') {
         assert.equal(h.document.querySelector('#sendButton')?.textContent, 'Send');
@@ -151,8 +167,8 @@ test('a newer deferred command owns only its own confirmation', async () => {
     h.emitServerEvent({ type: 'command_confirm_resolved', commandId: command.id, sessionId: command.sessionId, id: confirmation.id });
     h.emitRawServerEvent({ type: 'command_activity', command: null, bridgeStateRevision: '101' });
     h.releaseHeldCommand(); released = true; await h.settle();
-    assert.equal(h.document.querySelector<HTMLElement>('#appConfirmation')!.hidden, false);
-    await h.acceptAppConfirmation(); await h.settle();
+    assert.equal(h.document.querySelector<HTMLElement>('#appConfirmation')!.hidden, true);
+    h.click('#timeline [data-pending-confirmation] .confirm-buttons .primary'); await h.settle();
     assert.deepEqual(jsonCalls(h, '/confirm').map(call => call.body), [{ id: newerConfirmation.id, apply: true }]);
     assert.deepEqual(h.errors, []);
   } finally { if (!released) h.releaseHeldCommand(); h.close(); }

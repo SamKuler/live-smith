@@ -4,7 +4,8 @@ import { createLocaleBindings, type LocalizedText } from "./locale-bindings.js";
 import { createMidiPianoRoll } from "./midi-piano-roll.js";
 import type { PluginResultActions } from "./plugin-results.js";
 import { isSessionArtifactDetail } from "./wire-contracts/artifacts.js";
-import { createParameterTable } from "./parameter-table.js";
+import type { ParameterArtifactRead, ParameterArtifactCommand } from "../../app/parameters/contracts.js";
+import { createParameterCandidates } from "./parameter-candidates.js";
 
 interface Dependencies {
   getState(): { activeSessionId?: string };
@@ -12,16 +13,18 @@ interface Dependencies {
   transfer(kind: "export_artifact", input: { sessionId: string; artifact: ArtifactRef }): Promise<boolean>;
   openArtifact(artifact: SessionArtifact): void;
   resultActions: PluginResultActions;
+  readDeviceParameters(input: ParameterArtifactRead, signal?: AbortSignal): Promise<unknown>;
+  parameterCommand(input: ParameterArtifactCommand): Promise<boolean>;
 }
 
-/** Owns read-only chat views of saved files; import and export stay with their existing workflows. */
+/** MIDI tool previews and explicit sound presentations retain their own lifecycle. */
 export function createChatArtifactPreviews(deps: Dependencies) {
   const rows = new Map<string, ReturnType<typeof createRow>>();
+  const comparisons = new Map<string, ReturnType<typeof createParameterCandidates>>();
   let sessionId: string | undefined;
   let busy = false;
   const t = (text: string, values?: Record<string, string>) => window.LiveSmithI18n?.t(text, values) ?? text;
   function createRow(owner: string, ref: ArtifactRef) {
-    const isParameters = ref.kind === "device-parameters";
     const bindings = createLocaleBindings();
     const node = <T extends keyof HTMLElementTagNameMap>(tag: T, className: string, text?: LocalizedText) => {
       const element = document.createElement(tag); element.className = className;
@@ -30,16 +33,15 @@ export function createChatArtifactPreviews(deps: Dependencies) {
     };
     const root = node("section", "plugin-result-file chat-midi-preview");
     root.dataset.artifactId = ref.id;
-    const title = node("h4", "plugin-result-title", () => t(isParameters ? "Saved device parameters" : "Saved MIDI"));
-    const status = node("p", "field-hint", () => t(isParameters ? "Loading parameter preview…" : "Loading MIDI preview…")); status.setAttribute("role", "status");
+    const title = node("h4", "plugin-result-title", () => t("Saved MIDI"));
+    const status = node("p", "field-hint", () => t("Loading MIDI preview…")); status.setAttribute("role", "status");
     const retry = node("button", "secondary", () => t("Retry preview")); retry.type = "button"; retry.hidden = true;
     const preview = node("div", "chat-artifact-notes");
     const partLabel = node("label", "chat-artifact-part");
     partLabel.append(node("span", "", () => t("Preview part")));
     const part = node("select", ""); partLabel.append(part); partLabel.hidden = true;
-    const roll = isParameters ? undefined : createMidiPianoRoll({ id: `chat-midi-${owner}-${ref.id}`, label: () => t("Saved MIDI note preview") });
-    const parameterTable = isParameters ? createParameterTable() : undefined;
-    preview.append(...(parameterTable ? [parameterTable.element] : [partLabel, roll!.element])); preview.hidden = true;
+    const roll = createMidiPianoRoll({ id: `chat-midi-${owner}-${ref.id}`, label: () => t("Saved MIDI note preview") });
+    preview.append(partLabel, roll.element); preview.hidden = true;
     const controls = node("div", "artifact-actions"); controls.hidden = true;
     let artifact: SessionArtifact | undefined;
     let controller: AbortController | undefined;
@@ -51,20 +53,20 @@ export function createChatArtifactPreviews(deps: Dependencies) {
       const value = node("button", "secondary", () => t(text)); value.type = "button";
       value.addEventListener("click", () => { if (current()) run(); }); controls.append(value); return value;
     };
-    const add = isParameters ? undefined : button("Add to Live", () => {
+    const add = button("Add to Live", () => {
       if (busy || !artifact) return;
       deps.resultActions.openMidiImport({ sessionId: owner, artifacts: [{ artifactRef: ref.id, label: artifact.label }],
         ...(part.value ? { initialPartId: part.value } : {}),
         onComplete(completed) {
           if (!current()) return;
           status.hidden = false; bindings.text(status, () => t(completed ? "MIDI import finished. Review the Session result." : "MIDI import did not complete. Review the Session result before retrying."));
-          if (add?.isConnected) add.focus();
+          if (add.isConnected) add.focus();
         },
       });
     });
-    const download = isParameters ? undefined : button("Export MIDI", () => { void exportFile(); });
+    const download = button("Export MIDI", () => { void exportFile(); });
     button("Open artifact", () => { if (artifact) deps.openArtifact(artifact); });
-    function syncBusy() { if (add) add.disabled = busy; if (download) download.disabled = transferring; }
+    function syncBusy() { add.disabled = busy; download.disabled = transferring; }
     async function exportFile() {
       if (transferring) return;
       transferring = true; syncBusy();
@@ -75,26 +77,21 @@ export function createChatArtifactPreviews(deps: Dependencies) {
       finally { transferring = false; syncBusy(); }
     }
     function renderNotes(reset = false) {
-      if (artifact?.deviceParameters?.parameters) {
-        parameterTable?.update(artifact.deviceParameters.parameters.map((parameter) => ({ index: parameter.index, name: parameter.name,
-          after: parameter.value, min: parameter.min, max: parameter.max })));
-        return;
-      }
       if (!artifact?.midi) return;
       const midi = artifact.midi;
       const selected = midi.parts.find((entry) => entry.id === part.value);
-      roll!.update({ notes: selected ? midi.notes.filter((note) => note.partId === selected.id) : midi.notes,
+      roll.update({ notes: selected ? midi.notes.filter((note) => note.partId === selected.id) : midi.notes,
         durationBeats: selected?.durationBeats ?? midi.durationBeats }, reset);
     }
     async function load() {
       if (!current() || controller) return;
       const attempt = new window.AbortController(); controller = attempt;
-      status.hidden = false; bindings.text(status, () => t(isParameters ? "Loading parameter preview…" : "Loading MIDI preview…")); retry.hidden = true;
+      status.hidden = false; bindings.text(status, () => t("Loading MIDI preview…")); retry.hidden = true;
       try {
         const result = await deps.readArtifact({ sessionId: owner, artifact: ref }, attempt.signal);
         if (!current() || controller !== attempt) return;
         if (!isSessionArtifactDetail(result) || result.sessionId !== owner || artifactKey(result.artifact.ref) !== artifactKey(ref) ||
-            (isParameters ? !result.artifact.deviceParameters?.parameters : !result.artifact.midi)) throw new Error("Unavailable artifact");
+            !result.artifact.midi) throw new Error("Unavailable artifact");
         artifact = result.artifact;
         bindings.text(title, () => `${artifact!.label}${artifact!.version ? ` · v${artifact!.version.number}` : ""}`);
         part.replaceChildren();
@@ -107,7 +104,7 @@ export function createChatArtifactPreviews(deps: Dependencies) {
         preview.hidden = controls.hidden = false; status.hidden = true; renderNotes(true); syncBusy();
       } catch {
         if (!current() || controller !== attempt) return;
-        status.hidden = false; bindings.text(status, () => t(isParameters ? "Parameter preview is unavailable. Retry or open Artifacts." : "MIDI preview is unavailable. Retry or open Artifacts.")); retry.hidden = false;
+        status.hidden = false; bindings.text(status, () => t("MIDI preview is unavailable. Retry or open Artifacts.")); retry.hidden = false;
       } finally { if (controller === attempt) controller = undefined; }
     }
     part.addEventListener("change", () => renderNotes(true));
@@ -120,29 +117,38 @@ export function createChatArtifactPreviews(deps: Dependencies) {
     const observe = () => { if (observer) observer.observe(root); else void load(); };
     observe();
     return { element: root, syncBusy,
-      refreshLocale() { if (bindings.refresh(root)) { renderNotes(); parameterTable?.refreshLocale(); } },
+      refreshLocale() { if (bindings.refresh(root)) renderNotes(); },
       suspend() { suspended = true; controller?.abort(); controller = undefined; observer?.disconnect(); },
       resume() { if (!suspended || disposed) return; suspended = false; if (!artifact) observe(); },
       dispose() { disposed = true; controller?.abort(); observer?.disconnect(); },
     };
   }
   return {
-    sync(owner: string | undefined, refs: readonly ArtifactRef[]) {
-      if (sessionId !== owner) { for (const row of rows.values()) row.dispose(); rows.clear(); sessionId = owner; }
+    sync(owner: string | undefined, refs: readonly ArtifactRef[], presentationIds: readonly string[]) {
+      if (sessionId !== owner) { for (const row of [...rows.values(), ...comparisons.values()]) row.dispose(); rows.clear(); comparisons.clear(); sessionId = owner; }
       const present = new Set(refs.filter((ref) => ref.kind === "midi" || ref.kind === "device-parameters").map(artifactKey));
       for (const [key, row] of rows) if (!present.has(key)) { row.dispose(); rows.delete(key); }
-      for (const row of rows.values()) row.refreshLocale();
+      for (const [key, row] of comparisons) if (!presentationIds.includes(key)) { row.dispose(); comparisons.delete(key); }
+      for (const row of [...rows.values(), ...comparisons.values()]) row.refreshLocale();
     },
     render(ref: ArtifactRef) {
-      if (!sessionId || ref.kind !== "midi" && ref.kind !== "device-parameters") return undefined;
+      if (!sessionId || ref.kind !== "midi") return undefined;
       const key = artifactKey(ref); let row = rows.get(key);
       if (!row) { row = createRow(sessionId, ref); rows.set(key, row); }
       return row.element;
     },
-    setBusy(value: boolean) { busy = value; for (const row of rows.values()) row.syncBusy(); },
-    suspend() { for (const row of rows.values()) row.suspend(); },
-    resume() { for (const row of rows.values()) row.resume(); },
-    dispose() { for (const row of rows.values()) row.dispose(); rows.clear(); },
+    renderParameters(key: string, refs: readonly ArtifactRef[]) {
+      if (!sessionId || !refs.length) return undefined;
+      let group = comparisons.get(key);
+      if (!group) { group = createParameterCandidates(deps, sessionId, key, refs); comparisons.set(key, group); group.setBusy(busy); }
+      else group.setReferences(refs);
+      return group.element;
+    },
+    setBusy(value: boolean) { busy = value; for (const row of rows.values()) row.syncBusy(); for (const group of comparisons.values()) group.setBusy(value); },
+    invalidateParameters(owner: string) { if (owner === sessionId) for (const row of comparisons.values()) row.invalidateParameters(); },
+    suspend() { for (const row of [...rows.values(), ...comparisons.values()]) row.suspend(); },
+    resume() { for (const row of [...rows.values(), ...comparisons.values()]) row.resume(); },
+    dispose() { for (const row of [...rows.values(), ...comparisons.values()]) row.dispose(); rows.clear(); comparisons.clear(); },
   };
 }
 window.LiveSmithFactories ??= {};

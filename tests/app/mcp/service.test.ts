@@ -207,6 +207,11 @@ test("MCP parameter versions and audio listening reuse Session artifacts without
   const saved = await readDeviceParameterArtifact(h.directory, h.grant.client.sessionId, revisedOperation.result!.artifacts![0]!.id);
   assert.deepEqual(saved.source, { kind: "mcp", clientId: h.grant.client.id, clientName: "Composer" });
   assert.equal(saved.parameters[0]!.value, 0.6); assert.deepEqual(h.writes, []);
+  const presented = await h.result("present_device_parameter_candidates", { artifactRefs: [saved.id] });
+  assert.equal(presented.status, "completed", JSON.stringify(presented));
+  const presentation = (await h.service.operations(h.grant.client.sessionId)).find(entry => entry.id === (presented.operationId ?? presented.id))!;
+  assert.deepEqual(presentation.result!.artifacts, [{ kind: "device-parameters", id: saved.id }]);
+  assert.deepEqual(h.writes, []);
 
   const job = await createSessionAudioJob(h.directory, h.grant.client.sessionId, generationJobCases[0]!.input);
   const asset = await saveAudioAsset(h.directory, h.grant.client.sessionId, { jobId: job.id, role: "music", label: "Music",

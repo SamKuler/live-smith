@@ -73,11 +73,6 @@ function createArtifactLibraryView(deps: Dependencies) {
   let captureView: ReturnType<typeof createParameterArtifactView> | undefined;
   const parameterDependencies = (owner: string) => ({ sessionId: owner, isCurrent: () => current(owner) && visible,
     read: deps.readDeviceParameters, command: deps.parameterCommand,
-    onCommandSettled: (source: HTMLElement, kind: ParameterArtifactCommand["kind"]) => {
-      if (!current(owner)) return;
-      if (kind !== "capture_device_parameters") { captureView?.invalidate(source); for (const row of rows.values()) row.invalidateParameters(source); }
-      void read(snapshot?.offset ?? 0);
-    },
     openArtifact: async (id: string) => {
       if (!current(owner)) return;
       revealRead?.abort(); const controller = new window.AbortController(); revealRead = controller;
@@ -338,7 +333,7 @@ function createArtifactLibraryView(deps: Dependencies) {
       }
       return { element: card, update,
         syncBusy() { parameterView?.setBusy(busy || operationPending()); },
-        invalidateParameters(source: HTMLElement) { parameterView?.invalidate(source); },
+        invalidateParameters() { parameterView?.invalidate(); },
         notify(message: LocalizedText) { actionStatus.hidden = false; bindings.text(actionStatus, message); },
         pause() { player?.media.pause(); parameterView?.suspend(); },
         suspend() {
@@ -450,7 +445,7 @@ function createArtifactLibraryView(deps: Dependencies) {
       },
       open(value: SessionArtifact) { cancelRead(); artifact = value; opened = true; render(); expand.focus({ preventScroll: true }); row.scrollIntoView?.({ block: "nearest" }); },
       notify(message: LocalizedText) { card?.notify(message); },
-      invalidateParameters(source: HTMLElement) { card?.invalidateParameters(source); },
+      invalidateParameters() { card?.invalidateParameters(); },
       pause() { card?.pause(); },
       suspend() { cancelRead(); card?.suspend(); },
       resume() {
@@ -531,6 +526,11 @@ function createArtifactLibraryView(deps: Dependencies) {
     openArtifact(value: SessionArtifact) {
       showArtifact(value);
     },
+    invalidateParameters(owner: string) {
+      if (owner !== sessionId || !current(owner)) return;
+      captureView?.invalidate(); for (const row of rows.values()) row.invalidateParameters();
+      if (visible) void read(snapshot?.offset ?? 0);
+    },
     setBusy(value: boolean) { busy = value; syncBusy(); },
     setVisible(value: boolean) {
       const opening = value && !visible;
@@ -555,6 +555,7 @@ function createArtifactLibrary(deps: Dependencies) {
       view.openArtifact(value);
     },
     setBusy(value: boolean) { busy = value; view?.setBusy(value); },
+    invalidateParameters(owner: string) { view?.invalidateParameters(owner); },
     setVisible(value: boolean) {
       if (!view) { view = createArtifactLibraryView(deps); view.setBusy(busy); view.render(); }
       view.setVisible(value);

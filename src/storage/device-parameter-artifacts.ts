@@ -205,6 +205,7 @@ function applicationReservation(application: DeviceParameterApplication): number
 function applicationIdentity(application: DeviceParameterApplication): string {
   return JSON.stringify({ id: application.id, sessionId: application.sessionId, artifactId: application.artifactId,
     artifactLabel: application.artifactLabel, artifactVersion: application.artifactVersion,
+    baselineArtifactId: application.baselineArtifactId, previousApplicationId: application.previousApplicationId,
     createdAt: application.createdAt, target: application.target, entries: application.entries.map(({ parameter, requested }) => ({ parameter, requested })) });
 }
 

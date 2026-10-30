@@ -1,5 +1,5 @@
 import { isParameterArtifactPreview, type ParameterArtifactRead, type ParameterArtifactCommand, type ParameterArtifactPreview } from "../../app/parameters/contracts.js";
-import { parameterApplicationIsOpen, type DeviceParameterTarget } from "../../agent/device-parameter-contracts.js";
+import { parameterApplicationIsOpen, sameParameterLayout, sameParameterNumber, sameParameterTarget, type DeviceParameterTarget } from "../../agent/device-parameter-contracts.js";
 import type { SessionArtifact } from "../../app/session/session-artifacts.js";
 import { createLocaleBindings, type LocalizedText } from "./locale-bindings.js";
 import { createParameterTable } from "./parameter-table.js";
@@ -7,17 +7,17 @@ import { formatUiMessage, isUiMessage, type UiMessage } from "../../i18n/ui-mess
 
 export interface ParameterArtifactDependencies {
   sessionId: string;
+  presentationId?: string;
   isCurrent(): boolean;
   read(input: ParameterArtifactRead, signal?: AbortSignal): Promise<unknown>;
   command(input: ParameterArtifactCommand): Promise<boolean>;
-  onCommandSettled(source: HTMLElement, kind: ParameterArtifactCommand["kind"]): void;
   openArtifact(id: string): Promise<void>;
 }
 const destination = ({ runtimeId, songId, trackId, deviceId }: DeviceParameterTarget) => ({ runtimeId, songId, trackId, deviceId });
 const deviceKey = (device: DeviceParameterTarget) => `${device.trackId}:${device.deviceId}`;
 
 /** Owns one exact version or the explicit capture form; command receipts remain server-owned. */
-export function createParameterArtifactView(deps: ParameterArtifactDependencies, initial?: SessionArtifact) {
+export function createParameterArtifactView(deps: ParameterArtifactDependencies, initial?: SessionArtifact, presentation: "artifact" | "chat" = "artifact") {
   const bindings = createLocaleBindings();
   const t = (source: string, values?: Record<string, string>) => window.LiveSmithI18n?.t(source, values) ?? source;
   const message = (value: UiMessage) => window.LiveSmithI18n?.format(value) ?? formatUiMessage(value);
@@ -40,46 +40,119 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
   const comparisonLabel = node("label"); comparisonLabel.append(node("span", () => t("Compare with")));
   const comparison = node("select"); comparisonLabel.append(comparison); comparisonLabel.hidden = !initial;
   const actions = node("div"); actions.className = "artifact-actions";
+  const choices = node("div"); choices.className = "parameter-candidate-choices"; choices.setAttribute("role", "group");
+  bindings.attribute(choices, "aria-label", () => t("Sound choices"));
+  const originalChoice = node("button", "Original"); originalChoice.type = "button"; originalChoice.dataset.parameterOriginal = "true";
+  choices.append(originalChoice);
+  const choiceButtons = new Map<string, HTMLButtonElement>();
   const button = (text: string, action: () => void) => { const element = node("button", () => t(text)); element.className = "secondary"; element.type = "button"; element.addEventListener("click", action); actions.append(element); return element; };
   const refresh = button("Refresh device parameters", () => { void load(); });
-  const save = button(initial ? "Apply to Live" : "Save parameter snapshot", () => { void runSave(); });
+  const save = button(initial ? presentation === "chat" ? "Audition" : "Audition in Live" : "Save parameter snapshot", () => { void runSave(); });
+  actions.prepend(save);
+  const listening = node("p", () => t("Play a Clip or your instrument in Live to hear each version.")); listening.className = "field-hint"; listening.hidden = !initial;
   const receipt = node("section"); receipt.className = "parameter-application";
   const receiptText = node("p"); receiptText.className = "field-hint";
   const receiptSource = node("p");
   const receiptActions = node("div"); receiptActions.className = "artifact-actions";
-  const keep = node("button", () => t("Keep current values")); keep.type = "button"; keep.className = "secondary";
+  const keep = node("button", () => t("Use this sound")); keep.type = "button"; keep.className = "secondary";
   const restore = node("button", () => t("Restore previous values")); restore.type = "button"; restore.className = "secondary";
   const openApplied = node("button", () => t("Open applied version")); openApplied.type = "button"; openApplied.className = "secondary";
+  const openOriginal = node("button", () => t("Open original snapshot")); openOriginal.type = "button"; openOriginal.className = "secondary";
   const receiptHint = node("p"); receiptHint.className = "field-hint";
   const receiptDetails = node("details"); receiptDetails.append(node("summary", () => t("Application details")));
   const receiptTable = createParameterTable(); receiptDetails.append(receiptTable.element);
   const restorationDetails = node("details"); restorationDetails.append(node("summary", () => t("Values before restoration")));
   const restorationTable = createParameterTable(); restorationDetails.append(restorationTable.element); restorationDetails.hidden = true;
-  receiptActions.append(keep, restore, openApplied); receipt.append(receiptSource, receiptText, receiptHint, receiptActions, receiptDetails, restorationDetails); receipt.hidden = true;
+  receiptActions.append(keep, restore, openApplied, openOriginal); receipt.append(receiptSource, receiptText, receiptHint, receiptActions, receiptDetails, restorationDetails); receipt.hidden = true;
   const table = createParameterTable(); table.element.hidden = !initial;
-  root.append(source, deviceLabel, label, comparisonLabel, actions, status, receipt, table.element);
+  const details = presentation === "chat" ? node("details") : undefined;
+  if (details) {
+    details.className = "parameter-artifact-details";
+    const tools = node("div"); tools.className = "artifact-actions"; tools.append(refresh, openApplied, openOriginal);
+    details.append(node("summary", () => t("Sound details")), listening, source, deviceLabel, table.element, tools, receipt, receiptDetails, restorationDetails);
+    root.append(choices, status, details);
+  } else root.append(source, deviceLabel, label, comparisonLabel, actions, status, listening, receipt, table.element);
   let artifact = initial;
+  let candidates = initial ? [initial] : [];
   let preview: ParameterArtifactPreview | undefined;
   let reading: AbortController | undefined;
   let selectedDevice: DeviceParameterTarget | undefined;
   let busy = false, pending = false, disposed = false, suspended = false, loaded = false;
   let nameEdited = false;
   const current = () => !disposed && !suspended && deps.isCurrent();
+  function setCandidates(values: readonly SessionArtifact[]) {
+    candidates = [...values];
+    for (const [id, choice] of choiceButtons) if (!candidates.some((candidate) => candidate.ref.id === id)) { choice.remove(); choiceButtons.delete(id); }
+    for (const candidate of candidates) {
+      let choice = choiceButtons.get(candidate.ref.id);
+      if (!choice) {
+        choice = node("button"); choice.type = "button"; choice.dataset.parameterCandidate = candidate.ref.id;
+        const id = candidate.ref.id;
+        choice.addEventListener("click", () => {
+          if (choice!.disabled || !preview?.current) return;
+          const selected = candidates.find((value) => value.ref.id === id); if (!selected) return;
+          artifact = selected; comparison.value = "live";
+          void run({ kind: "apply_device_parameters", sessionId: deps.sessionId, artifactId: id, target: destination(preview.current.target),
+            ...(deps.presentationId ? { presentationId: deps.presentationId } : {}) });
+        });
+        choiceButtons.set(candidate.ref.id, choice); choices.append(choice);
+      }
+      choice.textContent = choice.title = candidate.label;
+    }
+    syncBusy();
+  }
+  function candidateIsCurrent() {
+    const application = preview?.application, live = preview?.current;
+    return Boolean(application && live && ["applied", "kept"].includes(application.status) && sameParameterTarget(application.target, live.target) &&
+      sameParameterLayout(application.entries.map((entry) => entry.parameter), live.parameters) && application.entries.every((entry) => {
+        const actual = live.parameters[entry.parameter.index];
+        const confirmed = entry.state === "applied" ? entry.after : entry.state === "pending" ? entry.parameter.value : undefined;
+        // SDK writes can round their input; detect later edits against the exact readback.
+        const requestTolerance = 1e-7 * Math.max(1, Math.abs(entry.requested));
+        return confirmed !== undefined && actual?.handleId === entry.parameter.handleId && sameParameterNumber(actual.value, confirmed) &&
+          Math.abs(confirmed - entry.requested) <= requestTolerance;
+      }));
+  }
+  function originalIsCurrent() {
+    const application = preview?.application, live = preview?.current;
+    return Boolean(live && (!application || application.status === "restored" && sameParameterTarget(application.target, live.target) &&
+      sameParameterLayout(application.entries.map((entry) => entry.parameter), live.parameters) && application.entries.every((entry) => {
+        const actual = live.parameters[entry.parameter.index];
+        return actual?.handleId === entry.parameter.handleId && sameParameterNumber(actual.value, entry.parameter.value);
+      })));
+  }
   function syncBusy() {
     const locked = busy || pending;
     devices.disabled = comparison.disabled = name.disabled = locked;
     refresh.disabled = Boolean(reading) || pending;
-    save.disabled = locked || Boolean(reading) || !preview || (artifact ? !preview.current || Boolean(preview.application && parameterApplicationIsOpen(preview.application)) : !selectedDevice || !name.value.trim());
-    keep.disabled = restore.disabled = locked || Boolean(reading) || !preview?.application || !parameterApplicationIsOpen(preview.application);
+    const application = preview?.application;
+    const open = application && parameterApplicationIsOpen(application);
+    const matchesCandidate = candidateIsCurrent();
+    const active = matchesCandidate && application?.artifactId === artifact?.ref.id;
+    save.disabled = locked || Boolean(reading) || !preview || (artifact ? !preview.current || Boolean(preview.switchError) || active || Boolean(open && (application.status !== "applied" || application.restorationBaseline)) : !selectedDevice || !name.value.trim());
+    if (artifact) save.setAttribute("aria-pressed", String(Boolean(active)));
+    root.dataset.auditionCurrent = String(Boolean(active));
+    keep.disabled = locked || Boolean(reading) || !application || !parameterApplicationIsOpen(application);
+    restore.disabled = locked || Boolean(reading) || !application || application.status === "restored";
     openApplied.disabled = pending || Boolean(reading) || !preview?.application;
+    openOriginal.disabled = pending || Boolean(reading) || !preview?.application?.baselineArtifactId;
     restore.disabled ||= Boolean(preview?.restoreError);
     if (preview?.application) restore.disabled ||= preview.application.entries.some((entry) => entry.state === "applying" || entry.state === "restoring" || entry.state === "conflict");
+    originalChoice.setAttribute("aria-pressed", String(originalIsCurrent()));
+    originalChoice.disabled = restore.disabled;
+    for (const [id, choice] of choiceButtons) {
+      const selected = matchesCandidate && application?.artifactId === id;
+      choice.setAttribute("aria-pressed", String(selected));
+      choice.disabled = locked || Boolean(reading) || !preview?.current || Boolean(preview.switchError) || selected || Boolean(open && (application.status !== "applied" || application.restorationBaseline));
+    }
   }
   function render() {
-    if (!preview) { table.element.hidden = receipt.hidden = true; syncBusy(); return; }
+    if (!preview) { table.element.hidden = receipt.hidden = openApplied.hidden = openOriginal.hidden = receiptDetails.hidden = restorationDetails.hidden = true; syncBusy(); return; }
     const key = devices.value;
     devices.replaceChildren();
-    const original = node("option", () => t(artifact ? "Original device binding" : "Choose a device")); original.value = ""; devices.append(original);
+    const original = node("option", () => artifact
+      ? !selectedDevice && preview?.current ? deviceLabelText(preview.current.target) : t("Saved device binding")
+      : t("Choose a device")); original.value = ""; devices.append(original);
     for (const device of preview.devices) { const option = node("option", () => deviceLabelText(device)); option.value = deviceKey(device); devices.append(option); }
     devices.value = key;
     if (selectedDevice && !preview.devices.some((device) => deviceKey(device) === deviceKey(selectedDevice!) && device.runtimeId === selectedDevice!.runtimeId)) {
@@ -87,28 +160,45 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
     }
     const compared = comparison.value || "live";
     comparison.replaceChildren(); const live = node("option", () => t("Current Live values")); live.value = "live"; comparison.append(live);
-    for (const version of artifact?.versions ?? []) if (version.id !== artifact!.ref.id) {
+    for (const version of presentation === "chat" ? [] : artifact?.versions ?? []) if (version.id !== artifact!.ref.id) {
       const option = node("option", `v${version.number} · ${version.label}`); option.value = version.id; comparison.append(option);
     }
     comparison.value = [...comparison.options].some((option) => option.value === compared) ? compared : "live";
     const saved = preview.artifact;
     table.element.hidden = !saved || Boolean(reading);
     if (saved) {
-      bindings.text(source, () => deviceLabelText(saved.target));
+      bindings.text(source, () => presentation === "chat" ? `${saved.label} · ${deviceLabelText(saved.target)}` : deviceLabelText(saved.target));
       const before = comparison.value === "live" ? preview.current?.parameters : preview.comparison?.parameters;
       table.update(saved.parameters.map((parameter, index) => ({ index: parameter.index, name: parameter.name, after: parameter.value, min: parameter.min, max: parameter.max,
         ...(before?.[index] ? { before: before[index]!.value } : {}) })), { before: comparison.value === "live" ? "Current value" : "Compared version", after: "Saved value" });
     }
     const application = preview.application;
     receipt.hidden = !application || Boolean(reading);
+    receiptDetails.hidden = !application;
+    openApplied.hidden = !application || application.artifactId === artifact?.ref.id;
+    openOriginal.hidden = !application?.baselineArtifactId;
+    restorationDetails.hidden = !application?.restorationBaseline;
+    receiptSource.setAttribute("aria-live", application?.artifactId === artifact?.ref.id ? "polite" : "off");
     if (application) {
-      bindings.text(receiptSource, () => t("Applied version: {name} · v{version}", { name: application.artifactLabel, version: String(application.artifactVersion) }));
-      openApplied.hidden = application.artifactId === artifact?.ref.id;
+      const selected = candidateIsCurrent();
+      bindings.text(keep, () => t(selected ? "Use this sound" : "Finish audition"));
+      bindings.text(receiptSource, () => t(application.baselineArtifactId
+        ? application.status === "applied" ? presentation === "chat" ? "Auditioning: {name}" : "Auditioning: {name} · v{version}" : application.status === "kept" ? selected ? "Using: {name}" : "Audition ended: {name} · v{version}. Current device values kept."
+          : application.status === "restored" ? "Restored before audition · {name}" : "Review audition: {name} · v{version}"
+        : "Applied version: {name} · v{version}", { name: application.artifactLabel, version: String(application.artifactVersion) }));
+      bindings.text(restore, () => t(application.baselineArtifactId ? "Restore before audition" : "Restore previous values"));
       bindings.text(receiptText, () => t("Parameter application: {status} · {device}", { status: t(application.status), device: `${application.target.trackName} · ${application.target.deviceName}` }));
-      keep.hidden = restore.hidden = !parameterApplicationIsOpen(application);
-      receiptActions.hidden = keep.hidden && openApplied.hidden;
-      receiptHint.hidden = !parameterApplicationIsOpen(application) || !preview.restoreError;
-      bindings.text(receiptHint, () => message(preview?.restoreError ?? ""));
+      receiptText.hidden = presentation === "chat" && ["applied", "kept", "restored"].includes(application.status);
+      keep.hidden = presentation === "chat" || !parameterApplicationIsOpen(application);
+      restore.hidden = presentation === "chat" || application.status === "restored";
+      receiptActions.hidden = keep.hidden && restore.hidden && (presentation === "chat" || openApplied.hidden && openOriginal.hidden);
+      const unconfirmed = application.entries.some((entry) => entry.state === "applying" || entry.state === "restoring" || entry.state === "conflict");
+      const differs = preview.current && sameParameterTarget(preview.current.target, application.target) && !selected;
+      const keptHint = application.status === "kept" ? unconfirmed
+        ? "Some parameter writes remain unconfirmed. Inspect Live and the application details."
+        : differs ? "Current device values differ from the saved candidate. Review the parameter comparison." : undefined : undefined;
+      receiptHint.hidden = !keptHint && (application.status === "restored" || !preview.restoreError);
+      bindings.text(receiptHint, () => keptHint ? t(keptHint) : message(preview?.restoreError ?? ""));
       if (receiptDetails.open) receiptTable.update(application.entries.map((entry) => ({ index: entry.parameter.index, name: entry.parameter.name,
         before: entry.parameter.value, ...(entry.state === "restored" ? { after: entry.parameter.value } : entry.after === undefined ? {} : { after: entry.after }),
         min: entry.parameter.min, max: entry.parameter.max,
@@ -135,8 +225,8 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
       if (!isParameterArtifactPreview(value) || value.sessionId !== deps.sessionId || (artifact && value.artifact?.id !== artifact.ref.id) ||
           (baseId && value.comparison?.id !== baseId) || selected && value.current && deviceKey(value.current.target) !== deviceKey(selected)) throw new Error(t("Device parameter preview is unavailable."));
       preview = value; loaded = true;
-      status.hidden = !value.bindingError && value.devices.length > 0;
-      bindings.text(status, () => value.bindingError ? message(value.bindingError) : value.devices.length ? "" : t("No devices are available in this Live Set."));
+      status.hidden = !value.bindingError && !value.switchError && value.devices.length > 0;
+      bindings.text(status, () => value.bindingError || value.switchError ? message((value.bindingError ?? value.switchError)!) : value.devices.length ? "" : t("No devices are available in this Live Set."));
     } catch (error) {
       if (current() && reading === controller) { preview = undefined; status.hidden = false; bindings.text(status, () => errorText(error, "Device parameter preview is unavailable.")); }
     } finally { if (reading === controller) { reading = undefined; render(); } }
@@ -153,7 +243,6 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
       if (current()) resultMessage = () => errorText(error, "Device parameter operation failed.");
     } finally {
       pending = false; syncBusy();
-      deps.onCommandSettled(root, command.kind);
       if (current()) { await load(); if (current() && preview && resultMessage) { status.hidden = false; bindings.text(status, resultMessage); } }
     }
   }
@@ -173,8 +262,12 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
   name.addEventListener("input", () => { nameEdited = true; syncBusy(); });
   keep.addEventListener("click", () => { if (!keep.disabled && preview?.application) void run({ kind: "keep_device_parameters", sessionId: deps.sessionId, applicationId: preview.application.id }); });
   openApplied.addEventListener("click", () => { if (!openApplied.disabled && preview?.application) void deps.openArtifact(preview.application.artifactId); });
+  openOriginal.addEventListener("click", () => { if (!openOriginal.disabled && preview?.application?.baselineArtifactId) void deps.openArtifact(preview.application.baselineArtifactId); });
   restore.addEventListener("click", () => { if (!restore.disabled && preview?.application) void run({ kind: "restore_device_parameters", sessionId: deps.sessionId, applicationId: preview.application.id }); });
-  return { element: root,
+  originalChoice.addEventListener("click", () => { if (!originalChoice.disabled && preview?.application) void run({ kind: "restore_device_parameters", sessionId: deps.sessionId, applicationId: preview.application.id,
+    ...(deps.presentationId ? { presentationId: deps.presentationId } : {}) }); });
+  if (presentation === "chat") setCandidates(candidates);
+  return { element: root, details, setCandidates, artifact: () => artifact,
     update(value?: SessionArtifact) {
       const previousVersions = JSON.stringify(artifact?.versions);
       artifact = value ?? artifact;
@@ -184,8 +277,7 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
       else if (localeChanged || previousVersions !== JSON.stringify(artifact?.versions)) render();
     },
     setBusy(value: boolean) { busy = value; syncBusy(); },
-    invalidate(source: HTMLElement) {
-      if (source === root) return;
+    invalidate() {
       loaded = false; preview = undefined; reading?.abort(); reading = undefined; syncBusy();
       if (current() && !pending) void load();
     },

@@ -106,6 +106,7 @@ export async function observeParameterWrites(device: Device<"1.0.0">, writes: re
 }
 
 export interface ParameterWriteHooks {
+  withinTransaction?<T>(operation: () => T): T;
   beforeWrite?(index: number, parameter: DeviceParameterValue, value: number): Promise<void>;
   afterWrite?(index: number, value: number): Promise<void>;
   writeNotStarted?(index: number): Promise<void>;
@@ -137,6 +138,59 @@ export async function executeParameterWrites(device: Device<"1.0.0">, writes: re
     if (metadata.handleId !== before.handleId || !sameParameterLayout([before], [metadata])) throw new UiMessageError(uiMessage("The device parameter identity or range changed during application."));
     return parameter;
   };
+  if (input.withinTransaction) {
+    const prepared: number[] = [], dispatched = new Set<number>();
+    const failures: unknown[] = [];
+    const pending: { index: number; result: Promise<PromiseSettledResult<void>> }[] = [];
+    try {
+      for (const [index, write] of writes.entries()) {
+        const before = observed[write.parameterIndex]!;
+        if (sameParameterNumber(before.value, write.value)) continue;
+        throwIfAborted(input.signal); input.assertCurrent(); currentParameter(before);
+        prepared.push(index);
+        await input.beforeWrite?.(index, before, write.value);
+      }
+      // Durable recovery records precede the final observation; dispatch has no await gaps.
+      const ready = await captureDeviceParameters(device, input.signal);
+      if (!sameParameterLayout(observed, ready) || observed.some((parameter, index) =>
+        parameter.handleId !== ready[index]!.handleId || !sameParameterNumber(parameter.value, ready[index]!.value))) {
+        throw new UiMessageError(uiMessage("Device parameters changed after preflight. Inspect the device before applying."));
+      }
+      throwIfAborted(input.signal); input.assertCurrent();
+      if (prepared.length) input.withinTransaction(() => {
+        for (const index of prepared) {
+          try {
+            throwIfAborted(input.signal); input.assertCurrent();
+            const write = writes[index]!, parameter = currentParameter(observed[write.parameterIndex]!);
+            dispatched.add(index); writesStarted++;
+            const result = parameter.setValue(write.value).then<PromiseSettledResult<void>, PromiseSettledResult<void>>(
+              () => ({ status: "fulfilled", value: undefined }), reason => ({ status: "rejected", reason }));
+            pending.push({ index, result });
+          } catch (error) { failures.push(error); break; }
+        }
+      });
+    } catch (error) { failures.push(error); }
+    const outcomes = await Promise.all(pending.map(async entry => ({ index: entry.index, result: await entry.result })));
+    const verified = await Promise.all(outcomes.map(async ({ index, result }) => {
+      if (result.status === "rejected") { failures.push(result.reason); return undefined; }
+      try {
+        const before = observed[writes[index]!.parameterIndex]!;
+        const value = await currentParameter(before).getValue(); currentParameter(before);
+        if (!Number.isFinite(value) || value < before.min || value > before.max) throw new UiMessageError(uiMessage('The value written to "{name}" could not be verified.', { name: before.name }));
+        return { index, before, value };
+      } catch (error) { failures.push(error); return undefined; }
+    }));
+    for (const entry of verified) if (entry) {
+      try {
+        await input.afterWrite?.(entry.index, entry.value);
+        completed.push(`Set [${entry.before.index}] "${entry.before.name}" to ${entry.value}.`);
+      } catch (error) { failures.push(error); }
+    }
+    for (const index of prepared) if (!dispatched.has(index)) await input.writeNotStarted?.(index).catch(() => undefined);
+    try { throwIfAborted(input.signal); } catch (error) { failures.push(error); }
+    if (failures.length) throw new DeviceParameterWriteError(completed, writesStarted, failures[0]);
+    return { results: completed, mutationCount: writesStarted };
+  }
   try {
     for (const [index, write] of writes.entries()) {
       throwIfAborted(input.signal); input.assertCurrent();

@@ -130,8 +130,8 @@ for (const outcome of ["approve", "stop"] as const) test(`detached command repla
     if (outcome === "approve") {
       dialog.emitRawServerEvent(confirmation);
       await dialog.settle();
-      assert.equal(dialog.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, false);
-      await dialog.acceptAppConfirmation(); await dialog.settle();
+      assert.equal(dialog.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, true);
+      dialog.click('#timeline [data-pending-confirmation] .confirm-buttons .primary'); await dialog.settle();
       await post(bridge.url, "/confirm", jsonCalls(dialog, "/confirm").at(-1)!.body);
     } else {
       dialog.click("#sendButton"); await dialog.settle();

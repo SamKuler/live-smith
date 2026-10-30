@@ -234,12 +234,45 @@ versions do not change Live. The parameter table shows complete saved values and
 ranges, with filtering and a **Compare with** choice for current Live values or
 another version in the same work.
 
-**Apply to Live** writes the changed parameters after the Session's Scope,
-approval and state checks. Listen in Live, then choose **Keep current values**
-or **Restore previous values**. The application history keeps the original
-values, confirmed results and unfinished changes across browser reconnection.
-Restore checks the target and current values again. Conflicting edits, changed
-parameter layouts and unconfirmed writes require inspection before continuing.
+When finished sounds are ready for audition, the agent can offer a **Sound
+comparison** card for one device. It chooses which saved versions to present
+according to the conversation. Capturing and saving parameters keep the versions
+in Artifacts; the comparison card appears through an explicit presentation.
+Its choices include **Original** and the selected sound candidates.
+Long choice names stay on one line; their full names are available in the
+tooltip and **Sound details**. Select a candidate to hear it, or
+select **Original** to return to the values from before auditioning. The selected
+choice stays highlighted across browser reconnection. **Sound details** shows
+saved parameters against current Live values, device selection, snapshots and application
+records. Artifacts also offers **Audition in Live**. Play a Clip or your instrument
+in Live to hear each version. Clicking a candidate or **Original** confirms that
+selection and applies it directly, including in Manual mode. Each audition keeps
+the Session's Scope, device binding and state checks. The changed parameters are
+submitted together after preparation, followed by result verification. Choose another candidate for the same
+device to switch directly between
+versions. Each switch checks the complete device state and preserves the values
+from before the first audition.
+Applying or restoring through Artifacts follows the Session's approval mode.
+When approval is required, the proposed changes and Apply/Cancel controls appear
+in the current chat, using the same review flow as agent edits.
+
+The first audition saves a **Before audition** parameter artifact.
+**Open original snapshot** opens its complete values. Every candidate remains
+saved in Artifacts. The comparison card switches directly between the candidates
+and Original. In Artifacts, **Use this sound** finishes a confirmed audition with
+the current values; **Restore before audition** remains available afterward.
+Restoration preserves the earlier decision in history and rechecks the device's
+current values before writing. Unconfirmed or externally changed results offer
+**Finish audition** with their inspection details.
+**Make primary** continues to control the version selected by default in the
+artifact library. A later audition captures a new starting snapshot.
+
+The application history keeps original values, confirmed results and unfinished
+changes across browser reconnection. Restore checks the target and all current
+values again. Conflicting edits, changed parameter layouts and unconfirmed writes
+require inspection before continuing. An unfinished switch retains confirmed
+changes from earlier candidates for recovery. Finish the current audition before
+choosing another device.
 Live Smith also checks whether changing one parameter affected others on the
 device. Application can stop partway through and can create several Live Undo
 steps.
@@ -354,6 +387,8 @@ Within the selected scope, the approval mode controls confirmation:
 
 All modes inspect the relevant Live objects, validate actions and recheck the
 Set before editing. One approved plan may create several Live Undo steps.
+In a Sound comparison card, clicking a candidate or Original supplies the
+confirmation for that selection directly.
 
 With **Manual** approval, the review shows an ordered action list above
 **Apply** and **Cancel**. Expand any action to see its complete parameters and

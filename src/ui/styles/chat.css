@@ -942,6 +942,7 @@ details.timeline-item > summary:hover {
 .timeline-activity-step > summary,
 .timeline-activity-input > summary,
 .timeline-activity-tool-details > summary,
+.parameter-artifact-details > summary,
 .timeline-item.reasoning > summary {
   @apply relative cursor-pointer list-none rounded-control normal-case;
   letter-spacing: normal;
@@ -951,6 +952,7 @@ details.timeline-item > summary:hover {
 .timeline-activity-step > summary::-webkit-details-marker,
 .timeline-activity-input > summary::-webkit-details-marker,
 .timeline-activity-tool-details > summary::-webkit-details-marker,
+.parameter-artifact-details > summary::-webkit-details-marker,
 .timeline-item.reasoning > summary::-webkit-details-marker {
   display: none;
 }
@@ -959,6 +961,7 @@ details.timeline-item > summary:hover {
 .timeline-activity-step > summary::before,
 .timeline-activity-input > summary::before,
 .timeline-activity-tool-details > summary::before,
+.parameter-artifact-details > summary::before,
 .timeline-item.reasoning > summary::before {
   content: "";
   position: absolute;
@@ -977,6 +980,7 @@ details.timeline-item > summary:hover {
 .timeline-activity-step[open] > summary::before,
 .timeline-activity-input[open] > summary::before,
 .timeline-activity-tool-details[open] > summary::before,
+.parameter-artifact-details[open] > summary::before,
 .timeline-item.reasoning[open] > summary::before {
   transform: rotate(90deg);
 }
@@ -985,6 +989,7 @@ details.timeline-item > summary:hover {
 .timeline-activity-step > summary:hover,
 .timeline-activity-input > summary:hover,
 .timeline-activity-tool-details > summary:hover,
+.parameter-artifact-details > summary:hover,
 .timeline-item.reasoning > summary:hover {
   background: rgba(255, 255, 255, 0.045);
 }
@@ -994,6 +999,7 @@ details.timeline-item > summary:hover {
   gap: 1px;
   margin: 2px 0 4px 9px;
 }
+
 
 .timeline-activity-summary {
   @apply text-muted;
@@ -1424,11 +1430,25 @@ details.timeline-item > .timeline-content {
 }
 .action-preview h3, .action-preview h4 { @apply text-label; margin: 0 0 6px; }
 .action-preview p { margin: 4px 0 8px; overflow-wrap: anywhere; }
-.midi-preview-switch { @apply flex flex-wrap gap-1 mb-2; }
-.midi-preview-switch button { @apply min-h-0 border-transparent bg-transparent px-2 py-1 text-small text-muted; }
+.midi-preview-switch, .parameter-candidate-choices { @apply flex min-w-0 flex-wrap gap-1; }
+.midi-preview-switch { @apply mb-2; }
+.midi-preview-switch button, .parameter-candidate-choices button { @apply min-h-0 border-transparent bg-transparent px-2 py-1 text-small text-muted; }
 .preview-coordinate, .preview-limits { @apply text-small text-muted; }
 .parameter-preview-values { font-variant-numeric: tabular-nums; }
 .parameter-artifact-view { @apply grid min-w-0 gap-3; }
+.parameter-artifact-view p { @apply m-0; }
+.chat-parameter-candidates, .sound-comparison-card { @apply min-w-0; }
+.sound-comparison-card { width: fit-content; max-width: min(100%, 32rem); }
+.sound-comparison-card .timeline-message-header h3 { @apply m-0 flex-none; }
+.sound-comparison-card .timeline-message-header span { @apply text-right; }
+.sound-comparison-card .timeline-content { @apply min-w-0 whitespace-normal; }
+.sound-comparison-card .parameter-artifact-view { @apply gap-2; }
+.parameter-candidate-choices button { @apply h-control-compact min-w-0 max-w-48 overflow-hidden text-ellipsis whitespace-nowrap border px-3 py-0; flex: 0 1 auto; }
+.parameter-candidate-choices button[aria-pressed="true"] { @apply border-border bg-field text-text opacity-100; }
+.parameter-artifact-details > summary { @apply flex min-h-6 items-center py-1 pl-[17px] pr-1 text-small text-muted; }
+.parameter-artifact-details > label { @apply grid min-w-0 gap-1 mt-3 text-small text-muted; }
+.parameter-artifact-details > .parameter-table-view { @apply mt-3; }
+.parameter-artifact-details > .artifact-actions, .parameter-artifact-details > details { @apply mt-3; }
 .parameter-artifact-view > label, .parameter-table-view > label { @apply grid min-w-0 gap-1 text-small text-muted; }
 .parameter-artifact-view input, .parameter-artifact-view select { @apply min-w-0 w-full; }
 .parameter-table-view { @apply grid min-w-0 gap-2; }
@@ -1862,7 +1882,8 @@ details.timeline-item > .timeline-content {
   @apply border-border bg-pane-raised text-text;
 }
 
-.inspector-scope-switch button:hover {
+.inspector-scope-switch button:hover,
+.parameter-candidate-choices button:not(:disabled):hover {
   @apply bg-surface-hover-soft text-text;
 }
 

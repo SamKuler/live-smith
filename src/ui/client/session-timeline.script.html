@@ -20,7 +20,7 @@
         runCommand,
         readSessionSearch,
         showStatus,
-        onExternalApproval,
+        onTimelineApproval,
         onInspectorTabChange = () => {},
       }) {
       const t = (message, params) => window.LiveSmithI18n.t(message, params);
@@ -1104,7 +1104,7 @@
         retainActiveSessionForWindow();
         const state = getState();
         const externalApprovalId = state.mcpApprovals?.[0]?.operationId || null;
-        if (externalApprovalId && externalApprovalId !== focusedExternalApprovalId) onExternalApproval?.();
+        if (externalApprovalId && externalApprovalId !== focusedExternalApprovalId) onTimelineApproval?.();
         focusedExternalApprovalId = externalApprovalId;
         sessionSearch.syncState(state);
         const currentSessions = state.sessions.filter((session) => isSessionVisible(session));
@@ -1947,8 +1947,14 @@
       }
 
       function appendTimelineActivitySegment(entries, steps) {
-        if (!steps.length) return;
-        entries.push({ activitySteps: steps });
+        let pending = [];
+        for (const step of steps) {
+          if (isSoundCandidateStep(step)) {
+            if (pending.length) { entries.push({ activitySteps: pending }); pending = []; }
+            entries.push({ soundCandidates: step.events.find(event => event.kind === "tool_result") });
+          } else pending.push(step);
+        }
+        if (pending.length) entries.push({ activitySteps: pending });
       }
 
       function timelineActivitySteps(events) {
@@ -2010,6 +2016,7 @@
         const queuedFollowUps = getQueuedFollowUps?.() || [];
         const webSearchUpdates = getWebSearchUpdates?.() || [];
         const pendingConfirmation = getPendingConfirmation();
+        if (pendingConfirmation && focusedConfirmationId !== pendingConfirmation.id) onTimelineApproval?.();
         const pendingUserMessage = getPendingUserMessage?.() || null;
         const renderKey = JSON.stringify({
           locale: window.LiveSmithI18n.locale,
@@ -2034,7 +2041,8 @@
         const operationIds = new Set((state.events || []).flatMap((event) => event.applyOperation ? [event.applyOperation.id] : []));
         if (pendingConfirmation?.operationId) operationIds.add(pendingConfirmation.operationId);
         for (const id of operationReviews.keys()) if (!operationIds.has(id)) operationReviews.delete(id);
-        artifactPreviews.sync(state.activeSessionId, (state.events || []).flatMap((event) => event.artifacts || []));
+        artifactPreviews.sync(state.activeSessionId, (state.events || []).flatMap((event) => event.artifacts || []),
+          (state.events || []).filter(event => event.kind === "tool_result" && event.name === "present_device_parameter_candidates").map(event => event.id));
         if (pendingReasoningSummaryFocus?.sessionId !== state.activeSessionId) {
           pendingReasoningSummaryFocus = null;
         }
@@ -2138,6 +2146,11 @@
         const visibleActivityIds = new Set();
         for (const approval of externalApprovals.filter(entry => entry.kind === "resolve_recovery")) desiredNodes.push(buildConfirmCard(approval));
         for (const entry of timelineActivityEntries(events)) {
+          if (entry.soundCandidates) {
+            const comparison = artifactPreviews.renderParameters(entry.soundCandidates.id, entry.soundCandidates.artifacts);
+            if (comparison) desiredNodes.push(comparison);
+            continue;
+          }
           if (entry.activitySteps) {
             const steps = entry.activitySteps;
             const pendingForStep = step => step.operationId && (step.operationId === pendingConfirmation?.operationId ? pendingConfirmation : externalApprovals.find(approval => approval.operationId === step.operationId));
@@ -2481,7 +2494,7 @@
           if (step.operationId) {
             content.push(renderOperationReview(step.operationId, step.events, confirm));
           } else {
-            const savedRefs = step.events.flatMap((event) => event.artifacts || []).filter((ref) => ref.kind === "midi" || ref.kind === "device-parameters");
+            const savedRefs = step.events.flatMap((event) => event.artifacts || []).filter((ref) => ref.kind === "midi");
             if (savedRefs.length) {
               for (const ref of savedRefs) { const preview = artifactPreviews.render(ref); if (preview) content.push(preview); }
             }
@@ -2728,6 +2741,14 @@
         return results.length > 0 && results.every(isPreviewArtifactOnlyResult);
       }
 
+      function isSoundCandidateStep(step) {
+        const results = step.events.filter(event => event.kind !== "tool_call");
+        const result = results[0];
+        return results.length === 1 && result.kind === "tool_result" && result.name === "present_device_parameter_candidates" &&
+          activityStepStatus(step) === "complete" && result.artifacts?.length > 0 &&
+          result.artifacts.every(ref => ref.kind === "device-parameters");
+      }
+
       function activityStepChangeCount(step) {
         for (const event of step.events) {
           if (event.kind !== "apply_auto_approved") continue;
@@ -2762,6 +2783,7 @@
           "capture_device_parameter_artifact": t("Capture device parameter artifact"),
           "inspect_device_parameter_artifact": t("Inspect device parameter artifact"),
           "save_device_parameter_artifact": t("Save device parameter artifact"),
+          "present_device_parameter_candidates": t("Present sound choices"),
           "listen_to_audio_asset": t("Listen to audio asset"),
           "livesmith_get_context": t("Read external tool context"),
           "livesmith_get_operation": t("Read external operation"),

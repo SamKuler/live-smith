@@ -1,15 +1,16 @@
 import { uiMessage, UiMessageError } from "../../i18n/ui-message.js";
 import { summarizeActionPlan, validateAgentPlan, type AgentPlan } from "../../agent/actions.js";
 import { assertEditScopesAllow, resolveEditScopes, type EditScope } from "../../agent/edit-scopes.js";
-import { parameterApplicationIsOpen, sameParameterLayout, sameParameterNumber, type DeviceParameterApplication, type DeviceParameterValue, type DeviceParameterWrite } from "../../agent/device-parameter-contracts.js";
+import { parameterApplicationIsOpen, parameterApplicationLeaves, sameParameterTarget, sameParameterLayout, sameParameterNumber, type DeviceParameterApplication, type DeviceParameterTarget, type DeviceParameterValue, type DeviceParameterWrite } from "../../agent/device-parameter-contracts.js";
 import type { AgentConfirmationDecision } from "../../agent/loop.js";
 import { requiredEditScopesForAction, requiredEditScopesForPlan } from "../../live/action-permissions.js";
 import { captureParameterDevice, resolveParameterDevice } from "../../live/device-parameters.js";
 import type { LiveInteractionContext } from "../../live/context.js";
 import { executeAgentPlanWithProgress } from "../../live/executor.js";
 import { throwIfAborted } from "../../runtime/host.js";
-import { listDeviceParameterApplications, readDeviceParameterArtifact, saveDeviceParameterApplication, saveDeviceParameterProgress } from "../../storage/device-parameter-artifacts.js";
-import { appendSessionEvent } from "../../storage/events.js";
+import { cloneJsonValue } from "../../model/json-clone.js";
+import { listDeviceParameterApplications, readDeviceParameterArtifact, saveDeviceParameterArtifact, saveDeviceParameterApplication, saveDeviceParameterProgress } from "../../storage/device-parameter-artifacts.js";
+import { appendSessionEvent, loadSessionEvents } from "../../storage/events.js";
 import { createStorageId } from "../../storage/id.js";
 import { listSessions } from "../../storage/sessions.js";
 import { preflightAgentPlan } from "../agent-request.js";
@@ -17,7 +18,7 @@ import { ChatBridgeCommandOutcomeUnknownError } from "../chat/chat-bridge.js";
 import type { LiveMutationQueue } from "../live-mutation-queue.js";
 import { subscribeSessionEditScopesChanges, subscribeSessionEditScopesInvalidations } from "../session/session-edit-scope-events.js";
 import type { ParameterArtifactCommand } from "./contracts.js";
-import { assertSnapshotMatchesDestination, requireParameterSession, restorableParameterEntries, type ParameterArtifactContext } from "./parameter-artifacts.js";
+import { assertSnapshotMatchesDestination, assertParameterAuditionCurrent, assertParameterRestorationCurrent, parameterApplicationForArtifact, parameterAuditionDestination, requireParameterSession, restorableParameterEntries, type ParameterArtifactContext } from "./parameter-artifacts.js";
 
 type ApplicationCommand = Exclude<ParameterArtifactCommand, { kind: "capture_device_parameters" }>;
 interface Dependencies extends ParameterArtifactContext {
@@ -26,44 +27,93 @@ interface Dependencies extends ParameterArtifactContext {
   confirm(plan: AgentPlan, guard: Awaited<ReturnType<typeof preflightAgentPlan>>, operationId: string): Promise<AgentConfirmationDecision>;
 }
 
+/** A chat choice confirms only a version or Original from its saved presentation. */
+async function assertPresentedChoice(input: ParameterArtifactContext, presentationId: string, artifactId: string, restorationTarget?: DeviceParameterTarget): Promise<void> {
+  const event = (await loadSessionEvents(input.storageDirectory, input.sessionId)).find(entry => entry.id === presentationId);
+  if (event?.kind !== "tool_result" || event.name !== "present_device_parameter_candidates" || event.outcome !== "success" ||
+      !event.artifacts?.length || event.artifacts.some(ref => ref.kind !== "device-parameters")) {
+    throw new UiMessageError(uiMessage("This sound choice is unavailable. Open a saved sound presentation."));
+  }
+  if (!restorationTarget && !event.artifacts.some(ref => ref.id === artifactId)) {
+    throw new UiMessageError(uiMessage("This version is not included in the sound choices."));
+  }
+  if (restorationTarget) {
+    const [presented, applied] = await Promise.all([
+      readDeviceParameterArtifact(input.storageDirectory, input.sessionId, event.artifacts[0]!.id),
+      readDeviceParameterArtifact(input.storageDirectory, input.sessionId, artifactId),
+    ]);
+    if ((!sameParameterTarget(presented.target, applied.target) && !sameParameterTarget(presented.target, restorationTarget)) ||
+        !sameParameterLayout(presented.parameters, applied.parameters)) {
+      throw new UiMessageError(uiMessage("These sound choices belong to another device."));
+    }
+  }
+  throwIfAborted(input.signal);
+}
+
 /** The caller holds the Session send fence. Human listening never holds the Live queue. */
 export async function runParameterApplication(input: Dependencies & ApplicationCommand): Promise<"applied" | "restored" | "kept" | "cancelled" | "unchanged"> {
   await requireParameterSession(input);
-  const applications = await listDeviceParameterApplications(input.storageDirectory, input.sessionId);
+  const history = await listDeviceParameterApplications(input.storageDirectory, input.sessionId);
+  const applications = parameterApplicationLeaves(history);
   const open = applications.findLast(parameterApplicationIsOpen);
   let application: DeviceParameterApplication;
   let values: DeviceParameterWrite[];
   let expectedParameters: DeviceParameterValue[];
   const restoring = input.kind === "restore_device_parameters";
+  const presentationId = input.kind === "apply_device_parameters" || restoring ? input.presentationId : undefined;
+  let restoresKeptApplication = false;
   if (input.kind === "apply_device_parameters") {
-    if (open) throw new UiMessageError(uiMessage("Keep or restore the previous parameter application before applying another version."));
     const artifact = await readDeviceParameterArtifact(input.storageDirectory, input.sessionId, input.artifactId);
-    const snapshot = await captureParameterDevice(input.context, input.target ?? artifact.target, input.signal);
-    assertSnapshotMatchesDestination(artifact, snapshot, input.target !== undefined);
+    if (presentationId) await assertPresentedChoice(input, presentationId, artifact.id);
+    const target = await parameterAuditionDestination(input, artifact, parameterApplicationForArtifact(history, artifact));
+    const snapshot = await captureParameterDevice(input.context, target, input.signal);
+    assertSnapshotMatchesDestination(artifact, snapshot, input.target !== undefined || !sameParameterTarget(target, artifact.target));
+    if (open) {
+      if (!sameParameterTarget(open.target, snapshot.target)) throw new UiMessageError(uiMessage("Finish the current device audition before choosing another device."));
+      assertParameterAuditionCurrent(open, snapshot);
+      if (open.artifactId === artifact.id) return "unchanged";
+    }
     expectedParameters = snapshot.parameters;
     const entries = artifact.parameters.map((parameter, index) => {
       const current = snapshot.parameters[index]!;
-      return { parameter: current, requested: parameter.value, state: "pending" as const };
+      const original = open?.entries[index]!.parameter ?? current;
+      return { parameter: original, requested: parameter.value,
+        ...(sameParameterNumber(current.value, original.value) ? { state: "pending" as const } : { state: "applied" as const, after: current.value }) };
     });
     application = { id: createStorageId("parameter_apply"), sessionId: input.sessionId, artifactId: artifact.id,
       artifactLabel: artifact.label, artifactVersion: artifact.version.number,
-      createdAt: new Date().toISOString(), target: snapshot.target, status: "applying", entries };
-    values = entries.filter((entry) => !sameParameterNumber(entry.parameter.value, entry.requested)).map((entry) => ({ parameterIndex: entry.parameter.index, parameterName: entry.parameter.name, value: entry.requested }));
-    if (!values.length) return "unchanged";
+      createdAt: new Date().toISOString(), target: snapshot.target, status: "applying", entries,
+      ...(open ? { previousApplicationId: open.id, ...(open.baselineArtifactId ? { baselineArtifactId: open.baselineArtifactId } : {}) } : {}) };
+    values = entries.filter((entry) => !sameParameterNumber(expectedParameters[entry.parameter.index]!.value, entry.requested)).map((entry) => ({ parameterIndex: entry.parameter.index, parameterName: entry.parameter.name, value: entry.requested }));
+    if (!values.length) {
+      // The executor observes and validates equal values without performing SDK writes.
+      values = entries.map((entry) => ({ parameterIndex: entry.parameter.index, parameterName: entry.parameter.name, value: entry.requested }));
+    }
   } else {
     const saved = applications.find((entry) => entry.id === input.applicationId);
-    if (!saved || !parameterApplicationIsOpen(saved) || open?.id !== saved.id) throw new UiMessageError(uiMessage("That parameter application is no longer pending."));
+    if (!saved) throw new UiMessageError(uiMessage("That parameter application is no longer pending."));
     application = saved;
     if (input.kind === "keep_device_parameters") {
+      if (!parameterApplicationIsOpen(saved) || open?.id !== saved.id) throw new UiMessageError(uiMessage("That parameter application is no longer pending."));
       application.status = "kept";
       await saveDeviceParameterApplication(input.storageDirectory, application);
       return "kept";
     }
+    assertParameterRestorationCurrent(history, saved);
+    if (presentationId) await assertPresentedChoice(input, presentationId, application.artifactId, application.target);
     const restorable = await restorableParameterEntries(input, application);
     expectedParameters = restorable.snapshot.parameters;
+    restoresKeptApplication = saved.status === "kept";
+    if (restoresKeptApplication) {
+      application = { ...cloneJsonValue(saved), id: createStorageId("parameter_apply"), previousApplicationId: saved.id,
+        createdAt: new Date().toISOString(), status: "restoring", restorationBaseline: restorable.snapshot.parameters };
+    }
     application.restorationBaseline ??= restorable.snapshot.parameters;
     values = restorable.entries.map((entry) => ({ parameterIndex: entry.parameter.index, parameterName: entry.parameter.name, value: entry.parameter.value }));
-    if (!values.length) { application.status = "restored"; await saveDeviceParameterApplication(input.storageDirectory, application); return "restored"; }
+    if (!values.length) {
+      if (!restoresKeptApplication) { application.status = "restored"; await saveDeviceParameterApplication(input.storageDirectory, application); return "restored"; }
+      values = application.entries.map((entry) => ({ parameterIndex: entry.parameter.index, parameterName: entry.parameter.name, value: entry.parameter.value }));
+    }
   }
   const bound = resolveParameterDevice(input.context, application.target);
   const interaction = { ...input.interaction, target: { track: bound.track, object: bound.resolved.device } };
@@ -106,7 +156,7 @@ export async function runParameterApplication(input: Dependencies & ApplicationC
     });
     await appendSessionEvent(input.storageDirectory, input.sessionId, { kind: "apply_requested", content: summarizeActionPlan(plan),
       applyOperation: { id: operationId, status: "proposed", plan, ...(guard.previews ? { previews: guard.previews } : {}) } });
-    const decision = await input.confirm(plan, guard, operationId);
+    const decision: AgentConfirmationDecision = presentationId ? { confirmed: true, source: "user" } : await input.confirm(plan, guard, operationId);
     throwIfAborted(input.signal);
     if (!decision.confirmed) {
       await appendSessionEvent(input.storageDirectory, input.sessionId, { kind: "apply_result", content: "Device parameter application cancelled.", applyOperation: { id: operationId, status: "cancelled" } });
@@ -119,18 +169,27 @@ export async function runParameterApplication(input: Dependencies & ApplicationC
         const restorable = await restorableParameterEntries(input, application);
         application.restorationBaseline ??= restorable.snapshot.parameters;
       }
+      if ((!restoring || restoresKeptApplication) && !application.baselineArtifactId) {
+        const baseline = await saveDeviceParameterArtifact(input.storageDirectory, input.sessionId, {
+          target: application.target, parameters: application.entries.map((entry) => entry.parameter),
+          label: `Before audition · ${application.artifactLabel}`.slice(0, 120), source: { kind: "captured" }, signal: input.signal,
+        });
+        application.baselineArtifactId = baseline.id;
+      }
       application.status = restoring ? "restoring" : "applying";
       await persist(); started = true;
       await executeAgentPlanWithProgress(input.context, plan, interaction.target, input.signal, bindings, (index, action) => {
         input.assertLiveSetCurrent(); resolveParameterDevice(input.context, application.target);
         assertEditScopesAllow(requiredEditScopesForAction(input.context, action, index, bindings), scopes);
       }, {
+        ...(presentationId ? { withinTransaction: input.context.withinTransaction.bind(input.context) } : {}),
         beforeWrite: async (index, current) => {
           const entry = entryAt(index);
-          if (current.handleId !== entry.parameter.handleId || !sameParameterNumber(current.value, restoring ? entry.after! : entry.parameter.value)) {
+          if (current.handleId !== entry.parameter.handleId || !sameParameterNumber(current.value, expectedParameters[entry.parameter.index]!.value)) {
             throw new UiMessageError(uiMessage('Parameter "{name}" changed before its write.', { name: current.name }));
           }
           entry.state = restoring ? "restoring" : "applying";
+          if (!restoring) delete entry.after;
           await persistEntry(entry);
         },
         afterWrite: async (index, actual) => {
@@ -143,7 +202,9 @@ export async function runParameterApplication(input: Dependencies & ApplicationC
         },
         writeNotStarted: async (index) => {
           const entry = entryAt(index);
-          entry.state = restoring ? "applied" : "pending";
+          const before = expectedParameters[entry.parameter.index]!.value;
+          if (restoring || !sameParameterNumber(before, entry.parameter.value)) { entry.state = "applied"; entry.after = before; }
+          else { entry.state = "pending"; delete entry.after; }
           await persistEntry(entry);
         },
       });

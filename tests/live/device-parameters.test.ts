@@ -10,6 +10,61 @@ import { preflightAgentPlan } from "../../src/app/agent-request.js";
 import { liveContextPresentationFixture } from "../app/context/support/live-context.test-harness.js";
 import { deviceParameterFixture } from "./support/device-parameter-fixture.js";
 
+test("transactional sound writes prepare every receipt then dispatch together before awaiting acknowledgements", async () => {
+  const h = deviceParameterFixture(3); const prepared: number[] = [], confirmed: number[] = [], started: number[] = [];
+  let inTransaction = false, transactions = 0;
+  const releases: (() => void)[] = [];
+  h.parameters.forEach((entry, index) => {
+    entry.parameter.setValue = value => {
+      assert.equal(inTransaction, true); assert.deepEqual(prepared, [0, 1, 2]); started.push(index);
+      const result = new Promise<void>(resolve => releases.push(() => { entry.state.value = value; resolve(); }));
+      if (started.length === 3) releases.forEach(release => release());
+      return result;
+    };
+  });
+  const result = await executeParameterWrites(h.device, h.parameters.map((entry, index) => ({ parameterIndex: index, parameterName: entry.parameter.name, value: 0.7 })), {
+    assertCurrent() {}, withinTransaction(fn) { transactions++; inTransaction = true; try { return fn(); } finally { inTransaction = false; } },
+    beforeWrite: async index => { assert.deepEqual(started, []); prepared.push(index); }, afterWrite: async index => { confirmed.push(index); },
+  });
+  assert.equal(transactions, 1); assert.equal(result.mutationCount, 3); assert.deepEqual(confirmed, [0, 1, 2]);
+});
+
+test("transactional preparation checks whole-device drift and returns unsubmitted receipts to their prior state", async () => {
+  for (const cause of ["drift", "stop", "receipt"] as const) {
+    const h = deviceParameterFixture(3), controller = createHostAbortController(); const reset: number[] = [];
+    await assert.rejects(executeParameterWrites(h.device, h.parameters.slice(0, 2).map((entry, index) => ({ parameterIndex: index, parameterName: entry.parameter.name, value: 0.7 })), {
+      signal: controller.signal, assertCurrent() {}, withinTransaction(fn) { return fn(); },
+      beforeWrite: async index => {
+        if (index !== 1) return;
+        if (cause === "drift") h.parameters[2]!.state.value = 0.4;
+        if (cause === "stop") controller.abort();
+        if (cause === "receipt") throw new Error("Receipt unavailable");
+      }, writeNotStarted: async index => { reset.push(index); },
+    }));
+    assert.deepEqual(h.writes, []); assert.deepEqual(reset, [0, 1]);
+  }
+});
+
+test("transactional write failure waits for other acknowledgements and records confirmed outcomes", async () => {
+  const h = deviceParameterFixture(3); const confirmed: number[] = []; let resolveLast!: () => void;
+  h.parameters[0]!.parameter.setValue = async () => { await Promise.resolve(); resolveLast(); throw new Error("SDK rejection"); };
+  h.parameters[2]!.parameter.setValue = value => new Promise<void>(resolve => { resolveLast = () => { h.parameters[2]!.state.value = value; resolve(); }; });
+  await assert.rejects(executeParameterWrites(h.device, h.parameters.map((entry, index) => ({ parameterIndex: index, parameterName: entry.parameter.name, value: 0.7 })), {
+    assertCurrent() {}, withinTransaction(fn) { return fn(); }, afterWrite: async index => { confirmed.push(index); },
+  }), /SDK rejection/);
+  assert.deepEqual(confirmed, [1, 2]); assert.equal(h.parameters[2]!.state.value, 0.7);
+});
+
+test("synchronous dispatch failure settles submitted writes and resets only unsubmitted receipts", async () => {
+  const h = deviceParameterFixture(3); const reset: number[] = [], confirmed: number[] = [];
+  h.parameters[1]!.parameter.setValue = () => { throw new Error("Synchronous SDK failure"); };
+  await assert.rejects(executeParameterWrites(h.device, h.parameters.map((entry, index) => ({ parameterIndex: index, parameterName: entry.parameter.name, value: 0.7 })), {
+    assertCurrent() {}, withinTransaction(fn) { let result: ReturnType<typeof fn>; assert.doesNotThrow(() => { result = fn(); }); return result!; }, beforeWrite: async () => {},
+    afterWrite: async index => { confirmed.push(index); }, writeNotStarted: async index => { reset.push(index); },
+  }), /Synchronous SDK failure/);
+  assert.deepEqual(confirmed, [0]); assert.deepEqual(reset, [2]); assert.deepEqual(h.writes, [[0, 0.7]]);
+});
+
 test("complete capture and bulk writes distinguish duplicate parameter names and exceed 64 parameters", async () => {
   const h = deviceParameterFixture(300);
   const snapshot = await captureParameterDevice(h.context, h.target);

@@ -353,16 +353,19 @@
             return completed && known;
           },
         });
+        const parameterCommand = async (input) => {
+          let known = false;
+          try {
+            const completed = await bridgeClient.runCommand(input.kind, input, { cancellable: true, onOutcome: (outcome) => { known = outcome.known; } });
+            return completed && known;
+          } finally { invalidateParameterArtifacts(input.sessionId); }
+        };
         const artifactLibrary = factories.createArtifactLibrary({
           transfer: transferArtifact,
           getState, read: bridgeClient.readSessionArtifacts, readArtifact: bridgeClient.readSessionArtifact,
           readMidiArtifactDiff: bridgeClient.readMidiArtifactDiff, readMidiPartPreview: bridgeClient.readMidiPartPreview,
           readDeviceParameters: bridgeClient.readDeviceParameters,
-          parameterCommand: async (input) => {
-            let known = false;
-            const completed = await bridgeClient.runCommand(input.kind, input, { cancellable: true, onOutcome: (outcome) => { known = outcome.known; } });
-            return completed && known;
-          },
+          parameterCommand,
           select: async (input) => {
             let known = false;
             const completed = await bridgeClient.runCommand("select_artifact", input, { onOutcome: (outcome) => { known = outcome.known; } });
@@ -375,11 +378,16 @@
         });
         const chatArtifactPreviews = factories.createChatArtifactPreviews({
           getState, readArtifact: bridgeClient.readSessionArtifact, transfer: transferArtifact, resultActions: pluginResults,
+          readDeviceParameters: bridgeClient.readDeviceParameters, parameterCommand,
           openArtifact: (artifact) => {
             openInspectorSection("artifacts", "sessionArtifacts");
             artifactLibrary.openArtifact(artifact);
           },
         });
+        function invalidateParameterArtifacts(sessionId) {
+          artifactLibrary.invalidateParameters(sessionId);
+          chatArtifactPreviews.invalidateParameters(sessionId);
+        }
         window.addEventListener("pagehide", (event) => {
           if (event.persisted) chatArtifactPreviews.suspend();
           else chatArtifactPreviews.dispose();
@@ -456,7 +464,7 @@
           isCommandInProgress: bridgeClient.isCommandInProgress,
           isConfirmationLocked: bridgeClient.isConfirmationLocked,
           resolveConfirm: bridgeClient.resolveConfirm,
-          onExternalApproval: () => setInspectorOpen(false),
+          onTimelineApproval: () => setInspectorOpen(false),
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
           onInspectorTabChange: (tab) => artifactLibrary.setVisible(tab === "artifacts" && !document.getElementById("inspectorPane").hidden),
@@ -1873,6 +1881,7 @@
         bridgeClient.connectView({
           announceAssistantMessage: sessionTimeline.announceAssistantMessage,
           invalidateSessionSearch: sessionTimeline.invalidateSessionSearch,
+          invalidateParameterArtifacts,
           clearGlobalSettingsFieldError:
             profileEditor.clearGlobalSettingsFieldError,
           clearFieldErrors: profileEditor.clearFieldErrors,
