@@ -168,6 +168,7 @@ test("explicit MIDI import materializes saved notes and records the applied resu
   assert.equal(events.at(-1)?.kind, "apply_result");
   assert.equal(events.at(-1)?.applyOperation?.status, "applied");
   assert.equal(events[0]?.applyOperation?.status, "proposed");
+  assert.deepEqual(events[0]?.applyOperation?.artifacts, [{ kind: "midi", id: h.saved.id }]);
   assert.equal(events[0]?.applyOperation?.plan?.actions.at(-1)?.type, "create_midi_clip");
   const action = events[0]?.applyOperation?.plan?.actions.at(-1);
   assert.ok(action?.type === "create_midi_clip");

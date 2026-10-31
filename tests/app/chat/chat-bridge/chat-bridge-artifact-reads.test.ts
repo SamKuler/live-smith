@@ -20,7 +20,7 @@ import type { ChatDialogState } from "../../../../src/ui/chat-state.js";
 const state = {} as ChatDialogState;
 const headers = { "Content-Type": "application/json" };
 const detail: SessionArtifactDetail = { sessionId: "session", artifact: { ref: { kind: "audio", id: "audio-1" },
-  label: "Track", createdAt: "2026-10-03", sourceLabel: "Generator", audio: { jobId: "job", durationSeconds: 4, mediaType: "audio/wav" } } };
+  label: "Track", createdAt: "2026-10-03", sourceLabel: "Generator", audio: { jobId: "job", durationSeconds: 4, mediaType: "audio/wav", sampleRate: 8000, channels: 1 } } };
 const diff: MidiArtifactDiff = { sessionId: "session", artifactRef: "midi-2", baseArtifactRef: "midi-1", baseVersion: 1,
   version: 2, beforeDurationBeats: 4, afterDurationBeats: 4, added: 0, removed: 0, modified: 0, unchanged: 0, parts: [] };
 const cases = [

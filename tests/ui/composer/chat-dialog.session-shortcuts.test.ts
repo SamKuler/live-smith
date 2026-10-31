@@ -8,6 +8,7 @@ const element = <T extends HTMLElement>(h: Harness, id: string) => h.document.ge
 const visibleShortcuts = (h: Harness) => [...h.document.querySelectorAll<HTMLElement>("[data-session-shortcut]")]
   .filter((button) => !button.hidden).map((button) => button.dataset.sessionShortcut);
 const visibleInspectorTabs = (h: Harness) => sessionInspectorTabs.filter((id) => !element(h, `${id}Tab`).hidden);
+const expectedInspectorTabs = (h: Harness) => sessionInspectorTabs.filter(id => id !== "artifacts" || element<HTMLInputElement>(h, "showSessionTab-artifacts").checked);
 const peerTabs = (tabs: SessionShortcutId[], revision: string, settings = stateFixture().settings) => ({
   type: "global_settings_changed", commandId: `peer-tabs-${revision}`,
   defaultFollowUpBehavior: settings.defaultFollowUpBehavior,
@@ -27,7 +28,7 @@ test("composer shortcuts open full Inspector panels and preserve message and bri
   assert.equal(element(h, "contextPanel").hidden, false);
   assert.equal(element(h, "contextTab").getAttribute("aria-selected"), "true");
   assert.equal(h.document.activeElement, element(h, "creativeBrief"));
-  assert.deepEqual(visibleInspectorTabs(h), sessionInspectorTabs);
+  assert.deepEqual(visibleInspectorTabs(h), expectedInspectorTabs(h));
   h.input("#creativeBrief", "Preserve the melody");
   assert.equal(element(h, "briefShortcut").dataset.state, "draft");
   element(h, "contextTab").dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "End", bubbles: true }));
@@ -61,7 +62,7 @@ test("the Context shortcut locates Live context while Brief retains its own sect
   assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
 });
 
-test("hiding every composer shortcut preserves the complete Inspector navigation and Skill activation", async (t) => {
+test("hiding composer shortcuts preserves remaining Inspector navigation and Skill activation", async (t) => {
   const state = stateFixture(); state.settings.sessionTabs = [...sessionShortcutIds];
   state.sessions[0]!.activeSkillIds = [state.availableSkills[0]!.id];
   state.activeSkillIds = [...state.sessions[0]!.activeSkillIds];
@@ -76,7 +77,7 @@ test("hiding every composer shortcut preserves the complete Inspector navigation
   assert.equal(element(h, "composerShortcuts").hidden, true);
   assert.equal(element(h, "appPanel").hidden, false);
   h.click("#sessionInspectorScope");
-  assert.deepEqual(visibleInspectorTabs(h), sessionInspectorTabs);
+  assert.deepEqual(visibleInspectorTabs(h), expectedInspectorTabs(h));
   h.click("#skillsTab");
   assert.equal(element(h, "skillsPanel").hidden, false);
   h.click("#settingsInspectorScope"); h.click("#appTab");
@@ -95,7 +96,7 @@ test("peer shortcut preferences leave the open panel, focus and unsaved draft in
     h.emitServerEvent(peerTabs(shortcuts as SessionShortcutId[], String(index + 1))); await h.settle();
     assert.equal(h.document.activeElement, element(h, "creativeBrief"));
     assert.equal(element(h, "contextPanel").hidden, false);
-    assert.deepEqual(visibleInspectorTabs(h), sessionInspectorTabs);
+    assert.deepEqual(visibleInspectorTabs(h), expectedInspectorTabs(h));
     assert.deepEqual(visibleShortcuts(h), shortcuts);
   }
   assert.equal(element<HTMLTextAreaElement>(h, "creativeBrief").value, "Unsaved per-Session notes");
@@ -167,7 +168,7 @@ test("tab configuration stays available during generation without consuming a dr
 });
 
 
-test("an Artifacts-only shortcut loads its library only when that shortcut opens it", async (t) => {
+test("an Artifacts-only shortcut loads the compact Session summary without opening the main page", async (t) => {
   const state = stateFixture(); state.openSettingsOnLoad = false; state.settings.sessionTabs = ["artifacts"];
   const h = await createDialogHarness(state); t.after(() => h.close());
   assert.equal(h.calls.filter((call) => call.path === "/session-artifacts").length, 0);
@@ -176,5 +177,6 @@ test("an Artifacts-only shortcut loads its library only when that shortcut opens
   h.click("#settingsButton"); h.click("#artifactsShortcut"); await h.settle();
   assert.equal(h.calls.filter((call) => call.path === "/session-artifacts").length, 1);
   assert.equal(element(h, "artifactsPanel").hidden, false);
+  assert.equal(element(h, "artifactsPage").hidden, true);
   assert.deepEqual(h.errors, []);
 });

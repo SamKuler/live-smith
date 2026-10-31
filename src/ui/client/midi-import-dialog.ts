@@ -51,7 +51,7 @@ export function createMidiImportDialog(deps: Dependencies) {
     const fields = element("fieldset", "midi-import-fields");
     const footer = element("div", "midi-import-footer");
     const status = element("p", "field-hint midi-import-status"); status.setAttribute("role", "status");
-    const submit = element("button", "primary plugin-result-apply", () => t("Add to Live")); submit.type = "submit"; submit.disabled = true;
+    const submit = element("button", "primary plugin-result-apply", () => t("Import")); submit.type = "submit"; submit.disabled = true;
     footer.append(status, submit); body.append(fields); form.append(body, footer); dialog.append(header, form);
     const view = { sessionId: input.sessionId, dialog, fields, previousFocus: document.activeElement,
       abort: undefined as AbortController | undefined, refresh: () => { bindings.refresh(dialog); fields.disabled = busy || loading; updatePreview(); } };

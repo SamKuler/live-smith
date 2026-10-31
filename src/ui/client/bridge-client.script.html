@@ -2364,7 +2364,7 @@
         requireView().renderPendingAttachments();
         requireView().renderSendPresentation();
         requireView().renderSessions();
-        promptControl.focus({ preventScroll: true });
+        requireView().focusComposer();
         promptControl.setSelectionRange(source.draft.length, source.draft.length);
         showStatus(
           source.recovery
@@ -3827,7 +3827,7 @@
         const parsed = parseComposerInput(promptControl?.value ?? "");
         if (parsed.kind === "invalid") {
           showStatus(parsed.message, true);
-          promptControl?.focus({ preventScroll: true });
+          requireView().focusComposer();
           return;
         }
         if (parsed.kind === "command") {
@@ -3837,7 +3837,7 @@
           );
           if (profileGate) {
             showStatus(profileGate, true);
-            promptControl?.focus({ preventScroll: true });
+            requireView().focusComposer();
             return;
           }
           void executeComposerCommand(parsed);
@@ -3972,7 +3972,7 @@
         const prompt = promptOverride ?? promptControl.value;
         if (!prompt.trim()) {
           showStatus(window.LiveSmithI18n.message("Enter a request for Live Smith."), true);
-          promptControl.focus({ preventScroll: true });
+          requireView().focusComposer();
           return;
         }
         if (
@@ -4268,7 +4268,7 @@
         const prompt = promptOverride ?? promptControl.value;
         if (!prompt.trim()) {
           showStatus(window.LiveSmithI18n.message("Enter a follow-up for the active request."), true);
-          promptControl.focus({ preventScroll: true });
+          requireView().focusComposer();
           return;
         }
         const entries = queuedFollowUpsBySession.get(attempt.sessionId) || [];
@@ -4811,7 +4811,7 @@
         const composerValue = sourceDraft ?? prompt;
         if (!prompt.trim()) {
           showStatus(window.LiveSmithI18n.message("Enter guidance for the active request."), true);
-          promptControl.focus({ preventScroll: true });
+          requireView().focusComposer();
           return;
         }
         if (attempt.steering && attempt.steering.prompt !== prompt) {
@@ -4819,7 +4819,7 @@
             window.LiveSmithI18n.message("The earlier steering outcome is unresolved. Retry the unchanged guidance before submitting different text."),
             true,
           );
-          promptControl.focus({ preventScroll: true });
+          requireView().focusComposer();
           return;
         }
         const pendingConfirmation = pendingConfirmationsBySession.get(

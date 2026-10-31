@@ -96,3 +96,14 @@ test("only tool results retain unique bounded saved artifact references", async 
   }
   await assert.rejects(appendSessionEvent(undefined, "session-artifact-result", { kind: "assistant", content: "Saved outputs", artifacts: event.artifacts }), /invalid/);
 });
+
+
+test("proposal artifact references survive reload and are rejected on terminal outcomes", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-artifact-history-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const artifacts = [{ kind: "midi" as const, id: "midi-version" }];
+  await appendSessionEvent(directory, "session-history", { kind: "apply_requested", content: "Import", applyOperation: { id: "import", status: "proposed", artifacts } });
+  artifacts[0]!.id = "changed";
+  assert.deepEqual((await loadSessionEvents(directory, "session-history"))[0]!.applyOperation!.artifacts, [{ kind: "midi", id: "midi-version" }]);
+  await assert.rejects(appendSessionEvent(directory, "session-history", { kind: "apply_result", content: "Result", applyOperation: { id: "import", status: "applied", artifacts } }), /invalid/);
+});

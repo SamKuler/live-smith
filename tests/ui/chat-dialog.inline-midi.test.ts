@@ -73,7 +73,7 @@ test("saved MIDI renders inline, preserves its part and viewport on refresh, and
     assert.equal(card.querySelector("svg"), svg); assert.equal(card.querySelector(".piano-roll-span")!.textContent, span);
     assert.equal(reads, 1);
     button(card, "Open artifact").click(); await h.settle();
-    assert.equal(h.document.getElementById("artifactsPanel")!.hidden, false);
+    assert.equal(h.document.getElementById("artifactsPage")!.hidden, false);
     assert.equal(h.document.querySelector("#artifact-preview-midi-saved-midi")?.getAttribute("id"), "artifact-preview-midi-saved-midi");
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }

@@ -87,3 +87,19 @@ test("source search accepts supported UI translations without translating author
   assert.equal((await listSessionArtifacts({ ...input, query: "主版本" })).total, 0);
   assert.equal((await listSessionArtifacts({ ...input, query: "Primary" })).artifacts[0]!.label, "Primary");
 });
+
+test("artifact type filters the complete catalog before pagination and combines with search", async (t) => {
+  const h = await audioStorageHarness(t);
+  const input = { storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal };
+  const audio = await savePluginAudioArtifact(h.storage, h.session.id, { connectionId: "generator", serverId: "audio", toolName: "make",
+    label: "Texture", bytes: waveBytes(), format: "wav", signal: h.signal });
+  for (let index = 0; index < 26; index++) await saveMidiArtifact(h.storage, h.session.id, { connectionId: "generator", serverId: "midi", toolName: "make",
+    label: `Notes ${index}`, bytes: midiBytes({ tracks: [noteTrack()] }), signal: h.signal });
+  assert.equal((await listSessionArtifacts(input)).artifacts.some((entry) => entry.ref.id === audio.id), false);
+  const filtered = await listSessionArtifacts({ ...input, kind: "audio", query: "Texture" });
+  assert.equal(filtered.kind, "audio"); assert.equal(filtered.total, 1);
+  assert.deepEqual(filtered.artifacts.map((entry) => entry.ref.id), [audio.id]); assert.equal(isSessionArtifacts(filtered), true);
+  const midi = await listSessionArtifacts({ ...input, kind: "midi", offset: 24 });
+  assert.equal(midi.total, 26); assert.equal(midi.artifacts.length, 2);
+  for (const kind of [["midi"], null, 1, "unknown"]) assert.equal(isSessionArtifacts({ ...filtered, kind }), false);
+});

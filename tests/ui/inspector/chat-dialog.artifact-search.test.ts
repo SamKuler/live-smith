@@ -10,9 +10,9 @@ import { listSessionArtifacts } from "../../../src/app/session/session-artifacts
 import type { SessionArtifact, SessionArtifacts } from "../../../src/app/session/session-artifacts.js";
 import { cloneState, commandCalls, createDialogHarness, stateFixture, waitForCondition } from "../support/chat-dialog.test-harness.js";
 
-type Query = { sessionId: string; offset: number; query?: string };
+type Query = { sessionId: string; offset: number; query?: string; kind?: "midi" | "audio" | "device-parameters" };
 const audio = (id: string, label: string): SessionArtifact => ({ ref: { kind: "audio", id }, label,
-  createdAt: "2026-10-03T00:00:00Z", sourceLabel: "Music generator", audio: { durationSeconds: 32, mediaType: "audio/wav" } });
+  createdAt: "2026-10-03T00:00:00Z", sourceLabel: "Music generator", audio: { durationSeconds: 32, mediaType: "audio/wav", sampleRate: 8000, channels: 1 } });
 const all = [audio("audio-a", "Arrangement"), audio("audio-b", "晨光")];
 const page = (input: Query, artifacts = all, total = artifacts.length): SessionArtifacts => ({ ...input, artifacts, total, unavailableCount: 0 });
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (error: Error) => void;
@@ -30,7 +30,7 @@ async function setup(read: (input: Query) => SessionArtifacts | Promise<SessionA
     }
     return original(input, init);
   } });
-  h.click("#artifactsTab");
+  h.click("#artifactsShortcut"); await h.settle(); reads.length = 0; h.click("#openArtifactsButton");
   await waitForCondition(() => reads.length === 1, "Expected initial artifact read");
   await h.settle();
   return { h, state, reads };
@@ -39,7 +39,7 @@ function action(h: Awaited<ReturnType<typeof setup>>["h"], label: string) {
   const button = [...h.document.querySelectorAll<HTMLButtonElement>("#artifactLibrary button")].find((entry) => entry.textContent === label);
   assert.ok(button, label); button.click();
 }
-const labels = (h: Awaited<ReturnType<typeof setup>>["h"]) => [...h.document.querySelectorAll(".artifact-open")].map((entry) => entry.textContent);
+const labels = (h: Awaited<ReturnType<typeof setup>>["h"]) => [...h.document.querySelectorAll(".artifact-work-name")].map((entry) => entry.textContent);
 
 test("searching the displayed Chinese source retrieves the saved artifact through the real catalog", async (t) => {
   const storage = await audioStorageHarness(t);
@@ -59,7 +59,7 @@ test("searching the displayed Chinese source retrieves the saved artifact throug
     return original(input, init);
   } });
   try {
-    h.click("#artifactsTab"); await waitForCondition(() => labels(h).length === 1, "Expected stored artifact");
+    h.click("#artifactsShortcut"); h.click("#openArtifactsButton"); await waitForCondition(() => labels(h).length === 1, "Expected stored artifact");
     h.click(".artifact-open"); assert.match(h.document.querySelector(".artifact-card")!.textContent!, /插件生成/);
     h.input("#artifactSearch", "插件生成");
     await waitForCondition(() => labels(h).length === 1, "Expected source translation to retrieve its artifact");
@@ -154,7 +154,7 @@ for (const scenario of [
     return original(input, init);
   } });
   try {
-    h.click("#artifactsTab"); await waitForCondition(() => pages.length === 1, "Expected initial catalog"); await h.settle();
+    h.click("#artifactsShortcut"); await waitForCondition(() => h.document.querySelectorAll(".artifact-summary-row").length > 0, "Expected summary catalog"); await h.settle(); pages.length = 0; h.click("#openArtifactsButton"); await waitForCondition(() => pages.length === 1, "Expected initial catalog"); await h.settle();
     h.input("#artifactSearch", "Melody");
     await waitForCondition(() => pages.length === 2, "Expected filtered catalog"); await h.settle();
     const lastOffset = Math.floor((scenario.initial - 1) / 24) * 24;
@@ -203,7 +203,7 @@ test("opening an exact artifact from chat clears an active filter and keeps the 
     open.click(); await h.settle();
     assert.equal(h.document.querySelector<HTMLInputElement>("#artifactSearch")!.value, "");
     assert.equal(h.document.querySelector(".artifact-open")!.getAttribute("aria-expanded"), "true");
-    action(h, "Export MIDI"); await h.settle();
+    action(h, "Export"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "export_artifact", sessionId: "session-1", artifact: saved.ref });
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
@@ -240,7 +240,7 @@ for (const kind of ["export_artifact", "select_artifact"] as const) test(`a matc
   try {
     h.input("#artifactSearch", "sketch"); await waitForCondition(() => reads.length === 2, "Expected old-version result"); await h.settle();
     h.click(".artifact-open"); assert.equal(h.document.querySelector<HTMLSelectElement>(".artifact-version-select")!.value, "audio-v1");
-    action(h, kind === "export_artifact" ? "Export audio" : "Make primary"); await waitForCondition(() => transfers === 1, "Expected held artifact mutation");
+    action(h, kind === "export_artifact" ? "Export" : "Default"); await waitForCondition(() => transfers === 1, "Expected held artifact mutation");
     h.input("#artifactSearch", "Work"); await new Promise((resolve) => h.window.setTimeout(resolve, 210));
     assert.equal(reads.length, 2, "A new query waits for the active mutation");
     held.resolve(); await waitForCondition(() => reads.length === 3, "Expected pending query after mutation"); await h.settle();
@@ -249,4 +249,43 @@ for (const kind of ["export_artifact", "select_artifact"] as const) test(`a matc
       : { kind, sessionId: reads[0]!.input.sessionId, selection: { action: "primary", group: { kind: "audio", id: "audio-v1" }, candidate: { kind: "audio", id: "audio-v1" } } });
     assert.equal(reads[2]!.input.query, "Work"); assert.deepEqual(h.errors, []);
   } finally { held.resolve(); h.close(); }
+});
+
+test("type selection cancels an obsolete catalog read and retains the filter through search", async () => {
+  const held = deferred<SessionArtifacts>();
+  const { h, reads } = await setup((input) => input.kind === "midi" ? held.promise : page(input, input.kind === "audio" ? [all[1]!] : all));
+  try {
+    h.click('[data-artifact-kind="midi"]'); await waitForCondition(() => reads.length === 2, 'Expected MIDI catalog');
+    h.click('[data-artifact-kind="audio"]'); await waitForCondition(() => reads.length === 3, 'Expected audio catalog'); await h.settle();
+    assert.equal(reads[1]!.signal?.aborted, true);
+    held.resolve(page(reads[1]!.input, [audio('obsolete', 'Obsolete')])); await h.settle();
+    assert.deepEqual(labels(h), ['晨光']);
+    h.input('#artifactSearch', 'morning'); await waitForCondition(() => reads.length === 4, 'Expected combined search');
+    assert.equal(reads[3]!.input.kind, 'audio'); assert.equal(reads[3]!.input.query, 'morning');
+    assert.equal(h.document.querySelector('[data-artifact-kind="audio"]')!.getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
+  } finally { held.resolve(page({ sessionId: 'session-1', offset: 0 })); h.close(); }
+});
+
+test("catalog search, type changes and paging retain the open chooser and its focused control until explicit selection", async () => {
+  const { h, reads } = await setup((input) => page(input, input.offset ? [audio('last', 'Last match')] : all, 25));
+  try {
+    h.click('.artifact-catalog-toggle');
+    const search = h.document.querySelector<HTMLInputElement>('#artifactSearch')!; search.focus();
+    h.input('#artifactSearch', 'morning'); await waitForCondition(() => reads.length === 2, 'Expected searched catalog'); await h.settle();
+    assert.equal(h.document.querySelector('.artifact-catalog-toggle')!.getAttribute('aria-expanded'), 'true');
+    assert.equal(h.document.activeElement, search);
+    const filter = h.document.querySelector<HTMLButtonElement>('[data-artifact-kind="audio"]')!; filter.focus(); filter.click();
+    await waitForCondition(() => reads.length === 3, 'Expected filtered catalog'); await h.settle();
+    assert.equal(h.document.querySelector('.artifact-catalog-toggle')!.getAttribute('aria-expanded'), 'true');
+    assert.equal(h.document.activeElement, filter);
+    const next = [...h.document.querySelectorAll<HTMLButtonElement>('.artifact-page-controls button')].find(button => button.textContent === 'Next page')!;
+    next.focus(); next.click(); await waitForCondition(() => reads.length === 4, 'Expected next page'); await h.settle();
+    assert.equal(h.document.querySelector('.artifact-catalog-toggle')!.getAttribute('aria-expanded'), 'true');
+    assert.equal(h.document.activeElement, next); assert.deepEqual(labels(h), ['Last match']);
+    h.click('.artifact-open');
+    assert.equal(h.document.querySelector('.artifact-catalog-toggle')!.getAttribute('aria-expanded'), 'false');
+    assert.equal(h.document.activeElement, h.document.querySelector('.artifact-detail'));
+    assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
 });

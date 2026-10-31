@@ -9,10 +9,18 @@ import { listSessions } from "../../storage/sessions.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { normalizeSearchQuery, searchTextMatches } from "./search-contracts.js";
 import { uiCatalogs } from "../../ui/i18n/messages.js";
-import { listDeviceParameterArtifacts, readDeviceParameterArtifact } from "../../storage/device-parameter-artifacts.js";
+import { listDeviceParameterApplications, listDeviceParameterArtifacts, readDeviceParameterArtifact } from "../../storage/device-parameter-artifacts.js";
 import type { DeviceParameterSnapshot } from "../../agent/device-parameter-contracts.js";
 
 export const ARTIFACT_PAGE_SIZE = 24;
+export interface ArtifactOperationRecord {
+  id: string;
+  createdAt: string;
+  artifact: ArtifactRef;
+  action: "parameters" | "import";
+  status: "applying" | "applied" | "restoring" | "restored" | "partial" | "kept" | "cancelled" | "failed" | "unknown";
+  target?: string;
+}
 export interface ArtifactGeneration {
   toolName: string;
   callEventId: string;
@@ -31,7 +39,8 @@ export interface SessionArtifact {
   version?: ArtifactVersion & { groupLabel: string };
   versions?: ArtifactVersionSummary[];
   primary?: ArtifactRef;
-  audio?: { durationSeconds: number; mediaType: "audio/wav" | "audio/mpeg"; jobId?: string };
+  history?: ArtifactOperationRecord[];
+  audio?: { durationSeconds: number; mediaType: "audio/wav" | "audio/mpeg"; sampleRate: number; channels: number; jobId?: string };
   midi?: { durationBeats: number; noteCount: number; parts: MidiArtifactPartSummary[];
     notes: (MidiPreviewNote & { partId: string })[]; omittedNoteCount: number };
   deviceParameters?: { parameterCount: number; target: DeviceParameterSnapshot["target"]; source: "captured" | "model" | "mcp"; parameters?: DeviceParameterSnapshot["parameters"] };
@@ -40,6 +49,7 @@ export interface SessionArtifactDetail { sessionId: string; artifact: SessionArt
 export interface SessionArtifacts {
   sessionId: string;
   query?: string;
+  kind?: ArtifactRef["kind"];
   artifacts: SessionArtifact[];
   total: number;
   offset: number;
@@ -161,12 +171,13 @@ export async function readSessionArtifactCatalog(input: SessionInput & { include
   artifacts: SessionArtifact[]; unavailableCount: number; continuation?: ArtifactRef;
 }> {
   await requireSession(input);
-  const [listing, audio, pluginAudio, events, parameters] = await Promise.all([
+  const [listing, audio, pluginAudio, events, parameters, applications] = await Promise.all([
     inspectMidiArtifacts(input.storageDirectory, input.sessionId), input.storageDirectory
       ? readAudioSessionState(input.storageDirectory, input.sessionId) : Promise.resolve({ jobs: [], assets: [] }),
     listPluginAudioArtifacts(input.storageDirectory, input.sessionId),
     loadSessionEvents(input.storageDirectory, input.sessionId),
     listDeviceParameterArtifacts(input.storageDirectory, input.sessionId),
+    listDeviceParameterApplications(input.storageDirectory, input.sessionId),
   ]);
   const { jobs, assets } = audio;
   const generations = artifactGenerationsFromEvents(events);
@@ -194,14 +205,14 @@ export async function readSessionArtifactCatalog(input: SessionInput & { include
         ...generationAt(`job:${job.id}`, job.createdAt),
         ...(job.artifactSource ? { parent: { ...job.artifactSource } } : {}),
         version: { ...artifactVersion(asset), groupLabel: job.title || asset.label },
-        audio: { durationSeconds: asset.durationSeconds, mediaType: asset.mediaType, jobId: job.id } };
+        audio: { durationSeconds: asset.durationSeconds, mediaType: asset.mediaType, sampleRate: asset.sampleRate, channels: asset.channels, jobId: job.id } };
     }),
     ...pluginAudio.map((artifact): SessionArtifact => ({ ref: { kind: "audio", id: artifact.id }, label: artifact.label,
       createdAt: artifact.createdAt, sourceLabel: "Plugin-generated audio",
       ...generationAt(`audio:${artifact.id}`, artifact.createdAt),
       ...(artifact.sourceArtifact ? { parent: artifact.sourceArtifact } : {}),
       version: { ...artifact.version, groupLabel: artifact.label },
-      audio: { durationSeconds: artifact.durationSeconds, mediaType: artifact.mediaType } })),
+      audio: { durationSeconds: artifact.durationSeconds, mediaType: artifact.mediaType, sampleRate: artifact.sampleRate, channels: artifact.channels } })),
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || artifactKey(a.ref).localeCompare(artifactKey(b.ref)));
   const artifacts = summaries;
   const groups = new Map<string, SessionArtifact[]>();
@@ -211,7 +222,32 @@ export async function readSessionArtifactCatalog(input: SessionInput & { include
     group.push(artifact); groups.set(key, group);
   }
   const selectedPrimaries = primaryArtifactsFromEvents(events);
+  const operations: ArtifactOperationRecord[] = applications.map((application) => ({
+    id: application.id, createdAt: application.createdAt, artifact: { kind: "device-parameters", id: application.artifactId },
+    action: "parameters", status: application.status,
+    target: `${application.target.trackName} · ${application.target.deviceName}`,
+  }));
+  const outcomes = new Map(events.filter((event) => event.kind === "apply_result" && event.applyOperation)
+    .map((event) => [event.applyOperation!.id, event]));
+  for (const event of events) {
+    if (event.kind !== "apply_requested" || !event.applyOperation) continue;
+    const operation = event.applyOperation;
+    const refs = [...operation.artifacts ?? []];
+    for (const action of operation.plan?.actions ?? []) {
+      if ("source" in action && action.source?.kind === "audio_asset") refs.push({ kind: "audio", id: action.source.assetRef });
+    }
+    const outcome = outcomes.get(operation.id);
+    for (const ref of new Map(refs.map((ref) => [artifactKey(ref), ref])).values()) {
+      if (ref.kind === "device-parameters") continue;
+      operations.push({ id: operation.id, artifact: ref, action: "import", createdAt: outcome?.createdAt ?? event.createdAt,
+        status: outcome?.applyOperation?.status as ArtifactOperationRecord["status"] ?? "unknown" });
+    }
+  }
   for (const [key, group] of groups) {
+    const members = new Set(group.map((artifact) => artifactKey(artifact.ref)));
+    const history = operations.filter((operation) => members.has(artifactKey(operation.artifact)))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    for (const artifact of group) artifact.history = history;
     const versioned = group.filter((artifact) => artifact.version);
     const versions = versioned.map((artifact): ArtifactVersionSummary => ({ id: artifact.ref.id,
       label: artifact.label, number: artifact.version!.number, createdAt: artifact.createdAt,
@@ -259,10 +295,10 @@ export function defaultSessionArtifact(group: readonly SessionArtifact[]): Sessi
   return primary ? group.find((artifact) => artifactKey(artifact.ref) === artifactKey(primary)) ?? group[0] : group[0];
 }
 
-export async function listSessionArtifacts(input: SessionInput & { offset?: number; query?: string }): Promise<SessionArtifacts> {
+export async function listSessionArtifacts(input: SessionInput & { offset?: number; query?: string; kind?: ArtifactRef["kind"] }): Promise<SessionArtifacts> {
   const catalog = await readSessionArtifactCatalog(input);
   const query = normalizeSearchQuery(input.query ?? "");
-  const summaries = groupSessionArtifacts(catalog.artifacts).map((group) => {
+  const summaries = groupSessionArtifacts(catalog.artifacts.filter((artifact) => !input.kind || artifact.ref.kind === input.kind)).map((group) => {
     if (!query) return group;
     const matches = group.filter((artifact) => [artifact.label, artifact.sourceLabel, artifact.version ? `v${artifact.version.number}` : "",
       artifact.deviceParameters?.target.trackName ?? "", artifact.deviceParameters?.target.deviceName ?? "",
@@ -286,6 +322,7 @@ export async function listSessionArtifacts(input: SessionInput & { offset?: numb
   await requireSession(input);
   return { sessionId: input.sessionId, artifacts, total: summaries.length, offset, unavailableCount,
     ...(query ? { query } : {}),
+    ...(input.kind ? { kind: input.kind } : {}),
     ...(catalog.continuation ? { continuation: catalog.continuation } : {}) };
 }
 

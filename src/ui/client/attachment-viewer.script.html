@@ -111,6 +111,57 @@
         return { element, media, dispose: () => disposeInlineMedia(preview) };
       }
 
+      function createArtifactAudioPlayer(sessionId, descriptor, sourceUrl) {
+        const player = createAudioPlayer(sessionId, descriptor, sourceUrl);
+        const { element, media } = player;
+        element.classList.add("artifact-audio-player"); media.preload = "metadata";
+        const waveform = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        waveform.classList.add("attachment-waveform"); waveform.setAttribute("viewBox", "0 0 480 120");
+        waveform.setAttribute("preserveAspectRatio", "none"); waveform.setAttribute("role", "img");
+        const path = document.createElementNS(waveform.namespaceURI, "path"); waveform.append(path);
+        const status = document.createElement("p"); status.className = "field-hint"; status.setAttribute("role", "status");
+        const retry = document.createElement("button"); retry.type = "button"; retry.className = "secondary"; retry.hidden = true;
+        const options = document.createElement("div"); options.className = "artifact-audio-options";
+        const volumeLabel = document.createElement("label"); const volumeText = document.createElement("span");
+        const volume = document.createElement("input"); volume.type = "range"; volume.min = "0"; volume.max = "1"; volume.step = ".01"; volume.value = String(media.volume);
+        volume.addEventListener("input", () => { media.volume = Number(volume.value); }); volumeLabel.append(volumeText, volume);
+        const loopLabel = document.createElement("label"); const loopText = document.createElement("span"); const loop = document.createElement("input"); loop.type = "checkbox";
+        loop.addEventListener("change", () => { media.loop = loop.checked; }); loopLabel.append(loop, loopText); options.append(volumeLabel, loopLabel);
+        element.prepend(waveform, status, retry); element.append(options);
+        let disposed = false, suspended = false, loaded = false, reading = null, failed = false;
+        const refreshLocale = () => {
+          waveform.setAttribute("aria-label", t("Audio waveform")); volumeText.textContent = t("Volume"); loopText.textContent = t("Loop");
+          retry.textContent = t("Retry preview");
+          status.textContent = t(failed ? "Waveform unavailable. Playback remains available." : "Loading waveform…");
+        };
+        const suspend = () => {
+          suspended = true; media.pause();
+          if (reading) { reading.controller.abort(); if (reading.context) void reading.context.close().catch(() => {}); reading = null; }
+        };
+        async function load() {
+          if (disposed || suspended || loaded || reading) return;
+          const view = { sessionId, controller: new window.AbortController(), context: null, decoded: null,
+            isCurrent: () => !disposed && !suspended && reading === view };
+          reading = view; failed = false; status.hidden = false; retry.hidden = true; refreshLocale();
+          try {
+            const response = await fetch(sourceUrl, { signal: view.controller.signal }); checkAudioView(view);
+            if (!response.ok) throw new Error(t("The saved audio could not be decoded."));
+            const bytes = await response.arrayBuffer(); checkAudioView(view);
+            const result = descriptor.mediaType === "audio/mpeg" ? await mp3Peaks(bytes, view, descriptor) : await wavePeaks(bytes, view);
+            checkAudioView(view);
+            path.setAttribute("d", Array.from(result.peaks, (peak, index) => `M${index},${60 - Math.max(1, peak * 55)}v${Math.max(2, peak * 110)}`).join(""));
+            loaded = true; status.hidden = true;
+          } catch {
+            if (reading === view && !view.controller.signal.aborted) { failed = true; retry.hidden = false; refreshLocale(); }
+          } finally { view.decoded = null; if (reading === view) reading = null; }
+        }
+        retry.addEventListener("click", () => { void load(); }); refreshLocale(); void load();
+        return { element, media, refreshLocale, suspend,
+          resume() { suspended = false; refreshLocale(); void load(); },
+          dispose() { disposed = true; suspend(); player.dispose(); },
+        };
+      }
+
       function createPreview(sessionId, attachment) {
         if (attachment.kind === "audio") {
           const player = createAudioPlayer(sessionId, attachment, getAttachmentUrl(sessionId, attachment.id));
@@ -382,7 +433,7 @@
       }
 
       function checkAudioView(view) {
-        if (activeAudio !== view || view.controller.signal.aborted || getState().activeSessionId !== view.sessionId) {
+        if ((view.isCurrent ? !view.isCurrent() : activeAudio !== view) || view.controller.signal.aborted || getState().activeSessionId !== view.sessionId) {
           throw new Error(t("Audio selection cancelled."));
         }
       }
@@ -613,5 +664,5 @@
           else if (preview.kind === "audio") preview.media.pause();
         }
       });
-      return { open, createPreview, createAudioPlayer, sync, close, reuse };
+      return { open, createPreview, createAudioPlayer, createArtifactAudioPlayer, sync, close, reuse };
       };

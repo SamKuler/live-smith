@@ -12,7 +12,7 @@ const artifacts: SessionArtifact[] = [
     midi: { durationBeats: 8, noteCount: 2, parts: [{ id: "track-0-channel-1", sourceTrackIndex: 0, channel: 1, sourceTrackName: "Piano", noteCount: 2, durationBeats: 8 }],
       notes: [{ partId: "track-0-channel-1", pitch: 60, startTime: 0, duration: 1 }, { partId: "track-0-channel-1", pitch: 64, startTime: 2, duration: 1 }], omittedNoteCount: 0 } },
   { ref: { kind: "audio", id: "audio-b" }, label: "Warm arrangement", createdAt: "2026-10-03T00:00:01Z", sourceLabel: "Music generator",
-    parent: { kind: "midi", id: "midi-a" }, audio: { durationSeconds: 32, mediaType: "audio/wav", jobId: "job-b" } },
+    parent: { kind: "midi", id: "midi-a" }, audio: { durationSeconds: 32, mediaType: "audio/wav", sampleRate: 8000, channels: 1, jobId: "job-b" } },
 ];
 
 async function setup(defer = false, entries: SessionArtifact[] = artifacts, language: "en" | "zh-CN" = "en") {
@@ -34,7 +34,7 @@ async function setup(defer = false, entries: SessionArtifact[] = artifacts, lang
     if (path === "/session-artifacts") {
       readCount++; if (defer) await gate;
       const groups = new Map<string, SessionArtifact>();
-      for (const entry of entries) {
+      for (const entry of entries.filter((entry) => body.sessionId === state.activeSessionId && (!body.kind || entry.ref.kind === body.kind))) {
         const key = `${entry.ref.kind}:${entry.version?.groupId ?? entry.ref.id}`;
         const primary = primaries.get(key);
         if (primary?.id === entry.ref.id || (!primary || groups.get(key)?.ref.id !== primary.id) &&
@@ -42,7 +42,7 @@ async function setup(defer = false, entries: SessionArtifact[] = artifacts, lang
       }
       return { ok: true, json: async () => ({ sessionId: body.sessionId,
         artifacts: [...groups.values()].slice(body.offset, body.offset + 24).map(withVersions), total: groups.size, offset: body.offset, unavailableCount: 0,
-        ...(continuation ? { continuation } : {}) }) };
+        ...(continuation ? { continuation } : {}), ...(body.kind ? { kind: body.kind } : {}) }) };
     }
     if (path === "/session-artifact") return { ok: true, json: async () => ({ sessionId: body.sessionId,
       artifact: withVersions(entries.find((entry) => entry.ref.id === body.artifact.id)!) }) };
@@ -71,7 +71,7 @@ async function setup(defer = false, entries: SessionArtifact[] = artifacts, lang
     }
     return originalFetch(input, init);
   } });
-  const open = async () => { assert.deepEqual(h.errors, []); h.click("#artifactsTab"); await h.settle(); assert.deepEqual(h.errors, []); await waitForCondition(() => h.document.querySelectorAll(".artifact-open").length === Math.min(new Set(entries.map((entry) => entry.version?.groupId ?? entry.ref.id)).size, 24), `Expected saved artifacts: ${h.document.querySelector("#artifactLibrary")?.textContent}`); };
+  const open = async () => { assert.deepEqual(h.errors, []); h.click("#artifactsShortcut"); h.click("#openArtifactsButton"); await h.settle(); assert.deepEqual(h.errors, []); await waitForCondition(() => h.document.querySelectorAll(".artifact-open").length === Math.min(new Set(entries.map((entry) => entry.version?.groupId ?? entry.ref.id)).size, 24), `Expected saved artifacts: ${h.document.querySelector("#artifactLibrary")?.textContent}`); };
   return { h, state, open, release, get playCount() { return playCount; }, get readCount() { return readCount; } };
 }
 
@@ -83,21 +83,29 @@ function action(h: Awaited<ReturnType<typeof setup>>["h"], text: string) {
 test("artifact browsing keeps source selection out of the timeline and prepares only a draft", async () => {
   const s = await setup(); const { h } = s;
   try {
-    await s.open(); h.click('button.artifact-open[data-artifact-key="midi:midi-a"]'); h.click('button.artifact-open[data-artifact-key="audio:audio-b"]');
+    await s.open(); h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
     assert.equal(h.document.querySelector('[aria-label="Saved MIDI note preview"]')!.getAttribute("role"), "img");
-    assert.match(h.document.querySelector("#artifactLibrary")!.textContent!, /Source artifact: Piano variation/);
+
     assert.match(h.document.querySelector("#artifactLibrary")!.textContent!, /"seed":12/);
     const generationSections = [...h.document.querySelectorAll<HTMLDetailsElement>(".artifact-card details")].filter((details) => details.querySelector("summary")?.textContent === "Generation parameters");
-    assert.equal(generationSections.length, 2);
-    assert.equal(generationSections[0]!.hidden, false); assert.equal(generationSections[1]!.hidden, true);
+    assert.equal(generationSections.length, 1);
+    assert.equal(generationSections[0]!.hidden, false);
     generationSections[0]!.open = true; assert.match(generationSections[0]!.textContent!, /"seed":12/);
+    h.click('button.artifact-open[data-artifact-key="audio:audio-b"]');
+    assert.equal(h.document.querySelectorAll(".artifact-card").length, 1);
+    assert.match(h.document.querySelector("#artifactLibrary")!.textContent!, /Source artifact: Piano variation/);
     const audio = h.document.querySelector<HTMLAudioElement>(".artifact-card audio")!;
     assert.match(audio.src, /\/audio-assets\/audio-b\?token=.*sessionId=/); assert.equal(audio.controls, false);
     h.click(".artifact-card .attachment-audio-toggle"); await h.settle(); assert.equal(s.playCount, 1);
-    h.input("#prompt", "Keep the dynamics."); action(h, "Create next version");
+    h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
+    assert.equal(audio.isConnected, false);
+    h.input("#prompt", "Keep the dynamics."); action(h, "Continue creating");
     await waitForCondition(() => h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value.includes("Piano variation"), "Expected candidate draft");
     assert.match(h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value, /^Keep the dynamics\./);
     assert.equal(jsonCalls(h, "/send").length, 0);
+    assert.equal(h.document.getElementById('artifactsPage')!.hidden, true);
+    assert.equal(h.document.getElementById('chatPage')!.hidden, false);
+    assert.equal(h.document.activeElement?.id, 'prompt');
     assert.deepEqual(commandCalls(h)[0]!.body, { kind: "select_artifact", sessionId: s.state.activeSessionId,
       selection: { action: "continue", candidate: { kind: "midi", id: "midi-a" } } });
     await h.settle();
@@ -119,17 +127,49 @@ test("artifact MIDI import reuses observed mapping preview and audio import only
   const s = await setup(); const { h } = s;
   try {
     await s.open(); h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
-    action(h, "Add to Live"); await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected M2 mapping");
+    action(h, "Import"); await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected M2 mapping");
     h.select(".plugin-result-track", "2"); h.input(".plugin-result-beat", "9");
     assert.match(h.document.querySelector('[aria-label="Clip preview"]')!.textContent!, /Piano.*beats 9–17/);
     h.click(".plugin-result-apply"); await h.settle();
     assert.deepEqual(commandCalls(h)[0]!.body, { kind: "import_midi_artifact", sessionId: s.state.activeSessionId,
       artifactRef: "midi-a", startBeat: 8, mappings: [{ partId: "track-0-channel-1", trackId: "2", trackName: "Piano" }] });
-    h.click('button.artifact-open[data-artifact-key="audio:audio-b"]'); action(h, "Prepare audio import in chat"); await h.settle();
+    h.click('button.artifact-open[data-artifact-key="audio:audio-b"]'); action(h, "Prepare import"); await h.settle();
     assert.match(h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value, /audio-b/);
     assert.equal(jsonCalls(h, "/send").length, 0); assert.equal(commandCalls(h).length, 1);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
+});
+
+for (const focus of ["import", "search", "chat"] as const) test(`MIDI import completion preserves ${focus} focus while refreshing its history`, async () => {
+  const s = await setup(); const { h } = s; let commandHeld = false;
+  let holdRead = false, refreshStarted = false;
+  let releaseRead!: () => void; const gate = new Promise<void>((resolve) => { releaseRead = resolve; });
+  const original = h.window.fetch;
+  Object.defineProperty(h.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (holdRead && new URL(String(input)).pathname === "/session-artifacts") { refreshStarted = true; await gate; }
+    return original(input, init);
+  } });
+  try {
+    await s.open();
+    const detail = h.document.querySelector<HTMLElement>(".artifact-detail")!; detail.scrollTop = 150;
+    const add = detail.querySelector<HTMLButtonElement>(".artifact-import")!; add.focus(); add.click();
+    await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected MIDI mapping");
+    h.holdNextCommand(); commandHeld = true; h.click(".plugin-result-apply"); await h.settle();
+    if (focus === "search") h.document.getElementById("artifactSearch")!.focus();
+    else if (focus === "chat") h.click("#closeArtifactsButton");
+    const retainedFocus = h.document.activeElement;
+    holdRead = true; h.releaseHeldCommand(); commandHeld = false; await h.settle();
+    if (focus === "chat") {
+      assert.equal(refreshStarted, false); assert.equal(h.document.activeElement, retainedFocus);
+      assert.equal(h.document.activeElement?.id, "chatPage");
+    } else {
+      await waitForCondition(() => refreshStarted, "Expected the import history refresh");
+      assert.equal(add.disabled, true);
+      assert.equal(h.document.activeElement, focus === "import" ? detail : h.document.getElementById("artifactSearch"));
+      assert.equal(detail.scrollTop, 150);
+    }
+    releaseRead(); await h.settle(); assert.deepEqual(h.errors, []);
+  } finally { releaseRead(); if (commandHeld) h.releaseHeldCommand(); await h.settle(); h.close(); }
 });
 
 test("read-only browsing and compact audio playback remain available during generation", async () => {
@@ -137,8 +177,8 @@ test("read-only browsing and compact audio playback remain available during gene
   try {
     await s.open(); h.click('button.artifact-open[data-artifact-key="audio:audio-b"]');
     h.click("#closeArtifactsButton");
-    h.holdNextSend(); held = true; h.input("#prompt", "Continue composing"); h.click("#sendButton"); await h.settle(); h.click("#artifactsTab");
-    const continuation = [...h.document.querySelectorAll<HTMLButtonElement>("#artifactLibrary button")].find((button) => button.textContent === "Continue in chat")!;
+    h.holdNextSend(); held = true; h.input("#prompt", "Continue composing"); h.click("#sendButton"); await h.settle(); h.click("#artifactsShortcut"); h.click("#openArtifactsButton");
+    const continuation = [...h.document.querySelectorAll<HTMLButtonElement>("#artifactLibrary button")].find((button) => button.textContent === "Continue creating")!;
     assert.equal(continuation.disabled, true);
     h.click(".artifact-card .attachment-audio-toggle"); await h.settle(); assert.equal(s.playCount, 1);
     h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
@@ -153,7 +193,7 @@ test("read-only browsing and compact audio playback remain available during gene
 test("delayed artifact read cannot populate another Session or keep its audio player", async () => {
   const s = await setup(true); const { h } = s;
   try {
-    h.click("#artifactsTab"); await waitForCondition(() => s.readCount > 0, "Expected candidate read");
+    h.click("#artifactsShortcut"); h.click("#openArtifactsButton"); await waitForCondition(() => s.readCount > 0, "Expected candidate read");
     h.click('.session-entry[data-session-id="session-2"] .session-row'); await h.settle();
     s.release(); await h.settle();
     assert.equal(h.document.querySelector(".artifact-card"), null);
@@ -171,16 +211,18 @@ test("MIDI version actions retain the exact selected version for export, chat at
   const s = await setup(false, [revised, original]); const { h } = s;
   try {
     await s.open(); h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
-    action(h, "Export MIDI"); await h.settle();
+    action(h, "Export"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "export_artifact", sessionId: s.state.activeSessionId, artifact: { kind: "midi", id: "midi-v2" } });
-    action(h, "Attach to message"); await h.settle();
+    action(h, "Attach"); await h.settle();
     assert.equal(h.document.getElementById("inspectorPane")!.hidden, true);
+    assert.equal(h.document.getElementById('artifactsPage')!.hidden, true);
+    assert.equal(h.document.getElementById('chatPage')!.hidden, false);
     assert.equal(h.document.activeElement?.id, "prompt");
-    h.click("#artifactsTab");
-    await waitForCondition(() => [...h.document.querySelectorAll<HTMLButtonElement>("#artifactLibrary button")].some((button) => button.textContent === "Create next version" && !button.disabled), "Expected refreshed version controls");
+    h.click("#artifactsShortcut"); h.click("#openArtifactsButton");
+    await waitForCondition(() => [...h.document.querySelectorAll<HTMLButtonElement>("#artifactLibrary button")].some((button) => button.textContent === "Continue creating" && !button.disabled), "Expected refreshed version controls");
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "attach_artifact", sessionId: s.state.activeSessionId, artifact: { kind: "midi", id: "midi-v2" } });
     assert.equal(jsonCalls(h, "/send").length, 0);
-    action(h, "Create next version"); await h.settle();
+    action(h, "Continue creating"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "select_artifact", sessionId: s.state.activeSessionId,
       selection: { action: "continue", candidate: { kind: "midi", id: "midi-v2" } } });
     assert.match(h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value, /new version.*Piano variation · v2/);
@@ -189,22 +231,22 @@ test("MIDI version actions retain the exact selected version for export, chat at
   } finally { h.close(); }
 });
 
-test("browsing and refreshing artifacts preserves active audio and open MIDI import drafts", async () => {
+test("switching works disposes audio while refreshing preserves the selected MIDI import draft", async () => {
   const s = await setup(); const { h } = s;
   try {
     await s.open(); h.click('button.artifact-open[data-artifact-key="audio:audio-b"]');
     const audio = h.document.querySelector<HTMLAudioElement>(".artifact-card audio")!;
     h.click(".artifact-card .attachment-audio-toggle"); await h.settle(); audio.currentTime = 12;
     h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
-    assert.equal(h.document.querySelector(".artifact-card audio"), audio, "opening another artifact must retain the playing media element");
+    assert.equal(h.document.querySelector(".artifact-card audio"), null, "switching work disposes the previous player");
     assert.equal(audio.currentTime, 12);
-    action(h, "Add to Live"); await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected mapping");
+    action(h, "Import"); await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected mapping");
     h.select(".plugin-result-track", "2"); h.input(".plugin-result-beat", "9");
     const track = h.document.querySelector<HTMLSelectElement>(".plugin-result-track")!;
     const refreshed = cloneState(h.readBootstrappedClientStateReference());
     h.setServerState(refreshed);
     h.emitServerEvent({ type: "session_state_invalidated", sessionId: s.state.activeSessionId }); await h.settle();
-    assert.equal(h.document.querySelector(".artifact-card audio"), audio);
+    assert.equal(h.document.querySelector(".artifact-card audio"), null);
     assert.equal(audio.currentTime, 12);
     assert.equal(h.document.querySelector(".plugin-result-track"), track);
     assert.equal(track.value, "2");
@@ -212,9 +254,10 @@ test("browsing and refreshing artifacts preserves active audio and open MIDI imp
     h.document.querySelector<HTMLButtonElement>(".midi-import-header button")!.click();
     action(h, "Refresh artifacts"); await h.settle();
     h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
-    assert.equal(h.document.querySelector(".artifact-card audio"), audio);
-    h.click('button.artifact-open[data-artifact-key="audio:audio-b"]');
     assert.equal(h.document.querySelector(".artifact-card audio"), null);
+    h.click('button.artifact-open[data-artifact-key="audio:audio-b"]');
+    assert.notEqual(h.document.querySelector(".artifact-card audio"), audio);
+    assert.ok(h.document.querySelector(".artifact-card audio"));
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
@@ -223,11 +266,10 @@ test("keyboard navigation and reopening artifacts refresh saved results while pr
   const entries = [...artifacts];
   const s = await setup(false, entries); const { h } = s;
   try {
-    h.click("#settingsButton"); h.click("#sessionInspectorScope"); h.click("#contextTab");
-    h.document.getElementById("contextTab")!.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    h.document.getElementById("artifactsShortcut")!.focus(); h.click("#artifactsShortcut"); h.click("#openArtifactsButton");
     await waitForCondition(() => h.document.querySelectorAll(".artifact-open").length === 2, "Expected keyboard-opened artifacts");
-    assert.equal(h.document.activeElement?.id, "artifactsTab");
-    assert.equal(h.document.getElementById("artifactsPanel")!.hidden, false);
+    assert.equal(h.document.activeElement?.id, "artifactsPage");
+    assert.equal(h.document.getElementById("artifactsPage")!.hidden, false);
     h.click('button.artifact-open[data-artifact-key="audio:audio-b"]');
     const audio = h.document.querySelector<HTMLAudioElement>(".artifact-card audio")!; audio.currentTime = 8;
     h.click("#closeArtifactsButton");
@@ -235,10 +277,10 @@ test("keyboard navigation and reopening artifacts refresh saved results while pr
     assert.equal(h.document.activeElement?.id, "prompt");
     assert.equal(h.document.querySelector(".chat-pane")!.hasAttribute("inert"), false);
     entries.push({ ...artifacts[0]!, ref: { kind: "midi", id: "midi-new" } });
-    h.click("#artifactsTab");
+    h.click("#artifactsShortcut"); h.click("#openArtifactsButton");
     await waitForCondition(() => h.document.querySelectorAll(".artifact-open").length === 3, "Expected newly saved artifact on reopen");
     assert.equal(h.document.querySelector(".artifact-card audio"), audio); assert.equal(audio.currentTime, 8);
-    h.click('button.artifact-open[data-artifact-key="audio:audio-b"]'); assert.equal(h.document.querySelector(".artifact-card audio"), null);
+    h.click('button.artifact-open[data-artifact-key="midi:midi-a"]'); assert.equal(h.document.querySelector(".artifact-card audio"), null);
     assert.equal(h.document.querySelector<HTMLInputElement>('button.artifact-open[data-artifact-key="audio:audio-b"]')!.getAttribute("aria-expanded"), "false");
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
@@ -258,7 +300,7 @@ test("pagination releases off-page media and returns to a fresh work list", asyn
     assert.equal(h.document.querySelectorAll('.artifact-open').length, 2);
     action(h, "Previous page"); await h.settle();
     assert.equal(h.document.querySelectorAll('.artifact-open').length, 24);
-    assert.equal(h.document.querySelector<HTMLInputElement>('button.artifact-open[data-artifact-key="audio:audio-b"]')!.getAttribute("aria-expanded"), "false");
+    assert.equal(h.document.querySelector<HTMLInputElement>('button.artifact-open[data-artifact-key="audio:audio-b"]')!.getAttribute("aria-expanded"), "true");
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
@@ -272,9 +314,9 @@ test("previewing one MIDI part carries that part into import without changing ex
     await s.open(); h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
     h.select('.artifact-preview-part select', second.id); await h.settle();
     assert.deepEqual([...h.document.querySelectorAll('rect[data-pitch]')].map((note) => note.getAttribute('data-pitch')), ["48"]);
-    action(h, "Export MIDI"); await h.settle();
+    action(h, "Export"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "export_artifact", sessionId: s.state.activeSessionId, artifact: { kind: "midi", id: "midi-a" } });
-    action(h, "Add to Live"); await waitForCondition(() => Boolean(h.document.querySelector('.midi-import-part-enabled')), "Expected part mapping");
+    action(h, "Import"); await waitForCondition(() => Boolean(h.document.querySelector('.midi-import-part-enabled')), "Expected part mapping");
     assert.deepEqual([...h.document.querySelectorAll<HTMLInputElement>('.midi-import-part-enabled')].map((part) => part.checked), [false, true]);
     h.click('.plugin-result-apply'); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "import_midi_artifact", sessionId: s.state.activeSessionId,
@@ -329,7 +371,7 @@ test("all MIDI source parts remain in a named keyboard region across refresh and
     assert.deepEqual([...region.querySelectorAll('p')], partRows);
     assert.match(partRows.at(-1)!.textContent!, /32 · Track 32 · 通道 16 · 1 · 8/);
     assert.equal(h.document.querySelector('.artifact-preview-part select'), preview);
-    assert.ok([...h.document.querySelectorAll<HTMLButtonElement>('.artifact-card button')].some((button) => button.textContent === "添加到 Live" && !button.disabled));
+    assert.ok([...h.document.querySelectorAll<HTMLButtonElement>('.artifact-card button')].some((button) => button.textContent === "导入" && !button.disabled));
     assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
@@ -338,9 +380,9 @@ test("audio artifacts export and attach the exact saved audio without starting a
   const s = await setup(); const { h } = s;
   try {
     await s.open(); h.click('button.artifact-open[data-artifact-key="audio:audio-b"]');
-    action(h, "Export audio"); await h.settle();
+    action(h, "Export"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "export_artifact", sessionId: s.state.activeSessionId, artifact: { kind: "audio", id: "audio-b" } });
-    action(h, "Attach to message"); await h.settle();
+    action(h, "Attach"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "attach_artifact", sessionId: s.state.activeSessionId, artifact: { kind: "audio", id: "audio-b" } });
     assert.equal(h.document.activeElement?.id, "prompt");
     assert.equal(jsonCalls(h, "/send").length, 0);
@@ -403,7 +445,7 @@ test("one work switches exact versions, keeps the chosen version on refresh and 
   const s = await setup(false, versions()); const { h } = s;
   try {
     await s.open(); h.click('.artifact-open');
-    assert.equal(h.document.querySelector('.artifact-open')!.textContent, "Verse piano");
+    assert.equal(h.document.querySelector('.artifact-work-name')!.textContent, "Verse piano");
     assert.equal(h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!.value, "midi-v3");
     assert.equal(h.document.querySelectorAll('.artifact-version-select option').length, 3);
     assert.match(h.document.querySelector('.artifact-version-source')!.textContent!, /v3.*v1/);
@@ -411,9 +453,9 @@ test("one work switches exact versions, keeps the chosen version on refresh and 
     assert.deepEqual([...h.document.querySelectorAll('rect[data-pitch]')].map((note) => note.getAttribute('data-pitch')), ['61']);
     action(h, 'Refresh artifacts'); await h.settle();
     assert.equal(h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!.value, 'midi-v2');
-    action(h, 'Export MIDI'); await h.settle();
+    action(h, 'Export'); await h.settle();
     assert.equal((commandCalls(h).at(-1)!.body as { artifact: { id: string } }).artifact.id, 'midi-v2');
-    action(h, 'Add to Live'); await waitForCondition(() => !!h.document.querySelector('.plugin-result-track'), 'Expected selected version import');
+    action(h, 'Import'); await waitForCondition(() => !!h.document.querySelector('.plugin-result-track'), 'Expected selected version import');
     h.click('.plugin-result-apply'); await h.settle();
     assert.equal((commandCalls(h).at(-1)!.body as { artifactRef: string }).artifactRef, 'midi-v2');
     assert.equal(jsonCalls(h, '/send').length, 0);
@@ -438,7 +480,7 @@ for (const next of ['latest', 'session'] as const) test(`a cancelled version rea
     assert.equal(signal!.aborted, true); release(); await h.settle();
     if (next === 'latest') {
       assert.equal(h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!.value, 'midi-v3');
-      action(h, 'Export MIDI'); await h.settle();
+      action(h, 'Export'); await h.settle();
       assert.equal((commandCalls(h).at(-1)!.body as { artifact: { id: string } }).artifact.id, 'midi-v3');
     } else assert.equal(h.document.querySelector('.artifact-card'), null);
     assert.deepEqual(h.errors, []);
@@ -531,24 +573,31 @@ for (const media of ['midi', 'audio'] as const) test(`${media} primary is work-s
   const entries: SessionArtifact[] = media === 'midi' ? versions() : [1, 2, 3].map((number) => ({ ...artifacts[1]!,
     ref: { kind: 'audio', id: `audio-v${number}` }, label: `Mix ${number}`, version: { groupId: 'audio-v1', groupLabel: 'Arrangement', number,
       ...(number > 1 ? { derivedFromId: 'audio-v1' } : {}) } }));
-  const s = await setup(false, entries); const { h } = s;
+  const other: SessionArtifact = { ...entries[0]!, ref: { kind: media, id: `${media}-other` }, label: 'Other work',
+    version: { groupId: `${media}-other`, groupLabel: 'Other work', number: 1 } };
+  const s = await setup(false, [...entries, other]); const { h } = s;
   const ids = entries.map((entry) => entry.ref.id);
   try {
     await s.open(); h.click('.artifact-open');
     h.select('.artifact-version-select', ids[0]!); await h.settle();
-    action(h, 'Make primary'); await h.settle();
+    action(h, 'Default'); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: 'select_artifact', sessionId: s.state.activeSessionId,
       selection: { action: 'primary', group: { kind: media, id: ids[0] }, candidate: { kind: media, id: ids[0] } } });
-    assert.equal(h.document.querySelector<HTMLButtonElement>('.artifact-primary')!.textContent, 'Clear primary');
+    assert.equal(h.document.querySelector<HTMLButtonElement>('.artifact-primary')!.textContent, 'Default');
     h.select('.artifact-version-select', ids[1]!); await h.settle();
     action(h, 'Refresh artifacts'); await h.settle();
     assert.equal(h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!.value, ids[1]);
-    action(h, media === 'midi' ? 'Export MIDI' : 'Export audio'); await h.settle();
+    action(h, media === 'midi' ? 'Export' : 'Export'); await h.settle();
     assert.equal((commandCalls(h).at(-1)!.body as { artifact: { id: string } }).artifact.id, ids[1]);
-    h.click('.artifact-open'); h.click('.artifact-open');
-    assert.equal(h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!.value, ids[0]);
-    action(h, 'Clear primary'); await h.settle(); h.click('.artifact-open'); h.click('.artifact-open');
-    assert.equal(h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!.value, ids[2]);
+    h.click('.artifact-open');
+    assert.equal(h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!.value, ids[1], 'selecting the same work preserves its explicit browsed version');
+    h.click(`[data-artifact-key="${media}:${other.ref.id}"]`); h.click(`[data-artifact-key="${media}:${ids[0]}"]`);
+    assert.equal(h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!.value, ids[0], 're-entering a closed work uses its saved default');
+    action(h, 'Default'); await h.settle();
+    assert.equal(h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!.value, ids[0], 'clearing the default preserves the browsed version');
+    assert.equal(h.document.querySelector('.artifact-primary')!.getAttribute('aria-pressed'), 'false');
+    h.click(`[data-artifact-key="${media}:${other.ref.id}"]`); h.click(`[data-artifact-key="${media}:${ids[0]}"]`);
+    assert.equal(h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!.value, ids[2], 'without an explicit default, re-entry uses the latest version');
     assert.equal(h.document.querySelector('#timeline .candidate'), null);
     assert.equal(jsonCalls(h, '/send').length, 0); assert.deepEqual(h.errors, []);
   } finally { h.close(); }
@@ -711,11 +760,11 @@ test("Chinese artifact sources preserve authored names and exact artifact action
   const s = await setup(false, entries, "zh-CN"); const { h } = s;
   try {
     await s.open(); h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
+    assert.equal(h.document.querySelector('#artifact-preview-midi-midi-a .artifact-provenance > p')!.textContent, "Live MIDI 来源");
     h.click('button.artifact-open[data-artifact-key="audio:audio-b"]');
-    assert.equal(h.document.querySelector('#artifact-preview-midi-midi-a > p')!.textContent, "Live MIDI 来源");
-    assert.equal(h.document.querySelector('#artifact-preview-audio-audio-b > p')!.textContent, "插件生成的音频");
-    assert.deepEqual([...h.document.querySelectorAll('.artifact-open')].map((node) => node.textContent), ["Primary", "Source"]);
-    action(h, "导出音频"); await h.settle();
+    assert.equal(h.document.querySelector('#artifact-preview-audio-audio-b .artifact-provenance > p')!.textContent, "插件生成的音频");
+    assert.deepEqual([...h.document.querySelectorAll('.artifact-work-name')].map((node) => node.textContent), ["Primary", "Source"]);
+    action(h, "导出"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "export_artifact", sessionId: s.state.activeSessionId, artifact: { kind: "audio", id: "audio-b" } });
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
@@ -738,16 +787,14 @@ test("changing language refreshes retained artifact, difference and import views
     await waitForCondition(() => Boolean(h.document.querySelector('.artifact-diff-overview')), "Expected loaded difference");
     const version = h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!;
     const baseline = h.document.querySelector<HTMLSelectElement>('.artifact-diff-baseline select')!;
-    h.click('button.artifact-open[data-artifact-key="audio:audio-b"]');
-    const audio = h.document.querySelector<HTMLAudioElement>('.artifact-card audio')!; audio.currentTime = 12;
-    action(h, 'Add to Live'); await waitForCondition(() => Boolean(h.document.querySelector('.plugin-result-track')), 'Expected import');
+    action(h, 'Import'); await waitForCondition(() => Boolean(h.document.querySelector('.plugin-result-track')), 'Expected import');
     h.select('.plugin-result-track', '2'); h.input('.plugin-result-beat', '9');
     const track = h.document.querySelector<HTMLSelectElement>('.plugin-result-track')!;
     h.emitServerEvent({ type: 'global_settings_changed', defaultFollowUpBehavior: s.state.settings.defaultFollowUpBehavior,
       defaultFollowUpBehaviorRevision: s.state.settings.defaultFollowUpBehaviorRevision, showContextUsage: s.state.settings.showContextUsage,
       contextUsageVisibilityRevision: s.state.settings.contextUsageVisibilityRevision, uiLanguage: 'zh-CN', uiLanguageRevision: '1', commandId: 'peer-language' });
     await h.settle();
-    assert.equal(h.document.querySelector('.artifact-primary')!.textContent, '设为主版本');
+    assert.equal(h.document.querySelector('.artifact-primary')!.textContent, '默认');
     assert.equal(h.document.querySelector('.artifact-diff-baseline span')!.textContent, '比较基准');
     assert.match(h.document.querySelector('.artifact-diff-overview')!.textContent!, /升高 2 个半音/);
     assert.match(h.document.querySelector('.artifact-diff-chart .after title')!.textContent!, /修改前：C3 · 第 1 拍/s);
@@ -756,7 +803,6 @@ test("changing language refreshes retained artifact, difference and import views
     assert.equal(h.document.querySelector('.artifact-version-select'), version); assert.equal(version.value, 'midi-v2');
     assert.equal(h.document.querySelector('.artifact-diff-baseline select'), baseline); assert.equal(baseline.value, 'midi-a');
     assert.equal(h.document.querySelector('.plugin-result-track'), track); assert.equal(track.value, '2');
-    assert.equal(h.document.querySelector('.artifact-card audio'), audio); assert.equal(audio.currentTime, 12);
     h.emitServerEvent({ type: 'global_settings_changed', defaultFollowUpBehavior: s.state.settings.defaultFollowUpBehavior,
       defaultFollowUpBehaviorRevision: s.state.settings.defaultFollowUpBehaviorRevision, showContextUsage: s.state.settings.showContextUsage,
       contextUsageVisibilityRevision: s.state.settings.contextUsageVisibilityRevision, uiLanguage: 'en', uiLanguageRevision: '2', commandId: 'peer-language-en' });
@@ -764,7 +810,6 @@ test("changing language refreshes retained artifact, difference and import views
     assert.equal(h.document.querySelector('#midi-import-heading')!.textContent, 'Add MIDI to Live');
     assert.match(h.document.querySelector('.artifact-diff-overview')!.textContent!, /Up 2 semitones/);
     assert.equal(h.document.querySelector('.plugin-result-track'), track); assert.equal(track.value, '2');
-    assert.equal(h.document.querySelector('.artifact-card audio'), audio); assert.equal(audio.currentTime, 12);
     assert.equal(commandCalls(h).length, 0); assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
@@ -944,4 +989,169 @@ test("browser resume restarts an interrupted dense MIDI preview without a user r
     assert.match(h.document.querySelector('svg[aria-label="Saved MIDI note preview"]')!.textContent!, /beat 296/);
     assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
   } finally { release(); h.close(); }
+});
+
+test("work history opens its exact version without changing the default or continuation", async () => {
+  const entries = versions();
+  for (const entry of entries) entry.history = [{ id: "application", createdAt: entry.createdAt,
+    artifact: { kind: "midi", id: "midi-a" }, action: "import", status: "partial" }];
+  const s = await setup(false, entries); const { h } = s;
+  try {
+    await s.open();
+    assert.equal(h.document.querySelector<HTMLSelectElement>(".artifact-version-select")!.value, "midi-v3");
+    const detail = h.document.querySelector<HTMLElement>('.artifact-detail')!; detail.scrollTop = 400;
+    h.click('.artifact-history > summary');
+    const reference = h.document.querySelector<HTMLButtonElement>('[data-history-version="midi-a"]')!;
+    reference.focus(); reference.click(); await h.settle();
+    assert.equal(h.document.querySelector<HTMLSelectElement>(".artifact-version-select")!.value, "midi-a");
+    assert.equal(h.document.activeElement, detail); assert.equal(detail.scrollTop, 0);
+    assert.match(h.document.querySelector('.artifact-history-records')!.textContent!, /partial/);
+    assert.deepEqual(commandCalls(h), []); assert.equal(h.document.querySelectorAll('.artifact-card').length, 1);
+  } finally { h.close(); }
+});
+
+test("catalog navigation returns to the selected work heading and Escape closes the catalog first", async () => {
+  const s = await setup(); const { h } = s;
+  try {
+    await s.open(); h.click('[data-artifact-key="audio:audio-b"]');
+    const detail = h.document.querySelector<HTMLElement>('.artifact-detail')!;
+    const player = detail.querySelector('audio');
+    const chooser = h.document.querySelector<HTMLButtonElement>('.artifact-catalog-toggle')!;
+    detail.scrollTop = 400; chooser.focus(); chooser.click();
+    chooser.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.equal(h.document.getElementById('artifactsPage')!.hidden, false);
+    assert.equal(chooser.getAttribute('aria-expanded'), 'false'); assert.equal(h.document.activeElement, chooser);
+    assert.equal(detail.scrollTop, 400, 'Closing the catalog preserves the reading position');
+    chooser.click(); h.click('[data-artifact-key="audio:audio-b"]');
+    assert.equal(h.document.activeElement, detail); assert.equal(detail.scrollTop, 0);
+    assert.equal(chooser.getAttribute('aria-expanded'), 'false'); assert.equal(detail.querySelector('audio'), player);
+    assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("saved audio uses its authenticated bytes for waveform, loop and volume and releases a switched player", async () => {
+  const s = await setup(); const { h } = s;
+  const { waveBytes } = await import('../../storage/support/audio-storage-test-helpers.js');
+  const bytes = waveBytes(); let loaded = '';
+  const original = h.window.fetch;
+  Object.defineProperty(h.window, 'fetch', { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === '/audio-assets/audio-b') {
+      loaded = String(input); return { ok: true, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+    }
+    return original(input, init);
+  } });
+  try {
+    await s.open(); h.click('[data-artifact-key="audio:audio-b"]');
+    await waitForCondition(() => Boolean(h.document.querySelector('.artifact-audio-player .attachment-waveform path')?.getAttribute('d')), 'Expected decoded saved waveform');
+    assert.match(loaded, /token=.*sessionId=session-1/);
+    const media = h.document.querySelector<HTMLAudioElement>('.artifact-card audio')!;
+    h.input('.artifact-audio-options input[type="range"]', '0.3'); assert.equal(media.volume, 0.3);
+    h.click('.artifact-audio-options input[type="checkbox"]'); assert.equal(media.loop, true);
+    h.click('[data-artifact-key="midi:midi-a"]'); assert.equal(media.isConnected, false); assert.equal(media.hasAttribute('src'), false);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+for (const oversized of [false, true]) test(`artifact MP3 ${oversized ? 'refuses oversized decode before allocation' : 'uses exact source metadata for a bounded decode'}`, async () => {
+  const durationSeconds = oversized ? 900 : 1, sampleRate = oversized ? 48000 : 24000, channels = oversized ? 2 : 1;
+  const entry = { ...artifacts[1]!, audio: { ...artifacts[1]!.audio!, mediaType: 'audio/mpeg' as const, durationSeconds, sampleRate, channels } };
+  const s = await setup(false, [entry]); const { h } = s;
+  let decodeCalls = 0; const rates: number[] = [];
+  Object.defineProperty(h.window, 'AudioContext', { configurable: true, value: class {
+    constructor(options: { sampleRate: number }) { rates.push(options.sampleRate); }
+    async decodeAudioData() { decodeCalls++; return { sampleRate, numberOfChannels: channels, length: durationSeconds * sampleRate,
+      duration: durationSeconds, getChannelData() { assert.equal(oversized, false, 'Oversized input must never allocate PCM data'); return new Float32Array(sampleRate).fill(.25); } }; }
+    async close() {}
+  } });
+  const original = h.window.fetch;
+  Object.defineProperty(h.window, 'fetch', { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname === '/audio-assets/audio-b') return { ok: true, arrayBuffer: async () => new ArrayBuffer(1) };
+    return original(input, init);
+  } });
+  try {
+    await s.open();
+    await waitForCondition(() => oversized ? h.document.querySelector('.artifact-audio-player [role="status"]')?.textContent?.includes('unavailable') === true
+      : Boolean(h.document.querySelector('.attachment-waveform path')?.getAttribute('d')), 'Expected bounded waveform outcome');
+    assert.equal(decodeCalls, oversized ? 0 : 1); assert.deepEqual(rates, oversized ? [] : [sampleRate]);
+    h.click('.attachment-audio-toggle'); await h.settle(); assert.equal(s.playCount, 1, 'Waveform admission keeps ordinary playback available');
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("Artifacts opens an independent main page and returns to the unchanged chat draft and scroll", async () => {
+  const s = await setup(); const { h } = s;
+  try {
+    h.input('#prompt', 'Keep this unsent draft');
+    const timeline = h.document.getElementById('timeline')!; timeline.scrollTop = 83;
+    await s.open();
+    const page = h.document.getElementById('artifactsPage')!;
+    assert.ok(page, 'Artifacts owns a main page');
+    assert.equal(page.parentElement?.tagName, 'MAIN');
+    assert.equal(h.document.getElementById('inspectorPane')!.contains(page), false);
+    assert.equal(h.document.getElementById('inspectorPane')!.hidden, true);
+    assert.equal(h.document.getElementById('chatPage')!.hidden, true);
+    h.click('#closeArtifactsButton');
+    assert.equal(page.hidden, true); assert.equal(h.document.getElementById('chatPage')!.hidden, false);
+    assert.equal(h.document.activeElement?.id, 'prompt');
+    assert.equal(h.document.querySelector<HTMLTextAreaElement>('#prompt')!.value, 'Keep this unsent draft');
+    assert.equal(timeline.scrollTop, 83); assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("Inspector tabs and focus isolation follow the visible artifact page without owning its preview", async () => {
+  const s = await setup(); const { h } = s;
+  try {
+    await s.open(); h.click('[data-artifact-key="audio:audio-b"]');
+    const player = h.document.querySelector('.artifact-card audio'); const reads = s.readCount;
+    const page = h.document.getElementById('artifactsPage')!;
+    assert.ok(page);
+    h.click('#settingsButton');
+    assert.equal(h.document.getElementById('inspectorPane')!.hidden, false); assert.equal(page.hidden, false);
+    assert.equal(page.hasAttribute('inert'), true); assert.equal(h.document.getElementById('chatPage')!.hasAttribute('inert'), true);
+    h.click('#skillsTab'); h.click('#contextTab'); await h.settle();
+    assert.equal(h.document.querySelector('.artifact-card audio'), player); assert.equal(s.readCount, reads + 1, "Opening the summary reads metadata without replacing the full preview");
+    h.document.getElementById('contextTab')!.focus(); h.click('#settingsButton');
+    assert.equal(page.hasAttribute('inert'), false); assert.equal(h.document.activeElement, page);
+    page.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.equal(page.hidden, true); assert.equal(h.document.activeElement?.id, 'prompt'); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+for (const kind of ['parameter', 'midi']) test(`${kind} manual approval reveals the real chat timeline from the artifact page`, async () => {
+  const s = await setup(); const { h } = s;
+  const command = { id: `direct-${kind}`, sessionId: s.state.activeSessionId!, stopping: false };
+  const confirmationId = `confirm-${kind}`;
+  try {
+    await s.open(); h.input('#prompt', 'Unsent draft');
+    h.emitServerEvent({ type: 'command_activity', command, bridgeStateRevision: '100' }); await h.settle();
+    h.emitServerEvent({ type: 'command_confirm_request', commandId: command.id, sessionId: command.sessionId,
+      id: confirmationId, kind: 'apply', operationId: `apply-${kind}`, message: kind === 'midi' ? 'Import saved MIDI' : 'Audition saved parameters',
+      groups: [{ title: 'Live changes', rows: [kind === 'midi' ? 'Create MIDI clip' : 'Set device parameters'] }] }); await h.settle();
+    const review = h.document.querySelector<HTMLElement>(`#timeline [data-operation-id="apply-${kind}"]`)!;
+    assert.ok(review); assert.equal(h.document.getElementById('chatPage')!.hidden, false);
+    assert.equal(h.document.getElementById('artifactsPage')!.hidden, true); assert.equal(h.document.getElementById('inspectorPane')!.hidden, true);
+    assert.equal(h.document.getElementById('chatPage')!.hasAttribute('inert'), false);
+    assert.equal(h.document.activeElement, review.querySelector('[data-confirm-cancel]'));
+    assert.equal(h.document.querySelector<HTMLTextAreaElement>('#prompt')!.value, 'Unsent draft');
+    review.querySelector<HTMLButtonElement>('.confirm-buttons .primary')!.click(); await h.settle();
+    assert.deepEqual(jsonCalls(h, '/confirm').at(-1)!.body, { id: confirmationId, apply: true });
+    assert.equal(jsonCalls(h, '/send').length, 0); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("an asynchronously resolved approval preserves focus on the visible artifact page", async () => {
+  const s = await setup(); const { h } = s;
+  const command = { id: 'background-resolution', sessionId: s.state.activeSessionId!, stopping: false };
+  try {
+    h.emitServerEvent({ type: 'command_activity', command, bridgeStateRevision: '100' }); await h.settle();
+    h.emitServerEvent({ type: 'command_confirm_request', commandId: command.id, sessionId: command.sessionId,
+      id: 'pending-review', kind: 'apply', operationId: 'pending-operation', message: 'Apply parameters', groups: [{ title: 'Device', rows: ['Set Gain'] }] }); await h.settle();
+    assert.ok(h.document.querySelector('#timeline [data-pending-confirmation]'));
+    await s.open();
+    const page = h.document.getElementById('artifactsPage')!;
+    assert.equal(h.document.activeElement, page);
+    h.emitServerEvent({ type: 'command_confirm_resolved', commandId: command.id, sessionId: command.sessionId, id: 'pending-review' }); await h.settle();
+    assert.equal(page.hidden, false); assert.equal(h.document.activeElement, page);
+    assert.equal(h.document.getElementById('chatPage')!.hidden, true); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
 });

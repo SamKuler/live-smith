@@ -54,9 +54,14 @@ test("artifact list accepts a bounded search query and keeps its Session and pag
     for (const query of [false, "x".repeat(201)]) {
       const response = await post({ sessionId: "session-1", query }); assert.equal(response.status, 400); await response.text();
     }
+    for (const kind of [["midi"], null, 3, {}, "unknown"]) {
+      const response = await post({ sessionId: "session-1", kind }); assert.equal(response.status, 400); await response.text();
+    }
     const response = await post({ sessionId: "session-1", offset: 24, query: "  旋律  " });
     assert.equal(response.status, 200); await response.json();
     assert.deepEqual(calls, [{ sessionId: "session-1", offset: 24, query: "旋律" }]);
+    const filtered = await post({ sessionId: "session-1", kind: "midi", query: "旋律" }); assert.equal(filtered.status, 200); await filtered.json();
+    assert.deepEqual(calls.at(-1), { sessionId: "session-1", offset: 0, kind: "midi", query: "旋律" });
   } finally { await bridge.close(); }
 });
 

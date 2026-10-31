@@ -44,6 +44,7 @@
         </div>
       </header>
       <main>
+        <button id="sessionsBackdrop" class="sessions-backdrop" type="button" hidden aria-label="Collapse Sessions" data-i18n-aria-label="Collapse Sessions" onclick="LiveSmithUI.toggleSessionsPane()"></button>
         <aside id="sessionsPane" class="sessions-pane">
           <div class="pane-header">
             <span class="session-heading">
@@ -67,7 +68,7 @@
           <div id="sessions" class="sessions"></div>
         </aside>
 
-        <section class="chat-pane">
+        <section id="chatPage" class="chat-pane main-page" data-main-view="chat" tabindex="-1">
           <div id="timeline" class="timeline" aria-label="Conversation" data-i18n-aria-label="Conversation"></div>
           <div id="conversationAnnouncements" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
           <div id="messageActionAnnouncements" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -154,6 +155,13 @@
             </div>
             </div>
           </div>
+        </section>
+
+        <section id="artifactsPage" class="artifacts-page main-page" data-main-view="artifacts" aria-labelledby="artifactHeading" tabindex="-1" hidden>
+          <div class="artifact-page-header"><h2 id="artifactHeading" data-i18n="Artifacts">Artifacts</h2><button id="closeArtifactsButton" type="button" class="secondary" onclick="LiveSmithUI.returnToChat()" data-i18n="Back to chat">Back to chat</button></div>
+          <section id="sessionArtifacts">
+            <section id="artifactLibrary" aria-label="Saved artifacts" data-i18n-aria-label="Saved artifacts"></section>
+          </section>
         </section>
 
         <aside id="inspectorPane" class="inspector-pane" aria-label="Inspector" hidden data-i18n-aria-label="Inspector">
@@ -861,12 +869,10 @@
             </div>
           </div>
           <div id="artifactsPanel" class="tab-panel" role="tabpanel" aria-labelledby="artifactsTab" tabindex="0" hidden>
-            <div class="settings">
-              <section id="sessionArtifacts" class="settings-scope" aria-labelledby="artifactHeading">
-                <div class="inspector-scope-header"><h2 id="artifactHeading" data-i18n="Artifacts">Artifacts</h2><button id="closeArtifactsButton" type="button" class="secondary inspector-heading-action" onclick="LiveSmithUI.returnToChat()" data-i18n="Back to chat">Back to chat</button></div>
-                <section id="artifactLibrary" aria-label="Saved artifacts" data-i18n-aria-label="Saved artifacts"></section>
-              </section>
-            </div>
+            <div class="settings"><section class="settings-scope" aria-labelledby="artifactSummaryHeading">
+              <div class="inspector-scope-header"><h2 id="artifactSummaryHeading" data-i18n="Artifacts">Artifacts</h2><button id="openArtifactsButton" type="button" class="secondary inspector-heading-action" onclick="LiveSmithUI.openAllArtifacts()" data-i18n="Open all">Open all</button></div>
+              <section id="artifactSummary" aria-label="Saved artifacts" data-i18n-aria-label="Saved artifacts"></section>
+            </section></div>
           </div>
           <div id="toolsPanel" class="tab-panel" role="tabpanel" aria-labelledby="toolsTab" tabindex="0" hidden>
             <div class="settings">

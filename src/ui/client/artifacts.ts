@@ -12,7 +12,7 @@ import type { ParameterArtifactRead, ParameterArtifactCommand } from "../../app/
 
 interface Dependencies {
   getState(): { activeSessionId?: string; events?: ArtifactHistoryEvent[] };
-  read(input: { sessionId: string; offset: number; query?: string }, signal?: AbortSignal): Promise<unknown>;
+  read(input: { sessionId: string; offset: number; query?: string; kind?: ArtifactRef["kind"] }, signal?: AbortSignal): Promise<unknown>;
   readArtifact(input: { sessionId: string; artifact: ArtifactRef }, signal?: AbortSignal): Promise<unknown>;
   readMidiArtifactDiff(input: { sessionId: string; artifactRef: string; baseArtifactRef?: string }, signal?: AbortSignal): Promise<unknown>;
   readMidiPartPreview(input: { sessionId: string; artifactRef: string; partId: string }, signal?: AbortSignal): Promise<unknown>;
@@ -23,14 +23,14 @@ interface Dependencies {
   useInChat(text: string): Promise<void>;
   resultActions: PluginResultActions;
   audioUrl(sessionId: string, id: string): string;
-  createAudioPlayer(sessionId: string, descriptor: { fileName: string; durationSeconds: number }, sourceUrl: string): { element: HTMLElement; media: HTMLAudioElement; dispose(): void };
+  createAudioPlayer(sessionId: string, descriptor: { fileName: string; durationSeconds: number; mediaType: string; sampleRate: number; channels: number }, sourceUrl: string): { element: HTMLElement; media: HTMLAudioElement; suspend(): void; resume(): void; refreshLocale(): void; dispose(): void };
 }
 
 function createArtifactLibraryView(deps: Dependencies) {
   const bindings = createLocaleBindings();
   const t = (value: string, params?: Record<string, string>) => window.LiveSmithI18n?.t(value, params) ?? value;
   const panel = document.getElementById("sessionArtifacts")!;
-  const launcher = document.getElementById("artifactsTab") as HTMLButtonElement;
+  const launcher = document.getElementById("artifactsShortcut") as HTMLButtonElement;
   let visible = false;
   let pageSuspended = false;
   let revealRead: AbortController | undefined;
@@ -43,6 +43,8 @@ function createArtifactLibraryView(deps: Dependencies) {
   let searchTimer: number | undefined;
   let composing = false;
   let query = "";
+  let kind: ArtifactRef["kind"] | undefined;
+  let selectedKey: string | undefined;
   let queryNeedsRead = false;
   let busy = false;
   let serial = 0;
@@ -61,6 +63,30 @@ function createArtifactLibraryView(deps: Dependencies) {
   searchField.append(search);
   const pages = element("div", "artifact-page-controls");
   const choices = element("div", "artifact-choices");
+  const workspace = element("div", "artifact-workspace");
+  const catalog = element("aside", "artifact-catalog"); catalog.id = "artifactCatalog";
+  const detail = element("section", "artifact-detail"); detail.tabIndex = -1;
+  bindings.attribute(detail, "aria-label", () => t("Selected work"));
+  function focusDetail() { detail.scrollTop = 0; detail.focus({ preventScroll: true }); }
+  const emptyDetail = element("p", "field-hint artifact-empty-detail", () => t("Choose a saved work to preview it."));
+  const chooser = element("button", "secondary artifact-catalog-toggle", () => t("Browse works")); chooser.type = "button";
+  chooser.setAttribute("aria-controls", catalog.id); chooser.setAttribute("aria-expanded", "false");
+  function showCatalog(open: boolean) { workspace.classList.toggle("catalog-open", open); chooser.setAttribute("aria-expanded", String(open)); }
+  chooser.addEventListener("click", () => showCatalog(!workspace.classList.contains("catalog-open")));
+  content.addEventListener("keydown", (event) => { if (event.key === "Escape" && workspace.classList.contains("catalog-open")) { event.preventDefault(); event.stopPropagation(); showCatalog(false); chooser.focus(); } });
+  const filters = element("div", "artifact-filters"); filters.setAttribute("role", "group");
+  bindings.attribute(filters, "aria-label", () => t("Artifact type"));
+  for (const [value, title] of [["", "All"], ["device-parameters", "Parameters"], ["audio", "Audio"], ["midi", "MIDI"]] as const) {
+    const filter = element("button", "secondary", () => t(title)); filter.type = "button"; filter.dataset.artifactKind = value;
+    filter.setAttribute("aria-pressed", String(value === ""));
+    filter.addEventListener("click", () => {
+      if (kind === (value || undefined)) return;
+      kind = value || undefined;
+      for (const child of filters.querySelectorAll("button")) child.setAttribute("aria-pressed", String(child === filter));
+      queryNeedsRead = true; changeQuery(true);
+    });
+    filters.append(filter);
+  }
   const context = element("p", "field-hint");
   const clear = element("button", "secondary", () => t("Clear next-request source")); clear.type = "button";
   const load = element("button", "secondary", () => t("Refresh artifacts")); load.type = "button";
@@ -93,7 +119,11 @@ function createArtifactLibraryView(deps: Dependencies) {
     captureView.update(); captureView.setBusy(busy || pending);
   });
   pages.append(load, previous, next);
-  controls.append(searchField, pages, status, context, clear, capture, choices); content.append(controls);
+  controls.append(searchField, filters, pages, status);
+  catalog.append(controls, choices, capture);
+  detail.append(emptyDetail);
+  workspace.append(catalog, detail);
+  content.append(chooser, context, clear, workspace);
   const artifactLabel = (artifact: SessionArtifact) => artifact.version ? `${artifact.label} · v${artifact.version.number}` : artifact.label;
   function sourceLabel(ref: ArtifactRef): string {
     for (const item of [...rows.values()].map((row) => row.artifact()).concat(snapshot?.artifacts ?? [])) {
@@ -110,8 +140,8 @@ function createArtifactLibraryView(deps: Dependencies) {
     load.disabled = operationPending(); previous.disabled = operationPending() || !snapshot?.offset;
     next.disabled = operationPending() || !snapshot || snapshot.offset + 24 >= snapshot.total;
     clear.disabled = operationPending() || busy;
-    for (const button of choices.querySelectorAll<HTMLButtonElement>("[data-artifact-transfer]")) button.disabled = operationPending();
-    for (const button of choices.querySelectorAll<HTMLButtonElement>("[data-artifact-write]")) button.disabled = operationPending() || busy;
+    for (const button of detail.querySelectorAll<HTMLButtonElement>("[data-artifact-transfer]")) button.disabled = operationPending();
+    for (const button of detail.querySelectorAll<HTMLButtonElement>("[data-artifact-write]")) button.disabled = operationPending() || busy;
     for (const row of rows.values()) row.syncBusy();
     captureView?.setBusy(operationPending() || busy);
   }
@@ -128,16 +158,16 @@ function createArtifactLibraryView(deps: Dependencies) {
     else searchTimer = window.setTimeout(() => { searchTimer = undefined; void read(); }, 180);
   }
   async function read(offset = 0) {
-    if (!current() || pending || composing) return;
+    if (!current() || !visible || pending || composing) return;
     cancelSearchTimer(); cancelListRead();
-    const id = sessionId!; const requestedQuery = query;
+    const id = sessionId!; const requestedQuery = query; const requestedKind = kind;
     const controller = new window.AbortController(); listRead = controller; queryNeedsRead = false; syncBusy();
     const isCurrentRead = () => current(id) && listRead === controller;
     status.hidden = false; bindings.text(status, () => t("Loading saved artifacts…"));
     try {
-      const result = await deps.read({ sessionId: id, offset, ...(requestedQuery ? { query: requestedQuery } : {}) }, controller.signal);
+      const result = await deps.read({ sessionId: id, offset, ...(requestedQuery ? { query: requestedQuery } : {}), ...(requestedKind ? { kind: requestedKind } : {}) }, controller.signal);
       if (!isCurrentRead()) return;
-      if (!isSessionArtifacts(result) || result.sessionId !== id || (result.query ?? "") !== requestedQuery || result.offset !== offset) throw new Error(t("Saved artifacts are unavailable."));
+      if (!isSessionArtifacts(result) || result.sessionId !== id || (result.query ?? "") !== requestedQuery || result.kind !== requestedKind || result.offset !== offset) throw new Error(t("Saved artifacts are unavailable."));
       if (offset > 0 && offset >= result.total) {
         await read(Math.max(0, Math.floor((result.total - 1) / 24) * 24));
         return;
@@ -169,9 +199,7 @@ function createArtifactLibraryView(deps: Dependencies) {
     card?.notify(() => t(kind === "export_artifact" ? "Opening file download…" : "Attaching file…"));
     try {
       const completed = await deps.transfer(kind, { sessionId: id, artifact: artifact.ref });
-      if (current(id)) card?.notify(() => t(completed
-        ? kind === "export_artifact" ? "File download opened." : "File attached to the next message."
-        : "The file transfer did not complete. Try again."));
+      if (current(id)) card?.notify(completed ? undefined : () => t("The file transfer did not complete. Try again."));
     } catch { if (current(id)) card?.notify(() => t("The file transfer did not complete. Try again.")); }
     finally { if (attempt === serial) { pending = false; syncBusy(); if (current(id) && queryNeedsRead && searchTimer === undefined) void read(); } }
   }
@@ -220,36 +248,40 @@ function createArtifactLibraryView(deps: Dependencies) {
       }
       card.id = `artifact-preview-${artifact.ref.kind}-${artifact.ref.id}`;
       const source = element("p", "field-hint", () => t(artifact.sourceLabel));
-      card.append(source);
       const actions = element("div", "artifact-actions");
-      const continueButton = button(artifact.ref.kind === "midi" ? "Create next version" : "Continue in chat", () => { void select({ action: "continue", candidate: artifact.ref }, artifact); });
+      const continueButton = button("Continue creating", () => { void select({ action: "continue", candidate: artifact.ref }, artifact); });
       continueButton.dataset.artifactWrite = "";
       actions.append(continueButton);
       card.append(actions);
       const actionStatus = element("p", "field-hint"); actionStatus.hidden = true;
       actionStatus.setAttribute("role", "status"); actionStatus.setAttribute("aria-live", "polite");
       card.append(actionStatus);
-      const transfers = element("div", "artifact-actions");
-      transfers.append(button("Attach to message", () => { void transfer("attach_artifact", artifact); }),
-        button(artifact.midi ? "Export MIDI" : "Export audio", () => { void transfer("export_artifact", artifact); }));
-      for (const button of transfers.querySelectorAll("button")) button.dataset.artifactTransfer = "";
-      if (artifact.ref.kind !== "device-parameters") card.append(transfers);
+      const importRecord = element("section", "artifact-import-record");
+      importRecord.append(element("h3", "", () => t("Last import")));
+      const importSummary = element("p", "field-hint"); importRecord.append(importSummary);
+      if (artifact.ref.kind !== "device-parameters") card.append(importRecord);
+      const transfers = actions;
+      transfers.append(button("Attach", () => { void transfer("attach_artifact", artifact); }),
+        button("Export", () => { void transfer("export_artifact", artifact); }));
+      for (const button of transfers.querySelectorAll<HTMLButtonElement>("button:not([data-artifact-write])")) button.dataset.artifactTransfer = "";
+      if (artifact.ref.kind === "device-parameters") for (const button of transfers.querySelectorAll("[data-artifact-transfer]")) button.remove();
       const parameterView = artifact.ref.kind === "device-parameters" ? createParameterArtifactView(parameterDependencies(sessionId!), artifact) : undefined;
       if (parameterView) card.append(parameterView.element);
       let diff: ReturnType<typeof createMidiArtifactDiffView> | undefined;
       let midiPreview: HTMLElement | undefined;
       if (artifact.audio) {
-        card.append(element("p", "field-hint", `${artifact.audio.durationSeconds.toFixed(1)} s · ${artifact.audio.mediaType === "audio/wav" ? "WAV" : "MP3"}`));
-        player = deps.createAudioPlayer(sessionId!, { fileName: artifact.label, durationSeconds: artifact.audio.durationSeconds }, deps.audioUrl(sessionId!, artifact.ref.id));
+        card.append(element("h3", "artifact-preview-heading", () => t("Audio preview")), element("p", "field-hint", `${artifact.audio.durationSeconds.toFixed(1)} s · ${artifact.audio.mediaType === "audio/wav" ? "WAV" : "MP3"}`));
+        player = deps.createAudioPlayer(sessionId!, { fileName: artifact.label, durationSeconds: artifact.audio.durationSeconds, mediaType: artifact.audio.mediaType, sampleRate: artifact.audio.sampleRate, channels: artifact.audio.channels }, deps.audioUrl(sessionId!, artifact.ref.id));
         card.append(player.element);
-        card.append(button("Prepare audio import in chat", () => {
+        const importAudio = button("Prepare import", () => {
           if (!current()) return;
-          void deps.useInChat(t("Import saved audio asset {reference} into Live. Inspect the destination and preview affected tracks and Clips before applying. Destination and start beat:", { reference: artifact.ref.id }));
-        }));
+          void deps.useInChat(t("Import saved audio {reference} into Live. Destination and start beat:", { reference: artifact.ref.id }));
+        });
+        importAudio.classList.add("artifact-import"); importRecord.append(importAudio);
       }
       if (artifact.midi) {
         const midi = artifact.midi;
-        midiPreview = element("div", "artifact-midi-preview-section"); card.append(midiPreview);
+        midiPreview = element("div", "artifact-midi-preview-section"); midiPreview.append(element("h3", "artifact-preview-heading", () => t("MIDI preview"))); card.append(midiPreview);
         if (midi.parts.length > 1) {
           const label = element("label", "artifact-preview-part"); label.append(element("span", "", () => t("Preview part")));
           partSelect = element("select", "");
@@ -269,41 +301,69 @@ function createArtifactLibraryView(deps: Dependencies) {
         bindings.attribute(partList, "aria-label", () => t("Source parts"));
         for (const part of midi.parts) partList.append(element("p", "field-hint", () => `${part.sourceTrackIndex + 1} · ${part.sourceTrackName || "MIDI"} · ${t("Channel")} ${part.channel} · ${part.noteCount} · ${part.durationBeats}`));
         parts.append(partList);
-        const add = button("Add to Live", () => {
+        const add = button("Import", () => {
           if (!current() || busy || operationPending()) return;
           deps.resultActions.openMidiImport({ sessionId: sessionId!, artifacts: [{ artifactRef: artifact.ref.id, label: artifactLabel(artifact) }],
             ...(partSelect?.value ? { initialPartId: partSelect.value } : {}),
             onComplete(completed) {
-              actionStatus.hidden = false;
-              bindings.text(actionStatus, () => t(completed ? "MIDI import finished. Review the Session result." : "MIDI import did not complete. Review the Session result before retrying."));
-              if (add.isConnected) add.focus();
+              if (!current() || !visible || !card.isConnected) return;
+              actionStatus.hidden = completed;
+              bindings.text(actionStatus, () => completed ? "" : t("MIDI import did not complete. Review the Session result before retrying."));
+              const focused = document.activeElement;
+              if ((focused === add || focused === document.body) && !card.hidden && !detail.closest("[inert]")) detail.focus({ preventScroll: true });
+              void read(snapshot?.offset ?? 0);
             },
           });
         }); add.dataset.artifactWrite = "";
-        transfers.append(add); card.append(parts);
+        add.classList.add("artifact-import"); importRecord.append(add); card.append(parts);
       }
-      const parentLabel = element("p", "field-hint"); card.append(parentLabel);
+      const provenance = element("details", "artifact-details artifact-provenance");
+      provenance.append(element("summary", "", () => t("Source")), source);
+      const parentLabel = element("p", "field-hint"); provenance.append(parentLabel);
       const generation = element("details", "artifact-details"); generation.append(element("summary", "", () => t("Generation parameters")));
       const tool = element("p", "field-hint");
       const parameters = element("pre", "");
       const shortened = element("p", "field-hint", () => t("Parameters are shortened here; the original tool call remains in Session history."));
-      generation.append(tool, parameters, shortened); card.append(generation);
+      generation.append(tool, parameters, shortened); provenance.append(generation); card.append(provenance);
+      const history = element("details", "artifact-details artifact-history"); history.append(element("summary", "", () => t("Operation history")));
+      const records = element("div", "artifact-history-records"); history.append(records); card.append(history);
+      let historyIdentity = "";
+      function renderHistory(value: SessionArtifact) {
+        const identity = JSON.stringify([value.history, value.versions, document.documentElement.lang]);
+        if (historyIdentity === identity) return;
+        historyIdentity = identity; records.replaceChildren();
+        for (const record of value.history ?? []) {
+          const row = element("div", "artifact-history-entry");
+          const time = element("time", "", new Intl.DateTimeFormat(document.documentElement.lang || undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(record.createdAt)));
+          time.dateTime = record.createdAt;
+          const operation = element("span", "", () => t(record.action === "parameters" ? "Parameter application" : "Import"));
+          const version = value.versions?.find((entry) => entry.id === record.artifact.id);
+          const reference = button(version ? `v${version.number} · ${version.label}` : value.label, () => { void rows.get(groupKey(value))?.browse(record.artifact.id); });
+          reference.className = "artifact-history-version"; reference.dataset.historyVersion = record.artifact.id;
+          const outcome = element("span", "artifact-history-outcome", () => [t(record.status), record.target].filter(Boolean).join(" · "));
+          row.append(time, operation, reference, outcome); records.append(row);
+        }
+        if (!records.childElementCount) records.append(element("p", "field-hint", () => t("No recorded operations.")));
+      }
       function update(value: SessionArtifact) {
-          artifact = value; bindings.text(source, () => t(value.sourceLabel));
-          parameterView?.update(value);
+          artifact = value; bindings.text(source, () => t(value.sourceLabel)); renderHistory(value);
+          const latestImport = value.history?.find((record) => record.action === "import");
+          const importedVersion = value.versions?.find((version) => version.id === latestImport?.artifact.id);
+          bindings.text(importSummary, () => latestImport ? `${importedVersion ? `v${importedVersion.number} · ${importedVersion.label} · ` : ""}${t(latestImport.status)}` : t("No recorded imports."));
+          parameterView?.update(value); player?.refreshLocale();
           if (value.midi && (value.version?.derivedFromId || (value.versions?.length ?? 0) > 1)) {
             if (!diff) {
               diff = createMidiArtifactDiffView({ sessionId: sessionId!, artifact: value, read: deps.readMidiArtifactDiff,
                 isCurrent: () => current() && card.isConnected,
                 onToggle: (open) => { midiPreview!.hidden = open; } });
-              card.insertBefore(diff.element, transfers.nextSibling);
+              card.insertBefore(diff.element, midiPreview!);
             } else diff.update(value);
           } else if (diff) {
             diff.dispose(); diff.element.remove(); diff = undefined;
             if (midiPreview) midiPreview.hidden = false;
           }
           if (cardSuspended && current() && visible) {
-            cardSuspended = false; diff?.resume();
+            cardSuspended = false; diff?.resume(); player?.resume();
             if (partSelect?.value && !partPreview && !previewRead) void readPart();
           }
           tool.hidden = !value.generation;
@@ -334,10 +394,10 @@ function createArtifactLibraryView(deps: Dependencies) {
       return { element: card, update,
         syncBusy() { parameterView?.setBusy(busy || operationPending()); },
         invalidateParameters() { parameterView?.invalidate(); },
-        notify(message: LocalizedText) { actionStatus.hidden = false; bindings.text(actionStatus, message); },
-        pause() { player?.media.pause(); parameterView?.suspend(); },
+        notify(message?: LocalizedText) { actionStatus.hidden = message === undefined; if (message !== undefined) bindings.text(actionStatus, message); },
+        pause() { cardSuspended = true; player?.suspend(); parameterView?.suspend(); },
         suspend() {
-          cardSuspended = true; player?.media.pause(); parameterView?.suspend(); diff?.dispose();
+          cardSuspended = true; player?.suspend(); parameterView?.suspend(); diff?.dispose();
           previewRead?.abort(); previewRead = undefined; previewLoading = false;
         },
         dispose() { previewRead?.abort(); diff?.dispose(); parameterView?.dispose(); player?.dispose(); card.remove(); },
@@ -354,62 +414,67 @@ function createArtifactLibraryView(deps: Dependencies) {
     const key = groupKey(initial);
     const row = element("article", "artifact-item");
     const expand = button(initial.version?.groupLabel ?? initial.label, () => {
-      opened = !opened;
-      if (opened) artifact = head;
-      if (!opened) { cancelRead(); card?.dispose(); card = undefined; cardKey = ""; }
-      render();
-      if (opened && artifact.midi?.omittedNoteCount) void readVersion(artifact.ref.id);
+      activate(key); showCatalog(false); focusDetail();
     });
     expand.className = "artifact-open"; expand.dataset.artifactKey = key;
     const body = element("div", "artifact-body"); body.id = `artifact-group-${initial.ref.kind}-${initial.version?.groupId ?? initial.ref.id}`;
     expand.setAttribute("aria-controls", body.id);
+    const heading = element("header", "artifact-detail-heading");
+    const title = element("h2", "");
+    const description = element("p", "field-hint"); heading.append(title, description);
     const toolbar = element("div", "artifact-version-toolbar");
     const label = element("label", "artifact-version-field"); label.append(element("span", "", () => t("Version")));
     const version = element("select", "artifact-version-select"); label.append(version);
     const ancestry = element("p", "field-hint artifact-version-source");
-    const primary = button("Make primary", () => {
+    const primary = button("Default", () => {
       if (!artifact.version || versionRead) return;
       void select({ action: "primary", group: { kind: artifact.ref.kind, id: artifact.version.groupId },
         candidate: artifact.primary && artifactKey(artifact.primary) === artifactKey(artifact.ref) ? null : artifact.ref }, artifact);
     });
     primary.classList.add("artifact-primary"); primary.dataset.artifactWrite = "";
-    toolbar.append(label, primary, ancestry);
+    toolbar.append(label, primary);
     const readStatus = element("p", "field-hint artifact-version-status"); readStatus.setAttribute("role", "status"); readStatus.hidden = true;
     const retryRead = button("Retry preview", () => { void readVersion(artifact.ref.id); });
     retryRead.classList.add("artifact-version-retry"); retryRead.hidden = true;
-    body.append(toolbar, readStatus, retryRead); row.append(expand, body);
+    body.append(heading, toolbar, readStatus, retryRead); row.append(expand);
     function cancelRead() { versionRead?.abort(); versionRead = undefined; version.value = artifact.ref.id; readStatus.hidden = true; retryRead.hidden = true; }
     function syncRowBusy() { primary.disabled = operationPending() || busy || Boolean(versionRead); card?.syncBusy(); }
     function render() {
       syncRowBusy();
       const versions = head.versions ?? [];
-      const title = head.version?.groupLabel ?? head.label;
-      expand.textContent = title;
-      expand.setAttribute("aria-label", title);
+      const name = head.version?.groupLabel ?? head.label;
+      expand.replaceChildren(element("strong", "artifact-work-name", name), element("span", "artifact-work-meta", () =>
+        `${t(head.ref.kind === "device-parameters" ? "Parameters" : head.ref.kind === "midi" ? "MIDI" : "Audio")} · ${t("{count} versions", { count: String(head.versions?.length ?? 1) })}`));
+      if (head.deviceParameters) expand.append(element("span", "artifact-work-target", `${head.deviceParameters.target.trackName} · ${head.deviceParameters.target.deviceName}`));
+      expand.setAttribute("aria-label", name); expand.setAttribute("aria-current", String(opened));
       expand.setAttribute("aria-expanded", String(opened)); body.hidden = !opened;
       if (!opened) return;
+      bindings.text(title, name);
+      bindings.text(description, () => head.deviceParameters ? `${t("Parameters")} · ${head.deviceParameters.target.trackName} · ${head.deviceParameters.target.deviceName}` : t(head.ref.kind === "midi" ? "MIDI" : "Audio"));
       const selectedId = versionRead ? version.value : artifact.ref.id;
       const previousOptions = [...version.options].map((option) => `${option.value}:${option.textContent}`).join("\n");
-      const entries = versions.map((entry) => ({ value: entry.id, text: `v${entry.number} · ${entry.label}${head.primary?.id === entry.id ? ` · ${t("Primary")}` : ""}` }));
+      const entries = versions.map((entry) => ({ value: entry.id, text: `v${entry.number} · ${entry.label}${head.primary?.id === entry.id ? ` · ${t("Default")}` : ""}` }));
       if (previousOptions !== entries.map((entry) => `${entry.value}:${entry.text}`).join("\n")) {
         version.replaceChildren(...entries.map((entry) => { const option = element("option", "", entry.text); option.value = entry.value; return option; }));
       }
       version.value = selectedId;
       toolbar.hidden = !artifact.version;
       const isPrimary = artifact.primary && artifactKey(artifact.primary) === artifactKey(artifact.ref);
-      bindings.text(primary, () => t(isPrimary ? "Clear primary" : "Make primary"));
+      bindings.text(primary, () => t("Default"));
+      bindings.attribute(primary, "title", () => t(isPrimary ? "Use latest as default" : "Set default"));
       primary.setAttribute("aria-pressed", String(Boolean(isPrimary)));
-      label.hidden = versions.length < 2;
+      label.hidden = false;
       const parent = versions.find((entry) => entry.id === artifact.version?.derivedFromId);
       bindings.text(ancestry, () => artifact.version?.derivedFromId
         ? parent ? t("v{version} · based on v{base}", { version: String(artifact.version.number), base: String(parent.number) }) : t("Source version unavailable")
         : artifact.version ? t(artifact.version.number === 1 ? "v{version} · original" : "v{version} · alternative", { version: String(artifact.version.number) }) : "");
-      if (versionRead || artifact.midi?.omittedNoteCount) { if (card) card.element.hidden = true; return; }
+      if (versionRead || artifact.midi?.omittedNoteCount) { if (card) { card.pause(); card.element.hidden = true; } return; }
       const identity = artifactKey(artifact.ref);
-      if (!card || cardKey !== identity) { card?.dispose(); card = createCard(artifact); cardKey = identity; body.append(card.element); }
+      if (!card || cardKey !== identity) { card?.dispose(); card = createCard(artifact); cardKey = identity; card.element.querySelector(".artifact-provenance")!.append(ancestry); body.append(card.element); }
       card.element.hidden = false; card.update(artifact); syncBusy();
     }
     async function readVersion(id: string) {
+      if (!opened || !current(owner)) return;
       versionRead?.abort(); versionRead = undefined; readStatus.hidden = true; retryRead.hidden = true;
       if (id === artifact.ref.id && !artifact.midi?.omittedNoteCount) { render(); return; }
       if (id === head.ref.id && !head.midi?.omittedNoteCount) { artifact = head; render(); return; }
@@ -438,23 +503,34 @@ function createArtifactLibraryView(deps: Dependencies) {
         if (artifact.ref.id === value.ref.id) {
           artifact = { ...value, ...(artifact.midi?.omittedNoteCount === 0 && value.midi?.omittedNoteCount ? { midi: artifact.midi } : {}) };
         } else if (value.versions && !value.versions.some((entry) => entry.id === artifact.ref.id)) artifact = value;
-        else artifact = { ...artifact, ...(value.versions ? { versions: value.versions } : {}) };
+        else artifact = { ...artifact, history: value.history ?? [], ...(value.versions ? { versions: value.versions } : {}) };
         if (value.primary) artifact.primary = value.primary; else delete artifact.primary;
         render();
         if (opened && artifact.ref.id !== previousId && artifact.midi?.omittedNoteCount) void readVersion(artifact.ref.id);
       },
-      open(value: SessionArtifact) { cancelRead(); artifact = value; opened = true; render(); expand.focus({ preventScroll: true }); row.scrollIntoView?.({ block: "nearest" }); },
-      notify(message: LocalizedText) { card?.notify(message); },
+      open(value?: SessionArtifact) { cancelRead(); artifact = value ?? head; opened = true; detail.replaceChildren(body); render();
+        if (artifact.midi?.omittedNoteCount) void readVersion(artifact.ref.id);
+      },
+      close() { opened = false; cancelRead(); card?.dispose(); card = undefined; cardKey = ""; body.remove(); render(); },
+      browse(id: string) { focusDetail(); return readVersion(id); },
+      notify(message?: LocalizedText) { card?.notify(message); },
       invalidateParameters() { card?.invalidateParameters(); },
-      pause() { card?.pause(); },
       suspend() { cancelRead(); card?.suspend(); },
       resume() {
         if (!opened) return;
         render();
         if (artifact.midi?.omittedNoteCount && !versionRead) void readVersion(artifact.ref.id);
       },
-      dispose() { cancelRead(); card?.dispose(); row.remove(); },
+      dispose() { cancelRead(); card?.dispose(); body.remove(); row.remove(); },
     };
+  }
+  function activate(key: string, value?: SessionArtifact) {
+    if (selectedKey !== key) {
+      revealRead?.abort(); revealRead = undefined;
+      if (selectedKey) rows.get(selectedKey)?.close();
+      selectedKey = key; rows.get(key)?.open(value); detail.scrollTop = 0;
+    }
+    else if (value) rows.get(key)?.open(value);
   }
   function renderSnapshot() {
     previous.hidden = next.hidden = !snapshot || snapshot.total <= 24;
@@ -470,6 +546,11 @@ function createArtifactLibraryView(deps: Dependencies) {
       if (!row) { row = createRow(artifact); rows.set(key, row); }
       if (row.element !== position) choices.insertBefore(row.element, position);
       position = row.element.nextElementSibling; row.update(artifact);
+    }
+    if (!selectedKey || !rows.has(selectedKey)) {
+      selectedKey = undefined;
+      const first = entries[0];
+      if (first) activate(groupKey(first)); else detail.replaceChildren(emptyDetail);
     }
     renderContext(); syncBusy();
   }
@@ -499,9 +580,15 @@ function createArtifactLibraryView(deps: Dependencies) {
     for (const row of rows.values()) row.resume();
     void read(snapshot?.offset ?? 0); if (capture.open) captureView?.update();
   });
+  function resetFilters() {
+    search.value = ""; composing = false; kind = undefined;
+    for (const filter of filters.querySelectorAll<HTMLButtonElement>("button")) filter.setAttribute("aria-pressed", String(filter.dataset.artifactKind === ""));
+    queryNeedsRead = true; changeQuery(true);
+  }
   function showArtifact(value: SessionArtifact) {
-    if (query || search.value) { search.value = ""; composing = false; changeQuery(true); }
-    revealedArtifact = value; renderSnapshot(); rows.get(groupKey(value))?.open(value);
+    if (query || search.value || kind) resetFilters();
+    revealedArtifact = value; renderSnapshot(); activate(groupKey(value), value);
+    showCatalog(false); focusDetail();
   }
   return {
     render() {
@@ -511,7 +598,8 @@ function createArtifactLibraryView(deps: Dependencies) {
       if (sessionId !== deps.getState().activeSessionId) {
         revealRead?.abort(); revealRead = undefined;
         captureView?.dispose(); captureView?.element.remove(); captureView = undefined; capture.open = false;
-        cancelSearchTimer(); cancelListRead(); query = ""; search.value = ""; composing = false; queryNeedsRead = false;
+        cancelSearchTimer(); cancelListRead(); query = ""; kind = undefined; search.value = ""; composing = false; queryNeedsRead = false;
+        for (const filter of filters.querySelectorAll<HTMLButtonElement>("button")) filter.setAttribute("aria-pressed", String(filter.dataset.artifactKind === ""));
         serial++; pending = false; sessionId = deps.getState().activeSessionId; snapshot = undefined; revealedArtifact = undefined;
         bindings.text(status, ""); status.hidden = true; renderSnapshot();
         if (visible) void read();
@@ -522,6 +610,10 @@ function createArtifactLibraryView(deps: Dependencies) {
       }
       continuationIdentity = identity;
       panel.hidden = !sessionId; launcher.disabled = !sessionId; syncBusy();
+    },
+    showAll() {
+      if (query || search.value || kind || snapshot?.offset || revealedArtifact || listRead) resetFilters();
+      else if (visible) void read();
     },
     openArtifact(value: SessionArtifact) {
       showArtifact(value);
@@ -538,7 +630,10 @@ function createArtifactLibraryView(deps: Dependencies) {
       if (opening) for (const row of rows.values()) row.resume();
       if (opening && !pending) void read(snapshot?.offset ?? 0);
       if (opening && capture.open) captureView?.update();
-      if (!visible) { captureView?.suspend(); for (const row of rows.values()) row.pause(); }
+      if (!visible) {
+        cancelSearchTimer(); cancelListRead(); revealRead?.abort(); revealRead = undefined;
+        captureView?.suspend(); for (const row of rows.values()) row.suspend();
+      }
     },
   };
 }
@@ -549,6 +644,10 @@ function createArtifactLibrary(deps: Dependencies) {
     render() {
       if (!view) { view = createArtifactLibraryView(deps); view.setBusy(busy); }
       view.render();
+    },
+    showAll() {
+      if (!view) { view = createArtifactLibraryView(deps); view.setBusy(busy); view.render(); }
+      view.showAll();
     },
     openArtifact(value: SessionArtifact) {
       if (!view) { view = createArtifactLibraryView(deps); view.setBusy(busy); view.render(); }

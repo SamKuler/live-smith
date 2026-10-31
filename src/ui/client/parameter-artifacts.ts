@@ -46,8 +46,11 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
   choices.append(originalChoice);
   const choiceButtons = new Map<string, HTMLButtonElement>();
   const button = (text: string, action: () => void) => { const element = node("button", () => t(text)); element.className = "secondary"; element.type = "button"; element.addEventListener("click", action); actions.append(element); return element; };
-  const refresh = button("Refresh device parameters", () => { void load(); });
-  const save = button(initial ? presentation === "chat" ? "Audition" : "Audition in Live" : "Save parameter snapshot", () => { void runSave(); });
+  const refresh = button(presentation === "chat" ? "Refresh device parameters" : "Refresh", () => { void load(); });
+  const save = button(initial ? "Audition" : "Save parameter snapshot", () => { void runSave(); });
+  bindings.attribute(refresh, "aria-label", () => t("Refresh device parameters"));
+  bindings.attribute(refresh, "title", () => t("Refresh device parameters"));
+  if (initial) bindings.attribute(save, "aria-label", () => t("Audition in Live"));
   actions.prepend(save);
   const listening = node("p", () => t("Play a Clip or your instrument in Live to hear each version.")); listening.className = "field-hint"; listening.hidden = !initial;
   const receipt = node("section"); receipt.className = "parameter-application";
@@ -66,11 +69,23 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
   receiptActions.append(keep, restore, openApplied, openOriginal); receipt.append(receiptSource, receiptText, receiptHint, receiptActions, receiptDetails, restorationDetails); receipt.hidden = true;
   const table = createParameterTable(); table.element.hidden = !initial;
   const details = presentation === "chat" ? node("details") : undefined;
+  const observed = node("p"); observed.className = "parameter-observed field-hint"; observed.hidden = true;
   if (details) {
     details.className = "parameter-artifact-details";
     const tools = node("div"); tools.className = "artifact-actions"; tools.append(refresh, openApplied, openOriginal);
     details.append(node("summary", () => t("Sound details")), listening, source, deviceLabel, table.element, tools, receipt, receiptDetails, restorationDetails);
     root.append(choices, status, details);
+  } else if (initial) {
+    root.classList.add("parameter-workspace-view");
+    const live = node("section"); live.className = "parameter-live-section";
+    live.append(node("h3", () => t("Live device")), observed, actions, status);
+    actions.append(keep, restore);
+    const destination = node("details"); destination.className = "artifact-details parameter-destination";
+    destination.append(node("summary", () => t("Destination device")), deviceLabel, source, listening);
+    const heading = node("div"); heading.className = "parameter-preview-heading";
+    heading.append(node("h3", () => t("Parameter preview")), comparisonLabel);
+    receipt.classList.add("parameter-last-application");
+    root.append(live, destination, heading, table.element, receipt);
   } else root.append(source, deviceLabel, label, comparisonLabel, actions, status, listening, receipt, table.element);
   let artifact = initial;
   let candidates = initial ? [initial] : [];
@@ -122,7 +137,8 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
       })));
   }
   function syncBusy() {
-    const locked = busy || pending;
+    const locked = busy || pending || !loaded;
+    root.setAttribute("aria-busy", String(pending || Boolean(reading)));
     devices.disabled = comparison.disabled = name.disabled = locked;
     refresh.disabled = Boolean(reading) || pending;
     const application = preview?.application;
@@ -132,6 +148,7 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
     save.disabled = locked || Boolean(reading) || !preview || (artifact ? !preview.current || Boolean(preview.switchError) || active || Boolean(open && (application.status !== "applied" || application.restorationBaseline)) : !selectedDevice || !name.value.trim());
     if (artifact) save.setAttribute("aria-pressed", String(Boolean(active)));
     root.dataset.auditionCurrent = String(Boolean(active));
+    if (presentation === "artifact" && artifact) { keep.hidden = !application || !parameterApplicationIsOpen(application); restore.hidden = !application || application.status === "restored"; }
     keep.disabled = locked || Boolean(reading) || !application || !parameterApplicationIsOpen(application);
     restore.disabled = locked || Boolean(reading) || !application || application.status === "restored";
     openApplied.disabled = pending || Boolean(reading) || !preview?.application;
@@ -147,7 +164,7 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
     }
   }
   function render() {
-    if (!preview) { table.element.hidden = receipt.hidden = openApplied.hidden = openOriginal.hidden = receiptDetails.hidden = restorationDetails.hidden = true; syncBusy(); return; }
+    if (!preview) { observed.hidden = true; bindings.text(observed, ""); table.element.hidden = receipt.hidden = openApplied.hidden = openOriginal.hidden = receiptDetails.hidden = restorationDetails.hidden = true; syncBusy(); return; }
     const key = devices.value;
     devices.replaceChildren();
     const original = node("option", () => artifact
@@ -165,7 +182,10 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
     }
     comparison.value = [...comparison.options].some((option) => option.value === compared) ? compared : "live";
     const saved = preview.artifact;
-    table.element.hidden = !saved || Boolean(reading);
+    observed.hidden = !preview.current || !preview.application || !candidateIsCurrent() && !originalIsCurrent();
+    bindings.text(observed, () => candidateIsCurrent() ? t("Observed Live values match v{version}.", { version: String(preview!.application!.artifactVersion) })
+      : originalIsCurrent() && preview?.application ? t("Observed Live values match the original snapshot.") : "");
+    table.element.hidden = !saved;
     if (saved) {
       bindings.text(source, () => presentation === "chat" ? `${saved.label} · ${deviceLabelText(saved.target)}` : deviceLabelText(saved.target));
       const before = comparison.value === "live" ? preview.current?.parameters : preview.comparison?.parameters;
@@ -173,7 +193,7 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
         ...(before?.[index] ? { before: before[index]!.value } : {}) })), { before: comparison.value === "live" ? "Current value" : "Compared version", after: "Saved value" });
     }
     const application = preview.application;
-    receipt.hidden = !application || Boolean(reading);
+    receipt.hidden = !application;
     receiptDetails.hidden = !application;
     openApplied.hidden = !application || application.artifactId === artifact?.ref.id;
     openOriginal.hidden = !application?.baselineArtifactId;
@@ -181,14 +201,21 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
     receiptSource.setAttribute("aria-live", application?.artifactId === artifact?.ref.id ? "polite" : "off");
     if (application) {
       const selected = candidateIsCurrent();
-      bindings.text(keep, () => t(selected ? "Use this sound" : "Finish audition"));
+      const keepDescription = () => t(selected ? "Use this sound" : "Finish audition");
+      bindings.text(keep, () => presentation === "artifact" && selected ? t("Keep") : keepDescription());
+      bindings.attribute(keep, "aria-label", keepDescription); bindings.attribute(keep, "title", keepDescription);
       bindings.text(receiptSource, () => t(application.baselineArtifactId
         ? application.status === "applied" ? presentation === "chat" ? "Auditioning: {name}" : "Auditioning: {name} · v{version}" : application.status === "kept" ? selected ? "Using: {name}" : "Audition ended: {name} · v{version}. Current device values kept."
           : application.status === "restored" ? "Restored before audition · {name}" : "Review audition: {name} · v{version}"
         : "Applied version: {name} · v{version}", { name: application.artifactLabel, version: String(application.artifactVersion) }));
-      bindings.text(restore, () => t(application.baselineArtifactId ? "Restore before audition" : "Restore previous values"));
+      if (presentation === "artifact") bindings.text(receiptSource, () => t("Last application: {name} · v{version} · {status}", {
+        name: application.artifactLabel, version: String(application.artifactVersion), status: t(application.status),
+      }));
+      const restoreDescription = () => t(application.baselineArtifactId ? "Restore before audition" : "Restore previous values");
+      bindings.text(restore, () => presentation === "artifact" ? t("Restore") : restoreDescription());
+      bindings.attribute(restore, "aria-label", restoreDescription); bindings.attribute(restore, "title", restoreDescription);
       bindings.text(receiptText, () => t("Parameter application: {status} · {device}", { status: t(application.status), device: `${application.target.trackName} · ${application.target.deviceName}` }));
-      receiptText.hidden = presentation === "chat" && ["applied", "kept", "restored"].includes(application.status);
+      receiptText.hidden = presentation === "artifact" || presentation === "chat" && ["applied", "kept", "restored"].includes(application.status);
       keep.hidden = presentation === "chat" || !parameterApplicationIsOpen(application);
       restore.hidden = presentation === "chat" || application.status === "restored";
       receiptActions.hidden = keep.hidden && restore.hidden && (presentation === "chat" || openApplied.hidden && openOriginal.hidden);
@@ -213,9 +240,9 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
   }
   async function load() {
     if (!current()) return;
-    reading?.abort(); const controller = new window.AbortController(); reading = controller; syncBusy();
-    table.element.hidden = receipt.hidden = true;
-    status.hidden = false; bindings.text(status, () => t("Reading device parameters…"));
+    reading?.abort(); const controller = new window.AbortController(); reading = controller; loaded = false; syncBusy();
+    status.hidden = presentation === "chat";
+    if (!status.hidden) bindings.text(status, () => t("Reading device parameters…"));
     const baseId = comparison.value && comparison.value !== "live" ? comparison.value : undefined;
     const selected = selectedDevice;
     try {
@@ -232,7 +259,7 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
     } finally { if (reading === controller) { reading = undefined; render(); } }
   }
   async function run(command: ParameterArtifactCommand) {
-    if (!current() || busy || pending || reading) return;
+    if (!current() || busy || pending || reading || !loaded) return;
     pending = true; syncBusy();
     let resultMessage: LocalizedText | undefined;
     try {
@@ -278,7 +305,7 @@ export function createParameterArtifactView(deps: ParameterArtifactDependencies,
     },
     setBusy(value: boolean) { busy = value; syncBusy(); },
     invalidate() {
-      loaded = false; preview = undefined; reading?.abort(); reading = undefined; syncBusy();
+      loaded = false; reading?.abort(); reading = undefined; syncBusy();
       if (current() && !pending) void load();
     },
     suspend() { suspended = true; reading?.abort(); reading = undefined; },

@@ -4,6 +4,7 @@
         deleteAttachment,
         getState,
         getComposerAttachments,
+        revealComposer,
         runCommand,
         showStatus,
         uploadAttachments,
@@ -285,9 +286,11 @@
         if (busy) return;
         const files = [...(fileList || [])];
         if (!files.length) return;
+        const sessionId = getState().activeSessionId;
+        revealComposer();
         const notices = [];
         try {
-          await uploadAttachments(getState().activeSessionId, files, async (file, signal) => {
+          await uploadAttachments(sessionId, files, async (file, signal) => {
             const classification = classifyFile(file);
             const admissionReason = uploadPolicyReason(file, classification, false);
             if (admissionReason) throw new Error(admissionReason);
@@ -297,9 +300,9 @@
             if (normalized.notice) notices.push(`${file.name}: ${normalized.notice}`);
             return normalized.file;
           });
-          if (notices.length) showStatus(notices.join(" "), false);
+          if (getState().activeSessionId === sessionId && notices.length) showStatus(notices.join(" "), false);
         } catch (error) {
-          showStatus([...notices, error.message || String(error)].join(" "), true);
+          if (getState().activeSessionId === sessionId) showStatus([...notices, error.message || String(error)].join(" "), true);
         }
       }
 

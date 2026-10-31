@@ -47,10 +47,10 @@ async function setup(options: { unknown?: boolean; roundedWrites?: boolean; lang
       reads.push({ body, ...(init?.signal === undefined ? {} : { signal: init.signal }) });
       const pending = held; held = undefined; if (pending) await pending;
       if (readFailure) { const failure = readFailure; readFailure = undefined; return { ok: false, json: async () => failure }; }
-      return { ok: true, json: async () => ({ sessionId: base.sessionId, devices: [snapshot.target],
+      return { ok: true, json: async () => JSON.parse(JSON.stringify({ sessionId: base.sessionId, devices: [snapshot.target],
         ...(body.artifactId ? { artifact: all.find((entry) => entry.id === body.artifactId), ...(options.bindingError ? { bindingError: options.bindingError } : { current }),
           ...(body.baseArtifactId || body.artifactId === saved.id ? { comparison: all.find((entry) => entry.id === (body.baseArtifactId ?? base.id)) } : {}) } : {}),
-        ...(application ? { application } : {}), ...(options.restoreError ? { restoreError: options.restoreError } : {}), ...(options.switchError ? { switchError: options.switchError } : {}) }) };
+        ...(application ? { application } : {}), ...(options.restoreError ? { restoreError: options.restoreError } : {}), ...(options.switchError ? { switchError: options.switchError } : {}) })) };
     }
     if (path === "/command") {
       if (body.kind === "apply_device_parameters") {
@@ -67,12 +67,12 @@ async function setup(options: { unknown?: boolean; roundedWrites?: boolean; lang
     return original(input, init);
   } });
   const open = async () => {
-    h.click("#artifactsTab"); await waitForCondition(() => Boolean(h.document.querySelector(".artifact-open")), "Expected the saved parameter work");
+    h.click("#artifactsShortcut"); h.click("#openArtifactsButton"); await waitForCondition(() => Boolean(h.document.querySelector(".artifact-open")), "Expected the saved parameter work");
     h.click(".artifact-open"); await waitForCondition(() => h.document.querySelectorAll(".artifact-card .parameter-table-view:first-of-type tbody tr").length === 300 ||
       [...h.document.querySelectorAll(".artifact-card .parameter-table-view tbody")].some((body) => body.children.length === 300), "Expected every saved parameter in the preview");
   };
   const click = (text: string, root = "#artifactLibrary") => {
-    const button = [...h.document.querySelectorAll<HTMLButtonElement>(`${root} button`)].find((button) => button.textContent === text);
+    const button = [...h.document.querySelectorAll<HTMLButtonElement>(`${root} button`)].find((button) => button.textContent === text || button.getAttribute("aria-label") === text);
     assert.ok(button, text); assert.equal(button.disabled, false, text); button.click();
   };
   const showChat = async (entries = [saved, bright, other], presented = entries) => {
@@ -107,7 +107,7 @@ test("complete parameter previews are read-only and apply/restore send only exac
     assert.equal(table.querySelectorAll("tbody tr").length, 1); assert.match(table.textContent!, /Parameter 299/);
     s.click("Audition in Live"); await waitForCondition(() => commandCalls(h).length === 1, "Expected the apply command"); await h.settle();
     assert.deepEqual(commandCalls(h)[0]!.body, { kind: "apply_device_parameters", sessionId: s.base.sessionId, artifactId: s.saved.id });
-    await waitForCondition(() => [...h.document.querySelectorAll<HTMLButtonElement>(".parameter-application button")].some((button) => button.textContent === "Restore before audition" && !button.disabled), "Expected the saved application receipt");
+    await waitForCondition(() => [...h.document.querySelectorAll<HTMLButtonElement>(".parameter-artifact-view button")].some((button) => button.getAttribute("aria-label") === "Restore before audition" && !button.disabled), "Expected the saved application receipt");
     s.click("Restore before audition"); await waitForCondition(() => commandCalls(h).length === 2, "Expected the restore command"); await h.settle();
     assert.deepEqual(commandCalls(h)[1]!.body, { kind: "restore_device_parameters", sessionId: s.base.sessionId, applicationId: "parameter_application" });
     assert.deepEqual(h.errors, []);
@@ -185,7 +185,7 @@ test("one comparison card switches Original/A/B/C directly and can return to Ori
     assert.equal(originalChoice(s).getAttribute("aria-pressed"), "true");
     const activeActions = [...h.document.querySelectorAll<HTMLButtonElement>(`${chatCard} button`)].filter((button) => !button.hidden && ["Use this sound", "Keep current values", "Restore before audition"].includes(button.textContent!));
     assert.deepEqual(activeActions, []);
-    assert.equal(h.document.querySelector<HTMLElement>("#artifactsPanel")!.hidden, true); assert.deepEqual(h.errors, []);
+    assert.equal(h.document.querySelector<HTMLElement>("#artifactsPage")!.hidden, true); assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
 
@@ -237,12 +237,76 @@ test("one shared detail view retains the selection and input when other tool res
   } finally { h.close(); }
 });
 
+test("audition readback retains visible details and the last confirmed selection while locking writes", async () => {
+  const s = await setup(); const { h } = s;
+  try {
+    await s.showChat(); choose(s, s.saved.id); await h.settle();
+    const card = h.document.querySelector(chatCard)!;
+    const view = card.querySelector<HTMLElement>(".parameter-artifact-view")!;
+    const details = card.querySelector<HTMLDetailsElement>(".parameter-artifact-details")!;
+    (details.querySelector("summary") as HTMLElement).click();
+    const table = details.querySelector<HTMLElement>(".parameter-table-view")!;
+    const receipt = details.querySelector<HTMLElement>(".parameter-application")!;
+    const filter = table.querySelector<HTMLInputElement>('input[type="search"]')!;
+    filter.value = "Gain"; filter.dispatchEvent(new h.window.Event("input", { bubbles: true })); filter.focus();
+    const selected = card.querySelector<HTMLButtonElement>(`[data-parameter-candidate="${s.saved.id}"]`)!;
+    const before = commandCalls(h).length;
+    const readsBefore = s.reads.length;
+    s.holdRead();
+    h.emitServerEvent({ type: "session_state_invalidated", sessionId: s.base.sessionId });
+    await waitForCondition(() => s.reads.length > readsBefore, "Expected the comparison readback");
+    assert.equal(table.hidden, false); assert.equal(receipt.hidden, false);
+    assert.equal(view.querySelector<HTMLElement>('[role="status"]')!.hidden, true);
+    assert.equal(view.getAttribute("aria-busy"), "true");
+    assert.equal(selected.getAttribute("aria-pressed"), "true");
+    assert.equal(details.open, true); assert.equal(filter.value, "Gain"); assert.equal(h.document.activeElement, filter);
+    const buttons = [...card.querySelectorAll<HTMLButtonElement>(".parameter-candidate-choices button")];
+    assert.ok(buttons.every((button) => button.disabled)); buttons.forEach((button) => button.click());
+    assert.equal(commandCalls(h).length, before);
+    s.release(); await h.settle();
+    assert.equal(h.document.querySelector(chatCard), card); assert.equal(view.getAttribute("aria-busy"), "false");
+    assert.equal(selected.getAttribute("aria-pressed"), "true"); assert.equal(originalChoice(s).disabled, false);
+    const nextRead = s.reads.length;
+    s.holdRead(); choose(s, s.bright.id);
+    await waitForCondition(() => s.reads.length > nextRead, "Expected post-apply readback");
+    assert.equal(table.hidden, false); assert.equal(receipt.hidden, false);
+    assert.equal(view.querySelector<HTMLElement>('[role="status"]')!.hidden, true);
+    assert.equal(selected.getAttribute("aria-pressed"), "true");
+    s.release(); await h.settle();
+    assert.equal(selected.getAttribute("aria-pressed"), "false");
+    assert.equal(card.querySelector(`[data-parameter-candidate="${s.bright.id}"]`)!.getAttribute("aria-pressed"), "true");
+    originalChoice(s).click(); await h.settle(); assert.equal(originalChoice(s).getAttribute("aria-pressed"), "true");
+    assert.deepEqual(h.errors, []);
+  } finally { s.release(); await h.settle(); h.close(); }
+});
+
+test("a failed audition refresh clears retained values and selection until a successful retry", async () => {
+  const s = await setup(); const { h } = s;
+  try {
+    await s.showChat(); choose(s, s.saved.id); await h.settle();
+    h.click(`${chatCard} .parameter-artifact-details > summary`);
+    s.failRead(); s.click("Refresh device parameters", chatCard); await h.settle();
+    const card = h.document.querySelector(chatCard)!;
+    assert.match(card.querySelector('.parameter-artifact-view [role="status"]')!.textContent!, /Comparison read failed/);
+    assert.equal(card.querySelector<HTMLElement>('.parameter-artifact-view [role="status"]')!.hidden, false);
+    assert.equal(card.querySelector<HTMLElement>(".parameter-table-view")!.hidden, true);
+    const choices = [...card.querySelectorAll<HTMLButtonElement>(".parameter-candidate-choices button")];
+    assert.ok(choices.every((button) => button.disabled && button.getAttribute("aria-pressed") === "false"));
+    const before = commandCalls(h).length; choices.forEach((button) => button.click()); assert.equal(commandCalls(h).length, before);
+    s.click("Refresh device parameters", chatCard); await h.settle();
+    assert.equal(card.querySelector<HTMLElement>('.parameter-artifact-view [role="status"]')!.hidden, true);
+    assert.equal(card.querySelector<HTMLElement>(".parameter-table-view")!.hidden, false);
+    assert.equal(card.querySelector(`[data-parameter-candidate="${s.saved.id}"]`)!.getAttribute("aria-pressed"), "true");
+    assert.equal(originalChoice(s).disabled, false); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
 test("the comparison and Artifacts share the current candidate and Original snapshot", async () => {
   const s = await setup(); const { h } = s;
   try {
     await s.showChat(); choose(s, s.saved.id); await h.settle();
     h.click(`${chatCard} .parameter-artifact-details > summary`); s.click("Open artifact", chatCard); await h.settle();
-    await waitForCondition(() => h.document.querySelector("#artifactLibrary .parameter-application")?.textContent?.includes("Auditioning: Soft synth") === true, "Expected shared audition in Artifacts");
+    await waitForCondition(() => h.document.querySelector("#artifactLibrary .parameter-application")?.textContent?.includes("Last application: Soft synth") === true, "Expected shared audition in Artifacts");
     s.click("Use this sound"); await h.settle(); h.click("#closeArtifactsButton"); await h.settle();
     assert.equal(originalChoice(s).disabled, false); originalChoice(s).click(); await h.settle();
     assert.equal(originalChoice(s).getAttribute("aria-pressed"), "true");
@@ -320,7 +384,7 @@ test("unknown writes disable restore and remain inspectable after reloading the 
   const s = await setup({ unknown: true }); const { h } = s;
   try {
     await s.open();
-    const restore = [...h.document.querySelectorAll<HTMLButtonElement>(".parameter-application button")].find((button) => button.textContent === "Restore before audition")!;
+    const restore = [...h.document.querySelectorAll<HTMLButtonElement>(".parameter-artifact-view button")].find((button) => button.getAttribute("aria-label") === "Restore before audition")!;
     const details = h.document.querySelector<HTMLDetailsElement>(".parameter-application details")!;
     details.open = true; details.dispatchEvent(new h.window.Event("toggle"));
     assert.equal(restore.disabled, true); assert.match(h.document.querySelector(".parameter-application")!.textContent!, /Write not confirmed/);
@@ -328,7 +392,7 @@ test("unknown writes disable restore and remain inspectable after reloading the 
     s.click("Finish audition"); await waitForCondition(() => commandCalls(h).length === 1, "Expected explicit Keep"); await h.settle();
     assert.deepEqual(commandCalls(h)[0]!.body, { kind: "keep_device_parameters", sessionId: s.base.sessionId, applicationId: "parameter_application" });
     const result = h.document.querySelector(".parameter-application")!;
-    assert.match(result.textContent!, /Current device values kept/);
+    assert.match(result.textContent!, /kept/);
     assert.doesNotMatch(result.textContent!, /Kept: Soft synth/);
     assert.match(result.textContent!, /unconfirmed/);
     assert.deepEqual(h.errors, []);
@@ -341,7 +405,7 @@ test("keeping manual edits describes the current values and their difference fro
     await s.open(); s.click("Audition in Live"); await h.settle();
     s.setCurrentValue(1, 0.4); s.click("Use this sound"); await h.settle();
     const receipt = h.document.querySelector(".parameter-application")!;
-    assert.match(receipt.textContent!, /Current device values kept/);
+    assert.match(receipt.textContent!, /kept/);
     assert.match(receipt.textContent!, /Current device values differ from the saved candidate/);
     assert.equal(commandCalls(h).filter((call) => (call.body as { kind: string }).kind === "apply_device_parameters").length, 1);
     assert.deepEqual(h.errors, []);
@@ -355,13 +419,13 @@ test("a failed comparison hides old values and disables receipt actions until a 
     const view = h.document.querySelector<HTMLElement>(".parameter-artifact-view")!;
     const table = view.querySelector<HTMLElement>(":scope > .parameter-table-view")!;
     const receipt = view.querySelector<HTMLElement>(".parameter-application")!;
-    const keep = [...receipt.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Finish audition")!;
+    const keep = [...view.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Finish audition")!;
     assert.equal(table.hidden, false); assert.equal(receipt.hidden, false); assert.equal(keep.disabled, false);
     s.holdRead(); s.failRead();
-    const comparison = view.querySelectorAll<HTMLSelectElement>(":scope > label select")[1]!;
+    const comparison = view.querySelector<HTMLSelectElement>(".parameter-preview-heading select")!;
     comparison.value = s.base.id; comparison.dispatchEvent(new h.window.Event("change", { bubbles: true }));
     await waitForCondition(() => s.reads.length === 2, "Expected the selected version comparison");
-    assert.equal(table.hidden, true); assert.equal(keep.disabled, true);
+    assert.equal(table.hidden, false); assert.equal(keep.disabled, true);
     s.release(); await h.settle();
     assert.match(view.textContent!, /Comparison read failed/);
     assert.equal(table.hidden, true); assert.equal(receipt.hidden, true);
@@ -375,7 +439,7 @@ test("a failed comparison hides old values and disables receipt actions until a 
 test("capture uses the selected device identity and a label without sending raw values", async () => {
   const s = await setup(); const { h } = s;
   try {
-    h.click("#artifactsTab"); await h.settle();
+    h.click("#artifactsShortcut"); h.click("#openArtifactsButton"); await h.settle();
     const details = h.document.querySelector<HTMLDetailsElement>(".parameter-capture")!; details.open = true;
     details.dispatchEvent(new h.window.Event("toggle"));
     await waitForCondition(() => (details.querySelector<HTMLSelectElement>("select")?.options.length ?? 0) === 2, "Expected observed capture destinations");
@@ -404,30 +468,20 @@ test("changing versions aborts old Live reads and never applies their result to 
 
 test("parameter capture and comparison controls use the current locale", async () => {
   const s = await setup({ language: "zh-CN" }); const { h } = s;
-  try { await s.open(); assert.match(h.document.querySelector(".parameter-artifact-view")!.textContent!, /目标设备/); assert.match(h.document.querySelector(".parameter-artifact-view")!.textContent!, /在 Live 中试听/); assert.deepEqual(h.errors, []); }
+  try { await s.open(); assert.match(h.document.querySelector(".parameter-artifact-view")!.textContent!, /目标设备/); assert.match(h.document.querySelector(".parameter-artifact-view")!.textContent!, /试听/); assert.deepEqual(h.errors, []); }
   finally { h.close(); }
 });
 
-test("parameter commands refresh every open work and identify the exact applied version", async () => {
+test("switching parameter works refreshes the destination receipt and opens its exact applied version", async () => {
   const s = await setup({ secondWork: true }); const { h } = s;
-  const first = `#artifact-group-device-parameters-${s.base.id}`;
-  const second = `#artifact-group-device-parameters-${s.other.id}`;
   try {
-    await s.open(); h.click(`[data-artifact-key="device-parameters:${s.other.id}"]`);
-    await waitForCondition(() => s.reads.some((read) => read.body.artifactId === s.other.id), "Expected the second comparison"); await h.settle();
-    s.click("Audition in Live", first); await h.settle();
-    await waitForCondition(() => s.reads.filter((read) => read.body.artifactId === s.other.id).length > 1, "Expected receipt invalidation across cards");
-    const receipt = h.document.querySelector<HTMLElement>(`${second} .parameter-application`)!;
-    assert.equal(receipt.hidden, false); assert.match(receipt.textContent!, /Auditioning: Soft synth · v2/);
-    const firstReceipt = h.document.querySelector<HTMLElement>(`${first} .parameter-application`)!;
-    const openButton = (parent: ParentNode) => [...parent.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Open applied version")!;
-    assert.equal(openButton(firstReceipt).hidden, true); assert.equal(openButton(receipt).hidden, false);
-    const otherApply = [...h.document.querySelectorAll<HTMLButtonElement>(`${second} button`)].find((button) => button.textContent === "Audition in Live")!;
-    assert.equal(otherApply.disabled, false);
-    s.click("Use this sound", first); await h.settle();
-    await waitForCondition(() => !otherApply.disabled, "Expected other cards to allow Apply after Keep");
-    s.click("Open applied version", second); await h.settle();
-    assert.equal(h.document.querySelector<HTMLSelectElement>(`${first} .artifact-version-select`)!.value, s.saved.id);
+    await s.open(); s.click("Audition in Live"); await h.settle();
+    h.click(`[data-artifact-key="device-parameters:${s.other.id}"]`); await h.settle();
+    const receipt = h.document.querySelector<HTMLElement>(".parameter-application")!;
+    assert.equal(receipt.hidden, false); assert.match(receipt.textContent!, /Last application: Soft synth · v2/);
+    assert.equal(h.document.querySelectorAll(".artifact-card").length, 1);
+    s.click("Open applied version"); await h.settle();
+    assert.equal(h.document.querySelector<HTMLSelectElement>(".artifact-version-select")!.value, s.saved.id);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
@@ -484,11 +538,11 @@ test("parameter cards show source once and rely on the saved receipt for a succe
     assert.equal(generation.hidden, true);
     s.click("Audition in Live"); await h.settle();
     const view = card.querySelector(".parameter-artifact-view")!;
-    assert.match(view.querySelector(".parameter-application")!.textContent!, /Auditioning: Soft synth · v2/);
-    assert.equal(view.querySelector<HTMLElement>(':scope > [role="status"]')!.hidden, true);
+    assert.match(view.querySelector(".parameter-application")!.textContent!, /Last application: Soft synth · v2/);
+    assert.equal(view.querySelector<HTMLElement>('.parameter-live-section > [role="status"]')!.hidden, true);
     assert.equal(view.querySelector<HTMLElement>(".parameter-application > .field-hint:last-of-type")!.hidden, true);
     s.click("Use this sound"); await h.settle();
-    assert.match(view.querySelector(".parameter-application")!.textContent!, /Using: Soft synth/);
+    assert.match(view.querySelector(".parameter-application")!.textContent!, /Last application: Soft synth · v2 · kept/);
     s.click("Open original snapshot"); await h.settle();
     assert.equal(h.document.querySelector<HTMLSelectElement>(".artifact-version-select")!.value, s.base.id);
     assert.deepEqual(h.errors, []);
@@ -505,7 +559,7 @@ test("binding and restoration errors localize while parameter names remain liter
   try {
     await s.open(); const view = h.document.querySelector(".parameter-artifact-view")!;
     assert.match(view.textContent!, /原设备绑定已失效/); assert.ok(view.textContent!.includes(`参数“${name}”在应用后被修改`));
-    const apply = [...view.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "在 Live 中试听")!;
+    const apply = [...view.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label") === "在 Live 中试听")!;
     assert.equal(apply.disabled, true);
     h.emitServerEvent({ type: "global_settings_changed", defaultFollowUpBehavior: s.state.settings.defaultFollowUpBehavior,
       defaultFollowUpBehaviorRevision: s.state.settings.defaultFollowUpBehaviorRevision, showContextUsage: s.state.settings.showContextUsage,
@@ -521,9 +575,43 @@ test("a translated HTTP preview failure retains its recovery message until retry
   try {
     await s.open(); s.failRead(uiMessage("Saved device parameter data is invalid."));
     s.click("刷新设备参数"); await h.settle();
-    const status = h.document.querySelector<HTMLElement>('.parameter-artifact-view > [role="status"]')!;
+    const status = h.document.querySelector<HTMLElement>('.parameter-artifact-view [role="status"]')!;
     assert.equal(status.hidden, false); assert.equal(status.textContent, "保存的设备参数数据无效。");
     s.click("刷新设备参数"); await h.settle(); assert.equal(status.hidden, true);
     assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("artifact observations retain their last confirmation while loading and clear on failed readback", async () => {
+  const s = await setup(); const { h } = s;
+  try {
+    await s.open(); s.click('Audition in Live'); await h.settle();
+    const view = h.document.querySelector<HTMLElement>('.parameter-workspace-view')!;
+    const observed = view.querySelector<HTMLElement>('.parameter-observed')!;
+    assert.equal(observed.hidden, false); assert.match(observed.textContent!, /match v2/);
+    s.holdRead(); s.failRead(); s.click('Refresh device parameters'); await h.settle();
+    assert.equal(observed.hidden, false); assert.equal(view.getAttribute('aria-busy'), 'true');
+    s.release(); await h.settle();
+    assert.equal(observed.hidden, true); assert.equal(observed.textContent, '');
+    assert.equal(view.querySelector<HTMLElement>('.parameter-table-view')!.hidden, true);
+    assert.equal(view.dataset.auditionCurrent, 'false');
+    s.click('Refresh device parameters'); await h.settle();
+    assert.equal(observed.hidden, false); assert.match(observed.textContent!, /match v2/);
+    assert.deepEqual(h.errors, []);
+  } finally { s.release(); h.close(); }
+});
+
+test("normal artifact Keep and Restore retain descriptive accessibility and exact command references", async () => {
+  const s = await setup({ language: 'zh-CN' }); const { h } = s;
+  try {
+    await s.open(); s.click('在 Live 中试听'); await h.settle();
+    const keep = [...h.document.querySelectorAll<HTMLButtonElement>('.parameter-live-section button')].find(button => button.textContent === '保留')!;
+    const restore = [...h.document.querySelectorAll<HTMLButtonElement>('.parameter-live-section button')].find(button => button.textContent === '恢复')!;
+    assert.ok(keep); assert.ok(restore); assert.equal(keep.getAttribute('aria-label'), '采用此音色'); assert.equal(restore.title, '恢复试听前状态');
+    keep.click(); await h.settle();
+    assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: 'keep_device_parameters', sessionId: s.base.sessionId, applicationId: 'parameter_application' });
+    restore.click(); await h.settle();
+    assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: 'restore_device_parameters', sessionId: s.base.sessionId, applicationId: 'parameter_application' });
+    assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });

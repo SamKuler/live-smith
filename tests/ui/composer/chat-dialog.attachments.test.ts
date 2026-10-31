@@ -1515,3 +1515,74 @@ test("session actions send only their command-specific fields", async () => {
     harness.close();
   }
 });
+
+function dropOnArtifactPage(h: Awaited<ReturnType<typeof createDialogHarness>>, files: File[]) {
+  const event = new h.window.Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'dataTransfer', { value: { files, types: ['Files'] } });
+  h.document.getElementById('artifactsPage')!.dispatchEvent(event);
+  return event.defaultPrevented;
+}
+
+for (const outcome of ['success', 'policy-rejected', 'server-failed'] as const) test(`a document drop on the artifact page reveals chat for ${outcome} while preserving its draft`, async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state);
+  const name = outcome === 'policy-rejected' ? 'macro.docm' : 'review.txt';
+  try {
+    h.input('#prompt', 'Keep this draft'); h.click('#artifactsShortcut'); h.click('#openArtifactsButton');
+    assert.equal(h.document.getElementById('chatPage')!.hidden, true);
+    if (outcome === 'server-failed') h.failAttachmentNamed(name, 'Fixture upload rejected.', 400);
+    assert.equal(dropOnArtifactPage(h, [documentFile(h.window, name, outcome === 'policy-rejected' ? '' : 'text/plain')]), true);
+    assert.equal(h.document.getElementById('chatPage')!.hidden, false, 'Upload admission reveals progress and failures');
+    assert.equal(h.document.getElementById('artifactsPage')!.hidden, true);
+    await h.settle(); await h.settleAttachmentOperation();
+    assert.equal(h.document.activeElement?.id, 'prompt');
+    assert.equal(h.document.querySelector<HTMLTextAreaElement>('#prompt')!.value, 'Keep this draft');
+    const uploads = h.calls.filter(call => call.path === '/attachments');
+    assert.equal(uploads.length, outcome === 'policy-rejected' ? 0 : 1);
+    if (outcome === 'success') {
+      assert.match(uploads[0]!.url, /sessionId=session-1&fileName=review.txt/);
+      assert.ok(h.document.querySelector('#pendingAttachments [data-attachment-id]'));
+    } else {
+      assert.match(h.document.getElementById('status')!.textContent!, outcome === 'server-failed' ? /Fixture upload rejected/ : /macro-enabled/i);
+      assert.equal(h.document.getElementById('status')!.closest('[hidden]'), null);
+    }
+    assert.equal(h.calls.some(call => call.path === '/send'), false); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("mixed text and file paste admits its upload after native input and retains the saved draft", async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state);
+  try {
+    const prompt = h.document.querySelector<HTMLTextAreaElement>('#prompt')!;
+    h.input('#prompt', 'Before '); prompt.focus(); prompt.setSelectionRange(7, 7);
+    assert.equal(h.dispatchPaste([documentFile(h.window, 'pasted.txt', 'text/plain')], 'native text'), false);
+    assert.equal(h.calls.filter(call => call.path === '/attachments').length, 0);
+    prompt.setRangeText('native text', prompt.selectionStart, prompt.selectionEnd, 'end');
+    prompt.dispatchEvent(new h.window.Event('input', { bubbles: true }));
+    await h.settle(); await h.settleAttachmentOperation();
+    assert.equal(prompt.value, 'Before native text'); assert.equal(h.document.activeElement, prompt);
+    assert.equal(h.calls.filter(call => call.path === '/attachments').length, 1);
+    h.click('.session-entry[data-session-id="session-2"] .session-row'); await h.settle();
+    h.click('.session-entry[data-session-id="session-1"] .session-row'); await h.settle();
+    assert.equal(prompt.value, 'Before native text');
+    assert.equal(h.calls.some(call => call.path === '/send'), false); assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("an attachment completion keeps the page and focus chosen after upload admission", async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state); let held = false;
+  try {
+    h.input('#prompt', 'Keep this draft'); h.click('#artifactsShortcut'); h.click('#openArtifactsButton'); h.holdNextAttachment(); held = true;
+    dropOnArtifactPage(h, [documentFile(h.window, 'later.txt', 'text/plain')]); await h.settle();
+    assert.equal(h.document.getElementById('chatPage')!.hidden, false);
+    h.click('#artifactsShortcut'); h.click('#openArtifactsButton'); const page = h.document.getElementById('artifactsPage')!;
+    assert.equal(h.document.activeElement, page);
+    h.releaseHeldAttachment(); held = false; await h.settleAttachmentOperation();
+    assert.equal(page.hidden, false); assert.equal(h.document.activeElement, page);
+    h.click('#closeArtifactsButton');
+    assert.ok(h.document.querySelector('#pendingAttachments [data-attachment-id]'));
+    assert.equal(h.document.querySelector<HTMLTextAreaElement>('#prompt')!.value, 'Keep this draft'); assert.deepEqual(h.errors, []);
+  } finally { if (held) { h.releaseHeldAttachment(); await h.settleAttachmentOperation(); } h.close(); }
+});

@@ -11,10 +11,11 @@ export function createParameterTable() {
     const result = document.createElement(tag); if (text !== undefined) bindings.text(result, text); return result;
   };
   const root = node("section"); root.className = "parameter-table-view";
-  const filterLabel = node("label"); filterLabel.append(node("span", () => t("Filter parameters")));
+  const filterLabel = node("label"); filterLabel.className = "parameter-filter"; filterLabel.append(node("span", () => t("Filter parameters")));
   const filter = node("input"); filter.type = "search"; filterLabel.append(filter);
+  bindings.attribute(filter, "placeholder", () => t("Filter parameters"));
   const changesLabel = node("label"); changesLabel.className = "parameter-changes-filter";
-  const changes = node("input"); changes.type = "checkbox"; changesLabel.append(changes, node("span", () => t("Only changed parameters")));
+  const changes = node("input"); changes.type = "checkbox"; changesLabel.append(changes, node("span", () => t("Only changes")));
   const count = node("p"); count.className = "field-hint"; count.setAttribute("role", "status");
   const scroller = node("div"); scroller.className = "parameter-table-scroll"; scroller.tabIndex = 0;
   bindings.attribute(scroller, "aria-label", () => t("Device parameter values"));
@@ -23,9 +24,15 @@ export function createParameterTable() {
   heading.append(node("th", () => t("Parameter")), beforeHeading, afterHeading, node("th", () => t("Range")));
   for (const th of heading.querySelectorAll("th")) th.scope = "col";
   head.append(heading); const body = node("tbody"); table.append(head, body); scroller.append(table);
-  root.append(filterLabel, changesLabel, count, scroller);
+  root.append(filterLabel, changesLabel, scroller, count);
   let rows: readonly ParameterTableRow[] = [];
   let beforeLabel = "Current value", afterLabel = "Saved value";
+  const compact = (value: number) => new Intl.NumberFormat(document.documentElement.lang || undefined, { maximumSignificantDigits: 6, useGrouping: false }).format(value);
+  function valueCell(value: number | undefined) {
+    const cell = node("td", value === undefined ? "—" : compact(value));
+    if (value !== undefined) { cell.title = String(value); cell.tabIndex = 0; cell.setAttribute("aria-label", String(value)); }
+    return cell;
+  }
   function render() {
     const comparing = rows.some((row) => row.before !== undefined);
     beforeHeading.hidden = changesLabel.hidden = !comparing;
@@ -41,8 +48,9 @@ export function createParameterTable() {
       const name = node("th", `[${row.index}] ${row.name}`); name.scope = "row";
       if (row.state) { const state = node("span", () => t(row.state!)); state.className = "parameter-row-state"; name.append(state); }
       tr.dataset.changed = String(row.before !== undefined && row.after !== undefined && !sameParameterNumber(row.before, row.after));
-      const before = node("td", row.before === undefined ? "—" : String(row.before)); before.hidden = !comparing;
-      tr.append(name, before, node("td", row.after === undefined ? "—" : String(row.after)), node("td", `${row.min}–${row.max}`));
+      const before = valueCell(row.before); before.hidden = !comparing;
+      const range = node("td", `${compact(row.min)}–${compact(row.max)}`); range.title = `${row.min}–${row.max}`;
+      tr.append(name, before, valueCell(row.after), range);
       return tr;
     }));
   }

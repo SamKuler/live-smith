@@ -890,7 +890,7 @@ test("Cmd or Ctrl Enter sends the unchanged prompt instead of accepting a Skill 
   }
 });
 
-test("a Skill can be disabled from archived history before deletion", async () => {
+test("visible Extensions Skills returns focus through archived disable and deletion", async () => {
   const state = stateFixture();
   state.availableSkills = [{
     id: "history-guide",
@@ -910,7 +910,8 @@ test("a Skill can be disabled from archived history before deletion", async () =
   const harness = await createDialogHarness(state);
   let commandHeld = false;
   try {
-    harness.click("#extensionsTab");
+    harness.click("#extensionsTab"); harness.click("#skillsExtensionTab");
+    assert.equal(harness.document.getElementById("skillLibrary")!.closest("[hidden], [inert]"), null);
     const disable = harness.document.querySelector<HTMLButtonElement>(
       "#userSkillLibraryList [data-skill-id='history-guide'] .skill-delete",
     );
@@ -925,6 +926,7 @@ test("a Skill can be disabled from archived history before deletion", async () =
       "Expected the global disable command to start.",
     );
     assert.equal(harness.document.activeElement, harness.document.getElementById("skillLibrary"));
+    assert.equal(harness.document.activeElement!.closest("[hidden], [inert]"), null);
     assert.equal(harness.document.getElementById("skillLibrary")?.getAttribute("aria-busy"), "true");
     assert.equal(disable?.disabled, true);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#userSkillList input")?.disabled, true);
@@ -941,10 +943,13 @@ test("a Skill can be disabled from archived history before deletion", async () =
     );
     assert.equal(deletion?.textContent, "Delete");
     assert.equal(harness.document.activeElement, deletion);
+    assert.equal(deletion!.closest("[hidden], [inert]"), null);
     deletion?.click();
     await harness.acceptAppConfirmation();
     await harness.settle();
     assert.ok(harness.calls.some((call) => call.path === "/skills/history-guide"));
+    assert.equal(harness.document.activeElement, harness.document.querySelector("#skillLibrary .skill-paste > summary"));
+    assert.equal(harness.document.activeElement!.closest("[hidden], [inert]"), null);
   } finally {
     if (commandHeld) harness.releaseHeldCommand();
     harness.close();

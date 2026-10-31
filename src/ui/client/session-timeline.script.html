@@ -21,8 +21,8 @@
         runCommand,
         readSessionSearch,
         showStatus,
-        onTimelineApproval,
-        onInspectorTabChange = () => {},
+        revealTimeline,
+        onInspectorTabChange,
       }) {
       const t = (message, params) => window.LiveSmithI18n.t(message, params);
       const { message } = window.LiveSmithI18n;
@@ -209,8 +209,11 @@
       document.addEventListener("keydown", handleConfirmationKeydown);
 
       function renderInspectorTabs() {
+        const visibleTabs = inspectorGroups[activeInspectorGroup].filter(name => name !== "artifacts" || getState().settings.sessionTabs.includes("artifacts"));
+        if (!visibleTabs.includes(selectedInspectorTabs[activeInspectorGroup])) selectedInspectorTabs[activeInspectorGroup] = visibleTabs[0];
         const selected = selectedInspectorTabs[activeInspectorGroup];
-        const visibleTabs = inspectorGroups[activeInspectorGroup];
+        const focus = document.activeElement;
+        const focusWasVisible = focus?.closest("#inspectorPane") && !focus.closest("[hidden]");
         for (const group of Object.keys(inspectorGroups)) {
           document.getElementById(`${group}InspectorScope`)
             .setAttribute("aria-pressed", String(group === activeInspectorGroup));
@@ -225,6 +228,8 @@
           tabButton.tabIndex = active ? 0 : -1;
           panel.hidden = !active;
         }
+        if (focusWasVisible && focus.closest("[hidden]")) document.getElementById(`${selected}Tab`).focus({ preventScroll: true });
+        onInspectorTabChange(selected);
       }
 
       function switchInspectorTab(tab) {
@@ -232,13 +237,11 @@
         activeInspectorGroup = inspectorGroups.session.includes(selected) ? "session" : "settings";
         selectedInspectorTabs[activeInspectorGroup] = selected;
         renderInspectorTabs();
-        onInspectorTabChange(selected);
       }
 
       function switchInspectorGroup(group) {
         activeInspectorGroup = group === "session" ? "session" : "settings";
         renderInspectorTabs();
-        onInspectorTabChange(selectedInspectorTabs[activeInspectorGroup]);
       }
 
       function handleInspectorTabKeydown(event) {
@@ -1079,6 +1082,7 @@
         const item = [...document.querySelectorAll("#timeline [data-event-id]")]
           .find((node) => node.dataset.eventId === eventId);
         if (!item) return false;
+        revealTimeline?.();
         cancelPendingTimelinePosition();
         item.tabIndex = -1;
         item.focus({ preventScroll: true });
@@ -1105,7 +1109,7 @@
         retainActiveSessionForWindow();
         const state = getState();
         const externalApprovalId = state.mcpApprovals?.[0]?.operationId || null;
-        if (externalApprovalId && externalApprovalId !== focusedExternalApprovalId) onTimelineApproval?.();
+        if (externalApprovalId && externalApprovalId !== focusedExternalApprovalId) revealTimeline?.();
         focusedExternalApprovalId = externalApprovalId;
         sessionSearch.syncState(state);
         const currentSessions = state.sessions.filter((session) => isSessionVisible(session));
@@ -2018,7 +2022,7 @@
         const queuedFollowUps = getQueuedFollowUps?.() || [];
         const webSearchUpdates = getWebSearchUpdates?.() || [];
         const pendingConfirmation = getPendingConfirmation();
-        if (pendingConfirmation && focusedConfirmationId !== pendingConfirmation.id) onTimelineApproval?.();
+        if (pendingConfirmation && focusedConfirmationId !== pendingConfirmation.id) revealTimeline?.();
         const pendingUserMessage = getPendingUserMessage?.() || null;
         const renderKey = JSON.stringify({
           locale: window.LiveSmithI18n.locale,
@@ -2326,9 +2330,9 @@
           const returnFocus = confirmationReturnFocus;
           focusedConfirmationId = null;
           confirmationReturnFocus = null;
-          if (hadConfirmation && returnFocus?.isConnected && !returnFocus.disabled) {
+          if (hadConfirmation && returnFocus?.isConnected && !returnFocus.disabled && !returnFocus.closest("[hidden], [inert]")) {
             returnFocus.focus({ preventScroll: true });
-          } else if (hadConfirmation) {
+          } else if (hadConfirmation && !timeline.closest("[hidden], [inert]")) {
             document.getElementById("sendButton")?.focus({ preventScroll: true });
           } else if (focusedReasoningSummary) {
             const reasoningFocus = timeline.querySelector(
@@ -3428,6 +3432,7 @@
         syncSessionPresentation,
         refreshLocale,
         renderSessions,
+        renderInspectorTabs,
         renderTimeline,
         syncMessageActions,
         setConfirmationState,

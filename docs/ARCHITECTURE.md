@@ -848,12 +848,20 @@ the next mutation; older builds do not read schema-2 catalogs.
 
 ### MCP tools and authority
 
-The Inspector contains Session Context, Artifacts, Skills, and Tools. Global
+The Inspector contains Session Context, an Artifacts summary, Skills, and Tools. Global
 Agent, Extensions, and App settings have separate owners.
-`model/session-tabs.ts` defines panel and shortcut IDs. The composer bootstrap
-controls shortcut visibility, and `session-timeline` owns Inspector navigation.
-Shortcuts open the same panels or sections while preserving drafts and scroll
-positions. The Brief shortcut opens the creative brief inside Context.
+`model/session-tabs.ts` defines shortcut IDs and the Inspector subset. The saved
+`sessionTabs.artifacts` preference controls the composer entry and Session summary
+tab. The document bootstrap owns one local `chat`/`artifacts` main
+view selection; it is independent of Session storage and other window views.
+The template places both pages beside the Session list. `session-timeline` owns
+Inspector navigation. The Brief shortcut opens the creative brief inside Context.
+Artifact shortcuts open the Session summary; its rows and exact saved chat links
+open the main workspace. Draft, attachment
+and timeline approval paths reveal chat before focusing its controls. Inspector
+isolation follows the visible main page; closing the overlay restores visible
+focus. Main-page navigation retains draft and scroll state and controls artifact
+preview suspension independently of Inspector tabs.
 
 Extensions owns Audio services, MCP, Skills, and Plugins. Its editors manage
 account settings, server configuration and permissions, standalone Skill
@@ -1388,8 +1396,26 @@ resource-only download tickets.
 
 #### Comparison and import views
 
-`ui/client/artifacts.ts` owns expanded work entries and their selected versions.
-Version reads are cancelled when an entry closes or the Session changes; stale
+`ui/client/artifact-summary.ts` owns the compact Session Inspector entry. It reads
+the existing catalog at offset zero while visible, displays metadata and the
+bounded page count, and links each displayed exact reference to the main page.
+Its cancellable read, Session ownership and page suspension are independent of
+the full library's filters, current version and media. Validated saved-artifact,
+default-selection and linked import-result events refresh the visible summary;
+authoritative state reconciles missed events without reloading on text tokens.
+Opening the summary leaves
+the main page selection intact; Open all explicitly clears the library filters
+and returns to its initial page. Parameter observations, media players, version
+comparison and write/transfer controls remain with the full detail owners.
+
+`ui/client/artifacts.ts` owns the library/detail workspace, one selected work and
+its browsed version. Shared headings, default controls, common actions, provenance
+and history stay in this owner; parameter comparison, audio playback, piano-roll
+and MIDI import retain their domain owners. The main Artifacts page consumes the
+space beside the Session list; catalog collapse follows its container width.
+The ordinary Inspector keeps its own width and overlays the current main page. Work
+switches dispose the old preview. Version reads are cancelled when the selected
+work or Session changes; stale
 responses cannot replace a newer selection. `app/midi/midi-artifact-diff.ts`
 reads the immutable selected file and an explicit same-work comparison version
 through the existing MIDI store. Omitting the baseline uses `derivedFromId`;
@@ -1451,7 +1477,7 @@ import uses the existing chat action/preflight path. Read-only browsing, differe
 playback remain available during generation; selection commands share the Session
 mutation fence and validate ownership again before writing their event.
 
-Artifact catalog search filters names, version labels and source labels before
+Artifact catalog type filtering and search filter names, version labels and source labels before
 group pagination. Source labels include aliases from the supported UI catalogs;
 user-authored names remain literal. A matching exact version is selected even
 when the group's primary version does not match; the group's complete version
@@ -1460,6 +1486,21 @@ on Session changes. Read cancellation is independent of artifact mutations, so
 typing a new query cannot release an outstanding selection or transfer command.
 If a catalog shrinks beyond the requested page, the library reads the last valid
 page, including page zero for an empty catalog.
+
+Parameter history projects existing durable applications for all versions in a
+work. Import history pairs persisted `apply_requested` and `apply_result` operation
+IDs. MIDI import proposals retain host-validated typed artifact references before
+materialization removes source file IDs; audio imports retain their asset references
+in the validated plan. Unfinished proposals project an unknown outcome. Legacy
+imports without exact source identity remain unassociated. The read projection
+never establishes observed current Live state or grants write authority.
+
+The artifact audio player reuses the attachment player's authenticated source,
+transport controls and waveform decoders. Its read/decode lifecycle belongs to the
+selected work: suspension cancels decoding and pauses playback; disposal releases
+media sources. The Session projection retains validated source sample rate and
+channel count for the decoder's pre-allocation PCM budget and exact-source
+checks. The interface displays duration and media type.
 
 ## Skill boundary
 

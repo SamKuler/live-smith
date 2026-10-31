@@ -396,7 +396,7 @@ export interface ChatBridgeOptions {
   viewIdleTimeoutMs?: number;
   readMidiArtifact?(sessionId: string, artifactRef: string, signal: AbortSignal): Promise<{ bytes: Uint8Array; fileName: string }>;
   searchSessions?(input: SessionSearchInput, signal: AbortSignal): Promise<SessionSearchResult>;
-  readSessionArtifacts?(input: { sessionId: string; offset: number; query?: string }, signal: AbortSignal): Promise<unknown>;
+  readSessionArtifacts?(input: { sessionId: string; offset: number; query?: string; kind?: ArtifactRef["kind"] }, signal: AbortSignal): Promise<unknown>;
   readDeviceParameters?(input: ParameterArtifactRead, signal: AbortSignal): Promise<unknown>;
   readSessionArtifact?(input: { sessionId: string; artifact: ArtifactRef }, signal: AbortSignal): Promise<SessionArtifactDetail>;
   readMidiArtifactDiff?(input: { sessionId: string; artifactRef: string; baseArtifactRef?: string }, signal: AbortSignal): Promise<MidiArtifactDiff>;
@@ -2193,14 +2193,15 @@ export async function createChatBridge(
         assertExactQueryParameters(url, ["token"], "Session artifacts");
         const input = await readRequestBody(request) as Record<string, unknown>;
         if (!input || typeof input !== "object" || Array.isArray(input) ||
-            Object.keys(input).some((key) => !["sessionId", "offset", "query"].includes(key)) || !isSafeStorageId(input.sessionId) ||
+            Object.keys(input).some((key) => !["sessionId", "offset", "query", "kind"].includes(key)) || !isSafeStorageId(input.sessionId) ||
+            input.kind !== undefined && (typeof input.kind !== "string" || !["audio", "midi", "device-parameters"].includes(input.kind)) ||
             input.query !== undefined && (typeof input.query !== "string" || input.query.length > MAX_SEARCH_QUERY_LENGTH) ||
             input.offset !== undefined && (!Number.isSafeInteger(input.offset) || (input.offset as number) < 0)) {
           throw new ChatBridgeRequestValidationError("Choose a Session artifact page.");
         }
         const query = typeof input.query === "string" ? normalizeSearchQuery(input.query) : "";
         sendJson(response, await options.readSessionArtifacts({ sessionId: input.sessionId, offset: input.offset as number ?? 0,
-          ...(query ? { query } : {}) }, beginReadOnlyBuild(response, handlerTerminal)));
+          ...(query ? { query } : {}), ...(input.kind ? { kind: input.kind as ArtifactRef["kind"] } : {}) }, beginReadOnlyBuild(response, handlerTerminal)));
         return;
       }
 

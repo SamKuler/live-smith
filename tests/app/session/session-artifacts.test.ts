@@ -567,3 +567,42 @@ test("provider audio recovers saved sources without a tool result and retains le
     assert.deepEqual(listed.parent, parent);
   }
 });
+
+test("artifact operation history pairs exact persisted proposals with outcomes and leaves interrupted imports unknown", async (t) => {
+  const h = await audioStorageHarness(t);
+  const saved = await saveMidiArtifact(h.storage, h.session.id, { connectionId: "midi", serverId: "midi", toolName: "make",
+    label: "First", bytes: midiBytes({ tracks: [noteTrack()] }), signal: h.signal });
+  const revised = await saveMidiArtifact(h.storage, h.session.id, { connectionId: "midi", serverId: "midi", toolName: "make",
+    label: "Second", revisionOf: saved.id, bytes: midiBytes({ tracks: [noteTrack({ pitch: 62 })] }), signal: h.signal });
+  for (const [id, artifact, status] of [["one", saved.id, "partial"], ["two", revised.id, "applied"], ["three", revised.id, undefined]] as const) {
+    await appendSessionEvent(h.storage, h.session.id, { kind: "apply_requested", content: "Import", applyOperation: { id, status: "proposed", artifacts: [{ kind: "midi", id: artifact }] } });
+    if (status) await appendSessionEvent(h.storage, h.session.id, { kind: "apply_result", content: "Result", applyOperation: { id, status } });
+  }
+  await appendSessionEvent(h.storage, h.session.id, { kind: "apply_result", content: "Uncorrelated", applyOperation: { id: "other", status: "applied" } });
+  const result = await readSessionArtifact({ storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal, artifact: { kind: "midi", id: saved.id } });
+  assert.deepEqual(new Map(result.artifact.history!.map((entry) => [entry.id, [entry.artifact.id, entry.status]])), new Map([
+    ["one", [saved.id, "partial"]], ["two", [revised.id, "applied"]], ["three", [revised.id, "unknown"]],
+  ]));
+  assert.equal(isSessionArtifactDetail(result), true);
+  assert.equal(isSessionArtifactDetail({ ...result, artifact: { ...result.artifact, history: [{ ...result.artifact.history![0], artifact: { kind: "midi", id: "unowned" } }] } }), false);
+});
+
+test("service and Plugin audio expose their validated decoding metadata in catalog and exact detail", async (t) => {
+  const h = await audioStorageHarness(t);
+  const service = await h.save('vocals');
+  const { mp3Bytes } = await import('../../storage/support/audio-storage-test-helpers.js');
+  const plugin = await savePluginAudioArtifact(h.storage, h.session.id, { connectionId: 'generator', serverId: 'audio', toolName: 'make',
+    label: 'MP3 texture', bytes: mp3Bytes(), format: 'mp3', signal: h.signal });
+  const input = { storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal };
+  const catalog = await listSessionArtifacts(input);
+  for (const saved of [service, plugin]) {
+    const detail = await readSessionArtifact({ ...input, artifact: { kind: 'audio', id: saved.id } });
+    for (const artifact of [catalog.artifacts.find(entry => entry.ref.id === saved.id)!, detail.artifact]) {
+      assert.equal(artifact.audio!.sampleRate, saved.sampleRate); assert.equal(artifact.audio!.channels, saved.channels);
+      assert.equal(isSessionArtifactDetail({ sessionId: h.session.id, artifact }), true);
+      for (const patch of [{ sampleRate: undefined }, { channels: undefined }, { sampleRate: 0 }, { channels: 1.5 }]) {
+        assert.equal(isSessionArtifactDetail({ sessionId: h.session.id, artifact: { ...artifact, audio: { ...artifact.audio, ...patch } } }), false);
+      }
+    }
+  }
+});

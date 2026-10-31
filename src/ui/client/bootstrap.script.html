@@ -23,6 +23,9 @@
         let retainedSessionControlFocus = null;
         let renderedContextSummary = null;
         let sessionsPaneCollapsed = false;
+        let mainView = "chat";
+        let chatSessionsPaneCollapsed = false;
+        let compactArtifactLayout = window.innerWidth <= 640;
         let selectedExtensionCategory = "audio";
         const extensionPages = { audio: "audioServicesSettings", mcp: "mcpSettings", skills: "skillLibrary", plugins: "pluginManager" };
         let statusUnderlay = {
@@ -147,7 +150,7 @@
           document.getElementById("appConfirmation").hidden = true;
           document.querySelector(".app").removeAttribute("inert");
           confirmation.resolve(accepted);
-          if (confirmation.returnFocus?.isConnected && !confirmation.returnFocus.disabled) {
+          if (confirmation.returnFocus?.isConnected && !confirmation.returnFocus.disabled && !confirmation.returnFocus.closest("[data-main-view][hidden], [data-main-view][inert]")) {
             confirmation.returnFocus.focus({ preventScroll: true });
           }
         }
@@ -286,6 +289,7 @@
         });
         const attachments = factories.createAttachments({
           attachmentViewer,
+          revealComposer: returnToChat,
           deleteAttachment: bridgeClient.deleteAttachment,
           getState,
           getComposerAttachments: bridgeClient.getComposerAttachments,
@@ -322,7 +326,7 @@
             try { await pluginApps.close(); }
             catch { bridgeClient.showStatus(i18n.message("MCP App could not be closed."), true); return; }
             if (getState().activeSessionId !== sessionId) return;
-            setInspectorOpen(false);
+            returnToChat();
             const prompt = document.getElementById("prompt");
             prompt.value = [prompt.value.trimEnd(), text].filter(Boolean).join("\n\n");
             prompt.dispatchEvent(new Event("input", { bubbles: true }));
@@ -334,7 +338,7 @@
             try { await pluginApps.close(); }
             catch { bridgeClient.showStatus(i18n.message("MCP App could not be closed."), true); return completed; }
             if (getState().activeSessionId !== input.sessionId) return completed;
-            setInspectorOpen(false); document.getElementById("prompt").focus();
+            returnToChat();
           }
           return completed;
         };
@@ -372,20 +376,25 @@
             return completed && known;
           },
           useInChat: useResultInChat, resultActions: pluginResults,
-          createAudioPlayer: (...args) => attachmentViewer.createAudioPlayer(...args),
+          createAudioPlayer: (...args) => attachmentViewer.createArtifactAudioPlayer(...args),
           audioUrl: (sessionId, id) => bridgeConfig.baseUrl + "/audio-assets/" + encodeURIComponent(id) +
             "?token=" + encodeURIComponent(bridgeConfig.token) + "&sessionId=" + encodeURIComponent(sessionId),
+        });
+        const artifactSummary = factories.createArtifactSummary({
+          getState, read: bridgeClient.readSessionArtifacts,
+          openArtifact: (artifact) => { openArtifacts(); artifactLibrary.openArtifact(artifact); },
         });
         const chatArtifactPreviews = factories.createChatArtifactPreviews({
           getState, readArtifact: bridgeClient.readSessionArtifact, transfer: transferArtifact, resultActions: pluginResults,
           readDeviceParameters: bridgeClient.readDeviceParameters, parameterCommand,
           openArtifact: (artifact) => {
-            openInspectorSection("artifacts", "sessionArtifacts");
+            openArtifacts();
             artifactLibrary.openArtifact(artifact);
           },
         });
         function invalidateParameterArtifacts(sessionId) {
           artifactLibrary.invalidateParameters(sessionId);
+          artifactSummary.invalidate(sessionId);
           chatArtifactPreviews.invalidateParameters(sessionId);
         }
         window.addEventListener("pagehide", (event) => {
@@ -465,10 +474,10 @@
           isSessionNavigationBlocked: bridgeClient.isSessionNavigationBlocked,
           isConfirmationLocked: bridgeClient.isConfirmationLocked,
           resolveConfirm: bridgeClient.resolveConfirm,
-          onTimelineApproval: () => setInspectorOpen(false),
+          revealTimeline,
+          onInspectorTabChange: syncArtifactSummaryVisibility,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
-          onInspectorTabChange: (tab) => artifactLibrary.setVisible(tab === "artifacts" && !document.getElementById("inspectorPane").hidden),
         });
 
         const toolsInspector = factories.createToolsInspector({
@@ -677,6 +686,7 @@
 
         function renderSessionShortcuts() {
           const tabs = getState().settings.sessionTabs;
+          sessionTimeline.renderInspectorTabs();
           const row = document.getElementById("composerShortcuts");
           const focused = document.activeElement;
           renderLiveContext();
@@ -690,7 +700,7 @@
             setPropertyIfChanged(control, "checked", tabs.includes(control.dataset.sessionTab));
           }
           if (row.contains(focused) && focused.closest("[hidden]")) {
-            document.getElementById("prompt").focus({ preventScroll: true });
+            returnToChat();
           }
         }
 
@@ -1003,45 +1013,85 @@
           const toggle = document.getElementById("sessionsToggleButton");
           if (!pane || !toggle) return;
           const focusWasInside = pane.contains(document.activeElement);
+          const backdrop = document.getElementById("sessionsBackdrop");
+          const focusWasOnBackdrop = document.activeElement === backdrop;
           sessionsPaneCollapsed = Boolean(collapsed);
           document.querySelector(".app").classList.toggle(
             "sessions-collapsed",
             sessionsPaneCollapsed,
           );
           pane.hidden = sessionsPaneCollapsed;
+          document.getElementById("sessionsBackdrop").hidden = !(mainView === "artifacts" && compactArtifactLayout && !sessionsPaneCollapsed);
           toggle.setAttribute("aria-expanded", String(!sessionsPaneCollapsed));
           const label = sessionsPaneCollapsed
             ? t("Show Sessions")
             : t("Collapse Sessions");
           toggle.setAttribute("aria-label", label);
           toggle.title = label;
-          if (sessionsPaneCollapsed && focusWasInside) {
+          synchronizeInspectorIsolation();
+          if ((sessionsPaneCollapsed && focusWasInside) || (backdrop.hidden && focusWasOnBackdrop)) {
             toggle.focus({ preventScroll: true });
           }
         }
 
         function toggleSessionsPane() {
+          if (mainView === "artifacts" && compactArtifactLayout && sessionsPaneCollapsed) setInspectorOpen(false);
           setSessionsPaneCollapsed(!sessionsPaneCollapsed);
         }
 
+        function setMainView(nextView) {
+          if (mainView !== nextView) {
+            if (nextView === "artifacts") chatSessionsPaneCollapsed = sessionsPaneCollapsed;
+            mainView = nextView;
+            document.querySelector(".app").classList.toggle("compact-artifacts", mainView === "artifacts" && compactArtifactLayout);
+            setSessionsPaneCollapsed(mainView === "artifacts" ? compactArtifactLayout || sessionsPaneCollapsed : chatSessionsPaneCollapsed);
+          }
+          for (const page of document.querySelectorAll("[data-main-view]")) page.hidden = page.dataset.mainView !== mainView;
+          artifactLibrary.setVisible(mainView === "artifacts");
+          synchronizeInspectorIsolation();
+        }
+
+        function syncArtifactSummaryVisibility() {
+          artifactSummary.setVisible(!document.getElementById("inspectorPane").hidden && !document.getElementById("artifactsPanel").hidden);
+        }
+
+        function openAllArtifacts() {
+          artifactLibrary.showAll();
+          openArtifacts();
+        }
+
+        function openArtifacts() {
+          if (!getState().activeSessionId) return;
+          setMainView("artifacts");
+          setInspectorOpen(false);
+          document.getElementById("artifactsPage").focus({ preventScroll: true });
+        }
+
         function synchronizeInspectorIsolation() {
-          const chat = document.querySelector(".chat-pane");
           const inspector = document.getElementById("inspectorPane");
-          if (!chat || !inspector) return;
-          const isolateChat = !inspector.hidden;
-          const focusWasCovered = isolateChat && chat.contains(document.activeElement);
-          chat.toggleAttribute("inert", isolateChat);
-          if (focusWasCovered) {
-            inspector.querySelector('[role="tab"][aria-selected="true"]')
-              ?.focus({ preventScroll: true });
+          if (!inspector) return;
+          const sessions = document.getElementById("sessionsPane");
+          const sessionsCovered = compactArtifactLayout && !inspector.hidden;
+          let focusWasCovered = sessionsCovered && sessions.contains(document.activeElement);
+          sessions.toggleAttribute("inert", sessionsCovered);
+          for (const page of document.querySelectorAll("[data-main-view]")) {
+            const isolated = page.hidden || !inspector.hidden || !document.getElementById("sessionsBackdrop").hidden;
+            focusWasCovered ||= isolated && page.contains(document.activeElement);
+            page.toggleAttribute("inert", isolated);
+          }
+          if (focusWasCovered && !document.getElementById("sessionsBackdrop").hidden) {
+            document.getElementById("sessionsToggleButton").focus({ preventScroll: true });
+          } else if (focusWasCovered && !inspector.hidden) {
+            inspector.querySelector('[role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
           }
         }
 
         function setInspectorOpen(open) {
+          if (open && mainView === "artifacts" && compactArtifactLayout && !sessionsPaneCollapsed) setSessionsPaneCollapsed(true);
           const inspector = document.getElementById("inspectorPane");
           const focusWasInside = !open && inspector.contains(document.activeElement);
           inspector.hidden = !open;
-          artifactLibrary.setVisible(open && !document.getElementById("artifactsPanel").hidden);
+          syncArtifactSummaryVisibility();
           const settingsButton = document.getElementById("settingsButton");
           settingsButton.setAttribute("aria-expanded", String(open));
           settingsButton.setAttribute(
@@ -1049,7 +1099,7 @@
             open ? t("Close Inspector") : t("Open Inspector"),
           );
           synchronizeInspectorIsolation();
-          if (focusWasInside) settingsButton.focus({ preventScroll: true });
+          if (focusWasInside) (mainView === "artifacts" ? document.getElementById("artifactsPage") : settingsButton).focus({ preventScroll: true });
         }
 
         function openInspector(tab) {
@@ -1109,8 +1159,15 @@
         }
 
         function returnToChat() {
+          setMainView("chat");
           setInspectorOpen(false);
-          document.getElementById("prompt").focus();
+          const prompt = document.getElementById("prompt");
+          (prompt.disabled ? document.getElementById("chatPage") : prompt).focus({ preventScroll: true });
+        }
+
+        function revealTimeline() {
+          if (mainView !== "chat") returnToChat();
+          else setInspectorOpen(false);
         }
 
         function toggleInspector() {
@@ -1432,6 +1489,7 @@
           pluginManager.render();
           pluginApps.sync();
           artifactLibrary.render();
+          artifactSummary.render();
           audioParameters.sync();
           toolsInspector.render();
           midiContinuation.render();
@@ -1882,6 +1940,7 @@
         }
 
         bridgeClient.connectView({
+          focusComposer: returnToChat,
           announceAssistantMessage: sessionTimeline.announceAssistantMessage,
           invalidateSessionSearch: sessionTimeline.invalidateSessionSearch,
           invalidateParameterArtifacts,
@@ -1909,7 +1968,7 @@
           renderEditScopes,
           reconcileSettingsForm: reconcileSettingsFormFromState,
           renderSettingsForm: renderSettingsFormFromState,
-          renderTimeline: () => { sessionTimeline.renderTimeline(); creativeBriefEditor.render(); },
+          renderTimeline: () => { sessionTimeline.renderTimeline(); creativeBriefEditor.render(); artifactSummary.render(); },
           renderSendPresentation,
           renderPendingAttachments: () => { attachments.renderPending(); renderContextAttachments(); },
           setOperationState,
@@ -1963,6 +2022,8 @@
           logoutOAuth: profileEditor.logoutOAuth,
           openOAuthVerification: profileEditor.openOAuthVerification,
           openInspector,
+          openArtifacts,
+          openAllArtifacts,
           openInspectorGroup,
           openInspectorSection,
           refreshOAuthAccount: profileEditor.refreshOAuthAccount,
@@ -2013,6 +2074,22 @@
           prompt.value = "";
           prompt.addEventListener("input", bridgeClient.handleComposerInput);
           bridgeClient.startEventStream();
+          window.addEventListener("resize", () => {
+            const compact = window.innerWidth <= 640;
+            if (compact === compactArtifactLayout) return;
+            compactArtifactLayout = compact;
+            document.querySelector(".app").classList.toggle("compact-artifacts", mainView === "artifacts" && compact);
+            if (mainView === "artifacts") setSessionsPaneCollapsed(compact || sessionsPaneCollapsed);
+            else synchronizeInspectorIsolation();
+          });
+          document.addEventListener("keydown", (event) => {
+            if (event.key !== "Escape" || event.defaultPrevented || mainView !== "artifacts" ||
+              event.target.closest?.("dialog, [role='dialog'], [role='alertdialog']")) return;
+            event.preventDefault();
+            if (!document.getElementById("sessionsBackdrop").hidden) setSessionsPaneCollapsed(true);
+            else if (!document.getElementById("inspectorPane").hidden) setInspectorOpen(false);
+            else returnToChat();
+          });
           const inspector = document.getElementById("inspectorPane");
           const initialFocus = inspector.hidden
             ? prompt

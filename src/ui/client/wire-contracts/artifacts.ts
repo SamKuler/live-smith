@@ -1,3 +1,4 @@
+import { MAX_AUDIO_ASSET_DURATION_SECONDS } from "../../../audio-services/contracts.js";
 import { isArtifactRef, isArtifactVersion, MAX_MIDI_ARTIFACT_OVERVIEW_NOTES } from "../../../agent/artifact-contracts.js";
 import type { MidiPartPreview, SessionArtifact, SessionArtifactDetail, SessionArtifacts } from "../../../app/session/session-artifacts.js";
 import { MAX_SEARCH_QUERY_LENGTH, normalizeSearchQuery } from "../../../app/session/search-contracts.js";
@@ -22,6 +23,7 @@ export function isSessionArtifactDetail(value: unknown): value is SessionArtifac
 }
 export function isSessionArtifacts(value: unknown): value is SessionArtifacts {
   return record(value) && text(value.sessionId, 128) && Array.isArray(value.artifacts) && value.artifacts.length <= 24 &&
+    (value.kind === undefined || typeof value.kind === "string" && ["audio", "midi", "device-parameters"].includes(value.kind)) &&
     (value.query === undefined || text(value.query, MAX_SEARCH_QUERY_LENGTH) && value.query.length > 0 && normalizeSearchQuery(value.query) === value.query) &&
     finite(value.total) && finite(value.offset) && finite(value.unavailableCount) &&
     (value.continuation === undefined || isArtifactRef(value.continuation)) && value.artifacts.every((artifact) => isSessionArtifact(artifact, MAX_MIDI_ARTIFACT_OVERVIEW_NOTES));
@@ -44,6 +46,12 @@ function isSessionArtifact(artifact: unknown, maximumMidiNotes: number): artifac
       (Array.isArray(artifact.versions) ? artifact.versions.some((version) => record(version) && version.id === primary.id)
         : primary.id === ref.id)) &&
     (artifact.parent === undefined || isArtifactRef(artifact.parent)) &&
+    (artifact.history === undefined || Array.isArray(artifact.history) && artifact.history.every((entry) => record(entry) &&
+      text(entry.id, 128) && text(entry.createdAt, 64) && Number.isFinite(Date.parse(entry.createdAt)) && isArtifactRef(entry.artifact) && entry.artifact.kind === ref.kind &&
+      (Array.isArray(artifact.versions) ? artifact.versions.some((version) => record(version) && version.id === (entry.artifact as { id: string }).id) : entry.artifact.id === ref.id) &&
+      typeof entry.action === "string" && ["parameters", "import"].includes(entry.action) &&
+      typeof entry.status === "string" && ["applying", "applied", "restoring", "restored", "partial", "kept", "cancelled", "failed", "unknown"].includes(entry.status) &&
+      (entry.target === undefined || text(entry.target, 1024)))) &&
     (artifact.generation === undefined || record(artifact.generation) && text(artifact.generation.toolName, 256) &&
       text(artifact.generation.callEventId, 128) && text(artifact.generation.resultEventId, 128) &&
       (artifact.generation.requestEventId === undefined || text(artifact.generation.requestEventId, 128)) &&
@@ -53,7 +61,12 @@ function isSessionArtifact(artifact: unknown, maximumMidiNotes: number): artifac
       Number(artifact.deviceParameters.parameterCount) > 0 && Number(artifact.deviceParameters.parameterCount) <= MAX_DEVICE_PARAMETERS &&
       (artifact.deviceParameters.parameters === undefined || isDeviceParameterSnapshot({ target: artifact.deviceParameters.target, parameters: artifact.deviceParameters.parameters }) &&
         (artifact.deviceParameters.parameters as unknown[]).length === artifact.deviceParameters.parameterCount)
-      : ref.kind === "audio" ? record(artifact.audio) && finite(artifact.audio.durationSeconds) && (artifact.audio.jobId === undefined || text(artifact.audio.jobId, 128)) &&
+      : ref.kind === "audio" ? record(artifact.audio) && finite(artifact.audio.durationSeconds) && artifact.audio.durationSeconds > 0 && artifact.audio.durationSeconds <= MAX_AUDIO_ASSET_DURATION_SECONDS &&
+      Number.isInteger(artifact.audio.sampleRate) && (artifact.audio.mediaType === "audio/mpeg"
+        ? [16_000, 22_050, 24_000, 32_000, 44_100, 48_000].includes(Number(artifact.audio.sampleRate))
+        : Number(artifact.audio.sampleRate) >= 8_000 && Number(artifact.audio.sampleRate) <= 192_000) &&
+      Number.isInteger(artifact.audio.channels) && Number(artifact.audio.channels) >= 1 && Number(artifact.audio.channels) <= (artifact.audio.mediaType === "audio/mpeg" ? 2 : 8) &&
+      (artifact.audio.jobId === undefined || text(artifact.audio.jobId, 128)) &&
       ["audio/wav", "audio/mpeg"].includes(artifact.audio.mediaType as string)
       : record(artifact.midi) && finite(artifact.midi.durationBeats) && artifact.midi.durationBeats > 0 && finite(artifact.midi.noteCount) &&
         Number.isSafeInteger(artifact.midi.noteCount) && artifact.midi.noteCount <= MAX_SOURCE_NOTES &&

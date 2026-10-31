@@ -34,6 +34,7 @@ The Inspector separates **Session** views (**Context**, **Artifacts**, **Skills*
 from global **Settings** (**Agent**, **Extensions**, **App**). Context contains the
 creative brief, bound Live object, context usage and the next message's
 attachments. **Skills** lets you choose workflow instructions for the Session.
+**Artifacts** provides a compact saved-work summary. Select a work to open its full detail page.
 
 ## Sessions and creative brief
 
@@ -135,20 +136,31 @@ its result or input parameters; long details scroll inside the card.
 
 ## Artifacts and versions
 
-**Session → Artifacts** collects this Session's saved MIDI, downloaded service audio,
+**Artifacts** collects this Session's saved MIDI, downloaded service audio,
 Plugin WAV/MP3 results and device parameter snapshots. Other supported
 file formats remain chat attachments. Each entry represents a piece of work and
-holds its versions. Open an entry and select a version to inspect, export or
-continue working on. Each version shows its source, which can be an older
-version in the same group. Choose **Make primary** to set the version selected
-when you next open the entry. **Clear primary** restores the latest available
+holds its versions. The Artifacts shortcut opens the Session summary in the
+Inspector. It shows the first catalogue page, its displayed/total count, and any
+available last operation with that operation's own version. Select a row to open
+the exact displayed version in the standalone detail page. **Open all** opens the
+complete library with its search and type filters cleared. The Session list keeps
+its existing collapse control, and the Inspector remains available over the
+current main page. Narrow artifact pages initially collapse Sessions; its header
+control opens the Session list over the page. Escape or the backdrop closes the
+list. Returning to chat restores the chat's previous Session-list layout.
+**Browse works** opens the work list at narrow widths. Parameter tables and
+expanded source details follow the detail page's vertical scroll.
+Switching works stops the previous audio preview. Select a version to inspect,
+export or continue working on. Each version shows its source, which can be an older
+version in the same group. Choose **Default** to set the version selected
+when you next open the entry. Choose the pressed **Default** button again to restore the latest available
 version as the default. Export, attachment and revision actions always use the
 version you have selected.
 
 **Search artifacts** searches names, version labels and localized sources across
 this Session's complete saved catalog. Results are grouped and paginated after
 matching; opening a match selects its matching version. Clear the search to
-return to the full catalog. Searching does not call a model or audio provider.
+return to the full catalog. Type filters combine with search across the complete catalog before pagination. Searching does not call a model or audio provider.
 
 Alternative results from the built-in generators are grouped together when
 they have compatible output types. Revisions keep their source information
@@ -156,16 +168,25 @@ when you resume a job or download it later. Stems are listed as separate
 components of their source audio. MIDI and audio have separate version groups,
 including when one was generated from the other.
 
-**Attach to message** and **Export** are available for both MIDI and audio.
+**Attach** and **Export** are available for both MIDI and audio.
 They use the selected version's saved file. Attaching the same file again
 reuses its pending attachment; distinct versions and outputs stay separate.
 Model input support and attachment limits still apply when sending.
 **Generation parameters** appears
 when the original tool call is available. Refreshing the list retains the
 selected version and audio playback; **Back to chat** pauses artifact audio and
-returns to the composer.
+returns to the composer with its draft and attachments. Continuing in chat,
+preparing an audio import and attaching a saved file also return to chat.
+A manual parameter or MIDI approval opens the corresponding timeline review.
+Saved audio offers a decoded waveform, seek, volume and
+loop controls. Waveform failures offer retry while keeping playback available.
+**Operation history** shows persisted parameter applications and associated import
+outcomes. Version links only change the preview. Interrupted operations remain
+unknown; partial results retain their status. Older imports without a saved source
+association have no version history entry. Historical receipts describe past
+operations; parameter comparisons read current Live values separately.
 
-**Continue in chat** (or **Create next version** for MIDI) selects the version
+**Continue creating** selects the version
 as the source for your next chat request and adds a message draft. Describe the
 changes you want, then send it through the usual model and tool permissions.
 The source selection clears when that message is saved; Steer and manual tool
@@ -244,7 +265,7 @@ tooltip and **Sound details**. Select a candidate to hear it, or
 select **Original** to return to the values from before auditioning. The selected
 choice stays highlighted across browser reconnection. **Sound details** shows
 saved parameters against current Live values, device selection, snapshots and application
-records. Artifacts also offers **Audition in Live**. Play a Clip or your instrument
+records. Artifacts also offers **Audition**. Play a Clip or your instrument
 in Live to hear each version. Clicking a candidate or **Original** confirms that
 selection and applies it directly, including in Manual mode. Each audition keeps
 the Session's Scope, device binding and state checks. The changed parameters are
@@ -259,12 +280,12 @@ in the current chat, using the same review flow as agent edits.
 The first audition saves a **Before audition** parameter artifact.
 **Open original snapshot** opens its complete values. Every candidate remains
 saved in Artifacts. The comparison card switches directly between the candidates
-and Original. In Artifacts, **Use this sound** finishes a confirmed audition with
-the current values; **Restore before audition** remains available afterward.
+and Original. In Artifacts, **Keep** finishes a confirmed audition with
+the current values; **Restore** remains available afterward.
 Restoration preserves the earlier decision in history and rechecks the device's
 current values before writing. Unconfirmed or externally changed results offer
 **Finish audition** with their inspection details.
-**Make primary** continues to control the version selected by default in the
+**Default** continues to control the version selected by default in the
 artifact library. A later audition captures a new starting snapshot.
 
 The application history keeps original values, confirmed results and unfinished
@@ -692,9 +713,11 @@ files.
 
 **Settings → App → Chat shortcuts** controls the entries above the message input.
 Context, Brief and Artifacts appear together by default; Skills and Tools can be enabled
-individually. Brief opens the creative brief section in Context; other shortcuts open
-their Inspector panels. Hiding shortcuts preserves
-all Inspector tabs, saved content, enabled Skills and tool permissions. The preference
+individually. Brief opens the creative brief section in Context; Artifacts opens
+its compact Session summary. Its visibility setting controls both the shortcut
+and Session tab. Context, Skills and Tools keep their Inspector navigation when
+shortcuts are hidden. Saved content, enabled Skills and tool permissions remain
+available. Saved artifact links in chat open their exact versions. The preference
 is shared across windows.
 
 Choose **Settings → App → Interface language** to use **English**, **简体中文**, or follow the
