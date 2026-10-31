@@ -40,8 +40,9 @@ Session 与全局通知使用 `target` 区分界面状态、工具目录或两�
 再依据保留的任务与产物重建目录。首个音频任务的创建由 `audio-job-runtime.ts`
 统一发送仅工具目录通知，覆盖连接移除与任务创建交错的情形，并保留聊天窗口的
 原有刷新生命周期。每次目录读取仍验证客户端及绑定 Session 的有效性。
-SDK 的 HTTP 消息构造器延迟加载，复用固定版本 Undici 的 Request/Response/Headers；
-Fetch 和 Abort 能力继续由 `src/runtime/host.ts` 从宿主解析。
+SDK 的 HTTP 消息构造器延迟加载，复用固定版本 Undici 的 Request/Response/Headers。
+Node Adapter 加载所需的 Event 在宿主缺失时由 `event-target-shim` 提供；已有构造器保持
+宿主实现。Fetch 和 Abort 能力继续由 `src/runtime/host.ts` 从宿主解析。
 
 This document describes module ownership, request and Session lifecycles, and
 safety and concurrency contracts. The Ableton extension entrypoint registers

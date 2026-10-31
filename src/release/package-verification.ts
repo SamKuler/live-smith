@@ -34,6 +34,7 @@ const REQUIRED_THIRD_PARTY_NOTICE_MARKERS = [
   "`hono`",
   "`@standard-schema/spec`",
   "Copyright (c) 2024-2025 Model Context Protocol",
+  "`event-target-shim`",
   "`eventsource`",
   "`jose`",
   "`zod`",

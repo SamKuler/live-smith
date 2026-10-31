@@ -63,6 +63,7 @@ test("package verification requires the actual bundled third-party notices", asy
     "`@modelcontextprotocol/client`",
     "`@modelcontextprotocol/core`",
     "`@modelcontextprotocol/ext-apps`",
+    "`event-target-shim`",
     "Copyright (c) Tailwind Labs, Inc.",
     "`ws`",
     "Copyright (c) 2016 Luigi Pinca",

@@ -24,6 +24,12 @@ Their paths are declared in [package.json](../package.json). Do not commit or
 redistribute the archives, SDK source, examples, documentation, or license copy.
 The directory's [README](../extensions-sdk-1/README.md) is public setup guidance.
 
+The CLI's archive dependencies use the `glob` and `minimatch` security overrides
+in `package.json`. Their CommonJS APIs are exercised by the release packaging
+test, including nested assets and exclusion patterns. Keep these overrides until
+the CLI dependency chain accepts patched versions directly. Run `npm run package`
+when changing the CLI or these overrides.
+
 ## Install and run
 
 From the repository root:
@@ -80,8 +86,8 @@ only when Suno requests human verification.
 
 ### MCP 服务验证
 
-对外 MCP 使用官方 Server 2.3.1 与 Node Adapter 2.1.1；已有 Client 2.2.0 用于互操作
-验证。`tests/app/mcp/` 覆盖真实 HTTP 工具发现、调用、凭据撤销、审批后的状态变化、
+对外 MCP 使用官方 Server 与 Node Adapter，官方 Client 用于互操作验证；
+依赖版本由 `package.json` 与锁文件管理。`tests/app/mcp/` 覆盖真实 HTTP 工具发现、调用、凭据撤销、审批后的状态变化、
 共享写入队列及 Session 文件隔离。`tests/runtime/mcp-host.test.ts` 在受限 VM 中加载
 bundle，再通过真实 MCP Client 完成鉴权请求和工具调用。
 
