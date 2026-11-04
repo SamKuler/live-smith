@@ -66,8 +66,8 @@ export async function reconcileLocalAudioJob(
     assets.every((asset) => job.outputAssets.some((existing) => existing.id === asset.id))) return job;
   return updateAudioJob(storageDirectory, sessionId, job.id, {
     outputAssets: [...expected.values()],
-    ...(complete ? { status: "completed", message: m("Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation.") }
-      : remoteStatus ? { status: remoteStatus, message: m("Audio is ready online. Preview a version or download it to Live Smith before a separate scoped Live import.") } : {}),
+    ...(complete ? { status: "completed", message: m("Audio is saved in this Session. Importing into Live is a separate scoped operation.") }
+      : remoteStatus ? { status: remoteStatus, message: m("Audio is ready online. Preview a version or save it to this Session before a separate scoped Live import.") } : {}),
   });
 }
 

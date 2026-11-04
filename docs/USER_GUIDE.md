@@ -19,11 +19,13 @@ Select a track, Clip, device, or another supported Live object and choose
 **Ask Live Smith**. Your conversation starts with that musical context.
 
 The **Context** row above the message input shows the Live object or selection
-that opened the Session. Select it to see the detailed Context view, including
-Arrangement positions in beats when available. This context stays with the
-Session as you select other objects in Live. If its object becomes unavailable,
-the row shows that status. The Session's **Scope** control sets the categories
-of edits the assistant may make throughout the Set.
+that opened the Session. Select it to see the object's name and kind or the
+selection type, along with the Arrangement beat range when available. Expand
+**Observed details (original text)** to read the full observation for an available
+object or selection. Context stays with the Session as you select other objects
+in Live. The interface marks a bound object that has become unavailable. The
+Session's **Scope** control sets the categories of edits the assistant may make
+throughout the Set.
 
 Describe what you want to do in the message box and continue the conversation
 as the work develops. You can inspect Context while keeping your message draft.
@@ -35,6 +37,14 @@ from global **Settings** (**Agent**, **Extensions**, **App**). Context contains 
 creative brief, bound Live object, context usage and the next message's
 attachments. **Skills** lets you choose workflow instructions for the Session.
 **Artifacts** provides a compact saved-work summary. Select a work to open its full detail page.
+
+### Interface help
+
+Hover over a **?** button or focus it with the keyboard to read its explanation.
+Activate it to keep the explanation open. Press **Esc**, activate the button
+again, or click outside to close it. Longer explanations use expandable sections.
+Errors, the consequences of permission changes, and import data-loss warnings
+appear in the relevant view or confirmation.
 
 ## Sessions and creative brief
 
@@ -63,7 +73,7 @@ search cleared, Current and History keep empty Sessions you opened in the
 current window visible until you close it. Other empty entries in those groups
 are hidden, with saved data preserved. Archived entries and Sessions with
 conversations or unsent drafts stay visible.
-The Live modal's **Close** button asks before discarding unsaved drafts, including
+The Live dialog's **Close** button asks before discarding unsaved drafts, including
 messages and creative briefs from other Sessions used in that window.
 Previous Sessions can be restored explicitly; matching names alone do not make
 an old conversation the same Live object.
@@ -119,6 +129,9 @@ descriptions from enabled, approved MCP sources; running a tool is a separate
 action. Available tools can change with the next request's inputs and connection
 settings.
 
+Built-in Live tool descriptions follow the interface language. Descriptions from
+external MCP sources appear as supplied.
+
 Expand an MCP tool to edit its supported parameters and select **Run tool**.
 Parameter forms remain editable during generation; **Run tool**
 becomes available when the current operation finishes.
@@ -142,13 +155,13 @@ file formats remain chat attachments. Each entry represents a piece of work and
 holds its versions. The Artifacts shortcut opens the Session summary in the
 Inspector. It shows the first catalogue page, its displayed/total count, and any
 available last operation with that operation's own version. Select a row to open
-the exact displayed version in the standalone detail page. **Open all** opens the
-complete library with its search and type filters cleared. The Session list keeps
-its existing collapse control, and the Inspector remains available over the
+the exact displayed version in the standalone detail page. **Open artifact library**
+opens the complete library with its search and type filters cleared. The Session
+list keeps its existing collapse control, and the Inspector remains available over the
 current main page. Narrow artifact pages initially collapse Sessions; its header
 control opens the Session list over the page. Escape or the backdrop closes the
 list. Returning to chat restores the chat's previous Session-list layout.
-**Browse works** opens the work list at narrow widths. Parameter tables and
+**Browse artifacts** opens the work list at narrow widths. Parameter tables and
 expanded source details follow the detail page's vertical scroll.
 Switching works stops the previous audio preview. Select a version to inspect,
 export or continue working on. Each version shows its source, which can be an older
@@ -168,7 +181,7 @@ when you resume a job or download it later. Stems are listed as separate
 components of their source audio. MIDI and audio have separate version groups,
 including when one was generated from the other.
 
-**Attach** and **Export** are available for both MIDI and audio.
+**Attach to message** and **Export** are available for both MIDI and audio.
 They use the selected version's saved file. Attaching the same file again
 reuses its pending attachment; distinct versions and outputs stay separate.
 Model input support and attachment limits still apply when sending.
@@ -192,8 +205,9 @@ changes you want, then send it through the usual model and tool permissions.
 The source selection clears when that message is saved; Steer and manual tool
 calls leave it available for the next request. Results from the request retain
 their link to that source. Clearing the selection preserves the saved files.
-Use **Add to Live** for MIDI import; ask in chat to prepare an audio import.
-Both use the Session's Edit Scope and approval settings.
+Use **Import into Live** for MIDI. For saved audio, **Prepare import** drafts a
+request in chat so you can specify a destination and start beat. Both workflows
+use the Session's Edit Scope and approval settings.
 
 ### Comparing and previewing MIDI
 
@@ -210,10 +224,10 @@ MIDI preview and comparison share a scrollable piano roll. Zoom, move
 horizontally, focus the first notes or changes, or choose **Full view**. Long
 files initially show a 16-beat window near the first relevant note. **Preview
 part** selects one MIDI track/channel part to display. The saved file and export
-keep every part; **Add to Live** carries the part choice into the import dialog.
+keep every part; **Import into Live** carries the part choice into the import dialog.
 
 Newly saved model and Plugin MIDI results also appear in chat. Expand the tool
-result for a note preview, part selection and the **Export MIDI**, **Add to Live**
+result for a note preview, part selection and the **Export MIDI**, **Import into Live**
 and **Open artifact** actions. Each card refers to its saved version. Older
 text-only results remain available through Artifacts. Saving a MIDI file uses
 local artifact storage; importing it into Live is a separate edit.
@@ -221,7 +235,7 @@ local artifact storage; importing it into Live is a separate edit.
 ### Importing saved MIDI
 
 Completed tool results offer **Use in chat**, which adds a reference to the
-composer. Saved MIDI offers **Add to Live**, opening a separate import dialog
+composer. Saved MIDI offers **Import into Live**, opening a separate import dialog
 that reads the file's source parts and current Live tracks automatically. Select
 the parts to import, use new MIDI tracks or map them to existing destinations,
 and choose a common Arrangement start beat. A single part can use the Session's
@@ -248,17 +262,17 @@ in the destination DAW to play it.
 ### 原生文件拖出
 
 在 macOS 14 或更高版本中，按[界面偏好设置](#interface-preferences)选择
-**原生窗口（macOS）**，然后重新打开 Live Smith。按住产物卡片上的
+**独立窗口（macOS）**，然后重新打开 Live Smith。按住产物卡片上的
 **拖出 MIDI（Drag MIDI）** 或 **拖出音频（Drag audio）**，拖到 Live 中的对应轨道
 或 Finder 文件夹。聊天窗口可以保持打开。产物库、聊天中的 MIDI 预览、Plugin 文件结果和
-已下载的音频均可使用卡片上的拖出控件。远程音频需先下载到 Session。
+已下载的音频均可使用卡片上的拖出控件。远程音频需先用 **保存到会话（Save to Session）**。
 
 MIDI 保留原文件的轨道、通道和事件，音频保留原始 WAV 或 MP3 格式。开始拖出后，
 本机副本会继续保留，供 DAW 在聊天关闭或 Session 删除后引用。
 宿主意外退出时，导出目录里可能留下仅为拖出准备的副本。清理目录前，先用 DAW
 的收集并保存功能保存工程引用的文件。
-**Export** 仍可通过默认浏览器下载文件。需要让 Live Smith 按 Session 编辑范围和审批流程
-执行导入时，可使用 **Add to Live**。
+**Export** 仍可通过默认浏览器下载文件。由 Live Smith 执行导入时，MIDI 使用
+**Import into Live**，音频使用 **Prepare import**。两者都遵循 Session 编辑范围和审批流程。
 
 ### Device parameter snapshots
 
@@ -371,8 +385,11 @@ cancels the current operation.
 Audio services start disabled and use their own account allowances. Generation
 sends the requested description to the selected service; separation uploads the
 chosen audio. Saved results belong to the active Session and can be previewed,
-reused or imported into Live. See [saved results and recovery](MODEL_PROVIDERS.md#saved-results-and-recovery)
-for downloads, interrupted jobs and provider-specific limits.
+reused or imported into Live. For an online result that offers **Save to Session**,
+use it to save a local copy for reuse. In the Suno.com connection settings, expand
+**Suno feature details** for supported capabilities and **How to get your Suno Cookie**
+for sign-in instructions. The connection reference covers downloads, interrupted
+jobs and provider-specific limits. See [saved results and recovery](MODEL_PROVIDERS.md#saved-results-and-recovery).
 
 ## Editing and approvals
 
@@ -654,8 +671,8 @@ Supported categories include:
 | Images | PNG, JPEG, and WebP are retained directly. Additional browser-decodable images, including GIF, BMP, SVG, AVIF, TIFF, and HEIC/HEIF, are converted to a static PNG. |
 | Audio | WAV and MP3 retain their original bytes, sample rate, bit depth, and channels. Other audio formats require an explicit WAV/MP3 export before attaching; Live Smith does not automatically transcode audio. |
 
-Image conversion depends on the codecs available in the Live modal or system
-browser. A conversion failure names the file and leaves other files in the batch
+Image conversion depends on the codecs available in your window or browser.
+A conversion failure names the file and leaves other files in the batch
 available to add. Converted images use the new PNG filename and bytes; the source
 file is not changed. Animated images contribute one static frame. MIDI uses at
 most 8 MiB; its context is symbolic music data and does not require an audio
@@ -739,14 +756,17 @@ Choose **Settings → App → Interface language** to use **English**, **简体�
 system language. The preference is shared across Live Smith windows. Switching
 languages keeps drafts and ongoing work; user messages, model replies, object
 names, and raw provider/SDK output stay in their original language.
+The macOS separate window keeps the **Live Smith** title and uses the selected
+interface language for its app menu commands.
 
-在 **设置 → 应用 → 对话与显示 → 界面打开方式** 中选择 **Live 模态窗口**（默认）、
-**系统浏览器** 或 **原生窗口（macOS）**。英文界面对应 **Settings → App →
-Conversation & Display → Open Live Smith in**，原生选项为 **Native window (macOS)**。
-设置在下次打开 Live Smith 时生效。原生窗口在 macOS 14 或更高版本上提供非模态聊天，
+在 **设置 → 应用 → 对话与显示 → 界面打开方式** 中选择 **Live 内对话框**（默认）、
+**系统浏览器** 或 **独立窗口（macOS）**。英文界面对应 **Settings → App →
+Conversation & Display → Open Live Smith in**，选项为 **Live dialog**、
+**System browser** 和 **Separate window (macOS)**。
+设置在下次打开 Live Smith 时生效。独立窗口在 macOS 14 或更高版本上提供非模态聊天，
 可同时操作 Live。
-原生窗口不可用或启动失败时，Live Smith 会打开 Live 模态对话框，应用偏好仍可访问。
-加载期间主动关闭原生窗口会取消这次打开。
+独立窗口不可用或启动失败时，Live Smith 会打开 Live 内对话框，应用偏好仍可访问。
+加载期间主动关闭独立窗口会取消这次打开。
 
 The browser lets you keep working in Live. Closing its tab preserves admitted
 tasks and pending approvals while the Extension is running.
@@ -773,7 +793,7 @@ Queue and Steer are configured under
 **Settings → App → Conversation & Display**.
 The same section can show or hide the compact context-window indicator in the
 composer.
-待发送消息归当前页面所有。Live 模态窗口和 macOS 原生窗口在存在待处理工作或
+待发送消息归当前页面所有。Live 内对话框和 macOS 独立窗口在存在待处理工作或
 未保存草稿时会询问是否关闭。系统浏览器使用标签页的关闭控件。
 
 ## Model and network settings

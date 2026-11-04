@@ -79,7 +79,7 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
       if (!options.importOnly) controls.append(chat);
       const midi = saved.filter((artifact) => artifact.kind === "midi");
       if (midi.length && !raw.isError) {
-        const launch = node("button", "secondary plugin-result-import", () => t("Add to Live")); launch.type = "button";
+        const launch = node("button", "secondary plugin-result-import", () => t("Import into Live")); launch.type = "button";
         const status = node("p", "plugin-result-import-status"); status.setAttribute("role", "status"); status.hidden = true;
         launch.addEventListener("click", () => {
           if (!current() || !sessionId) return;

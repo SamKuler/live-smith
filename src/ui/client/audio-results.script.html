@@ -124,10 +124,10 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
     renderAudioJobs();
     try {
       const accepted = await confirmAction({
-        title: i18n.message("Download this output to Live Smith?"),
+        title: i18n.message("Save this output to the Session?"),
         message: i18n.message("Download only {output} using {connection}. This may use up to one existing Suno download allowance. The file stays in this Session for playback, model listening and a separate scoped Live import. No allowance or quota will be purchased.",
           { output: () => audioResultLabel(outputRole, job), connection: savedAudioConnection(job.serviceId).name }),
-        acceptLabel: i18n.message("Download to Live Smith"),
+        acceptLabel: i18n.message("Save to Session"),
       });
       if (!accepted || pending.invalidated || pendingAudioDownload !== pending ||
         identity !== audioDownloadIdentity(output) || isInteractionBlocked()) return false;
@@ -226,7 +226,7 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
       const metadata = output.querySelector(".audio-output-meta");
       if (result.asset) {
         const seconds = Math.round(result.asset.durationSeconds);
-        metadata.textContent = t("Downloaded to Live Smith") + " · " + Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0") +
+        metadata.textContent = t("Saved to Session") + " · " + Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0") +
           " · " + (result.asset.mediaType === "audio/wav" ? "WAV" : "MP3") + " · " +
           new Intl.NumberFormat(i18n.locale, { maximumFractionDigits: 1 }).format(result.asset.sampleRate / 1000) + " kHz";
       } else metadata.textContent = t("Online");
@@ -242,8 +242,8 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
           actions.append(download);
         }
         download.dataset.downloadAudioOutput = result.remote.key;
-        download.textContent = t("Download to Live Smith");
-        download.setAttribute("aria-label", t("Download {output} to Live Smith · {job}", {
+        download.textContent = t("Save to Session");
+        download.setAttribute("aria-label", t("Save {output} to this Session · {job}", {
           output: label, job: output.closest("[data-audio-job-id]").querySelector("h4").textContent,
         }));
       }
@@ -263,7 +263,7 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
         exportButton.setAttribute("aria-label", t("Export {output} as {format} · {job}", {
           output: label, format, job: output.closest("[data-audio-job-id]").querySelector("h4").textContent,
         }));
-        exportButton.setAttribute("aria-describedby", "audio-local-download-help-" + job.id);
+        exportButton.setAttribute("aria-describedby", "audioResultsHelp");
       }
       let dragButton = actions.querySelector("[data-drag-local-audio]");
       if (!result.asset || bridgeConfig.nativeArtifactDrag !== true) dragButton?.remove();
@@ -355,12 +355,10 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
           heading.append(title, route, meta); header.append(heading, status);
           card.setAttribute("aria-labelledby", title.id); card.setAttribute("aria-describedby", status.id + " " + route.id);
           const results = document.createElement("div"); results.dataset.audioResults = "";
-          const help = document.createElement("p"); help.className = "field-hint audio-download-help";
-          help.dataset.audioLocalDownloadHelp = ""; help.id = "audio-local-download-help-" + job.id;
           const details = document.createElement("details"); details.className = "settings-disclosure audio-job-details";
           const detailText = document.createElement("p"); detailText.className = "field-hint";
           details.append(document.createElement("summary"), detailText);
-          card.append(header, results, help, details); container.append(card);
+          card.append(header, results, details); container.append(card);
         }
         if (container.children[jobIndex] !== card) container.insertBefore(card, container.children[jobIndex] || null);
         card.querySelector("h4").textContent = t("Audio {number} · {title}", {
@@ -384,9 +382,6 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
           details.dataset.status = job.status; details.open = ["failed", "interrupted", "unknown"].includes(job.status);
         }
         renderAudioResults(card.querySelector("[data-audio-results]"), job);
-        const help = card.querySelector("[data-audio-local-download-help]");
-        help.hidden = job.outputs.length === 0;
-        help.textContent = t("Downloaded files stay in this Session. Export a copy through your default browser; keep Live Smith open until it finishes. Export does not contact an audio service or use provider allowance. Importing into Live is a separate edit subject to your scope and approval settings.");
         let resume = card.querySelector("[data-resume-audio-job]");
         if (!job.resumable) resume?.remove();
         else if (!resume) {

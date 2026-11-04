@@ -1,3 +1,4 @@
+import { uiMessage } from "../../../src/i18n/ui-message.js";
 import { openBridgeEvents, readEvent, type BridgeEvents } from "../chat/support/bridge-events.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -158,7 +159,7 @@ for (const provider of ["direct", "openai", "anthropic", "google"] as const) {
           const responseText = await response.text();
           assert.equal(response.status, 200, responseText);
           const result = JSON.parse(responseText) as ChatDialogState;
-          assert.equal(result.status, "Session context compacted.");
+          assert.deepEqual(result.status, uiMessage("Session context compacted."));
           assert.equal((await listSessions(directory)).find((entry) => entry.id === state.activeSessionId)?.creativeBrief, "Keep original vocal; introduce a contrasting bridge.");
           assert.match(JSON.stringify(requests[0]?.currentUserContent), /Keep original vocal/);
           assert.ok(requests[0]?.systemInstructions.includes(customInstructions));

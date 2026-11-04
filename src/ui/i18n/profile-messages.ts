@@ -21,6 +21,15 @@ export const profileMessages: Record<string, string> = {
   "Try sign-in again": "重试登录",
   "Check again": "重新检查",
   "Signed out": "已退出登录",
+  "Signed out of {provider}.": "已退出 {provider} 登录。",
+  "Signed in with {provider}.": "已登录 {provider}。",
+  "Opened the {provider} account page.": "已打开 {provider} 账户页面。",
+  "Antigravity authorization code submitted.": "已提交 Antigravity 授权码。",
+  "Complete {provider} sign-in in your browser, then paste the authorization code below.": "请在浏览器中完成 {provider} 登录，然后在下方粘贴授权码。",
+  "Complete {provider} sign-in in your browser, then check again. If the browser did not open, use the sign-in link below.": "请在浏览器中完成 {provider} 登录，然后重新检查登录状态。如果浏览器未打开，请使用下方的登录链接。",
+  "Live Smith could not open the {provider} sign-in page in the system browser. Retry the account link below or copy it into a browser.": "Live Smith 未能在系统浏览器中打开 {provider} 登录页面。请重试下方的账户链接，或将它复制到浏览器中打开。",
+  "This {provider} account is not eligible for subscription requests.": "此 {provider} 账户无法发送订阅请求。",
+  "Model discovery returned an invalid or ambiguous catalog.": "模型发现返回的列表无效，或包含无法区分的模型。",
   "Sign in to continue": "请登录以继续",
   "Waiting": "等待中",
   "Finish sign-in": "完成登录",
@@ -192,5 +201,5 @@ export const profileMessages: Record<string, string> = {
   "Image input support for the active model is unverified. Remove the attached images, load models in Inspector → Agent, or select a model with verified image input support.": "当前模型的图像输入支持未经验证。请移除图像附件，在检查器 → 智能体中加载模型，或选择已验证支持图像输入的模型。",
   "Image input support for the active model is unverified. Remove the attached images, discover model capabilities, or set an explicit image-input override.": "当前模型的图像输入支持未经验证。请移除图像附件，发现模型能力，或明确设置图像输入覆盖选项。",
   "Audio input support for the active model is unverified. Remove the attached audio, load models in Inspector → Agent, or select a model with verified audio input support.": "当前模型的音频输入支持未经验证。请移除音频附件，在检查器 → 智能体中加载模型，或选择已验证支持音频输入的模型。",
-  "Audio input support for the active model is unverified. Remove the attached audio, discover model capabilities, or set an explicit audio-input override.": "当前模型的音频输入支持未经验证。请移除音频附件，发现模型能力，或明确设置音频输入覆盖选项。"
+  "Audio input support for the active model is unverified. Remove the attached audio, discover model capabilities, or set an explicit audio-input override.": "当前模型的音频输入支持未经验证。请移除音频附件，发现模型能力，或明确设置音频输入覆盖选项。",
 };

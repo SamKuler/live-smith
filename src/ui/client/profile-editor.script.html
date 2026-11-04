@@ -1217,6 +1217,7 @@
               ? t("Turned off · unavailable with Chat Completions.")
               : t("Unavailable with Chat Completions.");
         setPropertyIfChanged(hint, "textContent", hintText);
+        setPropertyIfChanged(hint, "hidden", !hintText);
         setPropertyIfChanged(hint, "hidden", !showHint);
         setDescribedByToken(control, "webSearchHint", showHint);
       }
@@ -1866,8 +1867,9 @@
           : control.value === "low-risk"
             ? t("Low Risk auto-applies changes that are not deletes, Clip writes, Arrangement clears, or sample replacements.")
             : t("Manual requests approval for every Apply request.");
-        const label = control.closest("label");
-        if (label.title !== title) label.title = title;
+        const hint = document.getElementById("approvalModeHint");
+        setPropertyIfChanged(hint, "textContent", title);
+        setPropertyIfChanged(hint, "hidden", !isEverything);
       }
 
       function renderApprovalMode() {
@@ -2067,11 +2069,12 @@
         const hintText = profileIsFull
           ? t("This Profile already contains {maximumProfileModelCount} models.", { maximumProfileModelCount: maximumProfileModelCount })
           : !modelId
-            ? t("For models missing from the provider list.")
+            ? ""
             : duplicate
               ? t("{modelId} is already in this Profile.", { modelId: modelId })
               : t("The provider will validate this ID when you use the model.");
         setPropertyIfChanged(hint, "textContent", hintText);
+        setPropertyIfChanged(hint, "hidden", !hintText);
 
         setPropertyIfChanged(
           document.getElementById("addManualModelButton"),
@@ -2476,7 +2479,7 @@
           document.getElementById("contextWindowTokensHint"),
           "textContent",
           Number.isInteger(configuredWindow) && configuredWindow > 0
-            ? t("Used for metering and auto-compact.")
+            ? ""
             : detectedWindow
               ? t("Model limit: {detectedWindow} tokens.", { detectedWindow: detectedWindow })
               : t("Set a limit to enable metering and auto-compact."),
@@ -2486,11 +2489,14 @@
           document.getElementById("autoCompactTokenLimitHint"),
           "textContent",
           Number.isInteger(configuredCompactAt) && configuredCompactAt > 0
-            ? t("Runs before the next turn.")
+            ? ""
             : effectiveWindow
               ? t("Auto: {value} tokens (90%).", { value: Math.floor(effectiveWindow * 0.9) })
               : t("Set a threshold to enable auto-compact."),
         );
+        for (const id of ["contextWindowTokensHint", "autoCompactTokenLimitHint"]) {
+          const hint = document.getElementById(id); setPropertyIfChanged(hint, "hidden", !hint.textContent);
+        }
       }
 
       function inputCapabilityStatus(label, key, inputs, authoritative) {

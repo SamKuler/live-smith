@@ -10,15 +10,19 @@ import { profileMessages } from "../../../src/ui/i18n/profile-messages.js";
 import { mainMessages } from "../../../src/ui/i18n/main-messages.js";
 import { audioMessages } from "../../../src/ui/i18n/audio-messages.js";
 import { connectionsMessages } from "../../../src/ui/i18n/connections-messages.js";
+import { toolMessages } from "../../../src/ui/i18n/tool-messages.js";
 import { AUDIO_OUTPUT_LABELS } from "../../../src/audio-services/contracts.js";
 import { actionMessages } from "../../../src/ui/i18n/action-messages.js";
+import { sessionNativeTools } from "../../../src/app/tools/tool-runtime.js";
+import { BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS } from "../../../src/plugins/builtins/index.js";
+import { MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH } from "../../../src/ui/chat-state.js";
 import { UI_LANGUAGES, DEFAULT_UI_LOCALE } from "../../../src/i18n/languages.js";
 const translatedLocales = UI_LANGUAGES.map(language => language.id).filter(id => id !== DEFAULT_UI_LOCALE);
 
 test("message catalogs agree on shared messages and preserve interpolation fields", () => {
   const seen = new Map<string,string>();
   const fields = (text: string) => [...new Set([...text.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)].map(match => match[1]))].sort();
-  for (const catalog of [templateMessages, timelineMessages, profileMessages, mainMessages, actionMessages, audioMessages, connectionsMessages]) {
+  for (const catalog of [templateMessages, timelineMessages, profileMessages, mainMessages, actionMessages, audioMessages, connectionsMessages, toolMessages]) {
     for (const [source, translated] of Object.entries(catalog)) {
       assert.ok(translated.trim(), source);
       if (seen.has(source)) assert.equal(translated, seen.get(source), source);
@@ -35,9 +39,24 @@ test("message catalogs agree on shared messages and preserve interpolation field
 });
 
 test("explicit client messages and static template markers all have translations", () => {
+  const missing = new Set<string>();
+  function requireTranslation(source: string, origin: string) {
+    for (const locale of translatedLocales) {
+      if (!Object.hasOwn(uiCatalogs[locale], source)) missing.add(`${locale} ${origin} — ${source}`);
+    }
+  }
+  function visitMessage(expression: ts.Expression, origin: string) {
+    if (ts.isStringLiteralLike(expression)) requireTranslation(expression.text, origin);
+    else if (ts.isParenthesizedExpression(expression)) visitMessage(expression.expression, origin);
+    else if (ts.isConditionalExpression(expression)) {
+      visitMessage(expression.whenTrue, origin);
+      visitMessage(expression.whenFalse, origin);
+    }
+  }
   const files = readdirSync(new URL('../../../src/ui/client/', import.meta.url), { recursive: true })
     .filter((name): name is string => typeof name === 'string' && (name.endsWith('.script.html') || name.endsWith('.ts'))).map(name => '../../../src/ui/client/' + name);
   files.push('../../../src/ui/action-diff.ts');
+  files.push('../../../src/app/plugins/plugin-lifecycle.ts', '../../../src/app/model/dialog-model-state.ts');
   files.push('../../../src/app/audio/audio-generation.ts', '../../../src/app/audio/audio-processing.ts', '../../../src/app/audio/audio-job-runtime.ts', '../../../src/app/audio/suno/suno-human-verification.ts', '../../../src/app/agent-flow.ts');
   files.push('../../../src/live/device-parameters.ts', '../../../src/app/parameters/parameter-artifacts.ts', '../../../src/app/parameters/parameter-application.ts', '../../../src/storage/device-parameter-artifacts.ts');
   for (const file of files) {
@@ -46,7 +65,7 @@ test("explicit client messages and static template markers all have translations
     function visit(node: ts.Node) {
       if (ts.isCallExpression(node) && ['t','m','message','uiMessage','window.LiveSmithI18n.t','window.LiveSmithI18n.message','i18n.message'].includes(node.expression.getText(ast))) {
         const arg = node.arguments[0];
-        if (arg && ts.isStringLiteralLike(arg)) for (const locale of translatedLocales) assert.ok(Object.hasOwn(uiCatalogs[locale], arg.text), `${file}: ${arg.text}`);
+        if (arg) visitMessage(arg, file);
       }
       ts.forEachChild(node, visit);
     }
@@ -57,14 +76,24 @@ test("explicit client messages and static template markers all have translations
     try {
       for (const node of dom.window.document.querySelectorAll('*')) {
         for (const attr of node.attributes) if (attr.name === 'data-i18n' || attr.name.startsWith('data-i18n-')) {
-          for (const locale of translatedLocales) assert.ok(Object.hasOwn(uiCatalogs[locale],attr.value), `${file}: ${attr.value}`);
+          requireTranslation(attr.value, file);
         }
       }
     } finally { dom.window.close(); }
   }
   for (const label of Object.values(AUDIO_OUTPUT_LABELS)) {
-    for (const locale of translatedLocales) assert.ok(Object.hasOwn(uiCatalogs[locale], label), label);
+    requireTranslation(label, "audio output");
   }
+  for (const descriptor of Object.values(BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS)) {
+    requireTranslation(descriptor.label, descriptor.pluginId);
+  }
+  for (const { function: { name, description } } of sessionNativeTools(true, true)) {
+    const displayed = description.length > MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH
+      ? description.slice(0, MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH - 1) + "…"
+      : description;
+    requireTranslation(displayed, name);
+  }
+  assert.deepEqual([...missing], []);
 });
 
 test("runtime formats bound messages repeatedly without treating values as translation keys", () => {

@@ -1,3 +1,4 @@
+import { isInterfaceMode, type InterfaceMode } from "../../../src/model/interface-mode.js";
 import { defaultSessionTabs, isSessionTabs, type SessionShortcutId } from "../../../src/model/session-tabs.js";
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
@@ -945,7 +946,7 @@ async function createDialogHarness(
         serverState.settings.sessionTabs = [...event.sessionTabs];
         serverState.settings.sessionTabsRevision = event.sessionTabsRevision;
       }
-      if ((event.interfaceMode === "modal" || event.interfaceMode === "browser") && typeof event.interfaceModeRevision === "string") {
+      if (isInterfaceMode(event.interfaceMode) && typeof event.interfaceModeRevision === "string") {
         serverState.settings.interfaceMode = event.interfaceMode;
         serverState.settings.interfaceModeRevision = event.interfaceModeRevision;
       }
@@ -1570,7 +1571,7 @@ async function createDialogHarness(
                 defaultFollowUpBehavior?: "queue" | "steer";
                 showContextUsage?: boolean;
                 sessionTabs?: SessionShortcutId[];
-                interfaceMode?: "modal" | "browser";
+                interfaceMode?: InterfaceMode;
                 uiLanguage?: UiLanguage;
                 networkProxy?: NetworkProxySettings;
                 integrationConnections?: import("../../../src/plugins/integration-connections.js").IntegrationConnectionsSettingsPatch;

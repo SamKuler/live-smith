@@ -312,12 +312,12 @@ test("Suno exposes account controls instead of API-key fields and keeps help key
     assert.match(operations.textContent!, /Custom lyrics.*Extend.*Library.*Retrieve/);
     assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /Suno credits.*save.*never retried/i);
     const help = harness.document.querySelector<HTMLElement>("#sunoFeatureHelp")!;
-    assert.equal(help.tabIndex, 0);
-    assert.equal(help.getAttribute("role"), "note");
-    assert.equal(help.dataset.tooltip, help.getAttribute("aria-label"));
-    assert.ok(help.dataset.tooltip?.trim());
-    help.focus();
-    assert.equal(harness.document.activeElement, help, "Connection help must remain keyboard accessible.");
+    const disclosure = help.closest("details")!;
+    assert.equal(disclosure.open, false);
+    const toggle = disclosure.querySelector("summary")!;
+    toggle.focus(); toggle.click();
+    assert.equal(disclosure.open, true);
+    assert.equal(harness.document.activeElement, toggle);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#sunoSessionValue")!.type, "password");
     assert.equal(harness.document.querySelector<HTMLButtonElement>("#openSunoWebsiteButton")!.disabled, false);
     assert.deepEqual(harness.errors, []);

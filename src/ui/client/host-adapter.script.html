@@ -1,7 +1,9 @@
       window.LiveSmithHostAdapter = (function createLiveSmithHostAdapter() {
         const isModal = window.__LIVE_SMITH_BRIDGE__?.hostMode !== "browser";
+        const isNative = window.__LIVE_SMITH_BRIDGE__?.hostMode === "native";
         const isWebKit = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.live;
         const isWebView2 = window.chrome && window.chrome.webview;
+        let lastMenuLocale;
 
         function sendMessage(message) {
           if (isWebKit) {
@@ -13,6 +15,27 @@
 
         return {
           canClose: isModal,
+          refreshLocale() {
+            if (!isNative || !isWebKit) return;
+            const { locale, t } = window.LiveSmithI18n;
+            if (locale === lastMenuLocale) return;
+            sendMessage({
+              method: "update_menu_labels",
+              params: [{
+                quit: t("Quit Live Smith"),
+                file: t("File"),
+                closeWindow: t("Close Window"),
+                edit: t("Edit"),
+                undo: t("Undo"),
+                redo: t("Redo"),
+                cut: t("Cut"),
+                copy: t("Copy"),
+                paste: t("Paste"),
+                selectAll: t("Select All"),
+              }],
+            });
+            lastMenuLocale = locale;
+          },
           closeWithResult(result) {
             if (!isModal) return;
             sendMessage({

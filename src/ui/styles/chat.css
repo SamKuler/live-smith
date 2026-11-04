@@ -447,11 +447,6 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
   @apply flex min-w-0 flex-1 self-stretch items-center cursor-pointer;
 }
 
-.edit-scope-panel .inline-help::after {
-  @apply left-0 right-auto w-full box-border;
-  top: auto;
-  bottom: calc(100% + 7px);
-}
 
 .edit-scope-options {
   @apply grid gap-[2px];
@@ -1156,45 +1151,26 @@ details.timeline-item.reasoning > summary {
 }
 
 .inline-help {
-  @apply static inline-grid size-[14px] place-items-center rounded-full text-[9px] text-quiet cursor-help;
-  flex: 0 0 14px;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  font-weight: 700;
-  line-height: 1;
-  cursor: help;
+  position: relative;
+  @apply inline-flex items-center justify-center shrink-0 text-quiet bg-transparent p-0 cursor-help;
+  width: 24px; height: 24px; min-width: 24px; min-height: 24px;
+  border: 0; border-radius: 4px; font-size: 11px; font-weight: 600; line-height: 1;
 }
-
-.inline-help::after {
-  content: attr(data-tooltip);
-  @apply invisible pointer-events-none absolute left-0 z-20 box-border text-left text-compact text-text normal-case opacity-0;
-  top: calc(100% + 7px);
-  width: min(250px, 100%);
-  max-width: calc(100vw - 32px);
-  padding: 7px 9px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  background: #171717;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-  font-weight: 400;
-  letter-spacing: normal;
-  line-height: 1.4;
-  transform: translateY(-2px);
-  transition: opacity 100ms ease, transform 100ms ease;
+.inline-help::before {
+  content: ""; position: absolute; width: 14px; height: 14px;
+  border: 1px solid currentColor; border-radius: 50%; pointer-events: none;
 }
-
-.inline-help:hover {
-  @apply border-border-hover text-text;
+.inline-help:hover, .inline-help[aria-expanded="true"] { @apply text-text bg-surface-hover; }
+.inline-help:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+.inline-help-content {
+  position: fixed; z-index: 1000; top: 0; left: 0; box-sizing: border-box;
+  width: max-content; max-width: min(320px, calc(100vw - 16px));
+  overflow: auto; padding: 10px 12px; border: 1px solid var(--color-border-hover);
+  border-radius: 6px; background: var(--color-field); color: var(--color-text);
+  box-shadow: var(--shadow-popover); font-size: 12px; font-weight: 400;
+  line-height: 1.5; letter-spacing: normal; white-space: pre-line; overflow-wrap: anywhere;
 }
-
-.inline-help:focus-visible {
-  @apply bg-surface-hover text-text;
-}
-
-.inline-help:hover::after,
-.inline-help:focus-visible::after {
-  @apply visible opacity-100;
-  transform: translateY(0);
-}
+.inline-help-content[hidden] { display: none; }
 
 .context-usage-setting {
   @apply flex min-h-composer-control items-center gap-2 text-text normal-case cursor-pointer;
@@ -3408,3 +3384,14 @@ input.piano-roll-position[hidden] { display: none; }
 
 .artifact-native-drag { cursor: grab; touch-action: none; user-select: none; }
 .artifact-native-drag:active { cursor: grabbing; }
+
+.help-details { margin: 8px 0; font-size: 12px; line-height: 1.6; }
+.help-details summary { cursor: pointer; color: var(--color-muted); }
+.help-details p { user-select: text; overflow-wrap: anywhere; }
+.inspector-scope-header:has(> .inline-help) { justify-content: flex-start; gap: 4px; }
+.audio-results-heading { margin-bottom: 8px; }
+.audio-results-heading > span { margin: 0; font-size: 12px; }
+
+.approval-mode-shell { display: inline-flex; align-items: center; gap: 0; }
+.approval-mode-hint { margin: 4px 0 0; color: var(--color-muted); font-size: 11px; line-height: 1.5; }
+.context-card pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }

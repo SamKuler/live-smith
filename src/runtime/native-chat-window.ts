@@ -26,7 +26,7 @@ interface Options {
   platform?: NodeJS.Platform; osRelease?: string; capsule?: string;
   launch?: (executable: string) => ChildProcessWithoutNullStreams;
 }
-const failure = () => new Error("The native chat window could not open. Try again or choose System browser in App Preferences.");
+const failure = () => new Error("The separate window could not open. Try again or choose System browser in App Preferences.");
 const requestId = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9_-]{1,96}$/u.test(value);
 
 export function createNativeChatHost(options: Options = {}): NativeChatHost {
@@ -37,7 +37,7 @@ export function createNativeChatHost(options: Options = {}): NativeChatHost {
     supported,
     async open(input) {
       throwIfAborted(input.signal);
-      if (!supported) throw new Error("Native chat requires macOS 14 or later. Choose Live modal or System browser.");
+      if (!supported) throw new Error("Native chat requires macOS 14 or later. Choose Live dialog or System browser.");
       const url = new URL(input.url);
       if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname) || url.pathname !== "/chat" || !url.searchParams.get("token") || url.username || url.password) throw failure();
       const app = await stageNativeApp(capsule, "NativeChat", "live-smith-native-chat-").catch(() => { throw failure(); });

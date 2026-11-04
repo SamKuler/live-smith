@@ -1,5 +1,5 @@
 import { openBridgeEvents, readEvent } from "../chat/support/bridge-events.js";
-import { formatUiMessage } from "../../../src/i18n/ui-message.js";
+import { formatUiMessage, uiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -215,10 +215,11 @@ test("agent flow shares one OAuth backend across auth and discovery, then closes
           verificationUrl: "https://auth.openai.com/codex/device",
           userCode: "ABCD-EFGH",
         });
-        assert.equal(
+        assert.deepEqual(
           pending.status,
-          "Complete ChatGPT sign-in in your browser, then check again. " +
-            "If the browser did not open, use the sign-in link below.",
+          uiMessage("Complete {provider} sign-in in your browser, then check again. If the browser did not open, use the sign-in link below.", {
+            provider: "ChatGPT",
+          }),
         );
         assert.equal(
           await browserLaunchStarted.promise,
@@ -239,6 +240,7 @@ test("agent flow shares one OAuth backend across auth and discovery, then closes
         });
         assert.ok(signedIn.oauthAuthGeneration > pending.oauthAuthGeneration);
         assert.deepEqual(signedIn.oauthAuth, auth);
+        assert.deepEqual(signedIn.status, uiMessage("Signed in with {provider}.", { provider: "ChatGPT" }));
 
         const discovered = await command({
           kind: "discover_models",
@@ -296,6 +298,7 @@ test("agent flow shares one OAuth backend across auth and discovery, then closes
         });
         assert.ok(signedOut.oauthAuthGeneration > signedIn.oauthAuthGeneration);
         assert.deepEqual(signedOut.oauthAuth, { status: "signed-out" });
+        assert.deepEqual(signedOut.status, uiMessage("Signed out of {provider}.", { provider: "ChatGPT" }));
         assert.deepEqual(signedOut.availableModels, []);
       },
     },
@@ -571,6 +574,7 @@ test("browser failure stays retryable and Antigravity code submission notifies p
         assert.equal(fallback.status, 200);
         assert.equal(peerStateInvalidations, invalidationsBeforeRetry + 1);
         const retried = await fallback.json() as ChatDialogState;
+        assert.deepEqual(retried.status, uiMessage("Opened the {provider} account page.", { provider: "Antigravity" }));
         assert.deepEqual(retried.oauthAuth, {
           status: "pending",
           verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test",
@@ -587,6 +591,7 @@ test("browser failure stays retryable and Antigravity code submission notifies p
         assert.equal(submitted.status, 200);
         assert.equal(peerStateInvalidations, invalidationsBeforeSubmit + 1);
         const submittedState = await submitted.json() as ChatDialogState;
+        assert.deepEqual(submittedState.status, uiMessage("Antigravity authorization code submitted."));
         assert.deepEqual(submittedState.oauthAuth, {
           status: "pending",
           verificationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test",
@@ -904,6 +909,7 @@ test("a malformed provider catalog preserves the prior Direct API cache", async 
     capabilities: { tools: true, streaming: true },
   }];
   await saveModelCache(directory, directProfile, cachedModels);
+  let invalidAtOwner = false;
 
   const interaction: LiveInteractionContext = {
     presentation: liveContextPresentationFixture("Lead"),
@@ -926,25 +932,23 @@ test("a malformed provider catalog preserves the prior Direct API cache", async 
         );
         assert.equal(initial.modelCatalogLoadReceipt, undefined);
 
-        const response = await fetch(bridgeEndpoint(url, "/command"), {
-          method: "POST",
-          headers: bridgeJsonHeaders(),
-          body: JSON.stringify({
-            kind: "discover_models",
-            profile: directProfile,
-          }),
-        });
-        assert.equal(response.status, 200, await response.clone().text());
-        const state = await response.json() as ChatDialogState;
-        assert.match(
-          formatUiMessage(state.status ?? ""),
-          /model discovery failed: .*invalid model entry/,
-        );
-        assert.deepEqual(
-          state.availableModels.map((model) => model.id),
-          [directProfile.defaultModel],
-        );
-        assert.equal(state.modelCatalogLoadReceipt, undefined);
+        for (const source of ["transport", "owner"]) {
+          invalidAtOwner = source === "owner";
+          const response: Response = await fetch(bridgeEndpoint(url, "/command"), {
+            method: "POST",
+            headers: bridgeJsonHeaders(),
+            body: JSON.stringify({ kind: "discover_models", profile: directProfile }),
+          });
+          assert.equal(response.status, 200, await response.clone().text());
+          const state = await response.json() as ChatDialogState;
+          if (invalidAtOwner) {
+            assert.deepEqual(state.status, uiMessage("Model discovery returned an invalid or ambiguous catalog."));
+          } else {
+            assert.match(formatUiMessage(state.status ?? ""), /model discovery failed: .*invalid model entry/);
+          }
+          assert.deepEqual(state.availableModels.map((model) => model.id), [directProfile.defaultModel]);
+          assert.equal(state.modelCatalogLoadReceipt, undefined);
+        }
       },
     },
   };
@@ -957,7 +961,9 @@ test("a malformed provider catalog preserves the prior Direct API cache", async 
 
   await runAgentFlow(context as never, interaction, {
     renderHtml: () => "<html></html>",
-    listModels: (profile, signal) => transport.listModels(profile, signal),
+    listModels: async (profile, signal) => invalidAtOwner
+      ? [cachedModels[0]!, cachedModels[0]!]
+      : transport.listModels(profile, signal),
   });
 
   assert.deepEqual(

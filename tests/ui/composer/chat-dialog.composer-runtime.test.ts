@@ -659,8 +659,8 @@ test("Direct API keeps manual model IDs in a secondary disclosure", async () => 
       "custom-chat-model",
     );
     assert.equal(
-      harness.document.querySelector("#manualModelIdHint")?.textContent,
-      "For models missing from the provider list.",
+      harness.document.querySelector<HTMLElement>("#manualModelIdHint")?.hidden,
+      true,
     );
     assert.equal(
       harness.document.querySelector("#profileModelCount")?.textContent,

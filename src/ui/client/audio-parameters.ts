@@ -1,15 +1,16 @@
 import type { AudioParameterPanel, AudioParameterSuggestions } from "../../plugins/builtins/parameter-panel.js";
+import { createLocaleBindings, type LocalizedText } from "./locale-bindings.js";
 export type { AudioParameterPanel } from "../../plugins/builtins/parameter-panel.js";
 
 type Schema = Record<string, unknown>;
 type Scalar = string | number | boolean;
 interface Draft { included: boolean; value?: unknown; children?: Record<string, Draft>; items?: Draft[]; variant?: number; variants?: Draft[] }
-interface AudioTool { name: string; description?: string; audioPanel: AudioParameterPanel }
+interface AudioTool { name: string; title?: () => string; description?: string; audioPanel: AudioParameterPanel }
 interface Dependencies {
   getState(): { activeSessionId?: string; integrationConnections?: { revision: string }; plugins?: unknown[]; audioJobs?: unknown[]; sunoAccounts?: { serviceId: string; accountId?: string }[]; events?: { kind: string; name?: string; content: string }[] };
   runCommand(kind: string, input: Record<string, unknown>, options: { cancellable: boolean }): Promise<unknown>;
 }
-export interface AudioParameterPanels { open(tool: AudioTool, connectionLabel?: string): void; close(): void; sync(): void; setBusy(value: boolean): void }
+export interface AudioParameterPanels { open(tool: AudioTool, connectionLabel?: LocalizedText): void; close(): void; sync(): void; setBusy(value: boolean): void }
 const record = (value: unknown): value is Schema => value !== null && typeof value === "object" && !Array.isArray(value);
 const scalar = (value: unknown): value is Scalar => typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value);
 const keys = new Set(["type", "title", "description", "default", "const", "enum", "properties", "required", "additionalProperties", "items", "oneOf", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minLength", "maxLength", "pattern", "minItems", "maxItems", "uniqueItems"]);
@@ -102,10 +103,15 @@ function valueOf(schema: Schema, draft: Draft): unknown {
 }
 
 export function createAudioParameterPanels(deps: Dependencies): AudioParameterPanels {
+  const bindings = createLocaleBindings();
+  const validityMessages = new WeakMap<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, () => string>();
   const t = (value: string, params?: Record<string, string>): string => window.LiveSmithI18n?.t(value, params) ?? value;
   const label = (name: string): string => t(name.replace(/([a-z])([A-Z])/gu, "$1 $2").replaceAll("_", " ").replace(/^./u, (letter) => letter.toUpperCase()));
-  const node = <K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text?: string): HTMLElementTagNameMap[K] => {
-    const element = document.createElement(tag); element.className = className; if (text !== undefined) element.textContent = text; return element;
+  const node = <K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text?: LocalizedText): HTMLElementTagNameMap[K] => {
+    const element = document.createElement(tag);
+    element.className = className;
+    if (text !== undefined) bindings.text(element, text);
+    return element;
   };
   let busy = false;
   let counter = 0;
@@ -124,30 +130,40 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
   }
   const currentOwner = () => { const state = deps.getState(); return JSON.stringify([state.activeSessionId, state.integrationConnections?.revision, state.plugins,
     (state.sunoAccounts ?? []).map(({ serviceId, accountId }) => [serviceId, accountId]).sort((left, right) => left[0]!.localeCompare(right[0]!))]); };
-  const sync = () => { if (owner !== currentOwner()) { close(); drafts.clear(); owner = currentOwner(); } };
+  const sync = () => {
+    const nextOwner = currentOwner();
+    if (owner !== nextOwner) { close(); drafts.clear(); owner = nextOwner; }
+    if (active && bindings.refresh(active.dialog)) {
+      for (const control of active.dialog.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input, textarea, select")) {
+        const message = validityMessages.get(control);
+        if (control.validity.customError && message) control.setCustomValidity(message());
+      }
+    }
+  };
   const close = () => { const previous = active; active = undefined; previous?.dialog.remove(); if (previous?.focus instanceof HTMLElement && previous.focus.isConnected) previous.focus.focus(); };
 
-  function render(schema: Schema, draft: Draft, name: string, path: string, required: boolean, checks: (() => boolean)[]): HTMLElement {
+  function render(schema: Schema, draft: Draft, name: LocalizedText, path: string, required: boolean, checks: (() => boolean)[]): HTMLElement {
     const row = node("div", "audio-parameter-field"); row.dataset.parameterPath = path;
-    const title = typeof schema.title === "string" ? t(schema.title) : label(name);
+    const title = () => typeof schema.title === "string" ? t(schema.title) : typeof name === "function" ? name() : label(name);
     const heading = node("div", "audio-parameter-heading");
     const caption = node("label", "", title); heading.append(caption); row.append(heading);
-    const contents = node("fieldset", "audio-parameter-value"); contents.disabled = !draft.included; contents.setAttribute("aria-label", title); row.append(contents);
+    const contents = node("fieldset", "audio-parameter-value"); contents.disabled = !draft.included; bindings.attribute(contents, "aria-label", title); row.append(contents);
     if (!required) {
       const optional = node("label", "audio-parameter-optional"); const include = node("input"); include.type = "checkbox"; include.checked = draft.included;
-      include.setAttribute("aria-label", t("Include {name}", { name: title }));
+      bindings.attribute(include, "aria-label", () => t("Include {name}", { name: title() }));
       include.addEventListener("change", () => { draft.included = include.checked; contents.disabled = !draft.included; });
-      optional.append(include, document.createTextNode(t("Use parameter"))); heading.append(optional);
+      optional.append(include, node("span", "", () => t("Use parameter"))); heading.append(optional);
     }
-    if (schema.description) row.append(node("p", "field-hint", t(String(schema.description))));
+    if (schema.description) row.append(node("p", "field-hint", () => t(String(schema.description))));
+    const validationMessage = () => t("Check the value for {name}.", { name: title() });
     const error = node("p", "audio-parameter-error error"); error.hidden = true; error.setAttribute("role", "alert"); row.append(error);
     const options = variants(schema);
     if (options) {
       row.classList.add("audio-parameter-wide");
-      const select = node("select"); select.setAttribute("aria-label", title); select.dataset.variant = path;
+      const select = node("select"); bindings.attribute(select, "aria-label", title); select.dataset.variant = path;
       options.forEach((entry, index) => {
         const discriminator = Object.entries(properties(entry)).find(([key, field]) => key !== "connectionId" && Object.hasOwn(field, "const"));
-        const text = typeof entry.title === "string" ? t(entry.title) : discriminator ? label(String(discriminator[1].const)) :
+        const text = () => typeof entry.title === "string" ? t(entry.title) : discriminator ? label(String(discriminator[1].const)) :
           properties(entry).options ? t("Custom lyrics") : properties(entry).prompt ? t("Description") : t("Mode {number}", { number: String(index + 1) });
         const option = node("option", "", text); option.value = String(index); select.append(option);
       });
@@ -176,16 +192,17 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
           input.checked = draft.items!.some((item) => item.value === choice);
           input.addEventListener("change", () => { draft.items = choices(itemSchema)!.filter((entry) => entry === choice ? input.checked : draft.items!.some((item) => item.value === entry))
             .map((value) => ({ included: true, value })); });
-          option.append(input, document.createTextNode(label(String(choice)))); contents.append(option);
+          option.append(input, node("span", "", () => label(String(choice)))); contents.append(option);
         }
       } else {
-        const list = node("div", "audio-parameter-items"); const add = node("button", "secondary", t("Add item")); add.type = "button";
+        const list = node("div", "audio-parameter-items"); const add = node("button", "secondary", () => t("Add item")); add.type = "button";
         const paint = () => {
           itemChecks = []; list.replaceChildren();
           draft.items!.forEach((item, index) => {
             const wrapper = node("div", "audio-parameter-item");
-            wrapper.append(render(itemSchema, item, t("Item {number}", { number: String(index + 1) }), path + "." + index, true, itemChecks));
-            const remove = node("button", "secondary", t("Remove")); remove.type = "button"; remove.setAttribute("aria-label", t("Remove item {number}", { number: String(index + 1) }));
+            wrapper.append(render(itemSchema, item, () => t("Item {number}", { number: String(index + 1) }), path + "." + index, true, itemChecks));
+            const remove = node("button", "secondary", () => t("Remove")); remove.type = "button";
+            bindings.attribute(remove, "aria-label", () => t("Remove item {number}", { number: String(index + 1) }));
             remove.addEventListener("click", () => { draft.items!.splice(index, 1); paint(); add.focus(); }); wrapper.append(remove); list.append(wrapper);
           });
           add.disabled = draft.items!.length >= Number(schema.maxItems ?? Infinity);
@@ -195,13 +212,13 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
       }
       checks.push(() => !draft.included || itemChecks.map((check) => check()).every(Boolean));
     } else if (fixed(schema)) {
-      contents.append(node("span", "audio-parameter-fixed", label(String(constant(schema)))));
+      contents.append(node("span", "audio-parameter-fixed", () => label(String(constant(schema)))));
     } else {
       const id = "audio-parameter-" + ++counter;
       let control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
       if (choices(schema)) {
         control = node("select");
-        choices(schema)!.forEach((value, index) => { const option = node("option", "", label(String(value))); option.value = String(index); control.append(option); });
+        choices(schema)!.forEach((value, index) => { const option = node("option", "", () => label(String(value))); option.value = String(index); control.append(option); });
         control.value = String(choices(schema)!.indexOf(draft.value as Scalar));
       } else if (schema.type === "string" && schema.pattern === undefined && (schema.maxLength === undefined || Number(schema.maxLength) > 256)) {
         control = node("textarea"); control.rows = Number(schema.maxLength) >= 3000 ? 8 : 3; control.value = String(draft.value); row.classList.add("audio-parameter-wide");
@@ -214,7 +231,7 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
       const update = () => { draft.value = choices(schema) ? choices(schema)![Number(control.value)] : control instanceof HTMLInputElement && control.type === "checkbox" ? control.checked : control.value; control.setCustomValidity(""); error.hidden = true; };
       control.addEventListener("input", update); control.addEventListener("change", update);
       if (!choices(schema) && ["number", "integer"].includes(String(schema.type)) && schema.minimum !== undefined && schema.maximum !== undefined && Number(schema.minimum) < Number(schema.maximum)) {
-        const range = node("input"); range.type = "range"; range.min = String(schema.minimum); range.max = String(schema.maximum); range.step = String(schema.multipleOf ?? (schema.type === "integer" ? 1 : "any")); range.value = String(draft.value || schema.minimum); range.setAttribute("aria-label", title);
+        const range = node("input"); range.type = "range"; range.min = String(schema.minimum); range.max = String(schema.maximum); range.step = String(schema.multipleOf ?? (schema.type === "integer" ? 1 : "any")); range.value = String(draft.value || schema.minimum); bindings.attribute(range, "aria-label", title);
         range.addEventListener("input", () => { control.value = range.value; update(); }); control.addEventListener("input", () => { range.value = control.value; }); contents.classList.add("audio-parameter-numeric"); contents.append(range);
       }
       if (control instanceof HTMLInputElement && control.type === "text") {
@@ -226,9 +243,15 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
         }
       }
       contents.append(control);
-      checks.push(() => { const okay = !draft.included || valid(schema, valueOf(schema, draft)); control.setCustomValidity(okay ? "" : t("Check the value for {name}.", { name: title })); return okay; });
+      validityMessages.set(control, validationMessage);
+      checks.push(() => { const okay = !draft.included || valid(schema, valueOf(schema, draft)); control.setCustomValidity(okay ? "" : validationMessage()); return okay; });
     }
-    checks.push(() => { const okay = !draft.included || valid(schema, valueOf(schema, draft)); error.hidden = okay; error.textContent = okay ? "" : t("Check the value for {name}.", { name: title }); return okay; });
+    checks.push(() => {
+      const okay = !draft.included || valid(schema, valueOf(schema, draft));
+      error.hidden = okay;
+      bindings.text(error, okay ? "" : validationMessage);
+      return okay;
+    });
     return row;
   }
 
@@ -237,19 +260,19 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
       sync(); close(); if (!deps.getState().activeSessionId) return;
       const dialog = node("dialog", "audio-parameter-dialog"); const focus = document.activeElement;
       active = { dialog, owner, focus }; const opened = active;
-      const heading = node("h3", "", label(tool.name)); heading.id = "audio-parameter-title"; dialog.setAttribute("aria-labelledby", heading.id);
-      const dismiss = node("button", "secondary", t("Close")); dismiss.type = "button"; dismiss.addEventListener("click", close);
+      const heading = node("h3", "", tool.title ?? (() => label(tool.name))); heading.id = "audio-parameter-title"; dialog.setAttribute("aria-labelledby", heading.id);
+      const dismiss = node("button", "secondary", () => t("Close")); dismiss.type = "button"; dismiss.addEventListener("click", close);
       const header = node("header", "audio-parameter-header"); header.append(heading, dismiss); dialog.append(header);
       if (connectionLabel) dialog.append(node("p", "audio-parameter-connection", connectionLabel));
-      if (tool.description) { const details = node("details", "audio-parameter-description"); details.append(node("summary", "", t("Tool details")), node("p", "", tool.description)); dialog.append(details); }
+      if (tool.description) { const details = node("details", "audio-parameter-description"); details.append(node("summary", "", () => t("Tool details")), node("p", "", tool.description)); dialog.append(details); }
       const form = node("form", "audio-parameter-form"); form.noValidate = true; dialog.append(form);
-      if (!isAudioParameterPanel(tool.audioPanel)) form.append(node("p", "error", t("This tool's parameters cannot be edited here.")));
+      if (!isAudioParameterPanel(tool.audioPanel)) form.append(node("p", "error", () => t("This tool's parameters cannot be edited here.")));
       else {
         const panel = tool.audioPanel; offeredSuggestions = panel.suggestions ?? {}; const key = JSON.stringify([panel.toolName, panel.signature, panel.connectionId, panel.schema]);
         if (!drafts.has(key)) drafts.set(key, initial(panel.schema)); const draft = drafts.get(key)!;
         const checks: (() => boolean)[] = []; const fields = render(panel.schema, draft, "Parameters", "", true, checks); fields.classList.add("audio-parameter-root"); form.append(fields);
-        form.append(node("p", "field-hint", t("Running uses the current connection's allowance. Results appear in this Session's audio area or tool history.")));
-        const run = node("button", "primary", t("Run tool")); run.type = "submit"; run.disabled = busy; const footer = node("footer", "audio-parameter-footer"); footer.append(run); form.append(footer);
+        form.append(node("p", "field-hint", () => t("Running uses the current connection's allowance. Results appear in this Session's audio area or tool history.")));
+        const run = node("button", "primary", () => t("Run tool")); run.type = "submit"; run.disabled = busy; const footer = node("footer", "audio-parameter-footer"); footer.append(run); form.append(footer);
         form.addEventListener("submit", async (event) => {
           event.preventDefault(); if (busy || active !== opened || owner !== currentOwner()) return;
           const okay = checks.map((check) => check()).every(Boolean); if (!okay) { form.reportValidity(); return; }

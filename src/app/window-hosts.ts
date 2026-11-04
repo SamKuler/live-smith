@@ -72,7 +72,7 @@ export function createWindowHostController(context: Api, dependencies: WindowDep
             assertLiveSetCurrent();
             nativeOperations.delete(operation); finish();
             await runAgentFlow(context, interaction, { ...dependencies,
-              initialStatus: uiMessage("The native window could not open. This Live dialog keeps App Preferences available; you can retry Native window or choose System browser.") });
+              initialStatus: uiMessage("The separate window could not open. This Live dialog keeps App Preferences available; you can retry Separate window or choose System browser.") });
             return;
           }
           await window.closed;

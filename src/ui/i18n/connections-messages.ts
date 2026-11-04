@@ -1,4 +1,13 @@
 export const connectionsMessages: Readonly<Record<string, string>> = {
+  "Plugin {pluginId} deleted.": "已删除插件 {pluginId}。",
+  "Plugin {pluginId} enabled.": "已启用插件 {pluginId}。",
+  "Plugin {pluginId} disabled.": "已禁用插件 {pluginId}。",
+  "Plugin {pluginId} MCP server {serverId} approved.": "已批准插件 {pluginId} 的 MCP 服务器 {serverId}。",
+  "Plugin {pluginId} MCP server {serverId} revoked.": "已撤销插件 {pluginId} 的 MCP 服务器 {serverId} 授权。",
+  "Plugin {pluginId} MCP server {serverId} {permission} approved.": "已授予插件 {pluginId} 的 MCP 服务器 {serverId} {permission}权限。",
+  "Plugin {pluginId} MCP server {serverId} {permission} revoked.": "已撤销插件 {pluginId} 的 MCP 服务器 {serverId} {permission}权限。",
+  "artifact input": "产物输入",
+  "artifact output": "产物输出",
   "Authentication": "身份验证",
   "Manual headers / no authentication": "手动请求头 / 无验证",
   "OAuth · browser sign-in": "OAuth · 浏览器登录",

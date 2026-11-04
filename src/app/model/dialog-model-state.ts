@@ -3,6 +3,7 @@ import { modelAuthSendFenceForStorage, type ModelAuthSendFence } from "./model-a
 import { requestModelTurn, runtimeProfileForSavedProfile } from "./model-request.js";
 import { createHostAbortController, throwIfAborted, waitForPromiseWithSignal } from "../../runtime/host.js";
 import { NetworkProxyError } from "../../runtime/network-proxy-error.js";
+import { uiMessage, UiMessageError, type UiMessage } from "../../i18n/ui-message.js";
 import { decodeDiscoveredModelCatalog } from "../../model/catalog.js";
 import { validateGenerationParameters } from "../../model/capabilities.js";
 import type { DraftProfile, SavedProfile, OAuthSubscriptionProvider } from "../../model/profile.js";
@@ -207,9 +208,7 @@ export function createDialogModelState(options: DialogModelStateOptions) {
   ): DiscoveredModelInfo[] => {
     const models = decodeDiscoveredModelCatalog(value);
     if (!models) {
-      throw new Error(
-        "Model discovery returned an invalid or ambiguous catalog.",
-      );
+      throw new UiMessageError(uiMessage("Model discovery returned an invalid or ambiguous catalog."));
     }
     return models;
   };
@@ -880,7 +879,7 @@ export function createDialogModelState(options: DialogModelStateOptions) {
     }
   }
   async function runAccountCommand(commandInput: OAuthAccountCommand, signal: AbortSignal) {
-    let status: string | undefined;
+    let status: UiMessage | undefined;
     switch (commandInput.kind) {
       case "start_oauth_login": {
         const provider = commandInput.provider;
@@ -938,7 +937,7 @@ export function createDialogModelState(options: DialogModelStateOptions) {
           recordOwnedAuthMutation(scope, resultAuth);
           notifyOAuthAuthStateChanged(scope,
             modelAuthSendFenceFor(scope.profileId).authGeneration(scope.provider), resultAuth);
-          status = "Antigravity authorization code submitted.";
+          status = uiMessage("Antigravity authorization code submitted.");
         }, signal, true);
         return { scope, auth: resultAuth, status: status! };
       }
@@ -1026,7 +1025,7 @@ export function createDialogModelState(options: DialogModelStateOptions) {
               resultAuth,
             );
           }
-          status = `Opened the ${oauthProviderLabel(provider)} account page.`;
+          status = uiMessage("Opened the {provider} account page.", { provider: oauthProviderLabel(provider) });
         }, signal, true);
         return { scope, auth: resultAuth, status: status! };
       }
@@ -1160,26 +1159,31 @@ export function createDialogModelState(options: DialogModelStateOptions) {
 export function oauthAuthStatusMessage(
   state: OAuthAuthState,
   provider: OAuthSubscriptionProvider,
-): string {
-  const label = oauthProviderLabel(provider);
+): UiMessage {
+  const values = { provider: oauthProviderLabel(provider) };
   switch (state.status) {
     case "unavailable":
       return state.message;
     case "signed-out":
-      return `Signed out of ${label}.`;
+      return uiMessage("Signed out of {provider}.", values);
     case "pending":
       if (state.browserLaunchFailed) {
-        return `Live Smith could not open the ${label} sign-in page in the system browser. Retry the account link below or copy it into a browser.`;
+        return uiMessage(
+          "Live Smith could not open the {provider} sign-in page in the system browser. Retry the account link below or copy it into a browser.",
+          values,
+        );
       }
       if (state.authorizationCodeInput) {
-        return `Complete ${label} sign-in in your browser, then paste the authorization code below.`;
+        return uiMessage("Complete {provider} sign-in in your browser, then paste the authorization code below.", values);
       }
-      return `Complete ${label} sign-in in your browser, then check again. ` +
-        "If the browser did not open, use the sign-in link below.";
+      return uiMessage(
+        "Complete {provider} sign-in in your browser, then check again. If the browser did not open, use the sign-in link below.",
+        values,
+      );
     case "signed-in":
-      return state.subscriptionEligible
-        ? `Signed in with ${label}.`
-        : `This ${label} account is not eligible for subscription requests.`;
+      return uiMessage(state.subscriptionEligible
+        ? "Signed in with {provider}."
+        : "This {provider} account is not eligible for subscription requests.", values);
   }
 }
 

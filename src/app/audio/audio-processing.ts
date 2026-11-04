@@ -244,7 +244,7 @@ async function ownJob(
           message: missing.length
             ? m("Audio outputs unavailable: {outputs}. Resume to retrieve missing files without another separation. {details}",
               { outputs: missing.join(", "), details: boundedAudioMessage(unavailable.join("; ")) })
-            : m("Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation."),
+            : m("Audio is saved in this Session. Importing into Live is a separate scoped operation."),
         });
         return job;
       }

@@ -212,7 +212,7 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
     for (const id of ["baseUrlHelp", "discoverModelsHelp"]) {
       const help = harness.document.getElementById(id);
       assert.equal(help?.tabIndex, 0);
-      assert.equal(help?.getAttribute("role"), "note");
+      assert.equal(help?.tagName, "BUTTON");
       assert.equal(help?.dataset.tooltip, help?.getAttribute("aria-label"));
     }
     harness.document.getElementById("discoverModelsHelp")?.focus();
@@ -363,6 +363,7 @@ test("first-run model setup is primary while advanced controls stay collapsed", 
 
 test("Context renders a safe Live-object card with scannable properties", async () => {
   const state = stateFixture();
+  if (state.liveContext.availability === "available") state.liveContext.value.title = 'Bass <img src=x onerror=alert(1)>';
   state.contextSummary = [
     'MIDI track "Bass <img src=x onerror=alert(1)>"',
     "mute=false, solo=true, armed=false",
@@ -378,24 +379,10 @@ test("Context renders a safe Live-object card with scannable properties", async 
     assert.equal(shell.querySelector(":scope > .context-card") !== null, true);
     assert.equal(
       harness.document.querySelector("#context .context-title")?.textContent,
-      'MIDI track "Bass <img src=x onerror=alert(1)>"',
+      'Bass <img src=x onerror=alert(1)>',
     );
     assert.equal(harness.document.querySelector("#context img"), null);
-    assert.deepEqual(
-      [...harness.document.querySelectorAll("#context .context-property")].map(
-        (item) => [
-          item.querySelector(".context-property-label")?.textContent,
-          item.querySelector(".context-property-value")?.textContent,
-        ],
-      ),
-      [
-        ["MUTE", "false"],
-        ["SOLO", "true"],
-        ["ARMED", "false"],
-        ["ARRANGEMENT CLIPS", "2"],
-        ["DEVICES", "Operator, EQ Eight"],
-      ],
-    );
+    assert.equal(harness.document.querySelector("#context details pre")?.textContent, state.contextSummary);
     assert.equal(
       harness.document.querySelector("#context .context-header h2")?.textContent,
       "Live Context",
@@ -487,7 +474,7 @@ test("Accept Everything saves without confirmation and remains visibly dangerous
     assert.equal(control?.value, "everything");
     assert.equal(control?.classList.contains("is-everything"), true);
     assert.match(
-      control?.closest("label")?.getAttribute("title") ?? "",
+      harness.document.querySelector("#approvalModeHint")?.textContent ?? "",
       /including deletes and replacement writes/i,
     );
 
@@ -555,7 +542,7 @@ test("Inspector scope navigation separates Session Skills from global management
     assert.equal(harness.document.querySelector<HTMLElement>("#extensionsPanel")?.hidden, false);
     assert.equal(harness.document.activeElement?.id, "skillLibrary");
     assert.deepEqual(visibleTabs(), ["agentTab", "extensionsTab", "appTab"]);
-    const returnToSkills = harness.document.querySelector<HTMLButtonElement>("#skillLibrary .plugin-section-heading button");
+    const returnToSkills = harness.document.querySelector<HTMLButtonElement>('#skillLibrary .plugin-section-heading button[data-i18n="Session Skills"]');
     returnToSkills?.focus();
     returnToSkills?.click();
     assert.equal(harness.document.activeElement?.id, "skillsTab");
@@ -1389,12 +1376,12 @@ test("a running Session can be left in the background and shows an unread comple
       false,
     );
     assert.match(
-      harness.document.querySelector("#approvalMode")?.closest("label")?.getAttribute("title") ?? "",
+      harness.document.querySelector("#approvalModeHint")?.textContent ?? "",
       /Low Risk auto-applies/i,
     );
     assert.equal(
       harness.document.querySelector("#approvalMode")?.getAttribute("aria-describedby"),
-      null,
+      "approvalModeHelp approvalModeHint",
     );
     assert.equal(
       harness.document.querySelector("#approvalModeLockHint"),

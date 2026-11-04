@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { uiMessage, type UiMessage } from "../../i18n/ui-message.js";
+import { uiMessage, type UiMessageDescriptor } from "../../i18n/ui-message.js";
 import { openPluginArchive, PluginArchiveError } from "../../plugins/archive.js";
 import { PluginConfigConflictError, PluginConfigError } from "../../plugins/user-config.js";
 import { previewPluginArchive } from "../../plugins/view.js";
@@ -165,7 +165,7 @@ export function createPluginLifecycle(dependencies: PluginLifecycleOptions) {
   const change = async (
     commandInput: PluginLifecycleCommand,
     signal: AbortSignal,
-  ): Promise<UiMessage> => {
+  ): Promise<UiMessageDescriptor> => {
     let changed = false;
     let toolCatalogChanged = false;
     let sessionCleanupPending = false;
@@ -279,21 +279,27 @@ export function createPluginLifecycle(dependencies: PluginLifecycleOptions) {
     } finally {
       if (changed) notifyGlobalStateChanged(toolCatalogChanged ? { target: "all" } : undefined);
     }
-    return commandInput.kind === "delete_plugin"
-      ? privateCleanupPending
-        ? uiMessage("Plugin {pluginId} removed; private data cleanup will retry if it has not completed.", {
-          pluginId: commandInput.pluginId,
-        })
-        : `Plugin ${commandInput.pluginId} deleted.`
-      : commandInput.kind === "set_plugin_enabled"
-        ? sessionCleanupPending
-          ? uiMessage("Plugin {pluginId} disabled; Session Skill cleanup is pending.", {
-            pluginId: commandInput.pluginId,
-          })
-          : `Plugin ${commandInput.pluginId} ${commandInput.enabled ? "enabled" : "disabled"}.`
-        : commandInput.kind === "set_plugin_artifact_permission"
-          ? `Plugin ${commandInput.pluginId} MCP server ${commandInput.serverId} artifact ${commandInput.permission} ${commandInput.approved ? "approved" : "revoked"}.`
-          : `Plugin ${commandInput.pluginId} MCP server ${commandInput.serverId} ${commandInput.approved ? "approved" : "revoked"}.`;
+    const { pluginId } = commandInput;
+    if (commandInput.kind === "delete_plugin") {
+      return uiMessage(privateCleanupPending
+        ? "Plugin {pluginId} removed; private data cleanup will retry if it has not completed."
+        : "Plugin {pluginId} deleted.", { pluginId });
+    }
+    if (commandInput.kind === "set_plugin_enabled") {
+      return uiMessage(sessionCleanupPending
+        ? "Plugin {pluginId} disabled; Session Skill cleanup is pending."
+        : commandInput.enabled ? "Plugin {pluginId} enabled." : "Plugin {pluginId} disabled.", { pluginId });
+    }
+    const { serverId, approved } = commandInput;
+    if (commandInput.kind === "set_plugin_artifact_permission") {
+      const permission = uiMessage(commandInput.permission === "input" ? "artifact input" : "artifact output");
+      return uiMessage(approved
+        ? "Plugin {pluginId} MCP server {serverId} {permission} approved."
+        : "Plugin {pluginId} MCP server {serverId} {permission} revoked.", { pluginId, serverId, permission });
+    }
+    return uiMessage(approved
+      ? "Plugin {pluginId} MCP server {serverId} approved."
+      : "Plugin {pluginId} MCP server {serverId} revoked.", { pluginId, serverId });
   };
   return { install, saveConfiguration, change };
 }

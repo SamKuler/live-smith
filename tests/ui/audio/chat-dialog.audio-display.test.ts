@@ -63,7 +63,7 @@ test("saved versions have one result row, canonical translated labels and local 
   try {
     assert.equal(h.document.querySelectorAll("[data-audio-result]").length, 2);
     const output = h.document.querySelector<HTMLElement>('[data-audio-output="asset-one"]')!;
-    assert.match(output.textContent!, /版本 1.*已下载到 Live Smith/);
+    assert.match(output.textContent!, /版本 1.*已保存到会话/);
     assert.doesNotMatch(output.textContent!, /Music/);
     assert.equal(output.querySelector("[data-download-local-audio]")!.textContent, "导出 WAV");
     output.querySelector<HTMLButtonElement>("[data-preview-audio]")!.click();
@@ -81,12 +81,12 @@ test("saved versions have one result row, canonical translated labels and local 
 test("authored audio details translate but diagnostic and title strings remain literal", async () => {
   const state = resultState(); state.settings.uiLanguage = "zh-CN";
   state.audioJobs![0] = { ...state.audioJobs![0]!, title: "Music <img src=x>",
-    message: uiMessage("Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation.") };
+    message: uiMessage("Audio is saved in this Session. Importing into Live is a separate scoped operation.") };
   const h = await createDialogHarness(state);
   try {
     assert.match(h.document.querySelector("#audioJobs h4")!.textContent!, /Music <img src=x>/);
     assert.equal(h.document.querySelector("#audioJobs img"), null);
-    assert.match(h.document.querySelector(".audio-job-details p")!.textContent!, /已下载到 Live Smith/);
+    assert.match(h.document.querySelector(".audio-job-details p")!.textContent!, /已保存到会话/);
     h.setServerState({ ...state, audioJobs: [{ ...state.audioJobs![0]!, message: "provider diagnostic Music <b>raw</b>" }] });
     h.emitServerEvent({ type: "session_state_invalidated", sessionId: state.activeSessionId }); await h.settle();
     assert.equal(h.document.querySelector(".audio-job-details p")!.textContent, "provider diagnostic Music <b>raw</b>");
@@ -138,7 +138,7 @@ test("a pending download translates its bound version while retaining the origin
     h.emitServerEvent({ ...broadcast(state, state.integrationConnections), uiLanguage: "zh-CN", uiLanguageRevision: "1" }); await h.settle();
     assert.match(h.document.querySelector("#appConfirmationMessage")!.textContent!, /Personal Suno.*版本 2/);
     assert.doesNotMatch(h.document.querySelector("#appConfirmationMessage")!.textContent!, /Version 2/);
-    assert.equal(h.document.querySelector("#appConfirmationAccept")!.textContent, "下载到 Live Smith");
+    assert.equal(h.document.querySelector("#appConfirmationAccept")!.textContent, "保存到会话");
     await h.cancelAppConfirmation(); await h.settle();
     assert.equal(commandCalls(h).length, 0);
   } finally { h.close(); }

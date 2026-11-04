@@ -14,6 +14,7 @@ import { appendSessionEvent } from "../../../src/storage/events.js";
 import { createSession, listSessions, type AgentSession } from "../../../src/storage/sessions.js";
 import type { ChatDialogState } from "../../../src/ui/chat-state.js";
 import { runAgentFlow } from "../../../src/app/agent-flow.js";
+import { uiMessage } from "../../../src/i18n/ui-message.js";
 import { liveContextPresentationFixture } from "../context/support/live-context.test-harness.js";
 
 let commandSequence = 0;
@@ -81,6 +82,7 @@ test("New Session reuses a pristine Session but not one with history", async (t)
         const repeatedEmpty = await newSession();
         assert.equal(repeatedEmpty.activeSessionId, initial.activeSessionId);
         assert.equal(repeatedEmpty.sessions.length, 1);
+        assert.deepEqual(repeatedEmpty.status, uiMessage("Empty session ready."));
 
         await appendSessionEvent(directory, initial.activeSessionId, {
           kind: "user",
@@ -89,6 +91,7 @@ test("New Session reuses a pristine Session but not one with history", async (t)
         const next = await newSession();
         assert.notEqual(next.activeSessionId, initial.activeSessionId);
         assert.equal(next.sessions.length, 2);
+        assert.deepEqual(next.status, uiMessage("New session created."));
 
         await saveSessionAttachment(
           directory,

@@ -508,6 +508,7 @@ test("an Approval change does not rewrite unrelated Model Profile or composer co
     );
     const allowedComposerAttributes = new Map<string, Set<string>>([
       ["approvalMode", new Set(["aria-label", "class", "disabled"])],
+      ["approvalModeHint", new Set(["hidden"])],
       ["prompt", new Set(["disabled"])],
       ["sendButton", new Set(["disabled", "title"])],
       ["attachmentMenuButton", new Set(["disabled"])],
@@ -523,6 +524,7 @@ test("an Approval change does not rewrite unrelated Model Profile or composer co
     const approvalLabel = harness.document.querySelector("#approvalMode")
       ?.closest("label");
     const unexpectedComposer = composerRecords.filter((record) => {
+      if (record.type === "childList" && (record.target as Element).id === "approvalModeHint") return false;
       if (record.type !== "attributes") return true;
       if (
         record.target === approvalLabel &&

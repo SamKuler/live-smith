@@ -84,7 +84,7 @@ test("unrelated state and language updates preserve the actual online frame and 
     assert.equal(h.document.querySelector("[data-remote-audio-key]"), card);
     assert.match(player.title, /Suno 在线播放器/);
     assert.equal(button(h, "[data-download-local-audio]").textContent, "导出 MP3");
-    assert.match(h.document.querySelector("[data-audio-local-download-help]")!.textContent!, /默认浏览器.*保持 Live Smith 打开.*不会请求音频服务/);
+    assert.match(h.document.querySelector<HTMLElement>("#audioResultsHelp")!.dataset.tooltip!, /浏览器.*保持 Live Smith 开启/);
     assert.equal(commandCalls(h).length, 0);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
@@ -293,8 +293,13 @@ test("saved files request a default-browser download without WebView navigation 
       assert.equal(localDownload.hasAttribute("download"), false);
       assert.doesNotMatch(localDownload.outerHTML, /test-token|file:|https?:|formaction/);
       const help = h.document.getElementById(localDownload.getAttribute("aria-describedby")!)!;
-      assert.match(help.textContent!, /default browser.*does not contact an audio service or use provider allowance/i);
-      assert.match(help.textContent!, /keep Live Smith open until it finishes/i);
+      if (!h.document.querySelector<HTMLElement>("#inspectorPane")!.hidden) h.click("#settingsButton");
+      h.document.querySelector<HTMLDetailsElement>("#sessionAudioResults")!.open = true;
+      help.click(); await h.settle();
+      const tooltip = h.document.querySelector<HTMLElement>('[role="tooltip"]')!;
+      assert.equal(tooltip.hidden, false);
+      assert.equal(tooltip.textContent, help.dataset.tooltip);
+      help.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       const services = {
         revision: "2",
         connections: [integrationConnectionView(musicService)],

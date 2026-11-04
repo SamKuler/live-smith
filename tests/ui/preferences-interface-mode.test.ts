@@ -3,16 +3,24 @@ import test from "node:test";
 import { commandCalls, createDialogHarness, stateFixture } from "./support/chat-dialog.test-harness.js";
 
 test("interface mode persists through DOM changes and a rejected write restores the saved mode", async () => {
-  const harness = await createDialogHarness(stateFixture());
+  const harness = await createDialogHarness(stateFixture(), { baseUrl: "http://bridge.test", token: "test-token", nativeWindowAvailable: true });
   try {
     harness.click('#appTab');
     assert.equal(harness.document.querySelector<HTMLSelectElement>('#interfaceMode')?.value, 'modal');
+    const help = harness.document.querySelector<HTMLElement>('#interfaceModeHint')!;
+    assert.match(help.dataset.tooltip!, /inside Live/);
     harness.select('#interfaceMode', 'browser'); await harness.settle();
     assert.deepEqual(commandCalls(harness).map(call => call.body), [{ kind: 'save_global_settings', interfaceMode: 'browser' }]);
     assert.equal(harness.document.querySelector<HTMLSelectElement>('#interfaceMode')!.value, 'browser');
+    assert.match(help.dataset.tooltip!, /after the tab closes/);
+    assert.match(harness.document.querySelector('#status')!.textContent!, /next time/);
     harness.failNextCommand('Write failed'); harness.select('#interfaceMode', 'modal'); await harness.settle();
     assert.equal(harness.document.querySelector<HTMLSelectElement>('#interfaceMode')!.value, 'browser');
     assert.equal(harness.document.querySelector<HTMLSelectElement>('#interfaceMode')!.disabled, false);
+    assert.equal(harness.document.querySelector('#status')!.textContent, 'Write failed');
+    harness.select('#interfaceMode', 'native'); await harness.settle();
+    assert.match(help.dataset.tooltip!, /Drag saved MIDI and audio/);
+    assert.doesNotMatch(help.dataset.tooltip!, /tab closes/);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });

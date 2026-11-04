@@ -10,6 +10,26 @@ import {
 } from "../../../src/plugins/builtins/audio-toolsets.js";
 import { BUILT_IN_AUDIO_PLUGINS } from "../../../src/plugins/builtins/index.js";
 
+test("saved audio-job messages retain Chinese display when replaying earlier message keys", async () => {
+  for (const source of [
+    "Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation.",
+    "Audio is downloaded to Live Smith. Some confirmed outputs failed to generate. Importing into Live is a separate scoped operation.",
+    "Audio is ready online. Preview a version or download it to Live Smith before a separate scoped Live import.",
+  ]) {
+    const state = audioState(); state.settings.uiLanguage = "zh-CN";
+    const message = uiMessage(source);
+    state.status = message; state.audioJobs = [job(state.activeSessionId, { message })];
+    const h = await createDialogHarness(state);
+    try {
+      const status = h.document.querySelector("#status")!.textContent!;
+      assert.notEqual(status, source);
+      assert.match(status, /音频.*会话/);
+      assert.ok(h.document.querySelector(".audio-job-details")!.textContent!.includes(status));
+      assert.deepEqual(h.errors, []);
+    } finally { h.close(); }
+  }
+});
+
 test("serializable audio progress translates on locale changes and structural replay", async () => {
   const state = audioState(); state.settings.uiLanguage = "zh-CN";
   const h = await createDialogHarness(state);
@@ -31,7 +51,7 @@ test("serializable audio progress translates on locale changes and structural re
 test("audio command progress and terminal notices retain locale identity", async () => {
   const state = audioState(); state.settings.uiLanguage = "zh-CN";
   state.audioJobs = [job(state.activeSessionId)];
-  const notice = uiMessage("Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation.");
+  const notice = uiMessage("Audio is saved in this Session. Importing into Live is a separate scoped operation.");
   const h = await createDialogHarness(state);
   let held = false;
   try {
@@ -39,7 +59,7 @@ test("audio command progress and terminal notices retain locale identity", async
     h.emitServerEvent({ type: "command_progress", commandId: h.commandIds[0], message: uiMessage("Downloading the selected Suno song") });
     assert.equal(h.document.querySelector("#status")!.textContent, "正在下载所选 Suno 歌曲");
     h.setServerState({ ...state, status: notice }); h.releaseHeldCommand(); held = false; await h.settle();
-    assert.match(h.document.querySelector("#status")!.textContent!, /已下载到 Live Smith/);
+    assert.match(h.document.querySelector("#status")!.textContent!, /已保存到会话/);
     h.emitServerEvent({ ...broadcast(state, state.integrationConnections), uiLanguage: "en", uiLanguageRevision: "1" }); await h.settle();
     assert.equal(h.document.querySelector("#status")!.textContent, notice.source);
     assert.deepEqual(h.errors, []);

@@ -1,6 +1,6 @@
 /** Action confirmation copy only. Names, enum values and JSON paths stay raw. */
 export const actionMessages = {
-  "Session audio attachment {attachmentId}": "Session 音频附件 {attachmentId}",
+  "Session audio attachment {attachmentId}": "会话音频附件 {attachmentId}",
   "processed audio asset {assetRef}": "已处理的音频资源 {assetRef}",
   "Create": "创建",
   "Insert Devices": "插入设备",

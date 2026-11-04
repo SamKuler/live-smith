@@ -67,10 +67,10 @@ function createArtifactLibraryView(deps: Dependencies) {
   const workspace = element("div", "artifact-workspace");
   const catalog = element("aside", "artifact-catalog"); catalog.id = "artifactCatalog";
   const detail = element("section", "artifact-detail"); detail.tabIndex = -1;
-  bindings.attribute(detail, "aria-label", () => t("Selected work"));
+  bindings.attribute(detail, "aria-label", () => t("Selected artifact"));
   function focusDetail() { detail.scrollTop = 0; detail.focus({ preventScroll: true }); }
-  const emptyDetail = element("p", "field-hint artifact-empty-detail", () => t("Choose a saved work to preview it."));
-  const chooser = element("button", "secondary artifact-catalog-toggle", () => t("Browse works")); chooser.type = "button";
+  const emptyDetail = element("p", "field-hint artifact-empty-detail", () => t("Choose an artifact to preview it."));
+  const chooser = element("button", "secondary artifact-catalog-toggle", () => t("Browse artifacts")); chooser.type = "button";
   chooser.setAttribute("aria-controls", catalog.id); chooser.setAttribute("aria-expanded", "false");
   function showCatalog(open: boolean) { workspace.classList.toggle("catalog-open", open); chooser.setAttribute("aria-expanded", String(open)); }
   chooser.addEventListener("click", () => showCatalog(!workspace.classList.contains("catalog-open")));
@@ -262,7 +262,7 @@ function createArtifactLibraryView(deps: Dependencies) {
       const importSummary = element("p", "field-hint"); importRecord.append(importSummary);
       if (artifact.ref.kind !== "device-parameters") card.append(importRecord);
       const transfers = actions;
-      transfers.append(button("Attach", () => { void transfer("attach_artifact", artifact); }),
+      transfers.append(button("Attach to message", () => { void transfer("attach_artifact", artifact); }),
         button("Export", () => { void transfer("export_artifact", artifact); }));
       const drag = artifact.ref.kind === "device-parameters" ? undefined : createNativeArtifactDragButton(() => current()
         ? { sessionId: sessionId!, artifact: artifact.ref } : undefined);
@@ -305,7 +305,7 @@ function createArtifactLibraryView(deps: Dependencies) {
         bindings.attribute(partList, "aria-label", () => t("Source parts"));
         for (const part of midi.parts) partList.append(element("p", "field-hint", () => `${part.sourceTrackIndex + 1} · ${part.sourceTrackName || "MIDI"} · ${t("Channel")} ${part.channel} · ${part.noteCount} · ${part.durationBeats}`));
         parts.append(partList);
-        const add = button("Import", () => {
+        const add = button("Import into Live", () => {
           if (!current() || busy || operationPending()) return;
           deps.resultActions.openMidiImport({ sessionId: sessionId!, artifacts: [{ artifactRef: artifact.ref.id, label: artifactLabel(artifact) }],
             ...(partSelect?.value ? { initialPartId: partSelect.value } : {}),

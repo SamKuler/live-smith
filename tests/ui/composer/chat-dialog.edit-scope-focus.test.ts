@@ -36,6 +36,12 @@ function blurDisabledFocus(harness: Harness) {
 
 function escapeFromFocus(harness: Harness) {
   const messages = harness.hostMessages.length;
+  const help = harness.document.querySelector<HTMLElement>('[role="tooltip"]');
+  if (help && !help.hidden) {
+    harness.document.activeElement!.dispatchEvent(new harness.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    assert.equal(help.hidden, true);
+    assert.equal(control(harness, "#editScopePanel").hidden, false);
+  }
   const escape = new harness.window.KeyboardEvent("keydown", {
     key: "Escape", bubbles: true, cancelable: true,
   });

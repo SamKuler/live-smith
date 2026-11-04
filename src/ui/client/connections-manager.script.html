@@ -768,7 +768,7 @@
         const showScope = () => {
           const session = sessionRecords().find(entry => entry.id === byId("mcpClientSession").value);
           byId("mcpClientScope").textContent = session
-            ? `${t("Scope")}: ${session.editScopes?.length === 0 ? t("Read only") : (session.editScopes || ["All"]).map(scope => t({ midi: "MIDI content", audio: "Audio content", devices: "Devices", mixer: "Mixer", structure: "Track and Set structure" }[scope] || scope)).join(", ")} · ${t("Approval")}: ${t({ manual: "Manual", "low-risk": "Low Risk", everything: "Accept Everything" }[session.approvalMode || "manual"])}`
+            ? `${t("Edit Scope")}: ${session.editScopes?.length === 0 ? t("Read only") : (session.editScopes || ["All"]).map(scope => t({ midi: "MIDI content", audio: "Audio content", devices: "Devices", mixer: "Mixer", structure: "Track and Set structure" }[scope] || scope)).join(", ")} · ${t("Approval")}: ${t({ manual: "Manual", "low-risk": "Low Risk", everything: "Accept Everything" }[session.approvalMode || "manual"])}`
             : t("New Session · All scopes · Manual approval");
         };
         async function command(kind, fields) {

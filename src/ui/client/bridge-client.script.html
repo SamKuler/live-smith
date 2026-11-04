@@ -3649,6 +3649,14 @@
       function renderDefaultFollowUpBehavior() {
         languagePreference.render();
         interfaceModePreference.render();
+        const modeHelp = document.getElementById("interfaceModeHint");
+        const openingMode = document.getElementById("interfaceMode").value;
+        const explanation = openingMode === "native"
+          ? t("Keep chatting while you work in Live. Drag saved MIDI and audio directly into a track. Available on macOS 14 or later.")
+          : openingMode === "browser"
+            ? t("Open chat in your default browser. Tasks continue after the tab closes while Live Smith is running.")
+            : t("Open a dialog inside Live. Close it to return to working in your Set.");
+        modeHelp.dataset.tooltip = explanation; modeHelp.setAttribute("aria-label", explanation);
         const behavior = effectiveDefaultFollowUpBehavior();
         const running = Boolean(activeSendAttempt());
         const control = document.getElementById("defaultFollowUpBehavior");
@@ -3729,25 +3737,6 @@
           urlControl.value !== draft.url
         ) {
           urlControl.value = draft.url;
-        }
-        const hint = document.getElementById("networkProxyHint");
-        if (hint) {
-          const showHint = mode !== "none";
-          const text = mode === "system"
-            ? t("Uses static system proxy settings · no PAC/WPAD.")
-            : mode === "manual"
-              ? t("Provider traffic uses this URL · local endpoints stay direct.")
-              : "";
-          if (hint.textContent !== text) hint.textContent = text;
-          if (hint.hidden !== !showHint) hint.hidden = !showHint;
-          const modeGroup = document.getElementById("networkProxyMode");
-          if (showHint) {
-            if (modeGroup.getAttribute("aria-describedby") !== "networkProxyHint") {
-              modeGroup.setAttribute("aria-describedby", "networkProxyHint");
-            }
-          } else {
-            modeGroup.removeAttribute("aria-describedby");
-          }
         }
         syncOperationState();
       }
@@ -7898,7 +7887,11 @@
         renderCustomInstructions,
         renderUiLanguage: languagePreference.render,
         setUiLanguage: languagePreference.set,
-        setInterfaceMode: interfaceModePreference.set,
+        setInterfaceMode: async (value) => {
+          const saved = await interfaceModePreference.set(value);
+          if (saved) showStatus(window.LiveSmithI18n.message("Changes apply next time you open Live Smith."));
+          return saved;
+        },
         renderNetworkProxySettings,
         runCommand,
         stopActiveCommand,

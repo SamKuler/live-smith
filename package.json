@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@ableton-extensions/sdk": "file:extensions-sdk-1/ableton-extensions-sdk-1.0.0-beta.1.tgz",
+    "@floating-ui/dom": "1.8.0",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/ext-apps": "2.0.4",
     "@modelcontextprotocol/node": "2.1.2",

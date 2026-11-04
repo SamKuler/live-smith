@@ -34,6 +34,7 @@ static NSDictionary *readMessage(void) {
 @property(strong) NSURL *chatURL;
 @property(strong) ChatWindow *window;
 @property(strong) WKWebView *webView;
+@property(strong) NSDictionary<NSString *, NSMenuItem *> *localizedMenuItems;
 @property(strong) NSMutableDictionary<NSString *, NSURL *> *files;
 @property(strong) NSMutableDictionary<NSString *, NSDictionary *> *claims;
 @property(strong) NSString *activeDrag;
@@ -77,17 +78,25 @@ static NSDictionary *readMessage(void) {
   self.webView.navigationDelegate = self; self.webView.UIDelegate = self;
   [self.window.contentView addSubview:self.webView];
   NSMenu *menu = [NSMenu new]; NSMenuItem *appItem = [NSMenuItem new]; NSMenu *appMenu = [NSMenu new];
-  [appMenu addItemWithTitle:@"Quit Live Smith" action:@selector(terminate:) keyEquivalent:@"q"];
+  NSMenuItem *quit = [appMenu addItemWithTitle:@"Quit Live Smith" action:@selector(terminate:) keyEquivalent:@"q"];
   appItem.submenu = appMenu; [menu addItem:appItem];
-  NSMenuItem *fileItem = [NSMenuItem new]; NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
-  [fileMenu addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
+  NSMenuItem *fileItem = [[NSMenuItem alloc] initWithTitle:@"File" action:NULL keyEquivalent:@""];
+  NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
+  NSMenuItem *closeWindow = [fileMenu addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
   fileItem.submenu = fileMenu; [menu addItem:fileItem];
-  NSMenuItem *editItem = [NSMenuItem new]; NSMenu *edit = [[NSMenu alloc] initWithTitle:@"Edit"];
-  [edit addItemWithTitle:@"Undo" action:@selector(undo:) keyEquivalent:@"z"];
-  [edit addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];
-  [edit addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
-  [edit addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
-  [edit addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+  NSMenuItem *editItem = [[NSMenuItem alloc] initWithTitle:@"Edit" action:NULL keyEquivalent:@""];
+  NSMenu *edit = [[NSMenu alloc] initWithTitle:@"Edit"];
+  NSMenuItem *undo = [edit addItemWithTitle:@"Undo" action:@selector(undo:) keyEquivalent:@"z"];
+  NSMenuItem *redo = [edit addItemWithTitle:@"Redo" action:@selector(redo:) keyEquivalent:@"z"];
+  redo.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+  NSMenuItem *cut = [edit addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];
+  NSMenuItem *copy = [edit addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
+  NSMenuItem *paste = [edit addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
+  NSMenuItem *selectAll = [edit addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+  self.localizedMenuItems = @{
+    @"quit": quit, @"file": fileItem, @"closeWindow": closeWindow, @"edit": editItem,
+    @"undo": undo, @"redo": redo, @"cut": cut, @"copy": copy, @"paste": paste, @"selectAll": selectAll
+  };
   editItem.submenu = edit; [menu addItem:editItem]; NSApp.mainMenu = menu;
   self.parent = getppid();
   self.parentWatch = [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) {
@@ -148,10 +157,31 @@ static NSDictionary *readMessage(void) {
   panel.canChooseDirectories = parameters.allowsDirectories; panel.canChooseFiles = YES;
   [panel beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) { completionHandler(response == NSModalResponseOK ? panel.URLs : nil); }];
 }
+- (void)updateMenuLabels:(id)payload {
+  if (![payload isKindOfClass:NSDictionary.class]) return;
+  NSDictionary *labels = payload;
+  if (labels.count != self.localizedMenuItems.count) return;
+  for (NSString *key in self.localizedMenuItems) {
+    id title = labels[key];
+    if (![title isKindOfClass:NSString.class] || [title length] == 0 || [title length] > 128) return;
+  }
+  for (NSString *key in self.localizedMenuItems) {
+    NSMenuItem *item = self.localizedMenuItems[key];
+    item.title = labels[key];
+    item.submenu.title = labels[key];
+  }
+}
 - (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
   if (!message.frameInfo.mainFrame || ![self allowedDocument:message.frameInfo.request.URL] || ![self allowedDocument:self.webView.URL] || ![message.body isKindOfClass:NSDictionary.class]) return;
   NSDictionary *body = message.body;
-  if ([message.name isEqualToString:@"live"] && [body[@"method"] isEqual:@"close_and_send"]) { [self terminate]; return; }
+  if ([message.name isEqualToString:@"live"]) {
+    if ([body[@"method"] isEqual:@"close_and_send"]) [self terminate];
+    else if ([body[@"method"] isEqual:@"update_menu_labels"]) {
+      id params = body[@"params"];
+      if ([params isKindOfClass:NSArray.class] && [params count] == 1) [self updateMenuLabels:[params firstObject]];
+    }
+    return;
+  }
   if (![message.name isEqualToString:@"nativeDrag"] || ![body[@"id"] isKindOfClass:NSString.class]) return;
   if ([body[@"type"] isEqual:@"prepare"] && [body[@"sessionId"] isKindOfClass:NSString.class] && [body[@"artifact"] isKindOfClass:NSDictionary.class]) {
     sendMessage(@{@"type":@"prepare", @"id":body[@"id"], @"sessionId":body[@"sessionId"], @"artifact":body[@"artifact"]});

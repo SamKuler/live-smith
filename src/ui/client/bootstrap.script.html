@@ -4,6 +4,7 @@
         const factories = window.LiveSmithFactories;
         if (!factories) throw new Error(t("Live Smith UI factories are missing."));
 
+        const inlineHelp = factories.createInlineHelp();
         let applicationState = window.__LIVE_SMITH_STATE__;
         const bridgeConfig = window.__LIVE_SMITH_BRIDGE__;
         const hostAdapter = window.LiveSmithHostAdapter;
@@ -659,6 +660,11 @@
           }));
         }
 
+        function contextPresentationTitle(context) {
+          if (context.availability !== "available") return context.label;
+          return context.value.origin === "object" ? context.value.title : t(context.value.title);
+        }
+
         function renderLiveContext() {
           const state = getState();
           const context = state.liveContext;
@@ -667,7 +673,7 @@
           setPropertyIfChanged(button, "hidden", !matchesSession || !state.settings.sessionTabs.includes("context"));
           if (!matchesSession) return;
           const available = context.availability === "available";
-          const title = available ? context.value.title : context.label;
+          const title = contextPresentationTitle(context);
           const range = available ? context.value.range : undefined;
           const origin = available && context.value.origin !== "object"
             ? t("Opening selection")
@@ -705,92 +711,42 @@
         }
 
         function renderContextSummary(summary) {
-          if (summary === renderedContextSummary) return;
-          renderedContextSummary = summary;
+          const state = getState();
+          const presentation = state.liveContext?.sessionId === state.activeSessionId ? state.liveContext : null;
+          const signature = JSON.stringify([presentation, summary, i18n.locale]);
+          if (signature === renderedContextSummary) return;
+          renderedContextSummary = signature;
           const context = document.getElementById("context");
-          const header = document.createElement("div");
-          header.className = "context-header inspector-scope-header";
-          const heading = document.createElement("h2");
-          heading.id = "contextHeading";
-          heading.textContent = t("Live Context");
-          header.append(heading);
-          const shell = document.createElement("section");
-          shell.className = "context-shell settings-scope";
-          shell.setAttribute("aria-labelledby", "contextHeading");
-          shell.append(header);
-
-          const lines = String(summary)
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter(Boolean);
-          if (!lines.length) {
-            const empty = document.createElement("p");
-            empty.className = "context-empty";
-            empty.textContent = t("No Live context is available for this Session.");
-            shell.append(empty);
-            context.replaceChildren(shell);
-            return;
-          }
-
-          const card = document.createElement("section");
-          card.className = "context-card";
-          const title = document.createElement("h3");
-          title.className = "context-title";
-          title.textContent = lines[0];
-          card.append(title);
-
-          if (lines.length > 1) {
-            const details = document.createElement("div");
-            details.className = "context-details";
-            for (const line of lines.slice(1)) {
-              const properties = contextPropertiesForLine(line);
-              if (properties.length) {
-                const group = document.createElement("div");
-                group.className = "context-properties";
-                for (const property of properties) {
-                  const item = document.createElement("div");
-                  item.className = "context-property";
-                  const label = document.createElement("span");
-                  label.className = "context-property-label";
-                  label.textContent = property.label.toUpperCase();
-                  const value = document.createElement("span");
-                  value.className = "context-property-value";
-                  value.textContent = property.value || "—";
-                  item.append(label, value);
-                  group.append(item);
-                }
-                details.append(group);
-                continue;
-              }
-              const detail = document.createElement("p");
-              detail.className = "context-detail";
-              detail.textContent = line;
-              details.append(detail);
+          const shell = document.createElement("section"); shell.className = "context-shell settings-scope";
+          const header = document.createElement("div"); header.className = "context-header inspector-scope-header";
+          const heading = document.createElement("h2"); heading.id = "contextHeading"; heading.textContent = t("Live Context");
+          shell.setAttribute("aria-labelledby", heading.id); header.append(heading); shell.append(header);
+          if (!presentation) {
+            const empty = document.createElement("p"); empty.className = "context-empty";
+            empty.textContent = t("No Live context is available for this Session."); shell.append(empty);
+          } else {
+            const card = document.createElement("section"); card.className = "context-card";
+            const title = document.createElement("h3"); title.className = "context-title";
+            const available = presentation.availability === "available";
+            const value = available ? presentation.value : undefined;
+            title.textContent = contextPresentationTitle(presentation);
+            card.append(title);
+            const description = document.createElement("p");
+            description.className = available ? "context-details" : "context-empty";
+            if (available) {
+              const kind = { "midi-clip": t("MIDI clip"), "audio-clip": t("Audio clip"), track: t("Track"), device: t("Device"), other: t("Object") }[value.objectKind];
+              description.textContent = [kind, value.range ? t("Beats {start}–{end}", { start: value.range.start, end: value.range.end }) : ""].filter(Boolean).join(" · ");
+            } else description.textContent = t("This Session's Live object is unavailable. Open Live Smith from an existing object to choose a target.");
+            card.append(description);
+            if (available && summary) {
+              const details = document.createElement("details"); details.className = "help-details";
+              const label = document.createElement("summary"); label.textContent = t("Observed details (original text)");
+              const original = document.createElement("pre"); original.setAttribute("translate", "no"); original.textContent = summary;
+              details.append(label, original); card.append(details);
             }
-            card.append(details);
+            shell.append(card);
           }
-          shell.append(card);
           context.replaceChildren(shell);
-        }
-
-        function contextPropertiesForLine(line) {
-          if (line.startsWith("- ")) return [];
-          const segments = line.split(/,\s+/);
-          const segmented = segments.map(parseContextProperty);
-          if (segmented.every(Boolean)) return segmented;
-          const single = parseContextProperty(line);
-          return single ? [single] : [];
-        }
-
-        function parseContextProperty(value) {
-          const separator = value.indexOf("=");
-          if (separator <= 0) return null;
-          const label = value.slice(0, separator).trim();
-          if (!/^[a-z][a-z0-9 ]{0,31}$/i.test(label)) return null;
-          return {
-            label,
-            value: value.slice(separator + 1).trim(),
-          };
         }
 
         function activeProfile() {
@@ -1124,7 +1080,7 @@
           if (category) openExtensionCategory(category);
           section?.scrollIntoView?.({ block: "start" });
           const target = section?.matches("[tabindex]") ? section
-            : section?.querySelector("button, input, select, textarea, summary");
+            : section?.querySelector("button:not(.inline-help), input, select, textarea, summary");
           target?.focus({ preventScroll: true });
         }
 
@@ -1413,11 +1369,11 @@
                 ? t("Tracks, Scenes, Cue Points, Take Lanes, and tempo. Deleting or duplicating a container also needs permission for its contents.")
                 : null;
             if (helpText) {
-              const help = document.createElement("span");
+              const help = document.createElement("button");
+              help.type = "button";
               help.id = scope === "devices" ? "editScopeDevicesHelp" : "editScopeStructureHelp";
               help.className = "inline-help";
               help.tabIndex = 0;
-              help.setAttribute("role", "note");
               help.setAttribute("aria-label", helpText);
               help.dataset.tooltip = helpText;
               help.textContent = "?";
@@ -1457,6 +1413,7 @@
           const localeChanged = i18n.configure(getState().settings?.uiLanguage ?? "system");
           if (localeChanged) {
             i18n.apply();
+            hostAdapter.refreshLocale?.();
             renderAppConfirmation();
             renderedContextSummary = null;
             contextTokenFormatter = new Intl.NumberFormat(i18n.locale);
@@ -1495,6 +1452,7 @@
           toolsInspector.render();
           midiContinuation.render();
           renderProfileStateProjection();
+          inlineHelp.refresh();
           if (sessionControlsLocked) syncSessionControlsLock(true);
         }
 
@@ -1934,6 +1892,7 @@
               commandAdmissionChanged && !commandAdmissionBusy)
           ) {
             renderProfileStateProjection();
+          inlineHelp.refresh();
           }
           renderComposerRuntimeControls(false);
           renderSendPresentation();
@@ -2066,6 +2025,7 @@
           attachments.initialize();
           profileEditor.renderSettingsForm();
           renderApplication();
+          hostAdapter.refreshLocale?.();
           setSessionsPaneCollapsed(false);
           setInspectorOpen(!getState().mcpApprovals?.length && Boolean(getState().openSettingsOnLoad || !activeProfile()));
           sessionTimeline.switchInspectorGroup(getState().openSettingsOnLoad || !activeProfile() ? "settings" : "session");

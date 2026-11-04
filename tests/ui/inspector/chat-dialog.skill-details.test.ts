@@ -33,8 +33,8 @@ test("Skills keeps one compact Session-level help affordance", async () => {
     assert.ok(help);
     assert.equal(heading?.parentElement?.querySelectorAll(".inline-help").length, 1);
     assert.equal(help.textContent, "?");
-    assert.equal(help.getAttribute("role"), "note");
-    assert.equal(help.getAttribute("tabindex"), "0");
+    assert.equal(help.tagName, "BUTTON");
+    assert.equal(help.tabIndex, 0);
     assert.equal(
       help.dataset.tooltip,
       "Enable for this Session, or use $skill-id for one turn.",

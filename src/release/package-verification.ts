@@ -7,6 +7,9 @@ import { parsePluginPackageManifest } from "../plugins/manifest.js";
 const REQUIRED_THIRD_PARTY_NOTICE_MARKERS = [
   "Third-Party Notices for Live Smith",
   "`fflate`",
+  "`@floating-ui/dom`",
+  "`@floating-ui/core`",
+  "`@floating-ui/utils`",
   "Copyright (c) 2026 Arjun Barrett",
   "`officeparser`",
   "`xlsx`",

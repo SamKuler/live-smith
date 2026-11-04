@@ -7,6 +7,7 @@ import { URL } from "node:url";
 
 import { strToU8, zipSync } from "fflate/browser";
 
+import { uiMessage } from "../../../src/i18n/ui-message.js";
 import type { LiveInteractionContext } from "../../../src/live/context.js";
 import { createHostAbortController } from "../../../src/runtime/host.js";
 import { installPlugin, listInstalledPlugins, setPluginEnabled, setPluginMcpServerApproved } from "../../../src/storage/plugins.js";
@@ -150,6 +151,7 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
           enabled: true,
         });
         assert.equal(enabled.plugins[0]?.enabled, true);
+        assert.deepEqual(enabled.status, uiMessage("Plugin {pluginId} enabled.", { pluginId: "music-tools" }));
         assert.ok(enabled.availableSkills.some((skill) => skill.id === "music-tools:convert"));
         const selected = await command({
           kind: "set_session_skills",
@@ -169,6 +171,9 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
           approved.plugins[0]?.mcpServers.find((server) => server.id === "converter")?.approved,
           true,
         );
+        assert.deepEqual(approved.status, uiMessage("Plugin {pluginId} MCP server {serverId} approved.", {
+          pluginId: "music-tools", serverId: "converter",
+        }));
         for (const permission of ["input", "output"] as const) {
           const granted = await command({
             kind: "set_plugin_artifact_permission",
@@ -180,6 +185,10 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
           });
           const server = granted.plugins[0]?.mcpServers.find((entry) => entry.id === "converter");
           assert.equal(permission === "input" ? server?.artifactInputApproved : server?.artifactOutputApproved, true);
+          assert.deepEqual(granted.status, uiMessage("Plugin {pluginId} MCP server {serverId} {permission} approved.", {
+            pluginId: "music-tools", serverId: "converter",
+            permission: uiMessage(permission === "input" ? "artifact input" : "artifact output"),
+          }));
         }
 
         const disabled = await command({
@@ -188,6 +197,7 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
           enabled: false,
         });
         assert.equal(disabled.plugins[0]?.enabled, false);
+        assert.deepEqual(disabled.status, uiMessage("Plugin {pluginId} disabled.", { pluginId: "music-tools" }));
         assert.deepEqual(disabled.activeSkillIds, []);
         assert.equal(disabled.availableSkills.some((skill) => skill.source === "plugin"), false);
 
@@ -214,6 +224,7 @@ test("Plugin bridge workflow inspects, installs, grants, disables, replaces, and
         assert.deepEqual((await listInstalledPlugins(storageDirectory))[0]!.approvedMcpServerIds, []);
         const deleted = await command({ kind: "delete_plugin", pluginId: "music-tools" });
         assert.deepEqual(deleted.plugins, []);
+        assert.deepEqual(deleted.status, uiMessage("Plugin {pluginId} deleted.", { pluginId: "music-tools" }));
       },
     },
   } as never, interaction, { renderHtml: () => "<html></html>" });

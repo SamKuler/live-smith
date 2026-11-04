@@ -182,8 +182,8 @@ export async function downloadAudioOutput(
       const complete = job.expectedOutputs!.every((entry) => outputAssets.some((saved) => saved.role === entry.role));
       await retryLocalCommit(() => update({ outputAssets, status: complete ? "completed" : "partial",
         message: m(job.failedOutputKeys?.length
-          ? "Audio is downloaded to Live Smith. Some confirmed outputs failed to generate. Importing into Live is a separate scoped operation."
-          : "Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation.") }));
+          ? "Audio is saved in this Session. Some confirmed outputs failed to generate. Importing into Live is a separate scoped operation."
+          : "Audio is saved in this Session. Importing into Live is a separate scoped operation.") }));
     } catch (error) {
       await update({ status: job.outputAssets.length ? "partial" : "ready",
         message: context.signal.aborted
@@ -263,7 +263,7 @@ async function runGeneration(
         hasCompleteAudio = true;
         for (const output of result.outputs) await save(output, true);
         if (!job.outputAssets.length) throw new Error("The audio service returned no usable output.");
-        await retryLocalCommit(() => update({ status: "completed", message: m("Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation.") }));
+        await retryLocalCommit(() => update({ status: "completed", message: m("Audio is saved in this Session. Importing into Live is a separate scoped operation.") }));
         return job;
       }
       acceptedTaskId = result.taskId;
@@ -300,7 +300,7 @@ async function runGeneration(
             message: remoteOutputs.length
               ? m(failed.length
                 ? "Audio is ready online, but some confirmed outputs failed to generate. Preview or download an available version."
-                : "Audio is ready online. Preview a version or download it to Live Smith before a separate scoped Live import.")
+                : "Audio is ready online. Preview a version or save it to this Session before a separate scoped Live import.")
               : m("The service failed to generate the confirmed outputs.") }));
           throwIfAborted(context.signal);
           return job;
@@ -329,7 +329,7 @@ async function runGeneration(
         await retryLocalCommit(() => update({ status: missing.length ? job.outputAssets.length ? "partial" : "interrupted" : "completed",
           message: missing.length
             ? m("Generated audio is not fully downloaded. Resume to retrieve missing files without another generation. {details}", { details: boundedAudioMessage(failures.join("; ")) })
-            : m("Audio is downloaded to Live Smith. Importing into Live is a separate scoped operation.") }));
+            : m("Audio is saved in this Session. Importing into Live is a separate scoped operation.") }));
         return job;
       }
       await context.onProgress?.(m("Waiting for generated audio"));

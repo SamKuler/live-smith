@@ -320,23 +320,16 @@ test("Chinese Cookie connection labels, help, account name and local-clear confi
     const cookieHelp = harness.document.querySelector<HTMLElement>(
       "#sunoCookieHelp",
     )!;
-    assert.equal(cookieHelp.textContent, "?");
-    assert.equal(cookieHelp.getAttribute("role"), "note");
-    assert.equal(cookieHelp.tabIndex, 0);
-    assert.equal(Object.hasOwn(cookieHelp, "open"), false);
-    assert.match(cookieHelp.dataset.tooltip ?? "", /auth.suno.com/);
-    assert.match(cookieHelp.dataset.tooltip ?? "", /复制其 Cookie 请求头/);
-    assert.match(cookieHelp.dataset.tooltip ?? "", /__session/);
-    assert.match(cookieHelp.dataset.tooltip ?? "", /完整请求头/);
-    assert.match(cookieHelp.dataset.tooltip ?? "", /提交后清空输入框/);
-    assert.equal(
-      cookieHelp.getAttribute("aria-label"),
-      cookieHelp.dataset.tooltip,
-    );
-    assert.equal(
-      cookieHelp.closest(".field-label-row")?.querySelector("label")?.htmlFor,
-      "sunoSessionValue",
-    );
+    const disclosure = cookieHelp.closest("details")!;
+    const cookie = harness.document.querySelector<HTMLInputElement>("#sunoSessionValue")!;
+    cookie.value = "unsaved-cookie-draft";
+    disclosure.querySelector("summary")!.click();
+    assert.equal(disclosure.open, true);
+    assert.match(disclosure.querySelector("summary")!.textContent!, /如何/);
+    disclosure.querySelector("summary")!.click();
+    assert.equal(disclosure.open, false);
+    assert.equal(cookie.value, "unsaved-cookie-draft");
+    cookie.value = "";
     assert.equal(harness.document.querySelector("#sunoCookieHint"), null);
     assert.equal(
       harness.document.querySelector("#sunoSessionValue")?.getAttribute(

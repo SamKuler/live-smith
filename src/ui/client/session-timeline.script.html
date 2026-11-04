@@ -3182,7 +3182,8 @@
         const label = document.createElement("div");
         label.className = "web-search-section-label";
         label.textContent = t("Source pages");
-        const sourceHelp = document.createElement("span");
+        const sourceHelp = document.createElement("button");
+        sourceHelp.type = "button";
         const sourceHelpText = t("Page text is available to the model; Live Smith receives source links, not excerpts. Citations appear with the answer when the provider returns them.");
         sourceHelp.className = "inline-help";
         sourceHelp.tabIndex = 0;

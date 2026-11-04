@@ -1420,8 +1420,8 @@ the full library's filters, current version and media. Validated saved-artifact,
 default-selection and linked import-result events refresh the visible summary;
 authoritative state reconciles missed events without reloading on text tokens.
 Opening the summary leaves
-the main page selection intact; Open all explicitly clears the library filters
-and returns to its initial page. Parameter observations, media players, version
+the main page selection intact. **Open artifact library** clears the library
+filters and returns to its initial page. Parameter observations, media players, version
 comparison and write/transfer controls remain with the full detail owners.
 
 `ui/client/artifacts.ts` owns the library/detail workspace, one selected work and
@@ -2298,6 +2298,13 @@ data. Locale refresh updates presentation without replacing drafts. Confirmation
 copy binds interpolation values when the decision opens and can translate those
 same values again while preserving its pending decision.
 
+内置 Live 工具说明由界面目录本地化，外部 MCP 工具提供的说明沿用原文。原生宿主
+通过受限的主框架桥接接收固定菜单项的本地化标签，窗口标题保持 Live Smith。
+
+界面统一使用 `ui/client/inline-help.ts` 管理问号提示及其键盘交互，由 Floating UI
+在视口内定位。较长的参考说明使用可展开的区块，错误、权限后果和导入数据损失提示
+保留在对应操作界面。
+
 `src/i18n/ui-message.ts` owns serializable application-message descriptors and
 their English fallback, shared by UI and audio orchestration. Authored audio job
 notices, progress and terminal status carry descriptors; historical strings and
@@ -2850,6 +2857,10 @@ Session and context summary under the same causal ownership rules. Missing or
 mismatched context cannot leave another Session's target visible in the composer.
 There is no global selection subscription; refreshing an opening selection
 re-observes its original handles and range.
+
+Context 概览从 `liveContext` 渲染当前 Session 绑定对象的名称和种类、选区范围与可用性。
+完整观察摘要仅在目标可用时通过 **Observed details (original text)** 展开。供模型使用的
+目标失联提示与界面文案各自独立。
 
 The context strip opens the existing Inspector without replacing the current draft
 or selecting a task mode. Direct requests use the same Session conversation and

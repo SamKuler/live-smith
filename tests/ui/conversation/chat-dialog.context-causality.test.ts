@@ -120,7 +120,7 @@ test("an older same-Session send preserves newer context without blocking a subs
     assert.deepEqual(harness.errors, []);
     assert.equal(control(harness, "#liveContextTitle").textContent, "Unavailable Bass");
     assert.equal(control(harness, "#liveContextLocation").textContent, "Unavailable");
-    assert.ok(control(harness, "#context").textContent?.includes(newer.contextSummary));
+    assert.equal(control(harness, "#context .context-title").textContent, newer.liveContext.label);
     assert.equal(control<HTMLSelectElement>(harness, "#approvalMode").value, "everything");
 
     // A later request observes the command publication and refreshes the same Session.

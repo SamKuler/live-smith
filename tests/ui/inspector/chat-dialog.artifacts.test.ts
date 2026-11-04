@@ -127,7 +127,7 @@ test("artifact MIDI import reuses observed mapping preview and audio import only
   const s = await setup(); const { h } = s;
   try {
     await s.open(); h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
-    action(h, "Import"); await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected M2 mapping");
+    action(h, "Import into Live"); await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected M2 mapping");
     h.select(".plugin-result-track", "2"); h.input(".plugin-result-beat", "9");
     assert.match(h.document.querySelector('[aria-label="Clip preview"]')!.textContent!, /Piano.*beats 9–17/);
     h.click(".plugin-result-apply"); await h.settle();
@@ -213,7 +213,7 @@ test("MIDI version actions retain the exact selected version for export, chat at
     await s.open(); h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
     action(h, "Export"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "export_artifact", sessionId: s.state.activeSessionId, artifact: { kind: "midi", id: "midi-v2" } });
-    action(h, "Attach"); await h.settle();
+    action(h, "Attach to message"); await h.settle();
     assert.equal(h.document.getElementById("inspectorPane")!.hidden, true);
     assert.equal(h.document.getElementById('artifactsPage')!.hidden, true);
     assert.equal(h.document.getElementById('chatPage')!.hidden, false);
@@ -240,7 +240,7 @@ test("switching works disposes audio while refreshing preserves the selected MID
     h.click('button.artifact-open[data-artifact-key="midi:midi-a"]');
     assert.equal(h.document.querySelector(".artifact-card audio"), null, "switching work disposes the previous player");
     assert.equal(audio.currentTime, 12);
-    action(h, "Import"); await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected mapping");
+    action(h, "Import into Live"); await waitForCondition(() => Boolean(h.document.querySelector(".plugin-result-track")), "Expected mapping");
     h.select(".plugin-result-track", "2"); h.input(".plugin-result-beat", "9");
     const track = h.document.querySelector<HTMLSelectElement>(".plugin-result-track")!;
     const refreshed = cloneState(h.readBootstrappedClientStateReference());
@@ -316,7 +316,7 @@ test("previewing one MIDI part carries that part into import without changing ex
     assert.deepEqual([...h.document.querySelectorAll('rect[data-pitch]')].map((note) => note.getAttribute('data-pitch')), ["48"]);
     action(h, "Export"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "export_artifact", sessionId: s.state.activeSessionId, artifact: { kind: "midi", id: "midi-a" } });
-    action(h, "Import"); await waitForCondition(() => Boolean(h.document.querySelector('.midi-import-part-enabled')), "Expected part mapping");
+    action(h, "Import into Live"); await waitForCondition(() => Boolean(h.document.querySelector('.midi-import-part-enabled')), "Expected part mapping");
     assert.deepEqual([...h.document.querySelectorAll<HTMLInputElement>('.midi-import-part-enabled')].map((part) => part.checked), [false, true]);
     h.click('.plugin-result-apply'); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "import_midi_artifact", sessionId: s.state.activeSessionId,
@@ -371,7 +371,7 @@ test("all MIDI source parts remain in a named keyboard region across refresh and
     assert.deepEqual([...region.querySelectorAll('p')], partRows);
     assert.match(partRows.at(-1)!.textContent!, /32 · Track 32 · 通道 16 · 1 · 8/);
     assert.equal(h.document.querySelector('.artifact-preview-part select'), preview);
-    assert.ok([...h.document.querySelectorAll<HTMLButtonElement>('.artifact-card button')].some((button) => button.textContent === "导入" && !button.disabled));
+    assert.ok([...h.document.querySelectorAll<HTMLButtonElement>('.artifact-card button')].some((button) => button.textContent === "导入 Live" && !button.disabled));
     assert.deepEqual(commandCalls(h), []); assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
@@ -382,7 +382,7 @@ test("audio artifacts export and attach the exact saved audio without starting a
     await s.open(); h.click('button.artifact-open[data-artifact-key="audio:audio-b"]');
     action(h, "Export"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "export_artifact", sessionId: s.state.activeSessionId, artifact: { kind: "audio", id: "audio-b" } });
-    action(h, "Attach"); await h.settle();
+    action(h, "Attach to message"); await h.settle();
     assert.deepEqual(commandCalls(h).at(-1)!.body, { kind: "attach_artifact", sessionId: s.state.activeSessionId, artifact: { kind: "audio", id: "audio-b" } });
     assert.equal(h.document.activeElement?.id, "prompt");
     assert.equal(jsonCalls(h, "/send").length, 0);
@@ -455,7 +455,7 @@ test("one work switches exact versions, keeps the chosen version on refresh and 
     assert.equal(h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!.value, 'midi-v2');
     action(h, 'Export'); await h.settle();
     assert.equal((commandCalls(h).at(-1)!.body as { artifact: { id: string } }).artifact.id, 'midi-v2');
-    action(h, 'Import'); await waitForCondition(() => !!h.document.querySelector('.plugin-result-track'), 'Expected selected version import');
+    action(h, 'Import into Live'); await waitForCondition(() => !!h.document.querySelector('.plugin-result-track'), 'Expected selected version import');
     h.click('.plugin-result-apply'); await h.settle();
     assert.equal((commandCalls(h).at(-1)!.body as { artifactRef: string }).artifactRef, 'midi-v2');
     assert.equal(jsonCalls(h, '/send').length, 0);
@@ -787,7 +787,7 @@ test("changing language refreshes retained artifact, difference and import views
     await waitForCondition(() => Boolean(h.document.querySelector('.artifact-diff-overview')), "Expected loaded difference");
     const version = h.document.querySelector<HTMLSelectElement>('.artifact-version-select')!;
     const baseline = h.document.querySelector<HTMLSelectElement>('.artifact-diff-baseline select')!;
-    action(h, 'Import'); await waitForCondition(() => Boolean(h.document.querySelector('.plugin-result-track')), 'Expected import');
+    action(h, 'Import into Live'); await waitForCondition(() => Boolean(h.document.querySelector('.plugin-result-track')), 'Expected import');
     h.select('.plugin-result-track', '2'); h.input('.plugin-result-beat', '9');
     const track = h.document.querySelector<HTMLSelectElement>('.plugin-result-track')!;
     h.emitServerEvent({ type: 'global_settings_changed', defaultFollowUpBehavior: s.state.settings.defaultFollowUpBehavior,

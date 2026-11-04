@@ -177,5 +177,5 @@ export const timelineMessages: Record<string, string> = {
   "Object": "对象",
   "Selection": "所选内容",
   "{summary}. {count} activity step in history": "{summary}。历史记录中有 {count} 个活动步骤",
-  "{summary}. {count} activity steps in history": "{summary}。历史记录中有 {count} 个活动步骤"
+  "{summary}. {count} activity steps in history": "{summary}。历史记录中有 {count} 个活动步骤",
 };

@@ -169,7 +169,7 @@ function createView(deps: Dependencies) {
       const completed = await deps.run(command);
       if (!current(owner) || attempt !== ownAttempt) return false;
       if (completed && command.kind === "configure_midi_continuation") hydrateSetup();
-      bindings.text(status, () => completed ? t(command.kind === "fill_midi_continuation" ? "Fill finished. Review the saved sections before importing." : command.kind === "import_midi_continuation" ? "Import finished. The server snapshot shows the remaining sections." : "MIDI continuation is ready.")
+      bindings.text(status, () => completed ? t(command.kind === "fill_midi_continuation" ? "Fill finished. Review the saved sections before importing." : command.kind === "import_midi_continuation" ? "Import finished. The server snapshot shows the remaining sections." : command.kind === "configure_midi_continuation" ? "Continuation setup saved." : "MIDI source list updated.")
         : t("Operation stopped or failed. Saved sections remain; review the Session status before trying again."));
       return completed;
     } catch (error) {

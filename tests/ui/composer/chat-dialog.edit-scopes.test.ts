@@ -42,11 +42,11 @@ test("independent Approval and Scope entries retain accessible inline help and l
     assert.ok(liveControls);
     assert.equal(approval.tagName, "SELECT");
     assert.equal(panel.contains(approval), false);
-    assert.equal(harness.document.querySelector("#approvalModeHelp"), null);
-    assert.equal(
-      [...liveControls.querySelectorAll(".inline-help")].every((help) => panel.contains(help)),
-      true,
-    );
+    const approvalHelp = control<HTMLButtonElement>(harness, "#approvalModeHelp");
+    approvalHelp.click(); await harness.settle();
+    assert.equal(control(harness, '[role="tooltip"]').hidden, false);
+    approvalHelp.dispatchEvent(new harness.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    assert.deepEqual(commandCalls(harness), []);
     assert.equal(liveControls.querySelectorAll("#approvalMode").length, 1);
     assert.equal(button.textContent, "All scopes");
     assert.equal(button.getAttribute("aria-haspopup"), "dialog");
@@ -95,6 +95,11 @@ test("independent Approval and Scope entries retain accessible inline help and l
     assert.equal(control(harness, "#editScope-devices").getAttribute("aria-describedby"), "editScopeDevicesHelp");
     assert.equal(control(harness, "#editScope-structure").getAttribute("aria-describedby"), "editScopeStructureHelp");
     assert.equal(commandCalls(harness).length, 0);
+    control(harness, "#editScopeStructureHelp").dispatchEvent(new harness.window.KeyboardEvent(
+      "keydown", { key: "Escape", bubbles: true, cancelable: true },
+    ));
+    assert.equal(control(harness, '[role="tooltip"]').hidden, true);
+    assert.equal(panel.hidden, false);
     control(harness, "#editScopeStructureHelp").dispatchEvent(new harness.window.KeyboardEvent(
       "keydown", { key: "Escape", bubbles: true, cancelable: true },
     ));
@@ -399,6 +404,9 @@ for (const change of ["scope", "approval"] as const) {
           help.dispatchEvent(new harness.window.KeyboardEvent("keydown", {
             key: "Escape", bubbles: true, cancelable: true,
           }));
+          assert.equal(control(harness, '[role="tooltip"]').hidden, true);
+          assert.equal(panel.hidden, false);
+          help.dispatchEvent(new harness.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
         } else if (dismissal === "outside") {
           if (focusTarget === harness.document.body) focusTarget.tabIndex = -1;
           focusTarget.focus();

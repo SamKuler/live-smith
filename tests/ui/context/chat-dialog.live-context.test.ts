@@ -154,7 +154,8 @@ test("an unavailable projection replaces stale object details while keeping Cont
     harness.click("#liveContextSummaryButton");
     await harness.settle();
     assert.equal(harness.document.querySelector<HTMLElement>("#contextPanel")?.hidden, false);
-    assert.ok(harness.document.querySelector("#contextPanel")?.textContent?.includes(unavailable.contextSummary));
+    assert.equal(harness.document.querySelector("#context .context-title")?.textContent, unavailable.liveContext.label);
+    assert.match(harness.document.querySelector("#context .context-empty")!.textContent!, /unavailable/);
     assert.deepEqual(jsonCalls(harness, "/send"), []);
     harness.input("#prompt", "Continue discussing the arrangement");
     harness.click("#sendButton");

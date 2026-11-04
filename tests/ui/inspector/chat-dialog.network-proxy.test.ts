@@ -50,6 +50,7 @@ function proxyCommands(
 test("Network settings expose explicit no, system, and manual proxy modes", async () => {
   const harness = await createDialogHarness();
   try {
+    harness.click("#appTab");
     const mode = harness.document.querySelector<HTMLFieldSetElement>(
       "#networkProxyMode",
     );
@@ -60,10 +61,12 @@ test("Network settings expose explicit no, system, and manual proxy modes", asyn
       "#networkProxyUrl",
     );
     assert.equal(mode?.tagName, "FIELDSET");
-    const routeHint = harness.document.querySelector<HTMLElement>("#networkProxyHint");
-    assert.equal(routeHint?.classList.contains("network-proxy-route-hint"), false);
-    assert.equal(mode?.getAttribute("aria-describedby"), null);
-    assert.equal(routeHint?.hidden, true);
+    const routeHint = harness.document.querySelector<HTMLButtonElement>("#networkProxyHelp")!;
+    assert.equal(mode?.getAttribute("aria-describedby"), "networkProxyHelp");
+    routeHint.click(); await harness.settle();
+    assert.equal(harness.document.querySelector<HTMLElement>('[role="tooltip"]')!.hidden, false);
+    routeHint.dispatchEvent(new harness.window.KeyboardEvent("keydown", {key:"Escape",bubbles:true}));
+    assert.deepEqual(proxyCommands(harness), []);
     assert.deepEqual(
       [...harness.document.querySelectorAll<HTMLInputElement>(
         'input[name="networkProxyMode"]',
@@ -84,9 +87,7 @@ test("Network settings expose explicit no, system, and manual proxy modes", asyn
     chooseProxyMode(harness, "manual");
     await harness.settle();
     assert.equal(urlField?.hidden, false);
-    assert.equal(routeHint?.hidden, false);
-    assert.equal(mode?.getAttribute("aria-describedby"), "networkProxyHint");
-    assert.match(routeHint?.textContent ?? "", /local endpoints.*direct/i);
+    assert.equal(mode?.getAttribute("aria-describedby"), "networkProxyHelp");
     assert.equal(harness.document.activeElement, manual);
     assert.deepEqual(proxyCommands(harness), []);
     assert.equal(apply?.disabled, false);
@@ -121,8 +122,6 @@ test("Network settings expose explicit no, system, and manual proxy modes", asyn
       },
     });
     assert.equal(urlField?.hidden, true);
-    assert.match(routeHint?.textContent ?? "", /system.*no PAC\/WPAD/i);
-    assert.doesNotMatch(routeHint?.textContent ?? "", /macOS/i);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

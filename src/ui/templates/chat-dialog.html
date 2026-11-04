@@ -75,7 +75,7 @@
           <details id="sessionAudioResults" class="session-results" hidden>
             <summary id="sessionAudioResultsSummary"><span data-i18n="Session audio">Session audio</span><span id="sessionAudioResultsCount" class="result-count"></span><span id="sessionAudioResultsStatus" class="activity-state" role="status" aria-live="polite"></span></summary>
             <section id="audioResultsSection" aria-label="Session audio" data-i18n-aria-label="Session audio">
-              <div id="audioJobs"></div>
+              <div class="field-label-row audio-results-heading"><span data-i18n="Files and export">Files and export</span><button id="audioResultsHelp" type="button" class="inline-help" aria-label="Saved files stay in this Session. Export saves a copy through your browser; keep Live Smith open until it finishes. Import into Live follows the Session edit scope and approval policy." data-tooltip="Saved files stay in this Session. Export saves a copy through your browser; keep Live Smith open until it finishes. Import into Live follows the Session edit scope and approval policy." data-i18n-aria-label="Saved files stay in this Session. Export saves a copy through your browser; keep Live Smith open until it finishes. Import into Live follows the Session edit scope and approval policy." data-i18n-data-tooltip="Saved files stay in this Session. Export saves a copy through your browser; keep Live Smith open until it finishes. Import into Live follows the Session edit scope and approval policy.">?</button></div><div id="audioJobs"></div>
             </section>
           </details>
           <div class="bridge-status">
@@ -107,21 +107,21 @@
                     <span id="attachmentCapabilityHint" class="attachment-capability-hint" role="status" aria-live="polite" hidden></span>
                   </div>
                 </div>
-                <label class="approval-mode-label" title="Manual requests approval for every Apply request." data-i18n-title="Manual requests approval for every Apply request.">
+                <div class="approval-mode-shell"><label class="approval-mode-label">
                   <span class="approval-mode-copy visually-hidden" data-i18n="Apply">Apply</span>
-                  <select id="approvalMode" name="approvalMode" class="approval-mode-select composer-select composer-control" aria-label="Apply approval mode" onchange="LiveSmithUI.saveApprovalMode()" data-i18n-aria-label="Apply approval mode">
+                  <select id="approvalMode" name="approvalMode" class="approval-mode-select composer-select composer-control" aria-label="Apply approval mode" aria-describedby="approvalModeHelp approvalModeHint" onchange="LiveSmithUI.saveApprovalMode()" data-i18n-aria-label="Apply approval mode">
                     <option value="manual" data-i18n="Manual">Manual</option>
                     <option value="low-risk" data-i18n="Low Risk">Low Risk</option>
                     <option value="everything" data-i18n="Accept Everything">Accept Everything</option>
                   </select>
-                </label>
+                </label><button id="approvalModeHelp" type="button" class="inline-help" aria-label="Manual asks before each edit plan. Low Risk applies lower-risk changes automatically and asks before protected changes. Accept Everything applies every validated change within the edit scope, including deletes and replacement writes." data-tooltip="Manual asks before each edit plan. Low Risk applies lower-risk changes automatically and asks before protected changes. Accept Everything applies every validated change within the edit scope, including deletes and replacement writes." data-i18n-aria-label="Manual asks before each edit plan. Low Risk applies lower-risk changes automatically and asks before protected changes. Accept Everything applies every validated change within the edit scope, including deletes and replacement writes." data-i18n-data-tooltip="Manual asks before each edit plan. Low Risk applies lower-risk changes automatically and asks before protected changes. Accept Everything applies every validated change within the edit scope, including deletes and replacement writes.">?</button></div>
                 <div id="editScopeShell" class="edit-scope-shell">
                   <button id="editScopeButton" class="edit-scope-button composer-select composer-control" type="button" aria-label="Edit scope: All scopes" aria-haspopup="dialog" aria-controls="editScopePanel" aria-expanded="false" data-i18n-aria-label="Edit scope: All scopes" data-i18n="All scopes">All scopes</button>
                   <div id="editScopePanel" class="edit-scope-panel floating-surface" role="dialog" aria-labelledby="editScopeHeading" aria-describedby="editScopeSavedSummary" aria-busy="false" hidden>
                     <span id="editScopeSavedSummary" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true" data-i18n="Saved: All">Saved: All</span>
                     <div class="permission-field-heading">
-                      <h2 id="editScopeHeading" data-i18n="Scope">Scope</h2>
-                      <span id="editScopeHelp" class="inline-help" tabindex="0" role="note" aria-label="Only selected categories may change, regardless of approval mode. Clear all for read-only. Reading Live state stays available. Changes save immediately." data-tooltip="Only selected categories may change, regardless of approval mode. Clear all for read-only. Reading Live state stays available. Changes save immediately." data-i18n-aria-label="Only selected categories may change, regardless of approval mode. Clear all for read-only. Reading Live state stays available. Changes save immediately." data-i18n-data-tooltip="Only selected categories may change, regardless of approval mode. Clear all for read-only. Reading Live state stays available. Changes save immediately.">?</span>
+                      <h2 id="editScopeHeading" data-i18n="Edit Scope">Edit Scope</h2>
+                      <button type="button" id="editScopeHelp" class="inline-help" aria-label="Only selected categories may change, regardless of approval mode. Clear all for read-only. Reading Live state stays available. Changes save immediately." data-tooltip="Only selected categories may change, regardless of approval mode. Clear all for read-only. Reading Live state stays available. Changes save immediately." data-i18n-aria-label="Only selected categories may change, regardless of approval mode. Clear all for read-only. Reading Live state stays available. Changes save immediately." data-i18n-data-tooltip="Only selected categories may change, regardless of approval mode. Clear all for read-only. Reading Live state stays available. Changes save immediately.">?</button>
                       <span id="permissionsSaveStatus" class="permissions-save-status" role="status" aria-live="polite" hidden></span>
                       <label class="edit-scope-all"><input id="editScopeAll" name="editScopeAll" type="checkbox" aria-label="All edit scopes" data-i18n-aria-label="All edit scopes"><span data-i18n="All">All</span></label>
                     </div>
@@ -153,6 +153,7 @@
                 <button id="sendButton" class="primary composer-send" data-action="send" type="button" aria-keyshortcuts="Enter Meta+Enter Control+Enter" aria-label="Send message" title="Send (Enter)" onclick="LiveSmithUI.handleSendButton()" data-i18n-title="Send (Enter)" data-i18n-aria-label="Send message"><span id="sendButtonLabel" class="send-button-label visually-hidden" data-i18n="Send">Send</span><svg class="send-button-icon send-button-send-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 20V4M5.5 10.5 12 4l6.5 6.5"></path></svg><svg class="send-button-icon send-button-stop-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="7" y="7" width="10" height="10" rx="1"></rect></svg></button>
               </div>
             </div>
+            <p id="approvalModeHint" class="approval-mode-hint" role="status" hidden></p>
             </div>
           </div>
         </section>
@@ -232,8 +233,8 @@
                 <div id="directApiFields" class="direct-api-fields">
                 <div class="field">
                   <div class="field-label-row">
-                    <label for="apiFamily" data-i18n="Provider">Provider</label>
-                    <span class="inline-help" tabindex="0" role="note" aria-label="Choose the API protocol family. Both official and compatible endpoints are supported." data-tooltip="Choose the API protocol family. Both official and compatible endpoints are supported." data-i18n-aria-label="Choose the API protocol family. Both official and compatible endpoints are supported." data-i18n-data-tooltip="Choose the API protocol family. Both official and compatible endpoints are supported.">?</span>
+                    <label for="apiFamily" data-i18n="API family">API family</label>
+                    <button type="button" class="inline-help" aria-label="Choose the API protocol family. Both official and compatible endpoints are supported." data-tooltip="Choose the API protocol family. Both official and compatible endpoints are supported." data-i18n-aria-label="Choose the API protocol family. Both official and compatible endpoints are supported." data-i18n-data-tooltip="Choose the API protocol family. Both official and compatible endpoints are supported.">?</button>
                   </div>
                   <select id="apiFamily" name="apiFamily" autocomplete="off" onchange="LiveSmithUI.handleApiFamilyChange()">
                     <option value="openai">OpenAI</option>
@@ -249,7 +250,7 @@
                 <div class="field">
                   <div class="field-label-row">
                     <label for="apiKey" data-i18n="API key">API key</label>
-                    <span class="inline-help" tabindex="0" role="note" aria-label="Optional for local loopback endpoints; required for every other endpoint." data-tooltip="Optional for local loopback endpoints; required for every other endpoint." data-i18n-aria-label="Optional for local loopback endpoints; required for every other endpoint." data-i18n-data-tooltip="Optional for local loopback endpoints; required for every other endpoint.">?</span>
+                    <button type="button" class="inline-help" aria-label="Optional for local loopback endpoints; required for every other endpoint." data-tooltip="Optional for local loopback endpoints; required for every other endpoint." data-i18n-aria-label="Optional for local loopback endpoints; required for every other endpoint." data-i18n-data-tooltip="Optional for local loopback endpoints; required for every other endpoint.">?</button>
                   </div>
                   <div class="key-row">
                     <input id="apiKey" name="apiKey" type="password" autocomplete="off" spellcheck="false" oninput="LiveSmithUI.markDraftDirty(this)" />
@@ -259,7 +260,7 @@
                 <div class="field">
                   <div class="field-label-row">
                     <label for="baseUrl" data-i18n="Endpoint URL">Endpoint URL</label>
-                    <span id="baseUrlHelp" class="inline-help" tabindex="0" role="note" aria-label="Include the provider API version path, usually ending in /v1." data-tooltip="Include the provider API version path, usually ending in /v1." data-i18n-aria-label="Include the provider API version path, usually ending in /v1." data-i18n-data-tooltip="Include the provider API version path, usually ending in /v1.">?</span>
+                    <button type="button" id="baseUrlHelp" class="inline-help" aria-label="Include the provider API version path, usually ending in /v1." data-tooltip="Include the provider API version path, usually ending in /v1." data-i18n-aria-label="Include the provider API version path, usually ending in /v1." data-i18n-data-tooltip="Include the provider API version path, usually ending in /v1.">?</button>
                   </div>
                   <input id="baseUrl" name="baseUrl" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…/v1" oninput="LiveSmithUI.markDraftDirty(this)" />
                 </div>
@@ -306,7 +307,7 @@
               <section id="modelSettingsSection" class="settings-section" aria-labelledby="modelSettingsHeading">
                 <div class="field-label-row">
                   <h3 id="modelSettingsHeading" data-i18n="Models">Models</h3>
-                  <span id="discoverModelsHelp" class="inline-help" tabindex="0" role="note" aria-label="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. OAuth reloads match the selected account." data-tooltip="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. OAuth reloads match the selected account." data-i18n-aria-label="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. OAuth reloads match the selected account." data-i18n-data-tooltip="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. OAuth reloads match the selected account.">?</span>
+                  <button type="button" id="discoverModelsHelp" class="inline-help" aria-label="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. OAuth reloads match the selected account." data-tooltip="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. OAuth reloads match the selected account." data-i18n-aria-label="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. OAuth reloads match the selected account." data-i18n-data-tooltip="Loads this connection's catalog. Direct API reloads add new models; changing API replaces the list. OAuth reloads match the selected account.">?</button>
                 </div>
                 <div class="model-load-row">
                   <div class="model-load-copy">
@@ -328,11 +329,11 @@
                   </div>
                 </div>
                 <details id="manualModelEntry" class="manual-model-entry">
-                  <summary data-i18n="Add model ID manually">Add model ID manually</summary>
+                  <summary data-i18n="Add model ID manually">Add model ID manually</summary><div class="field-label-row"><span data-i18n="Model ID">Model ID</span><button id="manualModelHelp" type="button" class="inline-help" aria-label="For models missing from the provider list." data-tooltip="For models missing from the provider list." data-i18n-aria-label="For models missing from the provider list." data-i18n-data-tooltip="For models missing from the provider list.">?</button></div>
                   <div class="manual-model-entry-body">
                     <input id="manualModelId" name="manualModelId" autocomplete="off" spellcheck="false" translate="no" placeholder="Exact model ID" aria-label="Exact model ID to add" aria-describedby="manualModelIdHint" oninput="LiveSmithUI.updateManualModelActions()" onkeydown="LiveSmithUI.handleManualModelIdKeydown(event)"  data-i18n-placeholder="Exact model ID" data-i18n-aria-label="Exact model ID to add"/>
                     <button id="addManualModelButton" class="secondary" type="button" onclick="LiveSmithUI.addManualModel()" data-i18n="Add">Add</button>
-                    <span id="manualModelIdHint" class="field-hint" role="status" aria-live="polite" data-i18n="For models missing from the provider list.">For models missing from the provider list.</span>
+                    <span id="manualModelIdHint" class="field-hint" role="status" aria-live="polite" hidden></span>
                   </div>
                 </details>
               </section>
@@ -366,12 +367,12 @@
                       <span id="maxOutputTokensHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
                     </div>
                     <div class="field">
-                      <label for="contextWindowTokens" data-i18n="Context window tokens">Context window tokens</label>
+                      <div class="field-label-row"><label for="contextWindowTokens" data-i18n="Context window tokens">Context window tokens</label><button id="contextWindowHelp" type="button" class="inline-help" aria-label="Used for metering and auto-compact." data-tooltip="Used for metering and auto-compact." data-i18n-aria-label="Used for metering and auto-compact." data-i18n-data-tooltip="Used for metering and auto-compact.">?</button></div>
                       <input id="contextWindowTokens" name="contextWindowTokens" type="number" min="1" max="10000000" step="1" placeholder="Model default…" aria-describedby="contextWindowTokensHint" oninput="LiveSmithUI.markDraftDirty(this)"  data-i18n-placeholder="Model default…"/>
                       <span id="contextWindowTokensHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
                     </div>
                     <div class="field">
-                      <label for="autoCompactTokenLimit" data-i18n="Compact at tokens">Compact at tokens</label>
+                      <div class="field-label-row"><label for="autoCompactTokenLimit" data-i18n="Compact at tokens">Compact at tokens</label><button id="autoCompactHelp" type="button" class="inline-help" aria-label="Compaction summarizes earlier messages before the next turn. Leave this blank to use 90% of the context window." data-tooltip="Compaction summarizes earlier messages before the next turn. Leave this blank to use 90% of the context window." data-i18n-aria-label="Compaction summarizes earlier messages before the next turn. Leave this blank to use 90% of the context window." data-i18n-data-tooltip="Compaction summarizes earlier messages before the next turn. Leave this blank to use 90% of the context window.">?</button></div>
                       <input id="autoCompactTokenLimit" name="autoCompactTokenLimit" type="number" min="1" max="10000000" step="1" placeholder="Automatic (90%)…" aria-describedby="autoCompactTokenLimitHint" oninput="LiveSmithUI.markDraftDirty(this)"  data-i18n-placeholder="Automatic (90%)…"/>
                       <span id="autoCompactTokenLimitHint" class="toggle-hint" role="status" aria-live="polite" aria-atomic="true"></span>
                     </div>
@@ -471,8 +472,8 @@
                     </fieldset>
                     <fieldset class="advanced-group">
                       <legend data-i18n="Raw request JSON">Raw request JSON</legend>
-                      <span class="field-hint" data-i18n="Cannot override protected request fields.">Cannot override protected request fields.</span>
-                      <div class="field"><label for="extraBody" data-i18n="Extra Body JSON">Extra Body JSON</label><textarea id="extraBody" class="model-extra-body-editor" name="extraBody" autocomplete="off" spellcheck="false" placeholder="{}" oninput="LiveSmithUI.markDraftDirty(this)"></textarea></div>
+
+                      <div class="field"><div class="field-label-row"><label for="extraBody" data-i18n="Extra Body JSON">Extra Body JSON</label><button id="extraBodyHelp" type="button" class="inline-help" aria-label="Cannot override protected request fields." data-tooltip="Cannot override protected request fields." data-i18n-aria-label="Cannot override protected request fields." data-i18n-data-tooltip="Cannot override protected request fields.">?</button></div><textarea id="extraBody" class="model-extra-body-editor" name="extraBody" autocomplete="off" spellcheck="false" placeholder="{}" oninput="LiveSmithUI.markDraftDirty(this)"></textarea></div>
                     </fieldset>
                   </div>
                 </details>
@@ -492,12 +493,12 @@
               <section id="customInstructionsSettings" class="settings-scope custom-instructions-settings" aria-labelledby="customInstructionsHeading">
                 <div class="inspector-scope-header">
                   <h2 id="customInstructionsHeading" data-i18n="Custom Instructions">Custom Instructions</h2>
-                  <span class="inline-help" tabindex="0" role="note" aria-label="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-tooltip="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-i18n-aria-label="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-i18n-data-tooltip="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced.">?</span>
+                  <button type="button" class="inline-help" aria-label="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-tooltip="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-i18n-aria-label="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced." data-i18n-data-tooltip="Set standing creative, workflow, and tool preferences for every Session. Your current request can override them. Security, Edit Scope, approval, credentials, and actual capabilities remain enforced.">?</button>
                 </div>
                 <div class="field">
                   <label class="visually-hidden" for="customInstructions" data-i18n="Custom Instructions">Custom Instructions</label>
-                  <textarea id="customInstructions" name="customInstructions" autocomplete="off" maxlength="16000" spellcheck="true" placeholder="e.g. If the deliverable is unclear, ask whether I want editable Live work, rendered audio, or both…" aria-describedby="customInstructionsHint customInstructionsCount" oninput="LiveSmithUI.handleCustomInstructionsInput()" data-i18n-placeholder="e.g. If the deliverable is unclear, ask whether I want editable Live work, rendered audio, or both…"></textarea>
-                  <span id="customInstructionsHint" class="field-hint" data-i18n="Applies as a default across Sessions; the current request takes precedence.">Applies as a default across Sessions; the current request takes precedence.</span>
+                  <textarea id="customInstructions" name="customInstructions" autocomplete="off" maxlength="16000" spellcheck="true" placeholder="e.g. If the deliverable is unclear, ask whether I want editable Live work, rendered audio, or both…" aria-describedby="customInstructionsCount" oninput="LiveSmithUI.handleCustomInstructionsInput()" data-i18n-placeholder="e.g. If the deliverable is unclear, ask whether I want editable Live work, rendered audio, or both…"></textarea>
+
                 </div>
                 <div class="custom-instructions-meta">
                   <span id="customInstructionsStatus" class="draft-status" role="status" aria-live="polite"></span>
@@ -518,13 +519,13 @@
               <section id="followUpSettingsSection" class="settings-section conversation-settings-section" aria-labelledby="followUpSettingsHeading">
                 <h3 id="followUpSettingsHeading" data-i18n="Conversation &amp; Display">Conversation &amp; Display</h3>
                 <div class="field">
-                  <label for="interfaceMode" data-i18n="Open Live Smith in">Open Live Smith in</label>
+                  <div class="field-label-row"><label for="interfaceMode" data-i18n="Open Live Smith in">Open Live Smith in</label><button id="interfaceModeHint" type="button" class="inline-help" aria-label="Choose where to open Live Smith. Changes apply the next time you open it." data-tooltip="Choose where to open Live Smith. Changes apply the next time you open it." data-i18n-aria-label="Choose where to open Live Smith. Changes apply the next time you open it." data-i18n-data-tooltip="Choose where to open Live Smith. Changes apply the next time you open it.">?</button></div>
                   <select id="interfaceMode" name="interfaceMode" aria-describedby="interfaceModeHint" onchange="LiveSmithUI.setInterfaceMode(this.value)">
-                    <option value="modal" data-i18n="Live modal">Live modal</option>
+                    <option value="modal" data-i18n="Live dialog">Live dialog</option>
                     <option value="browser" data-i18n="System browser">System browser</option>
-                    <option value="native" data-i18n="Native window (macOS)">Native window (macOS)</option>
+                    <option value="native" data-i18n="Separate window (macOS)">Separate window (macOS)</option>
                   </select>
-                  <p id="interfaceModeHint" class="hint" data-i18n="Applies next time you open Live Smith. Browser tasks continue when the tab closes.">Applies next time you open Live Smith. Browser tasks continue when the tab closes.</p>
+
                 </div>
                 <div class="field">
                   <label for="uiLanguage" data-i18n="Interface language">Interface language</label>
@@ -548,8 +549,8 @@
                 </label>
               </section>
               <section id="sessionTabsSettings" class="settings-section" aria-labelledby="sessionTabsHeading">
-                <h3 id="sessionTabsHeading" data-i18n="Chat shortcuts">Chat shortcuts</h3>
-                <p id="sessionTabsHint" class="field-hint" data-i18n="Choose which shortcuts appear above the message input.">Choose which shortcuts appear above the message input.</p>
+                <div class="field-label-row"><h3 id="sessionTabsHeading" data-i18n="Chat shortcuts">Chat shortcuts</h3><button id="sessionTabsHint" type="button" class="inline-help" aria-label="Choose which shortcuts appear above the message input." data-tooltip="Choose which shortcuts appear above the message input." data-i18n-aria-label="Choose which shortcuts appear above the message input." data-i18n-data-tooltip="Choose which shortcuts appear above the message input.">?</button></div>
+
                 <fieldset id="sessionTabs" class="session-tab-settings" aria-labelledby="sessionTabsHeading" aria-describedby="sessionTabsHint">
                   <legend class="visually-hidden" data-i18n="Chat shortcuts">Chat shortcuts</legend>
                   <label class="settings-switch" for="showSessionTab-context">
@@ -583,9 +584,9 @@
                 <h3 id="networkSettingsHeading" data-i18n="Network Proxy">Network Proxy</h3>
                 <div class="network-proxy-panel">
                   <div class="field-label-row">
-                    <span id="networkProxyModeLabel" class="network-proxy-control-label" data-i18n="Proxy mode">Proxy mode</span>
+                    <span id="networkProxyModeLabel" class="network-proxy-control-label" data-i18n="Proxy mode">Proxy mode</span><button id="networkProxyHelp" type="button" class="inline-help" aria-label="System mode uses static system proxy settings; PAC/WPAD is unavailable. Manual mode routes provider traffic through the specified URL. Local endpoints stay direct." data-tooltip="System mode uses static system proxy settings; PAC/WPAD is unavailable. Manual mode routes provider traffic through the specified URL. Local endpoints stay direct." data-i18n-aria-label="System mode uses static system proxy settings; PAC/WPAD is unavailable. Manual mode routes provider traffic through the specified URL. Local endpoints stay direct." data-i18n-data-tooltip="System mode uses static system proxy settings; PAC/WPAD is unavailable. Manual mode routes provider traffic through the specified URL. Local endpoints stay direct.">?</button>
                   </div>
-                  <fieldset id="networkProxyMode" class="network-proxy-mode" aria-labelledby="networkProxyModeLabel">
+                  <fieldset id="networkProxyMode" class="network-proxy-mode" aria-labelledby="networkProxyModeLabel" aria-describedby="networkProxyHelp">
                     <legend class="visually-hidden" data-i18n="Proxy mode">Proxy mode</legend>
                     <label class="network-proxy-option" for="networkProxyModeNone">
                       <input id="networkProxyModeNone" name="networkProxyMode" type="radio" value="none" onchange="LiveSmithUI.handleNetworkProxyModeChange()" checked />
@@ -600,7 +601,6 @@
                       <span class="network-proxy-option-label" data-i18n="Manual">Manual</span>
                     </label>
                   </fieldset>
-                  <span id="networkProxyHint" class="field-hint" role="status" aria-live="polite" hidden></span>
                   <div class="network-proxy-commit">
                     <div id="networkProxyUrlField" class="field network-proxy-url-field" hidden>
                       <label class="visually-hidden" for="networkProxyUrl" data-i18n="Proxy URL">Proxy URL</label>
@@ -642,7 +642,7 @@
                   <div class="field">
                     <div class="field-label-row">
                       <label for="audioServiceProvider" data-i18n="Provider">Provider</label>
-                      <span id="audioServiceDisclosure" class="inline-help" tabindex="0" role="note" aria-label="" data-tooltip="">?</span>
+                      <button type="button" id="audioServiceDisclosure" class="inline-help" aria-label="" data-tooltip="">?</button>
                     </div>
                     <select id="audioServiceProvider" name="audioServiceProvider" autocomplete="off" onchange="LiveSmithUI.handleAudioSettingsInput()" aria-describedby="audioServiceOperations audioServiceDisclosure"></select>
                     <span id="audioServiceOperations" class="field-hint"></span>
@@ -650,7 +650,7 @@
                   <div class="field" id="audioServiceCallbackField" hidden>
                     <div class="field-label-row">
                       <label for="audioServiceCallback" data-i18n="Callback URL">Callback URL</label>
-                      <span id="audioServiceCallbackHint" class="inline-help" tabindex="0" role="note" aria-label="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL." data-tooltip="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL." data-i18n-aria-label="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL." data-i18n-data-tooltip="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL.">?</span>
+                      <button type="button" id="audioServiceCallbackHint" class="inline-help" aria-label="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL." data-tooltip="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL." data-i18n-aria-label="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL." data-i18n-data-tooltip="Required to enable SunoAPI.org. Use any HTTP or HTTPS callback accepted by the provider, including a custom port or query token. SunoAPI.org sends notifications here; Live Smith polls for results and does not contact or test this URL.">?</button>
                     </div>
                     <input id="audioServiceCallback" name="audioCallbackUrl" type="url" inputmode="url" maxlength="2048" autocomplete="off" autocapitalize="none" spellcheck="false" oninput="LiveSmithUI.handleAudioSettingsInput()" aria-describedby="audioServiceCallbackHint" />
                   </div>
@@ -658,12 +658,13 @@
                     <div class="connection-auth-header">
                       <div class="connection-auth-heading field-label-row">
                         <h4 id="sunoConnectionHeading"><span data-i18n="Suno.com account">Suno.com account</span> <span class="connection-auth-experimental" data-i18n="Experimental">Experimental</span></h4>
-                        <span id="sunoFeatureHelp" class="inline-help" tabindex="0" role="note" aria-label="This experimental Suno.com connection supports music and sound generation, audio uploads, Cover, Remaster, Extend, Get Whole Song, section replacement, adding vocals or instrumentals, stem extraction, lyrics writing, and library playback. Microphone recording, Voice enrollment, custom-model training, Inspo/My Taste, Studio editing, and social or publishing features are not integrated. Complete security challenges on Suno." data-tooltip="This experimental Suno.com connection supports music and sound generation, audio uploads, Cover, Remaster, Extend, Get Whole Song, section replacement, adding vocals or instrumentals, stem extraction, lyrics writing, and library playback. Microphone recording, Voice enrollment, custom-model training, Inspo/My Taste, Studio editing, and social or publishing features are not integrated. Complete security challenges on Suno." data-i18n-aria-label="This experimental Suno.com connection supports music and sound generation, audio uploads, Cover, Remaster, Extend, Get Whole Song, section replacement, adding vocals or instrumentals, stem extraction, lyrics writing, and library playback. Microphone recording, Voice enrollment, custom-model training, Inspo/My Taste, Studio editing, and social or publishing features are not integrated. Complete security challenges on Suno." data-i18n-data-tooltip="This experimental Suno.com connection supports music and sound generation, audio uploads, Cover, Remaster, Extend, Get Whole Song, section replacement, adding vocals or instrumentals, stem extraction, lyrics writing, and library playback. Microphone recording, Voice enrollment, custom-model training, Inspo/My Taste, Studio editing, and social or publishing features are not integrated. Complete security challenges on Suno.">?</span>
+
                       </div>
                       <span id="sunoAuthStateBadge" class="connection-auth-state-badge" data-i18n="Not checked">Not checked</span>
                     </div>
                     <div class="connection-auth-status">
-                      <div id="sunoAuthState" class="connection-auth-state" role="status" aria-live="polite" aria-atomic="true">
+                      <details class="help-details"><summary data-i18n="Suno feature details">Suno feature details</summary><p id="sunoFeatureHelp" class="field-hint" data-i18n="This experimental Suno.com connection supports music and sound generation, audio uploads, Cover, Remaster, Extend, Get Whole Song, section replacement, adding vocals or instrumentals, stem extraction, lyrics writing, and library playback. Microphone recording, Voice enrollment, custom-model training, Inspo/My Taste, Studio editing, and social or publishing features are not integrated. Complete security challenges on Suno.">This experimental Suno.com connection supports music and sound generation, audio uploads, Cover, Remaster, Extend, Get Whole Song, section replacement, adding vocals or instrumentals, stem extraction, lyrics writing, and library playback. Microphone recording, Voice enrollment, custom-model training, Inspo/My Taste, Studio editing, and social or publishing features are not integrated. Complete security challenges on Suno.</p></details>
+                    <div id="sunoAuthState" class="connection-auth-state" role="status" aria-live="polite" aria-atomic="true">
                         <strong id="sunoLoginStatus" class="connection-auth-state-title"></strong>
                         <span id="sunoAccountName" class="connection-auth-state-detail" hidden></span>
                       </div>
@@ -677,9 +678,9 @@
                     <div class="field">
                       <div class="field-label-row">
                         <label for="sunoSessionValue" data-i18n="Suno session Cookie">Suno session Cookie</label>
-                        <span id="sunoCookieHelp" class="inline-help" tabindex="0" role="note" aria-label="Sign in to Suno in your browser; no browser extension is needed. In developer tools → Network, reload Suno, then open a request to auth.suno.com or studio-api-prod.suno.com and copy its Cookie request header. Paste either that full header or its __client or __session value here; current sessions may use __session and __client_uat instead of __client, and all of these forms are supported. Live Smith privately saves and refreshes only required Suno/Clerk fields for this connection, discards unrelated cookies, and clears this field after submission. Never paste the Cookie into chat or share it." data-tooltip="Sign in to Suno in your browser; no browser extension is needed. In developer tools → Network, reload Suno, then open a request to auth.suno.com or studio-api-prod.suno.com and copy its Cookie request header. Paste either that full header or its __client or __session value here; current sessions may use __session and __client_uat instead of __client, and all of these forms are supported. Live Smith privately saves and refreshes only required Suno/Clerk fields for this connection, discards unrelated cookies, and clears this field after submission. Never paste the Cookie into chat or share it." data-i18n-aria-label="Sign in to Suno in your browser; no browser extension is needed. In developer tools → Network, reload Suno, then open a request to auth.suno.com or studio-api-prod.suno.com and copy its Cookie request header. Paste either that full header or its __client or __session value here; current sessions may use __session and __client_uat instead of __client, and all of these forms are supported. Live Smith privately saves and refreshes only required Suno/Clerk fields for this connection, discards unrelated cookies, and clears this field after submission. Never paste the Cookie into chat or share it." data-i18n-data-tooltip="Sign in to Suno in your browser; no browser extension is needed. In developer tools → Network, reload Suno, then open a request to auth.suno.com or studio-api-prod.suno.com and copy its Cookie request header. Paste either that full header or its __client or __session value here; current sessions may use __session and __client_uat instead of __client, and all of these forms are supported. Live Smith privately saves and refreshes only required Suno/Clerk fields for this connection, discards unrelated cookies, and clears this field after submission. Never paste the Cookie into chat or share it.">?</span>
+
                       </div>
-                      <input id="sunoSessionValue" name="sunoSessionCookie" type="password" maxlength="16384" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="audioServiceDisclosure" />
+                      <input id="sunoSessionValue" name="sunoSessionCookie" type="password" maxlength="16384" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="audioServiceDisclosure" /><details class="help-details"><summary data-i18n="How to get your Suno Cookie">How to get your Suno Cookie</summary><p id="sunoCookieHelp" class="field-hint" data-i18n="Sign in to Suno in your browser; no browser extension is needed. In developer tools → Network, reload Suno, then open a request to auth.suno.com or studio-api-prod.suno.com and copy its Cookie request header. Paste either that full header or its __client or __session value here; current sessions may use __session and __client_uat instead of __client, and all of these forms are supported. Live Smith privately saves and refreshes only required Suno/Clerk fields for this connection, discards unrelated cookies, and clears this field after submission. Never paste the Cookie into chat or share it.">Sign in to Suno in your browser; no browser extension is needed. In developer tools → Network, reload Suno, then open a request to auth.suno.com or studio-api-prod.suno.com and copy its Cookie request header. Paste either that full header or its __client or __session value here; current sessions may use __session and __client_uat instead of __client, and all of these forms are supported. Live Smith privately saves and refreshes only required Suno/Clerk fields for this connection, discards unrelated cookies, and clears this field after submission. Never paste the Cookie into chat or share it.</p></details>
                     </div>
                     <div class="audio-settings-actions">
                       <button id="logoutSunoButton" class="connection-auth-quiet-action" type="button" aria-describedby="sunoAuthState" data-i18n="Clear local Cookie" hidden disabled>Clear local Cookie</button>
@@ -749,8 +750,8 @@
               </section>
               <section id="mcpSettings" class="settings-section extension-page" data-extension-page="mcp" role="tabpanel" aria-labelledby="mcpExtensionTab" tabindex="-1" hidden>
                 <section id="mcpOutwardService" aria-labelledby="mcpOutwardHeading" hidden>
-                  <h3 id="mcpOutwardHeading" data-i18n="External tool access">External tool access</h3>
-                  <p class="field-hint" data-i18n="Connect an external AI client to this Live Smith Session. Live edits use the Session's Scope and approval policy.">Connect an external AI client to this Live Smith Session. Live edits use the Session's Scope and approval policy.</p>
+                  <div class="field-label-row"><h3 id="mcpOutwardHeading" data-i18n="External tool access">External tool access</h3><button id="mcpOutwardHelp" type="button" class="inline-help" aria-label="Connect an external AI client to this Live Smith Session. Live edits use the Session&#x27;s Scope and approval policy." data-tooltip="Connect an external AI client to this Live Smith Session. Live edits use the Session&#x27;s Scope and approval policy." data-i18n-aria-label="Connect an external AI client to this Live Smith Session. Live edits use the Session&#x27;s Scope and approval policy." data-i18n-data-tooltip="Connect an external AI client to this Live Smith Session. Live edits use the Session&#x27;s Scope and approval policy.">?</button></div>
+
                   <label class="checkbox-row"><input id="mcpServerEnabled" type="checkbox" /><span data-i18n="Enable local MCP service">Enable local MCP service</span></label>
                   <div class="field"><label for="mcpServerPort" data-i18n="Port">Port</label><input id="mcpServerPort" type="number" min="1024" max="65535" value="17853" /></div>
                   <button id="saveMcpServer" type="button" class="secondary" data-i18n="Save service settings">Save service settings</button>
@@ -790,7 +791,7 @@
                 <div class="plugin-section-heading">
                   <div class="field-label-row">
                     <h3 id="pluginsHeading" data-i18n="Installed Plugins">Installed Plugins</h3>
-                    <span class="inline-help" tabindex="0" role="note" aria-label="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately." data-tooltip="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately." data-i18n-aria-label="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately." data-i18n-data-tooltip="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately.">?</span>
+                    <button type="button" class="inline-help" aria-label="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately." data-tooltip="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately." data-i18n-aria-label="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately." data-i18n-data-tooltip="Install portable Agent Plugins or compatible Codex and Claude Code packages. Installation runs nothing. Enable the Plugin, approve each MCP server, and grant artifact input or output separately.">?</button>
                   </div>
                   <button id="choosePluginButton" class="secondary" type="button" data-i18n="Install Plugin">Install Plugin</button>
                   <input id="pluginFileInput" name="pluginArchive" type="file" accept=".zip,application/zip" hidden />
@@ -805,10 +806,10 @@
               <section id="skillLibrary" class="settings-section skill-library extension-page" data-extension-page="skills" role="tabpanel" aria-labelledby="skillsExtensionTab" aria-busy="false" tabindex="-1" hidden>
                 <div id="skillLibraryContent" class="skill-library-content">
                 <div class="plugin-section-heading">
-                  <h3 id="skillLibraryHeading" data-i18n="Skills">Skills</h3>
+                  <div class="field-label-row"><h3 id="skillLibraryHeading" data-i18n="Skills">Skills</h3><button type="button" class="inline-help" aria-label="View Skill sources here. Choose which Skills to use in the Session view." data-tooltip="View Skill sources here. Choose which Skills to use in the Session view." data-i18n-aria-label="View Skill sources here. Choose which Skills to use in the Session view." data-i18n-data-tooltip="View Skill sources here. Choose which Skills to use in the Session view.">?</button></div>
                   <button class="secondary" type="button" onclick="LiveSmithUI.openInspector('skills')" data-i18n="Session Skills">Session Skills</button>
                 </div>
-                <p class="field-hint" data-i18n="View Skill sources here. Choose which Skills to use in the Session view.">View Skill sources here. Choose which Skills to use in the Session view.</p>
+
                 <div class="skill-group"><h3 data-i18n="Built-in Skills">Built-in Skills</h3><div id="builtInSkillLibraryList" class="skill-list" role="list" data-i18n-aria-label="Built-in Skills" aria-label="Built-in Skills"></div><p id="builtInSkillLibraryEmptyState" class="skill-empty" data-i18n="No Skills available.">No Skills available.</p></div>
                 <div class="skill-group"><h3 data-i18n="Plugin Skills">Plugin Skills</h3><div id="pluginSkillLibraryList" class="skill-list" role="list" data-i18n-aria-label="Plugin Skills" aria-label="Plugin Skills"></div><p id="pluginSkillLibraryEmptyState" class="skill-empty" data-i18n="No Skills available.">No Skills available.</p></div>
                 <h3 data-i18n="User Skills">User Skills</h3>
@@ -839,7 +840,7 @@
               <section id="skillManager" class="settings-scope skill-manager" aria-labelledby="skillsHeading" aria-busy="false" tabindex="-1">
                 <div class="inspector-scope-header">
                   <h2 id="skillsHeading" data-i18n="Session Skills">Session Skills</h2>
-                  <span class="inline-help" tabindex="0" role="note" aria-label="Enable for this Session, or use $skill-id for one turn." data-tooltip="Enable for this Session, or use $skill-id for one turn." data-i18n-aria-label="Enable for this Session, or use $skill-id for one turn." data-i18n-data-tooltip="Enable for this Session, or use $skill-id for one turn.">?</span>
+                  <button type="button" class="inline-help" aria-label="Enable for this Session, or use $skill-id for one turn." data-tooltip="Enable for this Session, or use $skill-id for one turn." data-i18n-aria-label="Enable for this Session, or use $skill-id for one turn." data-i18n-data-tooltip="Enable for this Session, or use $skill-id for one turn.">?</button>
                   <button id="manageSkillsButton" class="secondary inspector-heading-action" type="button" onclick="LiveSmithUI.openInspectorSection('extensions', 'skillLibrary')" data-i18n="Manage Skills">Manage Skills</button>
                 </div>
                 <section class="skill-group" aria-labelledby="builtInSkillsHeading">
@@ -871,7 +872,7 @@
           </div>
           <div id="artifactsPanel" class="tab-panel" role="tabpanel" aria-labelledby="artifactsTab" tabindex="0" hidden>
             <div class="settings"><section class="settings-scope" aria-labelledby="artifactSummaryHeading">
-              <div class="inspector-scope-header"><h2 id="artifactSummaryHeading" data-i18n="Artifacts">Artifacts</h2><button id="openArtifactsButton" type="button" class="secondary inspector-heading-action" onclick="LiveSmithUI.openAllArtifacts()" data-i18n="Open all">Open all</button></div>
+              <div class="inspector-scope-header"><h2 id="artifactSummaryHeading" data-i18n="Artifacts">Artifacts</h2><button id="openArtifactsButton" type="button" class="secondary inspector-heading-action" onclick="LiveSmithUI.openAllArtifacts()" data-i18n="Open artifact library">Open artifact library</button></div>
               <section id="artifactSummary" aria-label="Saved artifacts" data-i18n-aria-label="Saved artifacts"></section>
             </section></div>
           </div>
@@ -887,7 +888,7 @@
               <section id="sessionTools" class="settings-scope session-tools" aria-labelledby="sessionToolsHeading" aria-busy="false">
                 <div class="inspector-scope-header">
                   <h2 id="sessionToolsHeading" data-i18n="Session tools">Session tools</h2>
-                  <span id="sessionToolsHint" class="inline-help" tabindex="0" role="note" aria-label="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed." data-tooltip="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed." data-i18n-aria-label="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed." data-i18n-data-tooltip="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed.">?</span>
+                  <button type="button" id="sessionToolsHint" class="inline-help" aria-label="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed." data-tooltip="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed." data-i18n-aria-label="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed." data-i18n-data-tooltip="Loading retrieves tool descriptions from enabled, approved connections. No tool is executed.">?</button>
                   <button id="loadSessionToolsButton" class="secondary inspector-heading-action" type="button" data-i18n="Load tools">Load tools</button>
                 </div>
                 <p id="sessionToolsStatus" class="field-hint" role="status" aria-live="polite"></p>
@@ -905,8 +906,8 @@
           <div id="contextPanel" class="tab-panel" role="tabpanel" aria-labelledby="contextTab" tabindex="0" hidden>
             <div class="settings context-settings">
               <section id="creativeBriefSection" class="settings-scope creative-brief-settings" aria-labelledby="creativeBriefHeading">
-                <div class="inspector-scope-header"><h2 id="creativeBriefHeading" data-i18n="Creative brief">Creative brief</h2></div>
-                <p class="field-hint" id="creativeBriefHint" data-i18n="Style, references, sections, track roles, and material to keep. Saved only for this Session and retained across model changes and compaction.">Style, references, sections, track roles, and material to keep. Saved only for this Session and retained across model changes and compaction.</p>
+                <div class="inspector-scope-header"><div class="field-label-row"><h2 id="creativeBriefHeading" data-i18n="Creative brief">Creative brief</h2><button id="creativeBriefHint" type="button" class="inline-help" aria-label="Style, references, sections, track roles, and material to keep. Saved only for this Session and retained across model changes and compaction." data-tooltip="Style, references, sections, track roles, and material to keep. Saved only for this Session and retained across model changes and compaction." data-i18n-aria-label="Style, references, sections, track roles, and material to keep. Saved only for this Session and retained across model changes and compaction." data-i18n-data-tooltip="Style, references, sections, track roles, and material to keep. Saved only for this Session and retained across model changes and compaction.">?</button></div></div>
+
                 <label class="visually-hidden" for="creativeBrief" data-i18n="Creative brief">Creative brief</label>
                 <textarea id="creativeBrief" name="creativeBrief" rows="9" autocomplete="off" spellcheck="true" aria-describedby="creativeBriefHint creativeBriefCount creativeBriefStatus" placeholder="Style:&#10;References:&#10;Sections:&#10;Track roles:&#10;Keep:" data-i18n-placeholder="Style:&#10;References:&#10;Sections:&#10;Track roles:&#10;Keep:"></textarea>
                 <div class="custom-instructions-meta"><span id="creativeBriefStatus" class="draft-status" role="status" aria-live="polite"></span><span id="creativeBriefCount" class="field-hint"></span></div>

@@ -171,6 +171,9 @@ focus, host integration, OAuth browser/device login, refresh, cancellation,
 shutdown, and provider requests. Use an authorized test account for provider
 checks; ordinary tests must not read a developer's saved credentials.
 
+界面帮助的 DOM 测试覆盖展开、关闭和语言刷新。缩小 Live 内对话框和 macOS 独立窗口，
+检查问号提示能在窗口内完整显示或滚动，并验证独立窗口的菜单项随界面语言更新。
+
 ### UI styling conventions
 
 The dialogs' shared visual tokens live in `src/ui/styles/tokens.css`; reusable
@@ -293,7 +296,7 @@ Tool descriptions are collapsed separately from their controls. Tools with an
 MCP App offer the custom interface first and keep **Standard parameter form**
 as an expandable alternative. Completed results share the same host actions:
 **Use in chat** appends a reference to the composer without sending it, and
-saved MIDI exposes **Add to Live** through the shared import dialog described in
+saved MIDI exposes **Import into Live** through the shared import dialog described in
 the [user guide](USER_GUIDE.md#importing-saved-midi). Import uses the ordinary
 Session Edit Scope, approval, and recovery boundaries and can run independently
 of a model connection.

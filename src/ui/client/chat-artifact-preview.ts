@@ -54,7 +54,7 @@ export function createChatArtifactPreviews(deps: Dependencies) {
       const value = node("button", "secondary", () => t(text)); value.type = "button";
       value.addEventListener("click", () => { if (current()) run(); }); controls.append(value); return value;
     };
-    const add = button("Add to Live", () => {
+    const add = button("Import into Live", () => {
       if (busy || !artifact) return;
       deps.resultActions.openMidiImport({ sessionId: owner, artifacts: [{ artifactRef: ref.id, label: artifact.label }],
         ...(part.value ? { initialPartId: part.value } : {}),

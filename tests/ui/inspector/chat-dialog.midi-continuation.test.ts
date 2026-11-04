@@ -82,6 +82,18 @@ async function settleCommand(h: Awaited<ReturnType<typeof setup>>["h"]) {
   await h.settle(); await waitForCondition(() => h.document.querySelector("#midiContinuationSection")!.getAttribute("aria-busy") === "false", "Expected settled continuation operation");
 }
 
+test("reading an empty MIDI source list reports the read without claiming continuation is ready", async () => {
+  const s = await setup({ loaded: false });
+  try {
+    s.setView({ ...s.view, clips: [] });
+    s.h.click("#loadMidiContinuationButton"); await settleCommand(s.h);
+    assert.equal(s.h.document.querySelector(".midi-continuation-status")!.textContent, "MIDI source list updated.");
+    assert.equal(button(s.h, "Save continuation setup").disabled, true);
+    assert.deepEqual(midiCommands(s.h).map(call => (call.body as { kind: string }).kind), ["load_midi_continuation"]);
+    assert.deepEqual(s.h.errors, []);
+  } finally { s.h.close(); }
+});
+
 for (const edit of ["prompt", "length", "capacity", "source", "generator"] as const) {
   test(`restoring continuation ${edit} values clears the draft and Close warning`, async () => {
     const { h, view } = await setup({ initialCount: 0 });

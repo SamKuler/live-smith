@@ -1,3 +1,4 @@
+import { uiMessage } from "../../../../src/i18n/ui-message.js";
 import { openBridgeEvents } from "../support/bridge-events.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -299,14 +300,14 @@ test("canonical tool discovery preserves a concurrent foreground command's statu
         }, "save-settings-during-tool-read");
         assert.equal(saved.status, 200);
         const savedState = await saved.json() as ChatDialogState;
-        assert.equal(savedState.status, "Global settings saved.");
+        assert.deepEqual(savedState.status, uiMessage("Global settings saved."));
         readGate.resolve();
         const loaded = await read;
         assert.equal(loaded.status, 200);
         const loadedState = await loaded.json() as ChatDialogState;
         assert.ok(loadedState.sessionToolCatalog);
         const current = await readState();
-        assert.equal(current.status, savedState.status);
+        assert.deepEqual(current.status, savedState.status);
         assert.deepEqual(current.sessionToolCatalog, loadedState.sessionToolCatalog);
       } finally {
         readGate.resolve();

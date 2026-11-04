@@ -42,7 +42,7 @@ import type { ExtensionContext } from "@ableton-extensions/sdk";
 import { audioJobViews,resumeAudioJob } from "./audio/audio-processing.js";
 import { downloadAudioOutput } from "./audio/audio-generation.js";
 import { audioMessage as m } from "./audio/audio-messages.js";
-import { uiMessage,type UiMessage } from "../i18n/ui-message.js";
+import { uiMessage, UiMessageError, type UiMessage } from "../i18n/ui-message.js";
 import { SunoSessionManager } from "./audio/suno/suno-session-manager.js";
 import { SunoModelCatalog } from "./audio/suno/suno-model-catalog.js";
 import type { readSunoMusicService } from "../audio-services/suno/suno-catalog.js";
@@ -1315,7 +1315,7 @@ export async function createAgentRuntime(
           // this Profile's auth generation changes.
           modelState.invalidateDirectCatalog(profile);
         }
-        status = `Profile ${profile.name} saved.`;
+        status = uiMessage("Profile {name} saved.", { name: profile.name });
         openSettingsOnLoad = false;
         if (committedLifecycleFailure) {
           return resolveCommittedProfileLifecycleFailure(
@@ -1436,7 +1436,7 @@ export async function createAgentRuntime(
         releaseProfileMutation?.();
       }
       modelState.clearCatalogs();
-      status = "Profile deleted.";
+      status = uiMessage("Profile deleted.");
       openSettingsOnLoad = true;
       if (committedLifecycleFailure) {
         return resolveCommittedProfileLifecycleFailure(
@@ -1469,7 +1469,7 @@ export async function createAgentRuntime(
         return await globalSettingsMutationFence.run(sessionMutationFenceKey(storageDirectory, "global-settings"), signal, async () => {
           await commandContext.progress("Loading Suno models…");
           await sunoModelCatalog.load(commandInput.serviceId, signal);
-          status = "Suno models loaded.";
+          status = uiMessage("Suno models loaded.");
           return buildStateAfterCommandMutation(undefined, { signal });
         });
       } catch (error) {
@@ -1570,7 +1570,7 @@ export async function createAgentRuntime(
               commandId: commandContext.commandId,
             });
             if ("mcpServer" in commandInput) { await dependencies.mcpService?.refresh(); notifyGlobalStateChanged(); }
-            status = "Global settings saved.";
+            status = uiMessage("Global settings saved.");
             if ("integrationConnections" in commandInput || "networkProxy" in commandInput) notifyGlobalStateChanged({ target: "all" });
             return buildStateAfterCommandMutation();
           } catch (cause) {
@@ -2305,7 +2305,7 @@ export async function createAgentRuntime(
             modelRequest.release();
           }
           notifySessionStateChanged(session.id);
-          status = "Session context compacted.";
+          status = uiMessage("Session context compacted.");
           openSettingsOnLoad = false;
           try {
             return await buildStateAfterCommandMutation(undefined, {
@@ -2360,14 +2360,14 @@ export async function createAgentRuntime(
       claimSession(storageDirectory, session.id, viewSessionOwner);
       if (!reused) notifySessionStateChanged(session.id);
       activeSessionId = session.id;
-      status = reused ? "Empty session ready." : "New session created.";
+      status = uiMessage(reused ? "Empty session ready." : "New session created.");
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
     }
 
     if (commandInput.kind === "select_session") {
       if (!(await sessionBelongsToProject(commandInput.sessionId))) {
-        status = "That session is not available in this Live Set.";
+        status = uiMessage("That session is not available in this Live Set.");
         return buildState();
       }
       throwIfAborted(signal);
@@ -2381,7 +2381,7 @@ export async function createAgentRuntime(
     if (commandInput.kind === "restore_session") {
       const continueInteraction = resolveContinueInteraction();
       if (!continueInteraction) {
-        status = "The current Live object or selection is no longer available.";
+        status = uiMessage("The current Live object or selection is no longer available.");
         return buildState();
       }
       const restored = await withSessionMutation(commandInput.sessionId, signal, async () => {
@@ -2402,7 +2402,7 @@ export async function createAgentRuntime(
         );
       });
       if (!restored) {
-        status = "That historical Session cannot continue on the current Live object.";
+        status = uiMessage("That historical Session cannot continue on the current Live object.");
         return buildState();
       }
       claimSession(storageDirectory, restored.id, viewSessionOwner);
@@ -2412,8 +2412,9 @@ export async function createAgentRuntime(
         bindInvocationSelectionToNextSession = false;
       }
       const restoredTitle = restored.title || restored.scope.label;
-      status =
-        `Session ${restoredTitle} is ready on the current ${continueInteraction.scope.kind} “${continueInteraction.scope.label}”.`;
+      status = uiMessage("Session {title} is ready on the current {kind} “{label}”.", {
+        title: restoredTitle, kind: uiMessage(continueInteraction.scope.kind), label: continueInteraction.scope.label,
+      });
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
     }
@@ -2492,10 +2493,10 @@ export async function createAgentRuntime(
         if (activeSessionId === commandInput.sessionId) activeSessionId = undefined;
       });
       if (!existed) {
-        status = "That Session no longer exists.";
+        status = uiMessage("That Session no longer exists.");
         return buildState();
       }
-      status = "Session deleted.";
+      status = uiMessage("Session deleted.");
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
     }
@@ -2515,7 +2516,7 @@ export async function createAgentRuntime(
         return true;
       });
       if (!renamed) {
-        status = "That Session no longer exists.";
+        status = uiMessage("That Session no longer exists.");
         return buildState();
       }
       status = undefined;
@@ -2543,13 +2544,13 @@ export async function createAgentRuntime(
         return true;
       });
       if (!changed) {
-        status = "That Session no longer exists.";
+        status = uiMessage("That Session no longer exists.");
         return buildState();
       }
       if (archived && activeSessionId === commandInput.sessionId) {
         activeSessionId = undefined;
       }
-      status = archived ? "Session archived." : "Session returned to the list.";
+      status = uiMessage(archived ? "Session archived." : "Session returned to the list.");
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
     }
@@ -2674,9 +2675,9 @@ export async function createAgentRuntime(
           }
         },
       );
-      status = requestedSkillIds.length === 0
+      status = uiMessage(requestedSkillIds.length === 0
         ? "Session Skills cleared."
-        : "Session Skills updated.";
+        : "Session Skills updated.");
       openSettingsOnLoad = false;
       return buildStateAfterCommandMutation();
     }
@@ -2688,12 +2689,12 @@ export async function createAgentRuntime(
         const discovered = await modelState.discoverModels(profile, commandContext.commandId, signal);
         cacheMutationCompleted = true;
         status = discovered.length
-          ? `Discovered ${discovered.length} model${discovered.length === 1 ? "" : "s"}.`
-          : "No models returned by this provider.";
+          ? uiMessage(discovered.length === 1 ? "Discovered {count} model." : "Discovered {count} models.", { count: discovered.length })
+          : uiMessage("No models returned by this provider.");
       } catch (error) {
         throwIfAborted(signal);
         if (error instanceof ChatBridgeConflictError) throw error;
-        status = error instanceof Error ? error.message : String(error);
+        status = error instanceof UiMessageError ? error.displayMessage : error instanceof Error ? error.message : String(error);
       }
       openSettingsOnLoad = true;
       return cacheMutationCompleted
@@ -3043,7 +3044,7 @@ export async function createAgentRuntime(
     signal: AbortSignal,
   ): Promise<ChatBridgePluginInstallResult> => {
     const receipt = await pluginLifecycle.install(input, signal);
-    status = `Plugin ${receipt.id} installed.`;
+    status = uiMessage("Plugin {pluginId} installed.", { pluginId: receipt.id });
     openSettingsOnLoad = false;
     return { state: await buildStateAfterPluginMutation(), receipt };
   };
@@ -3053,7 +3054,7 @@ export async function createAgentRuntime(
     signal: AbortSignal,
   ): Promise<ChatBridgeSkillInstallResult> => {
     const receipt = await userSkillLifecycle.install(input, signal);
-    status = `Skill ${receipt.id} installed.`;
+    status = uiMessage("Skill {id} installed.", { id: receipt.id });
     openSettingsOnLoad = false;
     return { state: await buildStateAfterSkillMutation(), receipt };
   };
@@ -3063,9 +3064,7 @@ export async function createAgentRuntime(
     signal: AbortSignal,
   ) => {
     const deleted = await userSkillLifecycle.remove(input, signal);
-    status = deleted
-      ? `Skill ${input.skillId} deleted.`
-      : `Skill ${input.skillId} is already absent.`;
+    status = uiMessage(deleted ? "Skill {skillId} deleted." : "Skill {skillId} is already absent.", { skillId: input.skillId });
     openSettingsOnLoad = false;
     return buildStateAfterSkillMutation();
   };
