@@ -1,3 +1,6 @@
+import { createHostAbortController, throwIfAborted } from "../runtime/host.js";
+import { uiMessage } from "../i18n/ui-message.js";
+import { createNativeChatHost, NativeChatCancelledError } from "../runtime/native-chat-window.js";
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 import type { LiveInteractionContext } from "../live/context.js";
 import { createLiveSetGuard } from "../live/set-identity.js";
@@ -14,6 +17,8 @@ type WindowDependencies = AgentFlowDependencies & { openBrowser?: (url: string) 
 /** One activation owns one browser runtime; invocation changes are serialized. */
 export function createWindowHostController(context: Api, dependencies: WindowDependencies = {}) {
   const openBrowser = dependencies.openBrowser ?? createSystemBrowserOpener({ allowLoopbackHttp: true });
+  const nativeHost = dependencies.nativeChatHost ?? createNativeChatHost();
+  const nativeOperations = new Set<{ controller: AbortController; done: Promise<void> }>();
   let browser: { key: string; projectKey: string; runtime: AgentRuntime } | undefined;
   let tail: Promise<unknown> = Promise.resolve();
   const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
@@ -49,7 +54,35 @@ export function createWindowHostController(context: Api, dependencies: WindowDep
       const projectKey = projectKeyForContext(context);
       // A modal owns its own lifetime, independent of a browser's admitted work.
       const mode = (await loadAgentSettings(context.environment.storageDirectory)).interfaceMode;
-      if (mode === "modal") {
+      if (mode === "native" && nativeHost.supported) {
+        assertLiveSetCurrent();
+        const controller = createHostAbortController();
+        let finish!: () => void;
+        const operation = { controller, done: new Promise<void>(resolve => { finish = resolve; }) };
+        nativeOperations.add(operation);
+        let runtime: AgentRuntime | undefined;
+        try {
+          runtime = await createAgentRuntime(context, interaction, { ...dependencies, nativeChatHost: nativeHost }, "native");
+          let window;
+          try { window = await nativeHost.open({ url: runtime.url, signal: controller.signal, prepareArtifact: runtime.prepareArtifactExport }); }
+          catch (error) {
+            if (error instanceof NativeChatCancelledError) return;
+            throwIfAborted(controller.signal);
+            await runtime.close();
+            assertLiveSetCurrent();
+            nativeOperations.delete(operation); finish();
+            await runAgentFlow(context, interaction, { ...dependencies,
+              initialStatus: uiMessage("The native window could not open. This Live dialog keeps App Preferences available; you can retry Native window or choose System browser.") });
+            return;
+          }
+          await window.closed;
+        } finally {
+          try { await runtime?.close(); }
+          finally { nativeOperations.delete(operation); finish(); }
+        }
+        return;
+      }
+      if (mode === "modal" || mode === "native") {
         await serialize(async () => {
           assertLiveSetCurrent();
           if (browser && !browser.runtime.busy) await closeBrowser();
@@ -78,6 +111,11 @@ export function createWindowHostController(context: Api, dependencies: WindowDep
         }
       });
     },
-    close: () => serialize(closeBrowser),
+    close: async () => {
+      const pending = [...nativeOperations];
+      for (const operation of pending) operation.controller.abort();
+      await Promise.allSettled(pending.map(operation => operation.done));
+      await serialize(closeBrowser);
+    },
   };
 }

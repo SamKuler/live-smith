@@ -1,3 +1,4 @@
+import { createNativeArtifactDragButton } from "./native-artifact-drag.js";
 import "./chat-artifact-preview.js";
 import { createMidiPianoRoll } from "./midi-piano-roll.js";
 import { createLocaleBindings, type LocalizedText } from "./locale-bindings.js";
@@ -263,6 +264,9 @@ function createArtifactLibraryView(deps: Dependencies) {
       const transfers = actions;
       transfers.append(button("Attach", () => { void transfer("attach_artifact", artifact); }),
         button("Export", () => { void transfer("export_artifact", artifact); }));
+      const drag = artifact.ref.kind === "device-parameters" ? undefined : createNativeArtifactDragButton(() => current()
+        ? { sessionId: sessionId!, artifact: artifact.ref } : undefined);
+      if (drag) transfers.append(drag);
       for (const button of transfers.querySelectorAll<HTMLButtonElement>("button:not([data-artifact-write])")) button.dataset.artifactTransfer = "";
       if (artifact.ref.kind === "device-parameters") for (const button of transfers.querySelectorAll("[data-artifact-transfer]")) button.remove();
       const parameterView = artifact.ref.kind === "device-parameters" ? createParameterArtifactView(parameterDependencies(sessionId!), artifact) : undefined;

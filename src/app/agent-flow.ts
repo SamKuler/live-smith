@@ -1,3 +1,7 @@
+import { createNativeChatHost, type NativeChatHost, type NativeDragInput, type NativeDragFile } from "../runtime/native-chat-window.js";
+import { materializeArtifactExport } from "../storage/artifact-exports.js";
+import { midiArtifactExport } from "../storage/midi-artifacts.js";
+import { sessionAudioArtifactExport } from "../storage/audio-artifacts.js";
 import type { McpService } from "./mcp/service.js";
 import { decidePlanApproval } from "./tools/tool-approvals.js";
 import { sessionMutationFence,attachmentMutationFence,sessionIntentFence,globalSettingsMutationFence,requestConfigurationFence } from "./session/session-fences.js";
@@ -271,6 +275,8 @@ type Api = ExtensionContext<"1.0.0">;
 export interface AgentFlowDependencies extends DialogModelStateDependencies {
   mcpService?: McpService;
   initialSessionId?: string;
+  nativeChatHost?: NativeChatHost;
+  initialStatus?: UiMessage;
   /** Test seams; production uses the OS default browser and a Suno-only verifier. */
   openSunoWebsite?: typeof openSunoWebsite;
   openSunoPlatform?: typeof openSunoPlatform;
@@ -290,7 +296,7 @@ export interface AgentFlowDependencies extends DialogModelStateDependencies {
   updateSessionInTransaction?: typeof updateSessionInTransaction;
   renderHtml?(
     state: ChatBridgeState,
-    bridge: { baseUrl: string; token: string; viewId?: string; hostMode?: InterfaceMode },
+    bridge: { baseUrl: string; token: string; viewId?: string; hostMode?: InterfaceMode; nativeWindowAvailable?: boolean; nativeArtifactDrag?: boolean },
   ): string;
   /** Shared by every dialog opened from one extension activation. */
   liveMutationQueue?: LiveMutationQueue;
@@ -314,6 +320,7 @@ export interface AgentRuntime {
   readonly busy: boolean;
   reopen(sessionId?: string): Promise<void>;
   close(): Promise<void>;
+  prepareArtifactExport(input: NativeDragInput, signal: AbortSignal): Promise<NativeDragFile>;
 }
 
 export async function runAgentFlow(
@@ -339,11 +346,30 @@ export async function createAgentRuntime(
     ? undefined
     : await canonicalStorageDirectory(context.environment.storageDirectory);
   assertLiveSetCurrent();
+  const prepareArtifactExport = async (input: NativeDragInput, signal: AbortSignal): Promise<NativeDragFile> => {
+    assertLiveSetCurrent();
+    if (hostMode !== "native" || !storageDirectory || input.artifact.kind === "device-parameters") throw new Error("Native file dragging is unavailable.");
+    const session = (await listSessions(storageDirectory, projectKey)).find(entry => entry.id === input.sessionId && !entry.archivedAt);
+    if (!session) throw new Error("The artifact Session is unavailable in this Live Set.");
+    try {
+      const file = input.artifact.kind === "midi"
+        ? await midiArtifactExport(storageDirectory, input.sessionId, input.artifact.id)
+        : await sessionAudioArtifactExport(storageDirectory, input.sessionId, input.artifact.id);
+      const copy = await materializeArtifactExport(storageDirectory, file, signal);
+      try { assertLiveSetCurrent(); throwIfAborted(signal); }
+      catch (error) { await copy.discard(); throw error; }
+      return copy;
+    } catch {
+      throwIfAborted(signal);
+      throw new Error("The export copy could not be prepared. Check the saved artifact, free disk space and folder permissions, then retry.");
+    }
+  };
   const providerFetch = providerFetchForStorage(storageDirectory);
   const sunoSessions = new SunoSessionManager(storageDirectory,
     dependencies.verifySunoSession ?? createSunoSessionVerifier(providerFetch));
   const sunoModelCatalog = new SunoModelCatalog(storageDirectory, providerFetch, dependencies.readSunoMusicService);
   let bridge: Awaited<ReturnType<typeof createChatBridge>> | undefined;
+  const nativeChatHost = dependencies.nativeChatHost ?? createNativeChatHost();
   const attachmentOpener = createAttachmentOpener({
     ...(context.environment?.tempDirectory === undefined ? {} : { temporaryDirectory: context.environment.tempDirectory }),
   });
@@ -465,7 +491,7 @@ export async function createAgentRuntime(
   const createRuntimeView = (initialSessionId = viewInitialSessionId, viewId = ""): ChatBridgeOptions & {
     reopen(sessionId?: string): Promise<string>;
   } => {
-  let status: UiMessage | undefined;
+  let status: UiMessage | undefined = dependencies.initialStatus;
   let openSettingsOnLoad = false;
   let activeSessionId: string | undefined = initialSessionId;
   let loadedMidiContinuation: { owner: string; value: MidiContinuationView } | undefined;
@@ -3344,7 +3370,7 @@ export async function createAgentRuntime(
         signal === undefined ? {} : { signal },
       ),
       buildInvalidatedSessionState,
-      renderHtml: (state, configuration) => renderHtml(state, { ...configuration, hostMode }),
+      renderHtml: (state, configuration) => renderHtml(state, { ...configuration, hostMode, nativeWindowAvailable: nativeChatHost.supported, nativeArtifactDrag: hostMode === "native" && Boolean(storageDirectory) && nativeChatHost.supported }),
       handleCommand,
       handleSend,
       lookupSteeringReceipt,
@@ -3469,6 +3495,7 @@ export async function createAgentRuntime(
     assertLiveSetCurrent();
     return {
       url: bridge.url,
+      prepareArtifactExport,
       get busy() { return bridge!.busy; },
       async reopen(sessionId?: string) {
         assertLiveSetCurrent();

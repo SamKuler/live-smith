@@ -446,9 +446,10 @@ host-returned byte arrays may have a different intrinsic prototype in the
 isolated VM. Genuine byte views retain the same size, format, ownership and
 integrity checks; other views and prototype/tag lookalikes are not accepted.
 Direct `node:child_process` imports in project source are limited to
-`runtime/system-open.ts`, `runtime/system-proxy.ts`, and
-`runtime/suno-human-verification.ts`. These modules run fixed OS handlers,
-read-only system-proxy queries, and the bundled macOS Suno verification helper.
+`runtime/system-open.ts`, `runtime/system-proxy.ts`,
+`runtime/suno-human-verification.ts`, and `runtime/native-chat-window.ts`. These
+modules run fixed OS handlers, read-only system-proxy queries, and the bundled
+macOS verification and chat applications.
 Approved MCP stdio servers use the official MCP SDK's process transport; their
 command, environment, authorization, and cleanup contracts are described under
 [MCP tools and authority](#mcp-tools-and-authority). The verification helper's
@@ -1394,6 +1395,20 @@ read original bytes from the existing MIDI/audio stores. Provider audio results
 require committed output ownership. Attachment uses the canonical Session attachment
 admission, quotas and normalized-filename/content deduplication; export uses
 resource-only download tickets.
+
+#### 原生文件拖放
+
+原生聊天具备私有存储时，`ui/client/native-artifact-drag.ts` 为本地 MIDI 和音频卡片
+绑定拖出控件。悬停或聚焦时向原生桥接请求准备文件。应用层校验当前 Live Set 及
+未归档 Session 的归属，通过 MIDI 和音频存储的 `SessionFileExport` 读取原始文件，
+再由 `storage/artifact-exports.ts` 在私有目录中写入副本。同一原生窗口内相同的
+Session 与产物引用复用一次准备及同一份副本。
+
+`runtime/native-chat-window.ts` 通过私有进程管道把文件路径交给 `NativeChat`，聊天页面
+只接收对应令牌。AppKit 在发起文件 URL 的复制拖放前发送 `claim`，收到宿主保留确认后
+再检查当前鼠标手势和文件，随后向系统提交拖放。窗口结束时，由仍在运行的
+Extension Host 清理未领取副本。已领取副本独立于窗口和 Session 持久保留，
+供接收应用引用。拖放结束状态表示系统拖放操作的结果，Live 中的导入由接收端完成。
 
 #### Comparison and import views
 
@@ -3517,9 +3532,24 @@ The saved `interfaceMode` preference defaults to `modal` for historical settings
 its decimal revision orders command responses and peer publications. The document's
 host capability is fixed when created, so changing the preference only affects
 future invocations. Browser documents hide the modal Close control.
-The modal Close decision queries existing draft owners, including drafts in
-inactive Sessions and write-only credential inputs, before discarding edits.
-These checks do not persist drafts or credentials.
+
+`native` 模式由 `window-hosts.ts` 为每个窗口启动独立聊天运行时，并由
+`runtime/native-chat-window.ts` 启动 macOS 上内嵌的 `NativeChat` 应用。该应用使用
+非模态 AppKit 窗口与非持久化 WKWebView 加载同一聊天页面。主框架导航和原生消息
+桥接限定到启动时指定的带令牌本机 `/chat` 页面，桥接仅接收主框架消息。程序在
+聊天关闭入口就绪后报告 `ready`。用户在就绪前主动关闭窗口或退出应用时，
+`NativeChat` 发送 `cancelled`。宿主等待进程结束和清理流程完成，再抛出
+`NativeChatCancelledError`，控制器随后正常结束本次打开。原生程序不可用或启动失败时，
+控制器打开 Live 模态对话框，保留偏好设置入口。
+
+Extension Host 仍在运行时，关闭窗口会释放聊天运行时，并由宿主清理临时程序包。
+Extension Host 意外退出时，原生应用在进程管道关闭或检测到父进程变化后退出。
+宿主清理流程可能来不及运行，留下临时程序包及未领取的准备副本。该清理流程依赖
+宿主存活，范围限于当前运行。
+
+Live 模态和原生窗口沿用 `requestClose` 的关闭确认，检查在途操作、待发送队列及
+草稿持有者，包括非当前 Session 的草稿和只写凭据输入。原生聊天就绪后的系统关闭与
+退出请求也进入该流程。草稿和凭据输入仍由当前页面持有。
 
 Repeated browser invocations with the same Set, object and exact selection reuse
 the runtime. Each newly opened page starts from the invocation Session; existing

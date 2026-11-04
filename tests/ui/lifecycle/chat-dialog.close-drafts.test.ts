@@ -188,3 +188,18 @@ test("draft close confirmation still describes running work and discarded queued
     assert.equal(h.hostMessages.length, 1); assert.deepEqual(h.errors, []);
   } finally { h.releaseHeldSend(); await h.settle(); h.close(); }
 });
+
+test("native title-bar close uses the existing draft confirmation before closing its host", async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state, { baseUrl: "http://bridge.test", token: "test-token", hostMode: "native", nativeWindowAvailable: true });
+  try {
+    h.input("#prompt", "Keep this unsent draft");
+    void (h.window as unknown as { LiveSmithUI: { requestClose(): Promise<void> } }).LiveSmithUI.requestClose();
+    assert.equal(h.document.querySelector<HTMLElement>("#appConfirmation")!.hidden, false);
+    h.click("#appConfirmationCancel"); await h.settle();
+    assert.equal(h.hostMessages.length, 0);
+    assert.equal(h.document.querySelector<HTMLTextAreaElement>("#prompt")!.value, "Keep this unsent draft");
+    void (h.window as unknown as { LiveSmithUI: { requestClose(): Promise<void> } }).LiveSmithUI.requestClose();
+    h.click("#appConfirmationAccept"); await h.settle(); assert.equal(h.hostMessages.length, 1);
+  } finally { h.close(); }
+});

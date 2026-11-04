@@ -445,7 +445,7 @@ async function waitForCondition(
 
 async function createDialogHarness(
   initialState: ChatBridgeState = stateFixture(),
-  bridge: { baseUrl: string; token: string; viewId?: string } = { baseUrl: "http://bridge.test", token: "test-token" },
+  bridge: { baseUrl: string; token: string; viewId?: string; nativeWindowAvailable?: boolean; nativeArtifactDrag?: boolean; hostMode?: "modal" | "browser" | "native" } = { baseUrl: "http://bridge.test", token: "test-token" },
   options: {
     beforeParse?: (window: JSDOM["window"]) => void;
     oauthLoginResult?: NonNullable<ChatBridgeState["oauthAuth"]>;
@@ -1193,6 +1193,7 @@ async function createDialogHarness(
           configurable: true,
           value: {
             messageHandlers: {
+              ...(window as unknown as { webkit?: { messageHandlers?: Record<string, unknown> } }).webkit?.messageHandlers,
               live: {
                 postMessage: (message: unknown) => hostMessages.push(message),
               },

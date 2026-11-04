@@ -186,3 +186,89 @@ test('reopening a busy browser preserves its bounded selection and rejects anoth
     assert.equal(aborted, true);
   } finally { release(); await controller.close(); await send; await rm(directory, { recursive: true, force: true }); }
 });
+
+test('native windows own their backend until close and use the native HTML capability', async () => {
+  const { createWindowHostController } = await import('../../../src/app/window-hosts.js');
+  const { saveGlobalSettings } = await import('../../../src/storage/settings.js');
+  const directory = await mkdtemp(join(tmpdir(), 'window-native-'));
+  let opened!: () => void; const ready = new Promise<void>(resolve => { opened = resolve; });
+  let closed!: () => void; const windowClosed = new Promise<void>(resolve => { closed = resolve; });
+  let url = ''; let htmlHost = ''; let nativeDragging = false;
+  const controller = createWindowHostController({ application: { song: { handle: { id: 1n }, tracks: [], scenes: [] } }, environment: { storageDirectory: directory } } as never, {
+    renderHtml: (_state, bridge) => { htmlHost = bridge.hostMode!; nativeDragging = bridge.nativeArtifactDrag === true; return '<html></html>'; },
+    nativeChatHost: { supported: true, open: async input => { url = input.url; input.signal?.addEventListener('abort', closed); opened(); return { close: closed, closed: windowClosed }; } },
+  });
+  try {
+    await saveGlobalSettings(directory, { interfaceMode: 'native' });
+    const opening = controller.open(interaction); await ready;
+    assert.equal((await fetch(url)).status, 200); assert.equal(htmlHost, 'native'); assert.equal(nativeDragging, true);
+    await controller.close(); await opening;
+    await assert.rejects(fetch(url));
+  } finally { closed?.(); await controller.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('unavailable or failed native launch leaves the existing modal settings workflow reachable', async () => {
+  const { createWindowHostController } = await import('../../../src/app/window-hosts.js');
+  const { saveGlobalSettings } = await import('../../../src/storage/settings.js');
+  for (const supported of [false, true]) {
+    const directory = await mkdtemp(join(tmpdir(), 'window-native-fallback-')); let shown = 0;
+    const context = { application: { song: { handle: { id: 1n }, tracks: [], scenes: [] } }, environment: { storageDirectory: directory },
+      ui: { showModalDialog: async (url: string) => { shown++; assert.equal((await fetch(url)).status, 200); return ''; } } };
+    const controller = createWindowHostController(context as never, { renderHtml: () => '<html></html>', nativeChatHost: { supported, open: async () => { throw new Error('private-window-token'); } } });
+    try { await saveGlobalSettings(directory, { interfaceMode: 'native' }); await controller.open(interaction); assert.equal(shown, 1); }
+    finally { await controller.close(); await rm(directory, { recursive: true, force: true }); }
+  }
+});
+
+test('cancelling native startup closes its backend without opening the fallback modal', async () => {
+  const { createWindowHostController } = await import('../../../src/app/window-hosts.js');
+  const { NativeChatCancelledError } = await import('../../../src/runtime/native-chat-window.js');
+  const { saveGlobalSettings } = await import('../../../src/storage/settings.js');
+  const directory = await mkdtemp(join(tmpdir(), 'window-native-cancel-'));
+  let modalCount = 0; let nativeUrl = '';
+  const context = { application: { song: { handle: { id: 1n }, tracks: [], scenes: [] } }, environment: { storageDirectory: directory },
+    ui: { showModalDialog: async () => { modalCount++; return ''; } } };
+  const controller = createWindowHostController(context as never, { renderHtml: () => '<html></html>',
+    nativeChatHost: { supported: true, open: async input => { nativeUrl = input.url; throw new NativeChatCancelledError(); } } });
+  try {
+    await saveGlobalSettings(directory, { interfaceMode: 'native' });
+    await controller.open(interaction);
+    assert.equal(modalCount, 0);
+    await assert.rejects(fetch(nativeUrl));
+  } finally { await controller.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('native shutdown releases its window registration when backend cleanup fails', { timeout: 5_000 }, async (t) => {
+  const { createWindowHostController } = await import('../../../src/app/window-hosts.js');
+  const { saveGlobalSettings } = await import('../../../src/storage/settings.js');
+  const directory = await mkdtemp(join(tmpdir(), 'window-native-close-error-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const { context } = selectionFixture(directory);
+  const failure = new Error('Model backend cleanup failed');
+  let opened!: () => void;
+  const windowOpened = new Promise<void>(resolve => { opened = resolve; });
+  const controller = createWindowHostController(context as never, {
+    renderHtml: () => '<html></html>',
+    modelBackendManager: {
+      forProfile: () => { throw new Error('Unexpected model request'); },
+      oauth: () => { throw new Error('Unexpected OAuth request'); },
+      oauthLease: () => { throw new Error('Unexpected OAuth lease'); },
+      invalidateOAuth: async () => {},
+      close: async () => { throw failure; },
+    },
+    nativeChatHost: { supported: true, open: async input => {
+      let close!: () => void;
+      const closed = new Promise<void>(resolve => { close = resolve; });
+      input.signal?.addEventListener('abort', close, { once: true });
+      opened();
+      return { close, closed };
+    } },
+  });
+  await saveGlobalSettings(directory, { interfaceMode: 'native' });
+  const opening = assert.rejects(controller.open(interaction), error => error === failure);
+  await windowOpened;
+  const closing = controller.close();
+  await opening;
+  await closing;
+});
+

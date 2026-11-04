@@ -245,6 +245,21 @@ or drag it from the file manager into your DAW. Use **Export MIDI** to save the
 file first. MIDI contains note and event data; choose instruments and effects
 in the destination DAW to play it.
 
+### 原生文件拖出
+
+在 macOS 14 或更高版本中，按[界面偏好设置](#interface-preferences)选择
+**原生窗口（macOS）**，然后重新打开 Live Smith。按住产物卡片上的
+**拖出 MIDI（Drag MIDI）** 或 **拖出音频（Drag audio）**，拖到 Live 中的对应轨道
+或 Finder 文件夹。聊天窗口可以保持打开。产物库、聊天中的 MIDI 预览、Plugin 文件结果和
+已下载的音频均可使用卡片上的拖出控件。远程音频需先下载到 Session。
+
+MIDI 保留原文件的轨道、通道和事件，音频保留原始 WAV 或 MP3 格式。开始拖出后，
+本机副本会继续保留，供 DAW 在聊天关闭或 Session 删除后引用。
+宿主意外退出时，导出目录里可能留下仅为拖出准备的副本。清理目录前，先用 DAW
+的收集并保存功能保存工程引用的文件。
+**Export** 仍可通过默认浏览器下载文件。需要让 Live Smith 按 Session 编辑范围和审批流程
+执行导入时，可使用 **Add to Live**。
+
 ### Device parameter snapshots
 
 **Save device parameter snapshot** captures all exposed parameters of one selected
@@ -725,10 +740,16 @@ system language. The preference is shared across Live Smith windows. Switching
 languages keeps drafts and ongoing work; user messages, model replies, object
 names, and raw provider/SDK output stay in their original language.
 
-Choose **Settings → App → Conversation & Display → Open Live Smith in** to open Live
-Smith in the **Live modal** (default) or your **System browser**. The choice applies
-to the next invocation. The browser lets you keep working in Live; closing its tab
-preserves admitted tasks and pending approvals while the Extension is running.
+在 **设置 → 应用 → 对话与显示 → 界面打开方式** 中选择 **Live 模态窗口**（默认）、
+**系统浏览器** 或 **原生窗口（macOS）**。英文界面对应 **Settings → App →
+Conversation & Display → Open Live Smith in**，原生选项为 **Native window (macOS)**。
+设置在下次打开 Live Smith 时生效。原生窗口在 macOS 14 或更高版本上提供非模态聊天，
+可同时操作 Live。
+原生窗口不可用或启动失败时，Live Smith 会打开 Live 模态对话框，应用偏好仍可访问。
+加载期间主动关闭原生窗口会取消这次打开。
+
+The browser lets you keep working in Live. Closing its tab preserves admitted
+tasks and pending approvals while the Extension is running.
 Use **Ask Live Smith** on the same object or selection to reopen its Session, or
 use **Stop** to cancel its current task. Asking about a different selection replaces
 an idle browser runtime; finish or Stop its work first when it is busy.
@@ -752,8 +773,8 @@ Queue and Steer are configured under
 **Settings → App → Conversation & Display**.
 The same section can show or hide the compact context-window indicator in the
 composer.
-Queued follow-ups belong to the open page. The Live modal warns before closing
-with pending work; browser tabs use their native close control.
+待发送消息归当前页面所有。Live 模态窗口和 macOS 原生窗口在存在待处理工作或
+未保存草稿时会询问是否关闭。系统浏览器使用标签页的关闭控件。
 
 ## Model and network settings
 

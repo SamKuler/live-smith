@@ -1463,6 +1463,7 @@
             profileEditor.refreshLocale?.();
             composerInput.refreshLocale();
             pluginResults.refreshLocale();
+            window.LiveSmithNativeDrag?.refreshLocale();
             setInspectorOpen(!document.getElementById("inspectorPane").hidden);
             setSessionsPaneCollapsed(sessionsPaneCollapsed);
             renderActiveCommandFeedback();
@@ -1859,6 +1860,7 @@
             skillInProgress;
           bridgeClient.setAudioToolsBusy(sessionSettingDisabled, operationBusy);
           setPropertyIfChanged(document.getElementById("closeButton"), "hidden", !hostAdapter.canClose);
+          setPropertyIfChanged(document.querySelector("#interfaceMode option[value=native]"), "disabled", bridgeConfig.nativeWindowAvailable !== true);
           setPropertyIfChanged(document.getElementById("interfaceMode"), "disabled", sessionSettingDisabled || interfaceModeSaving);
           setPropertyIfChanged(document.getElementById("uiLanguage"), "disabled",
             sessionSettingDisabled || uiLanguageSaving);

@@ -1,3 +1,4 @@
+import { createNativeArtifactDragButton } from "./native-artifact-drag.js";
 import { createLocaleBindings, type LocalizedText } from "./locale-bindings.js";
 import { isArtifactRef, type ArtifactRef } from "../../agent/artifact-contracts.js";
 import { createMidiImportDialog, type MidiImportDialogInput } from "./midi-import-dialog.js";
@@ -98,7 +99,13 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
         const item = node("div", "plugin-result-file"); item.append(node("p", "field-hint", artifact.label));
         const actions = node("div", "artifact-actions");
         const status = node("p", "plugin-result-import-status"); status.setAttribute("role", "status"); status.hidden = true;
-        for (const [kind, label] of [["attach_artifact", "Attach to message"], ["export_artifact", artifact.kind === "midi" ? "Export MIDI" : "Export audio"]] as const) {
+        const transfers: Array<["export_artifact" | "attach_artifact", string]> = [
+          ["attach_artifact", "Attach to message"], ["export_artifact", artifact.kind === "midi" ? "Export MIDI" : "Export audio"],
+        ];
+        const drag = createNativeArtifactDragButton(() => current() && sessionId
+          ? { sessionId, artifact: { kind: artifact.kind, id: artifact.artifactRef } } : undefined);
+        if (drag) actions.append(drag);
+        for (const [kind, label] of transfers) {
           const transfer = node("button", "secondary", () => t(label)); transfer.type = "button";
           transfer.addEventListener("click", async () => {
             if (!current() || !sessionId) return;

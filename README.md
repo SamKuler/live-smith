@@ -50,8 +50,10 @@ For example:
 5. Send a request. Review its proposed changes using the Session's approval and
    Edit Scope controls.
 
-Once a Profile is saved, switch models from the composer. The interface supports
-English and 简体中文, and can open in a Live modal or the system browser.
+Once a Profile is saved, switch models from the composer. Live Smith supports
+English and 简体中文. Open it in a **Live dialog**, your **System browser**, or a
+**Separate window (macOS)**. On macOS 14 or later, the separate window lets you
+drag saved MIDI and audio from chat into Live.
 
 The [user guide](docs/USER_GUIDE.md) covers the interface, saved work, attachments,
 tools and day-to-day workflows.

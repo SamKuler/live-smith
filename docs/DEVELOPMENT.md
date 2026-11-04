@@ -74,15 +74,28 @@ before writing the bundle to `dist/extension.js`. The compiled styles are
 embedded into the generated dialog HTML; the WebView does not load Tailwind, a CDN,
 or a separate stylesheet at runtime.
 
-Suno's in-app verification uses a macOS AppKit/WebKit helper. The extension
-bundle includes its prebuilt universal arm64/x86_64 application. Both builds
-verify its contents against the native source and build recipe. When those
-inputs change, a macOS build recompiles and ad-hoc signs the helper using the
-separately installed macOS Command Line Tools. Builds on other platforms require
-a current helper built on macOS. The helper requires macOS 14 or later and starts
-only when Suno requests human verification.
+扩展包内嵌两个面向 macOS 14 及以上版本的 AppKit/WebKit 应用。聊天窗口使用
+`src/runtime/native/chat-capsule.json` 中的 `NativeChat`，Suno 在请求人工验证时使用
+`src/runtime/native/verifier-capsule.json` 中的验证程序。
+`scripts/native-app-capsule.ts` 在开发和生产构建中校验程序内容及源文件、Info.plist
+和构建脚本的指纹。输入变化后，macOS 构建使用单独安装的 Command Line Tools 生成
+arm64/x86_64 通用二进制并执行 ad-hoc 签名。其他平台构建时使用已在 macOS 上生成的
+对应版本。
+
+私有存储中的 `live-smith-exports/` 保存原生拖出使用的媒体副本。Extension Host
+意外退出时，可能残留未使用的准备副本和临时应用包。清理导出目录前，先使用 DAW 的
+收集并保存功能保存工程引用的文件。副本的保留与清理规则见
+[原生文件拖放](ARCHITECTURE.md#原生文件拖放)。
 
 ## Verification
+
+### 原生窗口与文件拖放
+
+自动化测试覆盖窗口启动、启动取消与回退、拖出消息协议、文件副本生命周期和聊天卡片交互。
+在 macOS 的 Ableton Live 中，按[用户指南](USER_GUIDE.md#原生文件拖出)打开原生聊天，
+分别将本地 MIDI 和音频从卡片拖到对应轨道，确认 Live 中出现可用的 Clip，并在关闭聊天后
+检查工程仍可读取引用的音频。带未保存草稿关闭窗口时，检查取消确认后草稿仍可编辑。
+实际投放由 AppKit 和 Live 处理，需在宿主中验证。
 
 ### MCP 服务验证
 
@@ -499,4 +512,5 @@ and confirm both an accepted generation receipt and a valid downloaded file.
 Check remote generation, online preview, download authorization, and Live import
 as separate steps. Use the Live dialog for the embedded player and download
 confirmation. JSDOM covers their interactions; the host check covers WebView
-playback, network policy, and native file export.
+playback and network policy. See [原生窗口与文件拖放](#原生窗口与文件拖放)
+for checks involving local audio files dragged from chat.

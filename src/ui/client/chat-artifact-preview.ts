@@ -1,3 +1,4 @@
+import { createNativeArtifactDragButton } from "./native-artifact-drag.js";
 import { artifactKey, type ArtifactRef } from "../../agent/artifact-contracts.js";
 import type { SessionArtifact } from "../../app/session/session-artifacts.js";
 import { createLocaleBindings, type LocalizedText } from "./locale-bindings.js";
@@ -65,8 +66,10 @@ export function createChatArtifactPreviews(deps: Dependencies) {
       });
     });
     const download = button("Export MIDI", () => { void exportFile(); });
+    const drag = createNativeArtifactDragButton(() => current() ? { sessionId: owner, artifact: ref } : undefined);
+    if (drag) controls.append(drag);
     button("Open artifact", () => { if (artifact) deps.openArtifact(artifact); });
-    function syncBusy() { add.disabled = busy; download.disabled = transferring; }
+    function syncBusy() { add.disabled = busy; download.disabled = transferring; if (drag) drag.disabled = transferring; }
     async function exportFile() {
       if (transferring) return;
       transferring = true; syncBusy();

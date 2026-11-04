@@ -1,7 +1,7 @@
 window.LiveSmithFactories = window.LiveSmithFactories || {};
 window.LiveSmithFactories.createAudioResults = function createAudioResults({
   getState, readConnections, readAccounts, readControls,
-  bridgeConfig, runCommand, confirmAction, i18n,
+  bridgeConfig, runCommand, confirmAction, i18n, createNativeArtifactDragButton,
   audioOperationLabel, audioServiceCapabilities, outputLabels, savedAudioConnection,
 }) {
   const t = (sourceEnglish, namedParams) => i18n.t(sourceEnglish, namedParams);
@@ -138,10 +138,13 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
     }
   }
 
+  function audioResultAsset(output) {
+    return audioResultJob(output)?.outputs.find((entry) => entry.id === output.dataset.audioOutput && entry.sessionId === activeSessionId());
+  }
+
   function exportLocalAudio(output) {
     if (pendingAudioDownload || readControls().localExportBusy) return;
-    const job = audioResultJob(output);
-    const asset = job?.outputs.find((entry) => entry.id === output.dataset.audioOutput && entry.sessionId === activeSessionId());
+    const asset = audioResultAsset(output);
     if (!asset) return;
     void runCommand("export_artifact", { sessionId: activeSessionId(), artifact: { kind: "audio", id: asset.id } }, { cancellable: true });
   }
@@ -261,6 +264,16 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
           output: label, format, job: output.closest("[data-audio-job-id]").querySelector("h4").textContent,
         }));
         exportButton.setAttribute("aria-describedby", "audio-local-download-help-" + job.id);
+      }
+      let dragButton = actions.querySelector("[data-drag-local-audio]");
+      if (!result.asset || bridgeConfig.nativeArtifactDrag !== true) dragButton?.remove();
+      else if (!dragButton) {
+        const owner = activeSessionId();
+        dragButton = createNativeArtifactDragButton(() => {
+          const asset = audioResultAsset(output);
+          return owner === activeSessionId() && asset ? { sessionId: owner, artifact: { kind: "audio", id: asset.id } } : undefined;
+        });
+        if (dragButton) { dragButton.dataset.dragLocalAudio = ""; actions.append(dragButton); }
       }
       renderAudioPreviewButton(output);
     }
@@ -392,7 +405,7 @@ window.LiveSmithFactories.createAudioResults = function createAudioResults({
     container.querySelectorAll("[data-download-audio-output]").forEach((button) => {
       button.disabled = Boolean(pendingAudioDownload) || isInteractionBlocked() || !audioDownloadIdentity(button.closest("[data-remote-audio-key]"));
     });
-    container.querySelectorAll("[data-download-local-audio]").forEach((button) => {
+    container.querySelectorAll("[data-download-local-audio], [data-drag-local-audio]").forEach((button) => {
       button.disabled = Boolean(pendingAudioDownload) || readControls().localExportBusy;
     });
     container.querySelectorAll("[data-resume-audio-job]").forEach((button) => { button.disabled = readControls().resumeBusy; });
