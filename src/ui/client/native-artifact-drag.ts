@@ -43,9 +43,15 @@ function createController(): NativeDragController {
     const failed = binding.failedKey !== undefined && binding.failedKey === key;
     binding.button.textContent = t(preparing ? "Preparing file…" : failed ? "Retry file preparation"
       : input?.artifact.kind === "midi" ? "Drag MIDI" : "Drag audio");
-    binding.button.title = t(preparing ? "Preparing file…" : failed
-      ? "The file could not be prepared. Click to retry or use Export."
-      : "Drag this file to a DAW track or a folder.");
+    binding.button.toggleAttribute("data-preparation-failed", failed);
+    if (failed) {
+      const hint = document.createElement("span");
+      hint.className = "field-hint";
+      hint.textContent = t("Use Export instead if needed.");
+      binding.button.append(hint);
+    }
+    if (preparing || failed) binding.button.removeAttribute("title");
+    else binding.button.title = t("Drag this file to a DAW track or a folder.");
     if (preparing) binding.button.setAttribute("aria-busy", "true");
     else binding.button.removeAttribute("aria-busy");
   }

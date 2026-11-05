@@ -8,6 +8,8 @@ import { templateMessages } from "../../../src/ui/i18n/template-messages.js";
 import { timelineMessages } from "../../../src/ui/i18n/timeline-messages.js";
 import { profileMessages } from "../../../src/ui/i18n/profile-messages.js";
 import { mainMessages } from "../../../src/ui/i18n/main-messages.js";
+import { audioToolHelp, audioToolHelpMessages } from "../../../src/ui/i18n/audio-tool-help.js";
+import { builtInAudioToolNames } from "../../../src/plugins/builtins/audio-toolsets.js";
 import { audioMessages } from "../../../src/ui/i18n/audio-messages.js";
 import { connectionsMessages } from "../../../src/ui/i18n/connections-messages.js";
 import { toolMessages } from "../../../src/ui/i18n/tool-messages.js";
@@ -22,7 +24,7 @@ const translatedLocales = UI_LANGUAGES.map(language => language.id).filter(id =>
 test("message catalogs agree on shared messages and preserve interpolation fields", () => {
   const seen = new Map<string,string>();
   const fields = (text: string) => [...new Set([...text.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)].map(match => match[1]))].sort();
-  for (const catalog of [templateMessages, timelineMessages, profileMessages, mainMessages, actionMessages, audioMessages, connectionsMessages, toolMessages]) {
+  for (const catalog of [templateMessages, timelineMessages, profileMessages, mainMessages, actionMessages, audioMessages, audioToolHelpMessages, connectionsMessages, toolMessages]) {
     for (const [source, translated] of Object.entries(catalog)) {
       assert.ok(translated.trim(), source);
       if (seen.has(source)) assert.equal(translated, seen.get(source), source);
@@ -56,6 +58,7 @@ test("explicit client messages and static template markers all have translations
   const files = readdirSync(new URL('../../../src/ui/client/', import.meta.url), { recursive: true })
     .filter((name): name is string => typeof name === 'string' && (name.endsWith('.script.html') || name.endsWith('.ts'))).map(name => '../../../src/ui/client/' + name);
   files.push('../../../src/ui/action-diff.ts');
+  files.push('../../../src/skills/format.ts', '../../../src/skills/plugin-package.ts', '../../../src/model/oauth/google.ts');
   files.push('../../../src/app/plugins/plugin-lifecycle.ts', '../../../src/app/model/dialog-model-state.ts');
   files.push('../../../src/app/audio/audio-generation.ts', '../../../src/app/audio/audio-processing.ts', '../../../src/app/audio/audio-job-runtime.ts', '../../../src/app/audio/suno/suno-human-verification.ts', '../../../src/app/agent-flow.ts');
   files.push('../../../src/live/device-parameters.ts', '../../../src/app/parameters/parameter-artifacts.ts', '../../../src/app/parameters/parameter-application.ts', '../../../src/storage/device-parameter-artifacts.ts');
@@ -86,6 +89,11 @@ test("explicit client messages and static template markers all have translations
   }
   for (const descriptor of Object.values(BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS)) {
     requireTranslation(descriptor.label, descriptor.pluginId);
+  }
+  for (const name of new Set(Object.values(builtInAudioToolNames()))) {
+    const help = audioToolHelp[name];
+    assert.ok(help, name);
+    requireTranslation(help[0], name);
   }
   for (const { function: { name, description } } of sessionNativeTools(true, true)) {
     const displayed = description.length > MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH

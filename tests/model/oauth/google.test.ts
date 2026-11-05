@@ -270,7 +270,7 @@ test("Google OAuth surfaces account validation as a trusted browser action", asy
       error.verificationUrl,
       "https://accounts.google.com/signin/continue?flow=test",
     );
-    assert.equal(error.verificationLabel, "Verify Google account");
+    assert.deepEqual(error.verificationLabel, { source: "Verify Google account", values: {} });
     return true;
   });
 });

@@ -296,12 +296,6 @@
             "secondary plugin-open-mcp", () => openMcpServers(plugin.id),
           ));
           card.append(links);
-          if (plugin.mcpServers.length) {
-            const hint = document.createElement("p");
-            hint.className = "field-hint";
-            hint.textContent = t("Connections and server permissions are managed in MCP.");
-            card.append(hint);
-          }
         }
         const apps = (getState().sessionToolCatalog?.groups || []).filter((group) => group.pluginId === plugin.id)
           .flatMap((group) => group.tools.filter((tool) => tool.app));

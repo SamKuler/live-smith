@@ -1,3 +1,4 @@
+import { uiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
@@ -66,6 +67,13 @@ test("User Skill bridge preserves replacement receipts and prevents deletion whi
             receipt: { id: string; sha256: string };
           }>;
         };
+        const invalid = await install(Buffer.from("This is not a Skill."));
+        assert.equal(invalid.status, 400);
+        const invalidBody = await invalid.json() as { displayMessage?: unknown };
+        assert.deepEqual(invalidBody.displayMessage, uiMessage("Invalid SKILL.md at line {line}: {reason}.", {
+          line: 1, reason: uiMessage("the opening delimiter is missing"),
+        }));
+
         const first = await readInstalled(await install(firstBytes));
         assert.deepEqual(first.receipt, {
           id: "mix-review",

@@ -16,7 +16,9 @@ import toolsInspectorScript from "./client/tools-inspector.script.html";
 import pluginParametersScript from "./client/plugin-parameters.script.html";
 import pluginUserConfigScript from "./client/plugin-user-config.script.html";
 import i18nScript from "./client/i18n.script.html";
-import { serializeUiI18nData } from "./i18n/messages.js";
+import type { UiLanguage } from "../i18n/languages.js";
+import type { UiMessage } from "../i18n/ui-message.js";
+import { composeResultDocument } from "./result-document.js";
 import bootstrapScript from "./client/bootstrap.script.html";
 import type { ChatBridgeState } from "./chat-state.js";
 import { composeChatDocument } from "./chat-document.js";
@@ -28,15 +30,11 @@ declare const __LIVE_SMITH_BRIDGE_CONTRACTS_SCRIPT__: string;
 declare const __LIVE_SMITH_CHAT_STYLES__: string;
 declare const __LIVE_SMITH_RESULT_STYLES__: string;
 
-export function resultUrl(title: string, body: string): string {
-  return toDataUrl(
-    resultDialog
-      .replace("/*__RESULT_STYLES__*/", () => __LIVE_SMITH_RESULT_STYLES__)
-      .replace("__HOST_ADAPTER_SCRIPT__", () => hostAdapterScript)
-      .replace("__I18N_SCRIPT__", () => i18nScript.replace("__UI_I18N__", () => serializeUiI18nData()))
-      .replace("__TITLE__", () => escapeHtml(title))
-      .replace("__BODY__", () => escapeHtml(body)),
-  );
+export function resultUrl(body: UiMessage, uiLanguage: UiLanguage): string {
+  return toDataUrl(composeResultDocument(resultDialog, body, uiLanguage, {
+    hostAdapter: hostAdapterScript,
+    i18n: i18nScript,
+  }, __LIVE_SMITH_RESULT_STYLES__));
 }
 
 export function chatHtml(
@@ -70,13 +68,4 @@ export function chatHtml(
 
 function toDataUrl(html: string): string {
   return `data:text/html,${encodeURIComponent(html)}`;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }

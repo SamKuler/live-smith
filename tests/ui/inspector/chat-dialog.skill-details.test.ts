@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readInlineHelp } from "../support/inline-help.js";
 
 import {
   availableSkillSummaries,
@@ -29,17 +30,17 @@ test("Skills keeps one compact Session-level help affordance", async () => {
   try {
     harness.click("#skillsTab");
     const heading = harness.document.getElementById("skillsHeading");
-    const help = heading?.parentElement?.querySelector<HTMLElement>(".inline-help");
+    const help = heading?.parentElement?.querySelector<HTMLButtonElement>(".inline-help");
     assert.ok(help);
     assert.equal(heading?.parentElement?.querySelectorAll(".inline-help").length, 1);
     assert.equal(help.textContent, "?");
     assert.equal(help.tagName, "BUTTON");
     assert.equal(help.tabIndex, 0);
     assert.equal(
-      help.dataset.tooltip,
+      readInlineHelp(help),
       "Enable for this Session, or use $skill-id for one turn.",
     );
-    assert.equal(help.getAttribute("aria-label"), help.dataset.tooltip);
+    assert.equal(help.getAttribute("aria-label"), "Session Skills help");
     assert.equal(
       harness.document.getElementById("builtInSkillsHeading")?.parentElement
         ?.querySelector(".inline-help"),

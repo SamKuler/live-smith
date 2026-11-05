@@ -750,7 +750,7 @@ export function createAudioConnectionEditor(options: AudioEditorOptions) {
                 ? t("Selected audio is sent to this external service. Stem separation uses processing minutes for each requested stem.")
                 : t("Generation sends your prompt to this external service and may incur separate API charges. A website subscription may not include API access.");
       const disclosure = element("audioServiceDisclosure");
-      disclosure.setAttribute("aria-label", disclosureText);
+      disclosure.setAttribute("aria-label", t("Audio provider help"));
       disclosure.dataset.tooltip = disclosureText;
       const keyConfigured = saved?.provider === service.provider && saved.apiKeyConfigured;
       keyPanel.dataset.authState = keyConfigured ? "signed-in" : "signed-out";

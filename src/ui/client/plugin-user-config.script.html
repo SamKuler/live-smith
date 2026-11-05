@@ -331,14 +331,15 @@
             status.setAttribute("role", "status");
             status.setAttribute("aria-live", "polite");
             const presentStatus = (message, isError = false) => {
-              draft.status = window.LiveSmithI18n.text(message);
+              draft.status = message;
+              const text = window.LiveSmithI18n.text(message);
               draft.statusError = isError;
               const active = drafts.get(plugin.id);
               if (active && active !== draft) { active.status = draft.status; active.statusError = isError; }
               const liveStatus = panelFor(plugin.id)?.querySelector(".plugin-user-config-status");
               for (const target of new Set([status, liveStatus].filter(Boolean))) {
-                target.textContent = draft.status;
-                target.hidden = !draft.status;
+                target.textContent = text;
+                target.hidden = !text;
                 target.classList.toggle("error", Boolean(isError));
               }
             };
@@ -346,7 +347,7 @@
             form.addEventListener("submit", async (event) => {
               event.preventDefault();
               if (busy || draft.saving) return;
-              if (!current(plugin, draft)) { presentStatus(t("Plugin parameters changed. Review the current values before saving."), true); return; }
+              if (!current(plugin, draft)) { presentStatus(window.LiveSmithI18n.message("Plugin parameters changed. Review the current values before saving."), true); return; }
               const values = [];
               const secretUpdates = [];
               let firstInvalid;

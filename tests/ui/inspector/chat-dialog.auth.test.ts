@@ -1,3 +1,4 @@
+import { uiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -2082,6 +2083,7 @@ test("automatic OAuth checks do not turn a saved Profile provisional while anoth
 
 test("Antigravity account verification is actionable without a one-time code", async () => {
   const state = stateFixture();
+  state.settings.uiLanguage = "zh-CN";
   const profile = profileFixture({
     id: "gemini-validation-profile",
     connection: { kind: "oauth-subscription", provider: "google" },
@@ -2100,13 +2102,16 @@ test("Antigravity account verification is actionable without a one-time code", a
     message: "Google requires an additional account verification before Antigravity can be used.",
     definitive: true,
     verificationUrl: "https://accounts.google.com/signin/continue?test=1",
-    verificationLabel: "Verify Google account",
+    displayMessage: uiMessage("Google requires an additional account verification before Antigravity can be used."),
+    verificationLabel: uiMessage("Verify Google account"),
   };
   const harness = await createDialogHarness(state);
   try {
+    assert.equal(harness.document.querySelector("#oauthAuthStateDetail")?.textContent,
+      "Google 要求完成额外的账户验证，之后才能使用 Antigravity。");
     assert.equal(
       harness.document.querySelector("#oauthVerificationLinkLabel")?.textContent,
-      "Verify Google account",
+      "验证 Google 账户",
     );
     assert.equal(
       harness.document.querySelector<HTMLAnchorElement>("#oauthVerificationLink")?.href,

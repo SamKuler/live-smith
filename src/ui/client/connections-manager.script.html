@@ -5,6 +5,10 @@
       }) {
         const outwardService = window.LiveSmithFactories.createMcpServiceSettings({ getState, runCommand });
         const t = (message, params) => window.LiveSmithI18n.t(message, params);
+        const m = window.LiveSmithI18n.message;
+        function validationError(message) {
+          return Object.assign(new Error(window.LiveSmithI18n.text(message)), { displayMessage: message });
+        }
         const builtInDescriptors = __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__;
         let busy = false;
         let canCancelSignIn = false;
@@ -487,13 +491,13 @@
             const name = row.name;
             const key = local ? name : name.toLowerCase();
             if (name.length > 256 || !(local ? /^[A-Za-z_][A-Za-z0-9_]*$/u : /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u).test(name) || names.has(key)) {
-              throw new Error(t("Enter unique, valid credential names."));
+              throw validationError(m("Enter unique, valid credential names."));
             }
             names.add(key);
             if (row.clear) secrets[name] = "";
             else if (row.value) {
               if (row.value.length > 8192 || (local ? /\0/u : /[^\t\x20-\x7e\x80-\xff]/u).test(row.value)) {
-                throw new Error(t("A credential value contains unsupported characters."));
+                throw validationError(m("A credential value contains unsupported characters."));
               }
               secrets[name] = row.value;
             }
@@ -524,11 +528,11 @@
           if (!current || busy || saving || !isDirty(current)) return;
           const signInAfterSave = connectOnSave(current);
           if (!current.name.trim() || connections().some((entry) => entry.id !== current.id && entry.name.toLowerCase() === current.name.trim().toLowerCase())) {
-            reportStatus(t("Enter a unique connection name."), true);
+            reportStatus(m("Enter a unique connection name."), true);
             return;
           }
           if (revision() !== current.expectedRevision) {
-            reportStatus(t("Connections changed. Close and reopen this editor before saving."), true);
+            reportStatus(m("Connections changed. Close and reopen this editor before saving."), true);
             return;
           }
           let connection;
@@ -536,7 +540,7 @@
             if (current.kind === "standalone") {
               if (current.mcp.type === "stdio") {
                 if (!current.mcp.command.trim() || current.mcp.args.length > 128 || current.mcp.args.some((arg) => arg.length > 8192)) {
-                  throw new Error(t("Enter a command and at most 128 arguments."));
+                  throw validationError(m("Enter a command and at most 128 arguments."));
                 }
               } else {
                 const url = new URL(current.mcp.url);
@@ -544,7 +548,7 @@
                 const authority = current.mcp.url.match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/iu)?.[1] || "";
                 if (!((url.protocol === "https:") || (url.protocol === "http:" && loopback)) ||
                     url.username || url.password || authority.includes("@") || /[\s\\#]/u.test(current.mcp.url)) {
-                  throw new Error(t("Use an HTTPS URL or a loopback HTTP URL without credentials or a fragment."));
+                  throw validationError(m("Use an HTTPS URL or a loopback HTTP URL without credentials or a fragment."));
                 }
               }
               const secrets = standaloneSecrets(current);
@@ -556,36 +560,36 @@
                   current.artifactInputApproved && !current.saved.artifactInputApproved || current.artifactOutputApproved && !current.saved.artifactOutputApproved) {
                 const accepted = await confirmAction({
                   title: window.LiveSmithI18n.message(current.mcp.type === "stdio" ? "Allow local MCP process?" : "Allow MCP connection?"),
-                  message: standaloneReview(current, secrets), acceptLabel: window.LiveSmithI18n.message("Save connection"),
+                  message: () => standaloneReview(current, secrets), acceptLabel: window.LiveSmithI18n.message("Save connection"),
                 });
                 if (!accepted || draft !== current) return;
               }
             } else {
               const { plugin, server } = draftPluginServer(current);
-              if (!server) throw new Error(t("Plugin package changed. Reopen the connection and enter its credentials again."));
+              if (!server) throw validationError(m("Plugin package changed. Reopen the connection and enter its credentials again."));
               const secrets = { ...current.secrets };
-              if (Object.values(secrets).some((value) => /[^\x21-\x7e]/u.test(value))) throw new Error(t("Credentials must be printable ASCII without spaces."));
+              if (Object.values(secrets).some((value) => /[^\x21-\x7e]/u.test(value))) throw validationError(m("Credentials must be printable ASCII without spaces."));
               const missing = current.enabled && server.credentialFields.find((field) => field.required && !secrets[field.name] &&
                 !(secrets[field.name] === undefined && current.saved?.configuration.pluginDigest === plugin.sha256 && current.saved.configuredSecrets.includes(field.name)));
-              if (missing) throw new Error(t("Enter {name} before enabling this MCP connection.", { name: missing.name }));
+              if (missing) throw validationError(m("Enter {name} before enabling this MCP connection.", { name: missing.name }));
               connection = { id: current.id, name: current.name.trim(), enabled: current.enabled, pluginId: current.pluginId,
                 configuration: { serverId: current.serverId, pluginDigest: current.pluginDigest },
                 ...(Object.keys(secrets).length ? { secrets } : {}) };
             }
           } catch (error) {
-            reportStatus(error instanceof TypeError ? t("Enter a valid server URL.") : error.message, true);
+            reportStatus(error instanceof TypeError ? m("Enter a valid server URL.") : error.displayMessage ?? error.message, true);
             return;
           }
           if (current.oauth) {
             if (current.oauth.clientId && !current.oauth.callbackPort || current.oauth.callbackPort !== undefined &&
               (!Number.isInteger(current.oauth.callbackPort) || current.oauth.callbackPort < 1024 || current.oauth.callbackPort > 65535)) {
-              reportStatus(t("A registered public client needs a callback port from 1024 to 65535."), true);
+              reportStatus(m("A registered public client needs a callback port from 1024 to 65535."), true);
               return;
             }
             connection.oauth = { ...current.oauth };
           }
           if (revision() !== current.expectedRevision) {
-            reportStatus(t("Connections changed. Close and reopen this editor before saving."), true);
+            reportStatus(m("Connections changed. Close and reopen this editor before saving."), true);
             return;
           }
           reportStatus("");
@@ -617,7 +621,7 @@
             message: window.LiveSmithI18n.message("Remove named connection {name} and its saved credentials?", { name: connection.name }),
             acceptLabel: window.LiveSmithI18n.message("Remove"), danger: true }))) return;
           if (revision() !== expectedRevision) {
-            reportStatus(t("Connections changed while removing. Review the connection and try again."), true);
+            reportStatus(m("Connections changed while removing. Review the connection and try again."), true);
             return;
           }
           saving = true;
@@ -713,7 +717,7 @@
           if (draft?.kind === "plugin" && !draftPluginServer(draft).server) {
             draft.secrets = Object.create(null);
             if (!draft.feedback?.message) draft.feedback = {
-              message: t("This MCP server is unavailable. Reopen the connection after restoring its Plugin, or remove the connection."),
+              message: m("This MCP server is unavailable. Reopen the connection after restoring its Plugin, or remove the connection."),
               isError: true,
             };
           }
@@ -759,9 +763,17 @@
       window.LiveSmithFactories.createMcpServiceSettings = function ({ getState, runCommand }) {
         const t = (key, values) => window.LiveSmithI18n.t(key, values);
         let busy = false, rendered = "", lastToken = "", draftSettings = null;
+        let feedback = { message: "", error: false };
         const byId = id => document.getElementById(id);
+        const renderFeedback = () => {
+          const node = byId("mcpClientFeedback");
+          node.textContent = window.LiveSmithI18n.text(feedback.message);
+          node.hidden = !node.textContent;
+          node.classList.toggle("error", feedback.error);
+        };
         const report = (message, error = false) => {
-          const node = byId("mcpClientFeedback"); node.textContent = window.LiveSmithI18n.text(message); node.hidden = !node.textContent; node.classList.toggle("error", error);
+          feedback = { message, error };
+          renderFeedback();
         };
         const clearSecrets = () => { byId("mcpClientConfig").value = ""; byId("mcpClientCredential").hidden = true; };
         const sessionRecords = () => [...getState().sessions, ...getState().previousSessions, ...getState().archivedSessions];
@@ -783,6 +795,7 @@
           const key = JSON.stringify([service, state.sessions, state.previousSessions, state.archivedSessions, state.mcpCredential, busy, window.LiveSmithI18n.locale]);
           if (key === rendered) return;
           rendered = key;
+          renderFeedback();
           const settings = draftSettings || service.settings;
           byId("mcpServerEnabled").checked = settings.enabled;
           byId("mcpServerPort").value = String(settings.port);
@@ -813,6 +826,7 @@
           const credential = state.mcpCredential;
           if (credential && credential.token !== lastToken) {
             lastToken = credential.token;
+            byId("mcpOutwardService").open = true;
             byId("mcpClientConfig").value = JSON.stringify({ mcpServers: { "live-smith": { url: credential.url, headers: { Authorization: `Bearer ${credential.token}` } } } }, null, 2);
             byId("mcpClientCredential").hidden = false;
             byId("mcpClientConfig").focus(); byId("mcpClientConfig").select();
@@ -823,13 +837,13 @@
           byId("mcpServerEnabled").addEventListener("change", editSettings); byId("mcpServerPort").addEventListener("input", editSettings);
           byId("saveMcpServer").addEventListener("click", async () => {
             const port = Number(byId("mcpServerPort").value);
-            if (!Number.isInteger(port) || port < 1024 || port > 65535) { report(t("Choose a port from 1024 to 65535."), true); return; }
+            if (!Number.isInteger(port) || port < 1024 || port > 65535) { report(window.LiveSmithI18n.message("Choose a port from 1024 to 65535."), true); return; }
             if (await command("save_global_settings", { mcpServer: { enabled: byId("mcpServerEnabled").checked, port } })) { draftSettings = null; rendered = ""; render(); }
           });
           byId("mcpClientSession").addEventListener("change", showScope);
           byId("createMcpClient").addEventListener("click", async () => {
             const name = byId("mcpClientName").value.trim(), sessionId = byId("mcpClientSession").value;
-            if (!name) { report(t("Enter a client name."), true); byId("mcpClientName").focus(); return; }
+            if (!name) { report(window.LiveSmithI18n.message("Enter a client name."), true); byId("mcpClientName").focus(); return; }
             if (await command("create_mcp_client", { name, ...(sessionId ? { sessionId } : {}) })) byId("mcpClientName").value = "";
           });
           byId("dismissMcpCredential").addEventListener("click", clearSecrets);

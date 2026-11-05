@@ -16,7 +16,7 @@ test("MCP offers standalone servers and packaged credentials alongside Plugin se
     ] }];
   const harness = await createDialogHarness(state);
   try {
-    assert.equal(harness.document.querySelector("#connectionsHeading")?.textContent, "MCP servers");
+    assert.equal(harness.document.querySelector("#connectionsHeading")?.textContent, "Connect external tools");
     harness.click("#addConnectionButton");
     assert.equal(harness.document.querySelector("#connectionSourcePicker"), null);
     assert.ok(harness.document.querySelector('.plugin-connection-editor [name="mcpUrl"]'));

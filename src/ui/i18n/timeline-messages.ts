@@ -142,7 +142,7 @@ export const timelineMessages: Record<string, string> = {
   "Inspect song info": "检查乐曲信息",
   "Apply live actions": "应用 Live 操作",
   "Resolve live recovery": "处理 Live 恢复",
-  "Propose creative brief": "提出创作简报",
+  "Propose creative brief": "提出创作要求",
   "List Session artifacts": "列出会话产物",
   "Inspect MIDI artifact": "查看 MIDI 产物",
   "Save MIDI artifact": "保存 MIDI 产物",

@@ -1163,7 +1163,7 @@ export function oauthAuthStatusMessage(
   const values = { provider: oauthProviderLabel(provider) };
   switch (state.status) {
     case "unavailable":
-      return state.message;
+      return state.displayMessage ?? state.message;
     case "signed-out":
       return uiMessage("Signed out of {provider}.", values);
     case "pending":

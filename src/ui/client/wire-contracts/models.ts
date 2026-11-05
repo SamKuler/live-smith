@@ -44,6 +44,7 @@ import {
   isInteger,
   isWireArray,
   isWireRecord,
+  isWireUiMessage,
   isWireStorageId,
   isWireCorrelationId,
   wireCodePointLengthAtMost,
@@ -663,13 +664,14 @@ export function isWireOAuthAuth(value: unknown): value is OAuthAuthState {
       "definitive",
       "verificationUrl",
       "verificationLabel",
+      "displayMessage",
     ]) &&
       typeof value.message === "string" &&
       (value.definitive === undefined || typeof value.definitive === "boolean") &&
       (value.verificationUrl === undefined ||
         typeof value.verificationUrl === "string") &&
-      (value.verificationLabel === undefined ||
-        typeof value.verificationLabel === "string");
+      (value.verificationLabel === undefined || isWireUiMessage(value.verificationLabel)) &&
+      (value.displayMessage === undefined || isWireRecord(value.displayMessage) && isWireUiMessage(value.displayMessage));
   }
   if (value.status === "pending") {
     return hasOnlyWireKeys<NonNullable<OAuthAuthState>>(value, [

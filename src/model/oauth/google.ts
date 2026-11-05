@@ -1,3 +1,4 @@
+import { uiMessage } from "../../i18n/ui-message.js";
 import { Buffer } from "node:buffer";
 import { URL } from "node:url";
 
@@ -305,9 +306,9 @@ async function discoverAntigravityProject(
   if (validationTier) {
     const verificationUrl = trustedGoogleVerificationUrl(validationTier.validationUrl);
     throw new OAuthLoginError(
-      "Google requires an additional account verification before Antigravity can be used.",
+      uiMessage("Google requires an additional account verification before Antigravity can be used."),
       verificationUrl
-        ? { verificationUrl, verificationLabel: "Verify Google account" }
+        ? { verificationUrl, verificationLabel: uiMessage("Verify Google account") }
         : {},
     );
   }

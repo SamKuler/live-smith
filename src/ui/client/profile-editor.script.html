@@ -1259,7 +1259,7 @@
             title: retryableSignIn
               ? t("{providerLabel} sign-in failed", { providerLabel: providerLabel })
               : t("{providerLabel} subscription unavailable", { providerLabel: providerLabel }),
-            detail: auth.message,
+            detail: window.LiveSmithI18n.text(auth.displayMessage ?? auth.message),
             signIn: {
               label: retryableSignIn ? t("Try sign-in again") : t("Sign in"),
               hidden: !retryableSignIn,
@@ -1392,7 +1392,7 @@
           auth?.status === "pending" && auth.browserLaunchFailed
             ? t("Retry opening {providerLabel} sign-in page", { providerLabel: providerLabel })
             : auth?.status === "unavailable" && auth.verificationLabel
-              ? auth.verificationLabel
+              ? window.LiveSmithI18n.text(auth.verificationLabel)
               : t("Open {providerLabel} sign-in page", { providerLabel: providerLabel }),
         );
         setDataIfChanged(panel, "authState", presentation.state);

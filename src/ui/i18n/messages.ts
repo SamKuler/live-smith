@@ -3,6 +3,7 @@ import { timelineMessages } from "./timeline-messages.js";
 import { profileMessages } from "./profile-messages.js";
 import { mainMessages } from "./main-messages.js";
 import { actionMessages } from "./action-messages.js";
+import { audioToolHelpMessages } from "./audio-tool-help.js";
 import { audioMessages } from "./audio-messages.js";
 import { connectionsMessages } from "./connections-messages.js";
 import { toolMessages } from "./tool-messages.js";
@@ -15,6 +16,7 @@ const zhCNMessages: Readonly<Record<string, string>> = Object.freeze({
   ...mainMessages,
   ...actionMessages,
   ...audioMessages,
+  ...audioToolHelpMessages,
   ...connectionsMessages,
   ...toolMessages,
 });

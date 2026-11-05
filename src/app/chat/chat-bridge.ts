@@ -314,10 +314,10 @@ export class ChatBridgeAttachmentValidationError extends Error {
   }
 }
 
-export class ChatBridgeSkillValidationError extends Error {
+export class ChatBridgeSkillValidationError extends UiMessageError {
   readonly status = 400;
 
-  constructor(message: string) {
+  constructor(message: UiMessage) {
     super(message);
     this.name = "ChatBridgeSkillValidationError";
   }
@@ -2890,14 +2890,14 @@ export async function createChatBridge(
       const reportedError = error instanceof ChatBridgeSendFailureError
         ? error.originalError
         : error;
-      const displayMessage = (requestPath === "/command" || requestPath === "/device-parameters") &&
-        reportedError instanceof UiMessageError && typeof reportedError.displayMessage === "object"
-        ? reportedError.displayMessage : undefined;
       const attachmentRequest = requestPath === "/attachments" ||
         requestPath.startsWith("/attachments/");
       const attachmentMutation = attachmentRequest && (request.method === "POST" || request.method === "DELETE");
       const skillMutation = requestPath === "/skills" ||
         requestPath.startsWith("/skills/");
+      const displayMessage = (requestPath === "/command" || requestPath === "/device-parameters" || skillMutation) &&
+        reportedError instanceof UiMessageError && typeof reportedError.displayMessage === "object"
+        ? reportedError.displayMessage : undefined;
       const pluginRequest = requestPath === "/plugins" ||
         requestPath === "/plugins/inspect";
       const pluginMutation = requestPath === "/plugins";

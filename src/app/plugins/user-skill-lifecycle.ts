@@ -46,7 +46,7 @@ export function createUserSkillLifecycle(dependencies: UserSkillLifecycleOptions
       definition = parseSkillMarkdown(bytes);
     } catch (error) {
       if (error instanceof SkillFormatError) {
-        throw new ChatBridgeSkillValidationError(error.message);
+        throw new ChatBridgeSkillValidationError(error.displayMessage);
       }
       throw new ChatBridgeSkillValidationError(
         "The uploaded SKILL.md is invalid.",

@@ -5495,6 +5495,7 @@
             result.error || `${response.status} ${response.statusText}`,
           );
           error.httpStatus = response.status;
+          if (isWireUiMessage(result.displayMessage)) error.displayMessage = result.displayMessage;
           if (result.commandOutcome === "unknown") {
             error.attachmentFailureKind = "unknown";
             if (isWireChatBridgeState(result.state)) {
@@ -5825,6 +5826,7 @@
             result.error || `${response.status} ${response.statusText}`,
           );
           error.httpStatus = response.status;
+          if (isWireUiMessage(result.displayMessage)) error.displayMessage = result.displayMessage;
           if (result.commandOutcome === "unknown") {
             if (isWireChatBridgeState(result.state)) {
               applyCommandState("skill_reconcile", result.state, causalAttempt);
@@ -5961,6 +5963,7 @@
         if (!response.ok) {
           const error = new Error(result.error || `${response.status} ${response.statusText}`);
           error.httpStatus = response.status;
+          if (isWireUiMessage(result.displayMessage)) error.displayMessage = result.displayMessage;
           if (result.commandOutcome === "unknown") {
             if (isWireChatBridgeState(result.state)) {
               applyCommandState("plugin_reconcile", result.state, causalAttempt);

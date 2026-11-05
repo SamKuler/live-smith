@@ -4,6 +4,7 @@
       }) {
         const t = (source, params) => window.LiveSmithI18n.t(source, params);
         const descriptors = Object.assign(Object.create(null), __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__);
+        const audioHelp = Object.assign(Object.create(null), __BUILT_IN_AUDIO_TOOL_HELP__);
         const parameterPanels = window.LiveSmithFactories.createPluginParameterPanels({ getState, runCommand, resultActions });
         let renderedKey = null;
         let disabled = false;
@@ -137,19 +138,19 @@
             title.textContent = group.kind === "mcp" ? tool.name : humanizeToolName(tool.name);
             const name = element("code", "tool-name", tool.name);
             name.setAttribute("translate", "no");
-            const description = element("p", "tool-description", group.kind === "live" ? t(tool.description) : tool.description);
-            if (group.kind !== "live") description.setAttribute("translate", "no");
-            const information = element("details", "tool-information");
-            information.dataset.toolKey = JSON.stringify(["information", entry.dataset.toolKey]);
-            information.append(element("summary", "", t("Tool details")));
-            if (group.kind !== "mcp") information.append(name);
-            information.append(description);
-            entry.append(title, information);
+            const help = group.kind === "audio" ? audioHelp[tool.name] : undefined;
+            const description = element("p", "tool-description",
+              group.kind === "live" ? t(tool.description) : help ? t(help) : tool.description);
+            if (group.kind !== "live" && !help) description.setAttribute("translate", "no");
+            entry.append(title);
+            if (group.kind !== "mcp") entry.append(name);
+            entry.append(description);
             if (tool.audioPanel) {
               const open = element("button", "secondary audio-open-panel", t("Open controls"));
               open.type = "button";
               open.addEventListener("click", () => {
-                audioParameters.open({ ...tool, title: () => humanizeToolName(tool.name) }, () => groupLabel(group));
+                audioParameters.open({ ...tool, title: () => humanizeToolName(tool.name),
+                  description: help ? () => t(help) : tool.description }, () => groupLabel(group));
               });
               entry.append(open);
             }
@@ -212,7 +213,7 @@
           const status = document.getElementById("sessionToolsStatus");
           status.textContent = loading ? t("Loading tool descriptions…")
             : loadFailed ? t("The tool list was not loaded. You can try again.")
-            : catalog ? t("Loaded at {time}. Tools may change with connection settings and the next message's inputs.", {
+            : catalog ? t("Loaded at {time}.", {
               time: new Intl.DateTimeFormat(window.LiveSmithI18n.locale, { hour: "2-digit", minute: "2-digit" })
                 .format(new Date(catalog.loadedAt)),
             }) : t("Tool descriptions load automatically when this Session is idle. Connection status below reflects saved settings.");

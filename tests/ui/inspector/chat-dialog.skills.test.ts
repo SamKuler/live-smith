@@ -500,7 +500,7 @@ test("Skill import, activation, and deletion keep bodies off JSON command paths"
       "#userSkillLibraryList [data-skill-id='mix-review'] .skill-delete",
     );
     assert.equal(deleteButton?.disabled, false);
-    assert.equal(deleteButton?.textContent, "Disable");
+    assert.equal(deleteButton?.textContent, "Disable in all Sessions");
     deleteButton?.focus();
     deleteButton?.click();
     await harness.acceptAppConfirmation();
@@ -915,7 +915,7 @@ test("visible Extensions Skills returns focus through archived disable and delet
     const disable = harness.document.querySelector<HTMLButtonElement>(
       "#userSkillLibraryList [data-skill-id='history-guide'] .skill-delete",
     );
-    assert.equal(disable?.textContent, "Disable");
+    assert.equal(disable?.textContent, "Disable in all Sessions");
     disable?.focus();
     harness.holdNextCommand();
     commandHeld = true;
@@ -1016,7 +1016,7 @@ for (const completion of ["cancel", "failure", "complete"] as const) {
         const removeButton = harness.document.querySelector<HTMLButtonElement>('#userSkillLibraryList [data-skill-id="remove-me"] .skill-delete')!;
         assert.equal(removeButton.textContent, "Delete");
         const keepButton = harness.document.querySelector<HTMLButtonElement>('#userSkillLibraryList [data-skill-id="keep-me"] .skill-delete')!;
-        assert.equal(keepButton.textContent, "Disable");
+        assert.equal(keepButton.textContent, "Disable in all Sessions");
       }
       assert.deepEqual(harness.errors, []);
     } finally { harness.close(); }

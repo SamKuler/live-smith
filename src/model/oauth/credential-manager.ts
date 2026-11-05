@@ -1,3 +1,4 @@
+import { UiMessageError, type UiMessage } from "../../i18n/ui-message.js";
 import {
   deleteOAuthCredential,
   loadOAuthCredential,
@@ -26,15 +27,15 @@ export interface OAuthLoginAttempt {
   cancel(reason?: unknown): void;
 }
 
-export class OAuthLoginError extends Error {
+export class OAuthLoginError extends UiMessageError {
   readonly verificationUrl: string | undefined;
-  readonly verificationLabel: string | undefined;
+  readonly verificationLabel: UiMessage | undefined;
 
   constructor(
-    message: string,
+    message: UiMessage,
     options: {
       verificationUrl?: string;
-      verificationLabel?: string;
+      verificationLabel?: UiMessage;
     } = {},
   ) {
     super(message);
@@ -372,6 +373,7 @@ export class OAuthCredentialManager {
       return {
         status: "unavailable",
         message: error.message,
+        ...(typeof error.displayMessage === "object" ? { displayMessage: error.displayMessage } : {}),
         definitive: true,
         ...(error.verificationUrl
           ? { verificationUrl: error.verificationUrl }

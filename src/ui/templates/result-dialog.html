@@ -6,15 +6,29 @@
     <meta name="theme-color" content="#292929" />
     <title data-i18n="Live Smith Result">Live Smith Result</title>
     <script>
+      window.__LIVE_SMITH_STATE__ = __RESULT_DATA__;
       __HOST_ADAPTER_SCRIPT__
       __I18N_SCRIPT__
+      (() => {
+        const { body } = window.__LIVE_SMITH_STATE__;
+        delete window.__LIVE_SMITH_STATE__;
+        const i18n = window.LiveSmithI18n;
+        const render = () => { document.getElementById("resultBody").textContent = i18n.text(body); };
+        window.addEventListener("DOMContentLoaded", render, { once: true });
+        window.addEventListener("languagechange", () => {
+          if (i18n.preference === "system" && i18n.configure("system")) {
+            i18n.apply();
+            render();
+          }
+        });
+      })();
     </script>
     <style>/*__RESULT_STYLES__*/</style>
   </head>
   <body>
     <main>
-      <h1>__TITLE__</h1>
-      <pre>__BODY__</pre>
+      <h1 data-i18n="Live Smith Error">Live Smith Error</h1>
+      <pre id="resultBody"></pre>
       <div class="actions">
         <button type="button" onclick="LiveSmithHostAdapter.closeWithResult({ closed: true })" data-i18n="Close">Close</button>
       </div>

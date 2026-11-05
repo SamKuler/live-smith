@@ -1,3 +1,4 @@
+import type { UiMessage, UiMessageDescriptor } from "../i18n/ui-message.js";
 import type {
   ConversationMessage,
   ModelHostedWebSearch,
@@ -205,11 +206,12 @@ export type OAuthAuthState =
   | {
       status: "unavailable";
       message: string;
+      displayMessage?: UiMessageDescriptor;
       /** The backend observed a terminal auth result, not an indeterminate read. */
       definitive?: boolean;
       /** Trusted provider page for resolving an account requirement. */
       verificationUrl?: string;
-      verificationLabel?: string;
+      verificationLabel?: UiMessage;
     }
   | { status: "signed-out" }
   | {

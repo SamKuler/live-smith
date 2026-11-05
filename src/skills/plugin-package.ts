@@ -1,5 +1,6 @@
 import { TextDecoder } from "node:util";
 
+import { uiMessage } from "../i18n/ui-message.js";
 import { openPluginArchive, type OpenPluginArchive } from "../plugins/archive.js";
 import type { InstalledPluginPackage } from "../storage/plugins.js";
 import {
@@ -30,9 +31,9 @@ export function pluginSkillsFromArchive(pluginId: string, archive: OpenPluginArc
     if (segments.length !== 2 || segments[1] !== "SKILL.md") continue;
     const localId = segments[0]!;
     try {
-      if (!isSafeSkillId(localId)) throw new SkillFormatError(1, "the Skill directory name is invalid");
+      if (!isSafeSkillId(localId)) throw new SkillFormatError(1, uiMessage("the Skill directory name is invalid"));
       const definition = parsePluginSkillMarkdown(source, localId);
-      if (definition.id !== localId) throw new SkillFormatError(2, "the name does not match the Skill directory");
+      if (definition.id !== localId) throw new SkillFormatError(2, uiMessage("the name does not match the Skill directory"));
       definitions.push({ ...definition, id: `${pluginId}:${localId}`, pluginId, localId });
     } catch (error) {
       if (!(error instanceof SkillFormatError)) throw error;
@@ -55,37 +56,37 @@ export async function pluginSkillsFromPackages(
 }
 
 export function parsePluginSkillMarkdown(bytes: Uint8Array, fallbackId: string): SkillDefinition {
-  if (!bytes.byteLength) throw new SkillFormatError(1, "the file is empty");
-  if (bytes.byteLength > MAX_SKILL_FILE_BYTES) throw new SkillFormatError(1, "the file exceeds the byte limit");
+  if (!bytes.byteLength) throw new SkillFormatError(1, uiMessage("the file is empty"));
+  if (bytes.byteLength > MAX_SKILL_FILE_BYTES) throw new SkillFormatError(1, uiMessage("the file exceeds the byte limit"));
   let source: string;
   try { source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
-  catch { throw new SkillFormatError(1, "the file is not valid UTF-8"); }
+  catch { throw new SkillFormatError(1, uiMessage("the file is not valid UTF-8")); }
   assertSafeText(source);
   const lines = source.replaceAll("\r\n", "\n").split("\n");
-  if (lines[0] !== "---") throw new SkillFormatError(1, "the opening delimiter is missing");
+  if (lines[0] !== "---") throw new SkillFormatError(1, uiMessage("the opening delimiter is missing"));
   const closing = lines.indexOf("---", 1);
-  if (closing < 2 || closing > 64) throw new SkillFormatError(1, "the frontmatter delimiter is invalid");
+  if (closing < 2 || closing > 64) throw new SkillFormatError(1, uiMessage("the frontmatter delimiter is invalid"));
   const fields = new Map<string, { value: string; line: number }>();
   for (let index = 1; index < closing; index += 1) {
     const match = /^([A-Za-z][A-Za-z0-9-]*):(.*)$/u.exec(lines[index]!);
-    if (!match) throw new SkillFormatError(index + 1, "frontmatter contains an invalid field");
+    if (!match) throw new SkillFormatError(index + 1, uiMessage("frontmatter contains an invalid field"));
     const key = match[1]!;
-    if (fields.has(key)) throw new SkillFormatError(index + 1, "frontmatter contains a duplicate field");
+    if (fields.has(key)) throw new SkillFormatError(index + 1, uiMessage("frontmatter contains a duplicate field"));
     const value = match[2]!.trim();
     if (!value || forbiddenScalarPrefixes.has(value[0]!) || /^[-?:](?:$|\s)/u.test(value)) {
-      throw new SkillFormatError(index + 1, "frontmatter must use a non-empty plain scalar");
+      throw new SkillFormatError(index + 1, uiMessage("frontmatter must use a non-empty plain scalar"));
     }
     fields.set(key, { value, line: index + 1 });
   }
   const id = fields.get("name")?.value ?? fallbackId;
-  if (!isSafeSkillId(id)) throw new SkillFormatError(fields.get("name")?.line ?? 2, "the name is invalid");
+  if (!isSafeSkillId(id)) throw new SkillFormatError(fields.get("name")?.line ?? 2, uiMessage("the name is invalid"));
   const description = fields.get("description");
-  if (!description) throw new SkillFormatError(closing + 1, "frontmatter must contain description");
+  if (!description) throw new SkillFormatError(closing + 1, uiMessage("frontmatter must contain description"));
   if ([...description.value].length > MAX_SKILL_DESCRIPTION_LENGTH) {
-    throw new SkillFormatError(description.line, "the description exceeds the character limit");
+    throw new SkillFormatError(description.line, uiMessage("the description exceeds the character limit"));
   }
   const body = lines.slice(closing + 1).join("\n");
-  if (!body.trim()) throw new SkillFormatError(closing + 2, "the Markdown body is empty");
+  if (!body.trim()) throw new SkillFormatError(closing + 2, uiMessage("the Markdown body is empty"));
   return { id, description: description.value, body };
 }
 
@@ -93,14 +94,14 @@ function assertSafeText(source: string): void {
   for (let index = 0; index < source.length; index += 1) {
     const code = source.charCodeAt(index);
     if ((code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || code === 0x7f) {
-      throw new SkillFormatError(lineAt(source, index), "the file contains a forbidden control character");
+      throw new SkillFormatError(lineAt(source, index), uiMessage("the file contains a forbidden control character"));
     }
-    if (code === 0xfeff) throw new SkillFormatError(lineAt(source, index), "the file contains a byte-order mark");
+    if (code === 0xfeff) throw new SkillFormatError(lineAt(source, index), uiMessage("the file contains a byte-order mark"));
     if ((code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069)) {
-      throw new SkillFormatError(lineAt(source, index), "the file contains a bidirectional control character");
+      throw new SkillFormatError(lineAt(source, index), uiMessage("the file contains a bidirectional control character"));
     }
     if (code === 0x0d && source.charCodeAt(index + 1) !== 0x0a) {
-      throw new SkillFormatError(lineAt(source, index), "line endings must use LF or CRLF");
+      throw new SkillFormatError(lineAt(source, index), uiMessage("line endings must use LF or CRLF"));
     }
   }
 }

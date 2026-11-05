@@ -3496,7 +3496,11 @@ function throwMappedAttachmentError(error: unknown): never {
 export function showAgentError(context: Api, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   console.error(message);
-  void import("../ui/dialogs.js").then(({ resultUrl }) =>
-    context.ui.showModalDialog(resultUrl("Live Smith Error", message), 560, 240),
+  const body = error instanceof UiMessageError ? error.displayMessage : message;
+  const uiLanguage = loadAgentSettings(context.environment.storageDirectory).then(
+    settings => settings.uiLanguage, () => "system" as const,
+  );
+  void Promise.all([import("../ui/dialogs.js"), uiLanguage]).then(([{ resultUrl }, language]) =>
+    context.ui.showModalDialog(resultUrl(body, language), 560, 240),
   );
 }

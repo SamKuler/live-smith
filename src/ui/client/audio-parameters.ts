@@ -5,7 +5,7 @@ export type { AudioParameterPanel } from "../../plugins/builtins/parameter-panel
 type Schema = Record<string, unknown>;
 type Scalar = string | number | boolean;
 interface Draft { included: boolean; value?: unknown; children?: Record<string, Draft>; items?: Draft[]; variant?: number; variants?: Draft[] }
-interface AudioTool { name: string; title?: () => string; description?: string; audioPanel: AudioParameterPanel }
+interface AudioTool { name: string; title?: () => string; description?: LocalizedText; audioPanel: AudioParameterPanel }
 interface Dependencies {
   getState(): { activeSessionId?: string; integrationConnections?: { revision: string }; plugins?: unknown[]; audioJobs?: unknown[]; sunoAccounts?: { serviceId: string; accountId?: string }[]; events?: { kind: string; name?: string; content: string }[] };
   runCommand(kind: string, input: Record<string, unknown>, options: { cancellable: boolean }): Promise<unknown>;

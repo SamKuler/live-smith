@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readInlineHelp } from "../support/inline-help.js";
 import { URL } from "node:url";
 import { commandCalls, createDialogHarness, pendingAudio, pendingImage } from "../support/chat-dialog.test-harness.js";
 import { audioState, service, musicService, sunoService, job, broadcast,
@@ -181,12 +182,14 @@ test("Chinese audio settings and result controls render through the real dialog"
   const harness = await createDialogHarness(state);
   try {
     assert.equal(harness.document.querySelector("#audioSettingsHeading")?.textContent, "音频服务");
-    assert.equal(harness.document.querySelector("#connectionsHeading")?.textContent, "MCP 服务器");
+    harness.click("#mcpExtensionTab");
+    assert.equal(harness.document.querySelector("#connectionsHeading")?.textContent, "连接外部工具");
+    harness.click("#audioExtensionTab");
     assert.equal(harness.document.querySelector("#addAudioServiceButton")?.textContent, "添加连接");
     assert.equal(harness.document.querySelector("#saveAudioServiceButton")?.textContent, "保存");
     assert.equal(harness.document.querySelector("#saveAudioServiceButton")?.getAttribute("aria-label"), "保存连接");
     assert.equal(harness.document.querySelector("[data-resume-audio-job]")?.textContent, "恢复音频任务");
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /分钟数/);
+    assert.match(readInlineHelp(harness.document.querySelector<HTMLButtonElement>("#audioServiceDisclosure")!), /分钟数/);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });

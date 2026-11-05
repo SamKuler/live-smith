@@ -1,5 +1,6 @@
 import { TextDecoder } from "node:util";
 
+import { uiMessage, UiMessageError, type UiMessageDescriptor } from "../i18n/ui-message.js";
 import { isSafePluginId } from "../plugins/contracts.js";
 
 export const MAX_SKILL_FILE_BYTES = 64 * 1024;
@@ -36,19 +37,19 @@ const forbiddenScalarPrefixes = new Set([
   "#",
 ]);
 
-export class SkillFormatError extends Error {
-  constructor(line: number, reason: string) {
-    super(`Invalid SKILL.md at line ${line}: ${reason}.`);
+export class SkillFormatError extends UiMessageError {
+  constructor(line: number, reason: UiMessageDescriptor) {
+    super(uiMessage("Invalid SKILL.md at line {line}: {reason}.", { line, reason }));
     this.name = "SkillFormatError";
   }
 }
 
 export function parseSkillMarkdown(bytes: Uint8Array): SkillDefinition {
   if (bytes.byteLength === 0) {
-    throw new SkillFormatError(1, "the file is empty");
+    throw new SkillFormatError(1, uiMessage("the file is empty"));
   }
   if (bytes.byteLength > MAX_SKILL_FILE_BYTES) {
-    throw new SkillFormatError(1, "the file exceeds the byte limit");
+    throw new SkillFormatError(1, uiMessage("the file exceeds the byte limit"));
   }
 
   let source: string;
@@ -56,21 +57,21 @@ export function parseSkillMarkdown(bytes: Uint8Array): SkillDefinition {
     source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
       .decode(bytes);
   } catch {
-    throw new SkillFormatError(1, "the file is not valid UTF-8");
+    throw new SkillFormatError(1, uiMessage("the file is not valid UTF-8"));
   }
 
   const invalidControlIndex = firstForbiddenControlIndex(source);
   if (invalidControlIndex >= 0) {
     throw new SkillFormatError(
       lineNumberAt(source, invalidControlIndex),
-      "the file contains a forbidden control character",
+      uiMessage("the file contains a forbidden control character"),
     );
   }
   const byteOrderMarkIndex = source.indexOf("\ufeff");
   if (byteOrderMarkIndex >= 0) {
     throw new SkillFormatError(
       lineNumberAt(source, byteOrderMarkIndex),
-      "the file contains a byte-order mark",
+      uiMessage("the file contains a byte-order mark"),
     );
   }
 
@@ -78,7 +79,7 @@ export function parseSkillMarkdown(bytes: Uint8Array): SkillDefinition {
   if (bidiControlIndex >= 0) {
     throw new SkillFormatError(
       lineNumberAt(source, bidiControlIndex),
-      "the file contains a bidirectional control character",
+      uiMessage("the file contains a bidirectional control character"),
     );
   }
 
@@ -86,21 +87,21 @@ export function parseSkillMarkdown(bytes: Uint8Array): SkillDefinition {
   if (loneCarriageReturnIndex >= 0) {
     throw new SkillFormatError(
       lineNumberAt(source, loneCarriageReturnIndex),
-      "line endings must use LF or CRLF",
+      uiMessage("line endings must use LF or CRLF"),
     );
   }
 
   const normalized = source.replaceAll("\r\n", "\n");
   const lines = normalized.split("\n");
   if (lines[0] !== "---") {
-    throw new SkillFormatError(1, "the opening delimiter is missing");
+    throw new SkillFormatError(1, uiMessage("the opening delimiter is missing"));
   }
 
   const closingDelimiterIndex = 3;
   if (lines[closingDelimiterIndex] !== "---") {
     throw new SkillFormatError(
       Math.min(closingDelimiterIndex + 1, Math.max(1, lines.length)),
-      "frontmatter must contain exactly two field lines",
+      uiMessage("frontmatter must contain exactly two field lines"),
     );
   }
 
@@ -109,27 +110,27 @@ export function parseSkillMarkdown(bytes: Uint8Array): SkillDefinition {
     const line = lines[index]!;
     const match = /^([A-Za-z][A-Za-z0-9-]*):(.*)$/.exec(line);
     if (!match) {
-      throw new SkillFormatError(index + 1, "frontmatter contains an invalid field");
+      throw new SkillFormatError(index + 1, uiMessage("frontmatter contains an invalid field"));
     }
     const key = match[1]!;
     if (!allowedFrontmatterKeys.has(key)) {
-      throw new SkillFormatError(index + 1, "frontmatter contains an unknown field");
+      throw new SkillFormatError(index + 1, uiMessage("frontmatter contains an unknown field"));
     }
     if (values.has(key)) {
-      throw new SkillFormatError(index + 1, "frontmatter contains a duplicate field");
+      throw new SkillFormatError(index + 1, uiMessage("frontmatter contains a duplicate field"));
     }
     const value = match[2]!.trim();
     if (value.length === 0) {
-      throw new SkillFormatError(index + 1, "frontmatter contains an empty value");
+      throw new SkillFormatError(index + 1, uiMessage("frontmatter contains an empty value"));
     }
     if (forbiddenScalarPrefixes.has(value[0]!)) {
-      throw new SkillFormatError(index + 1, "frontmatter must use a plain scalar");
+      throw new SkillFormatError(index + 1, uiMessage("frontmatter must use a plain scalar"));
     }
     if (/^[-?:](?:$|\s)/u.test(value)) {
-      throw new SkillFormatError(index + 1, "frontmatter must use a plain scalar");
+      throw new SkillFormatError(index + 1, uiMessage("frontmatter must use a plain scalar"));
     }
     if (/[\u0085\u2028\u2029]/u.test(value)) {
-      throw new SkillFormatError(index + 1, "frontmatter must use one physical line");
+      throw new SkillFormatError(index + 1, uiMessage("frontmatter must use one physical line"));
     }
     values.set(key, value);
   }
@@ -137,7 +138,7 @@ export function parseSkillMarkdown(bytes: Uint8Array): SkillDefinition {
   if (values.size !== allowedFrontmatterKeys.size) {
     throw new SkillFormatError(
       closingDelimiterIndex + 1,
-      "frontmatter must contain name and description",
+      uiMessage("frontmatter must contain name and description"),
     );
   }
 
@@ -146,20 +147,20 @@ export function parseSkillMarkdown(bytes: Uint8Array): SkillDefinition {
     id.length > MAX_SKILL_ID_LENGTH ||
     !skillIdPattern.test(id)
   ) {
-    throw new SkillFormatError(fieldLine(lines, closingDelimiterIndex, "name"), "the name is invalid");
+    throw new SkillFormatError(fieldLine(lines, closingDelimiterIndex, "name"), uiMessage("the name is invalid"));
   }
 
   const description = values.get("description")!;
   if ([...description].length > MAX_SKILL_DESCRIPTION_LENGTH) {
     throw new SkillFormatError(
       fieldLine(lines, closingDelimiterIndex, "description"),
-      "the description exceeds the character limit",
+      uiMessage("the description exceeds the character limit"),
     );
   }
 
   const body = lines.slice(closingDelimiterIndex + 1).join("\n");
   if (body.trim().length === 0) {
-    throw new SkillFormatError(closingDelimiterIndex + 2, "the Markdown body is empty");
+    throw new SkillFormatError(closingDelimiterIndex + 2, uiMessage("the Markdown body is empty"));
   }
 
   return { id, description, body };

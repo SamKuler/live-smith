@@ -233,14 +233,14 @@
         remove.type = "button";
         remove.className = "skill-delete secondary";
         const inUse = usedSkillIds.has(skill.id);
-        remove.textContent = inUse ? t("Disable") : t("Delete");
+        remove.textContent = inUse ? t("Disable in all Sessions") : t("Delete");
         remove.title = inUse
           ? t("Disable this Skill in every Session before deleting it.")
           : t("Delete Skill {id}", { id: skill.id });
         remove.setAttribute(
           "aria-label",
           inUse
-            ? t("Disable Skill {id} in every Session", { id: skill.id })
+            ? `${remove.textContent} · ${skill.id}`
             : t("Delete Skill {id}", { id: skill.id }),
         );
         remove.addEventListener("click", () => {
@@ -386,7 +386,7 @@
               : t("User Skill {skillId} deleted.", { skillId: skillId }),
           );
         } catch (error) {
-          showStatus(error.message || String(error), true);
+          showStatus(error.displayMessage ?? (error.message || String(error)), true);
         }
       }
 
@@ -439,11 +439,11 @@
               showStatus(t("Skill {id} replaced.", { id: receipt.id }));
               return receipt;
             } catch (replacementError) {
-              showStatus(replacementError.message || String(replacementError), true);
+              showStatus(replacementError.displayMessage ?? (replacementError.message || String(replacementError)), true);
               return null;
             }
           } else {
-            showStatus(error.message || String(error), true);
+            showStatus(error.displayMessage ?? (error.message || String(error)), true);
             return null;
           }
         }
