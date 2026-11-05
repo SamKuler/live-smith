@@ -18,6 +18,7 @@ import {
 import { createSession } from "../../src/storage/sessions.js";
 import {
   deleteSessionMidiArtifacts,
+  hasSessionMidiContent,
   inspectMidiArtifacts,
   listMidiArtifacts,
   listSessionMidiArtifactDirectoryIds,
@@ -279,6 +280,34 @@ test("fresh incomplete MIDI files remain untouched while another process may be 
   assert.ok((await fs.readdir(root)).includes(".midi_orphan.mid.tmp_writing"));
 });
 
+test("legacy continuation files coexist with readable and newly saved MIDI artifacts", async (t) => {
+  const h = await harness(t);
+  const root = path.join(h.directory, "live-smith-midi", h.session.id);
+  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  const temporary = path.join(root, ".continuation.json.tmp_interrupted");
+  await fs.writeFile(temporary, "{}", { mode: 0o600 });
+  assert.equal(await hasSessionMidiContent(h.directory, h.session.id), false);
+  const legacyFile = path.join(root, "continuation.json");
+  await fs.writeFile(legacyFile, "{}", { mode: 0o600 });
+  assert.equal(await hasSessionMidiContent(h.directory, h.session.id), true);
+
+  const input = { source: { kind: "model" as const, profileId: "profile", model: "test" },
+    serverId: "host", toolName: "save_midi_artifact", label: "Melody", bytes: midiFile(), signal: h.signal };
+  const original = await saveMidiArtifact(h.directory, h.session.id, input);
+  const historical = { ...original, generationKind: "continuation" as const };
+  await fs.writeFile(path.join(root, `${original.id}.midi.json`), JSON.stringify(historical), { mode: 0o600 });
+  const revision = await saveMidiArtifact(h.directory, h.session.id, {
+    ...input, label: "Melody revision", revisionOf: original.id,
+  });
+
+  assert.deepEqual((await readMidiArtifact(h.directory, h.session.id, original.id)).artifact, historical);
+  assert.deepEqual(new Map((await listMidiArtifacts(h.directory, h.session.id)).map((artifact) => [artifact.id, artifact])),
+    new Map([[historical.id, historical], [revision.id, revision]]));
+  assert.equal(revision.generationKind, undefined);
+  assert.equal(await fs.readFile(legacyFile, "utf8"), "{}");
+  assert.equal(await fs.readFile(temporary, "utf8"), "{}");
+});
+
 test("MIDI recovery never follows or removes an orphan symlink target", async (t) => {
   const h = await harness(t);
   const root = path.join(h.directory, "live-smith-midi", h.session.id);
@@ -341,8 +370,8 @@ test("model and host MIDI artifact identities remain distinct from Plugin identi
   if (model.source?.kind === "model") model.source.model = "returned mutation";
   const read = await readMidiArtifact(h.directory, h.session.id, model.id, h.signal);
   assert.deepEqual(read.artifact.source, { kind: "model", profileId: "profile-main", model: "configured-model" });
-  const host = await saveMidiArtifact(h.directory, h.session.id, { source: { kind: "host", operation: "live-midi-context" }, serverId: "host", toolName: "observe_midi_continuation", label: "Live source", bytes: midiFile(), signal: h.signal });
-  assert.deepEqual(host.source, { kind: "host", operation: "live-midi-context" });
+  const host = await saveMidiArtifact(h.directory, h.session.id, { source: { kind: "host", operation: "midi-conditioning-context" }, serverId: "host", toolName: "capture", label: "Live source", bytes: midiFile(), signal: h.signal });
+  assert.deepEqual((await readMidiArtifact(h.directory, h.session.id, host.id)).artifact.source, { kind: "host", operation: "midi-conditioning-context" });
   await assert.rejects(saveMidiArtifact(h.directory, h.session.id, { source: { kind: "host", operation: "live-midi-context" }, pluginId: "forged-plugin", serverId: "host", toolName: "save_midi_artifact", label: "Invalid", bytes: midiFile(), signal: h.signal } as never), MidiArtifactStorageError);
   assert.equal((await listMidiArtifacts(h.directory, h.session.id)).length, 2);
 });

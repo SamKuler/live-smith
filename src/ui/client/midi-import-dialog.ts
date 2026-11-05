@@ -7,9 +7,7 @@ export interface ImportableMidiArtifact { artifactRef: string; label: string }
 export interface MidiImportDialogInput {
   sessionId: string;
   artifacts: ImportableMidiArtifact[];
-  initialStartBeat?: number;
   initialPartId?: string;
-  onImport?: (input: Omit<MidiArtifactImportCommand, "kind">) => Promise<boolean>;
   onComplete?: (completed: boolean) => void;
 }
 interface Dependencies {
@@ -59,7 +57,7 @@ export function createMidiImportDialog(deps: Dependencies) {
     const current = () => active === view && view.sessionId === deps.getState().activeSessionId;
     let prepared: MidiArtifactImportPreview | undefined;
     let loading = false;
-    let startEdited = input.initialStartBeat !== undefined;
+    let startEdited = false;
     const field = (label: string, control: HTMLInputElement | HTMLSelectElement) => {
       const node = element("label", "midi-import-field"); node.append(element("span", "", () => t(label)), control); return node;
     };
@@ -72,7 +70,7 @@ export function createMidiImportDialog(deps: Dependencies) {
     fields.append(element("p", "field-hint", () => t("Destination: Arrangement")));
     const placement = element("div", "midi-import-placement");
     const start = element("input", "plugin-result-beat"); start.type = "number"; start.min = "1"; start.step = "any"; start.required = true;
-    start.value = String((input.initialStartBeat ?? 0) + 1);
+    start.value = "1";
     const mode = element("select", "plugin-result-mode");
     for (const [value, label] of [["parts", "Separate source parts"], ["merge", "Merge all parts into one Clip"]]) {
       const option = element("option", "", () => t(label!)); option.value = value!; mode.append(option);
@@ -195,7 +193,7 @@ export function createMidiImportDialog(deps: Dependencies) {
       const command: Omit<MidiArtifactImportCommand, "kind"> = { sessionId: input.sessionId, artifactRef: source.value,
         startBeat: Number(start.value) - 1, ...(mode.value === "merge" ? { ...destination(rows[0]!)!, mergeParts: true } : { mappings: selected }) };
       close(false);
-      const completed = await (input.onImport ?? deps.importMidi)(command);
+      const completed = await deps.importMidi(command);
       if (input.sessionId === deps.getState().activeSessionId) input.onComplete?.(completed);
     });
     document.body.append(dialog);

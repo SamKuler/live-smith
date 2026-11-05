@@ -19,7 +19,7 @@ import {
   type StandaloneMcpConnection,
 } from "../../plugins/integration-connections.js";
 import { loadAgentSettings } from "../../storage/settings.js";
-import { callPluginToolWithArtifacts, LIVE_SMITH_ARTIFACT_META_KEY, type MidiArtifactOutputPolicy, type PluginSavedArtifact } from "../../plugins/artifacts.js";
+import { callPluginToolWithArtifacts, LIVE_SMITH_ARTIFACT_META_KEY, type PluginSavedArtifact } from "../../plugins/artifacts.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { inspectMidiArtifacts, type MidiArtifact } from "../../storage/midi-artifacts.js";
 import { canonicalStorageDirectory, storageScopeKey, type StorageScopeKey } from "../../storage/scope.js";
@@ -57,7 +57,6 @@ export interface RequestPluginTools extends Toolset {
 }
 
 export interface RequestPluginCatalogTool {
-  continuation?: { inputArgument: string; lengthArgument: string };
   pluginId?: string;
   serverId: string;
   connectionId?: string;
@@ -156,7 +155,6 @@ function manageMcpSource(
 }
 
 export async function createRequestPluginTools(input: {
-  midiOutputPolicy?: MidiArtifactOutputPolicy;
   storageDirectory: string | undefined;
   sessionId: string;
   signal: AbortSignal;
@@ -410,7 +408,6 @@ export async function createRequestPluginTools(input: {
           ...(connection ? { connectionId: connection.id, connectionName: connection.name } : {}),
           name: definition.name,
           description: definition.description,
-          ...(definition.artifactContract?.continuation ? { continuation: { inputArgument: definition.artifactContract.inputs[0]!.argument, lengthArgument: definition.artifactContract.continuation.lengthArgument } } : {}),
           ...(panel ? { panel } : {}),
           ...(app ? { app } : {}),
         };
@@ -463,7 +460,6 @@ async function callMcpTool(
   routes: ReadonlyMap<string, McpRoute>,
   call: ModelToolCall,
   input: {
-    midiOutputPolicy?: MidiArtifactOutputPolicy;
     storageDirectory: string | undefined;
     temporaryDirectory?: string;
     sessionId: string;
@@ -511,7 +507,6 @@ async function callMcpTool(
         contract: definition.artifactContract,
         ...(input.artifactRevisionOf ? { revisionOf: input.artifactRevisionOf } : {}),
 
-        ...(input.midiOutputPolicy ? { outputPolicy: input.midiOutputPolicy } : {}),
         argumentsValue,
         storageDirectory: input.storageDirectory,
         temporaryDirectory: input.temporaryDirectory,

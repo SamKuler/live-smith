@@ -495,20 +495,6 @@
           humanizeToolName: sessionTimeline.humanizeToolName,
           runCommand: bridgeClient.runCommand,
         });
-        const midiContinuation = factories.createMidiContinuation({
-          getState,
-          run: async ({ kind, ...input }) => {
-            let known = false;
-            const completed = await bridgeClient.runCommand(kind, input, {
-              cancellable: kind !== "load_midi_continuation", onOutcome: (outcome) => { known = outcome.known; },
-            });
-            return completed && known;
-          },
-          stop: bridgeClient.stopActiveCommand,
-          preview: bridgeClient.prepareMidiImport,
-          resultActions: pluginResults,
-          createParameterPanels: () => factories.createPluginParameterPanels({ getState, runCommand: bridgeClient.runCommand }),
-        });
 
         function renderStateStatus() {
           const state = getState();
@@ -1138,7 +1124,7 @@
             bridgeClient.hasAnySendInProgress();
           const profileDirty = profileEditor.getDraftState().dirty;
           const otherDraftDirty = creativeBriefEditor.hasUnsavedChanges() || bridgeClient.hasUnsavedChanges() ||
-            connectionsManager.hasUnsavedChanges() || midiContinuation.hasUnsavedChanges() || skillManager.hasUnsavedChanges() ||
+            connectionsManager.hasUnsavedChanges() || skillManager.hasUnsavedChanges() ||
             pluginUserConfig.hasUnsavedChanges();
           const draftDirty = profileDirty || otherDraftDirty;
           const queuedFollowUpCount = bridgeClient.getQueuedFollowUpCount();
@@ -1450,7 +1436,6 @@
           artifactSummary.render();
           audioParameters.sync();
           toolsInspector.render();
-          midiContinuation.render();
           renderProfileStateProjection();
           inlineHelp.refresh();
           if (sessionControlsLocked) syncSessionControlsLock(true);
@@ -1877,7 +1862,6 @@
           pluginResults.setBusy(operationBusy);
           artifactLibrary.setBusy(operationBusy);
           chatArtifactPreviews.setBusy(operationBusy);
-          midiContinuation.setOperation({ busy: operationBusy, commandKind, canStop: commandCanStop, stopping: commandStopInProgress });
 
           if (
             !settingsBusy &&

@@ -310,53 +310,46 @@ test("multitrack materialization selects exact source parts and requires explici
   }
 });
 
-test("declared MIDI conditioning stages exact read-only SMF input and validates output before publishing", async (t) => {
+for (const legacyHint of [false, true]) test(`declared MIDI tools stage exact read-only SMF input and save their output${legacyHint ? " with a legacy continuation hint" : ""}`, async (t) => {
   const h = await audioStorageHarness(t);
-  const source = await saveMidiArtifact(h.storage, h.session.id, { source: { kind: "host", operation: "live-midi-context" },
-    serverId: "host", toolName: "observe_midi_continuation", label: "Source", bytes: midiFile(), signal: h.signal });
+  const source = await saveMidiArtifact(h.storage, h.session.id, { source: { kind: "model", profileId: "profile", model: "test" },
+    serverId: "host", toolName: "save_midi_artifact", label: "Source", bytes: midiFile(), signal: h.signal });
   const tool = artifactTool({ name: "continue_midi", inputSchema: { type: "object", properties: {
     source: { type: "string" }, destination: { type: "string" }, beats: { type: "integer", minimum: 1, maximum: 256 },
   }, required: ["source", "destination", "beats"] }, _meta: { [LIVE_SMITH_ARTIFACT_META_KEY]: {
-    version: 1, inputs: [{ argument: "source", kind: "midi" }], outputs: [{ argument: "destination", kind: "midi", label: "Next section" }], continuation: { lengthArgument: "beats" },
+    version: 1, inputs: [{ argument: "source", kind: "midi" }], outputs: [{ argument: "destination", kind: "midi", label: "Next section" }],
+    ...(legacyHint ? { continuation: { lengthArgument: "beats" } } : {}),
   } } });
   const contract = pluginArtifactContract(tool)!;
-  assert.deepEqual(contract.continuation, { lengthArgument: "beats" });
   const schema = modelSchemaForArtifactTool(tool.inputSchema, contract);
   assert.match(JSON.stringify(schema), /Session midi artifact reference/);
-  let staged = "", checked = 0, committed = 0;
+  let staged = "";
   const result = await callPluginToolWithArtifacts({ contract, argumentsValue: { source: source.id, beats: 1 },
     storageDirectory: h.storage, temporaryDirectory: h.storage, sessionId: h.session.id, connectionId: "midi-generator", serverId: "local", toolName: "continue_midi", signal: h.signal,
-    outputPolicy: { generationKind: "continuation", validate: async (bytes) => { checked++; assert.deepEqual(bytes, midiFile()); }, beforeCommit: () => { committed++; } },
     call: async (args) => {
       const file = String(args.source); staged = path.dirname(path.dirname(file)); assert.equal(path.extname(file), ".mid");
       assert.equal((await fs.stat(file)).mode & 0o777, 0o400); assert.deepEqual(new Uint8Array(await fs.readFile(file)), midiFile());
       assert.equal(args.beats, 1); await fs.writeFile(String(args.destination), midiFile()); return { content: [] };
     } });
-  assert.equal(checked, 1); assert.equal(committed, 1);
   assert.equal(result.artifacts[0]?.kind, "midi");
-  if (result.artifacts[0]?.kind === "midi") assert.equal(result.artifacts[0].generationKind, "continuation");
+  assert.deepEqual((await readMidiArtifact(h.storage, h.session.id, result.artifacts[0]!.id)).bytes, midiFile());
   assert.equal(result.artifacts[0]!.connectionId, "midi-generator"); await assert.rejects(fs.stat(staged));
   const existing = (await listMidiArtifacts(h.storage, h.session.id)).length;
   await assert.rejects(callPluginToolWithArtifacts({ contract, argumentsValue: { source: source.id, beats: 1 },
     storageDirectory: h.storage, temporaryDirectory: h.storage, sessionId: h.session.id, connectionId: "midi-generator", serverId: "local", toolName: "continue_midi", signal: h.signal,
-    outputPolicy: { generationKind: "continuation", validate: async () => { throw new Error("Source changed"); }, beforeCommit: () => {} },
-    call: async (args) => { await fs.writeFile(String(args.destination), midiFile()); return { content: [] }; } }), /Source changed/);
+    call: async (args) => { await fs.writeFile(String(args.destination), "invalid MIDI"); return { content: [] }; } }));
   assert.equal((await listMidiArtifacts(h.storage, h.session.id)).length, existing);
 });
 
-test("audio output declarations admit WAV or MP3 and cannot declare MIDI continuation", () => {
-  const make = (output: Record<string, unknown>, continuation?: Record<string, unknown>) => artifactTool({
-    _meta: { [LIVE_SMITH_ARTIFACT_META_KEY]: { version: 1, inputs: [], outputs: [output], ...(continuation ? { continuation } : {}) } },
+test("audio output declarations admit WAV or MP3", () => {
+  const make = (output: Record<string, unknown>) => artifactTool({
+    _meta: { [LIVE_SMITH_ARTIFACT_META_KEY]: { version: 1, inputs: [], outputs: [output] } },
   });
   assert.deepEqual(pluginArtifactContract(make({ argument: "destination", kind: "audio", label: "Take" }))!.outputs,
     [{ argument: "destination", kind: "audio", label: "Take", format: "wav" }]);
   assert.equal(pluginArtifactContract(make({ argument: "destination", kind: "audio", label: "Take", format: "mp3" }))!.outputs[0]?.kind, "audio");
   assert.throws(() => pluginArtifactContract(make({ argument: "destination", kind: "audio", label: "Take", format: "flac" })));
   assert.throws(() => pluginArtifactContract(make({ argument: "destination", kind: "midi", label: "Take", format: "wav" })));
-  assert.throws(() => pluginArtifactContract(artifactTool({ _meta: { [LIVE_SMITH_ARTIFACT_META_KEY]: {
-    version: 1, inputs: [{ argument: "source", kind: "midi" }],
-    outputs: [{ argument: "destination", kind: "audio", label: "Take" }], continuation: { lengthArgument: "beats" },
-  } } })));
 });
 
 test("Plugin artifact labels preserve 120 Chinese characters through execution and storage", async (t) => {

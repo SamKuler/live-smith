@@ -1,6 +1,4 @@
 export const mainMessages: Record<string, string> = {
-  "Continuation setup saved.": "续写设置已保存。",
-  "MIDI source list updated.": "MIDI 素材列表已更新。",
   "Profile {name} saved.": "已保存配置“{name}”。",
   "Profile deleted.": "已删除配置。",
   "Global settings saved.": "应用设置已保存。",
@@ -42,8 +40,6 @@ export const mainMessages: Record<string, string> = {
   "Copy": "复制",
   "Paste": "粘贴",
   "Select All": "全选",
-  "Loading MIDI continuation sources…": "正在读取 MIDI 续写素材…",
-  "Filling MIDI continuation buffer…": "正在填充 MIDI 续写缓冲区…",
   "Suno via SunoAPI.org (third-party)": "通过 SunoAPI.org 使用 Suno（第三方服务）",
   "Choose where to open Live Smith. Changes apply the next time you open it.": "选择 Live Smith 的打开位置，下次打开时生效。",
   "Keep chatting while you work in Live. Drag saved MIDI and audio directly into a track. Available on macOS 14 or later.": "保持聊天窗口开启，同时操作 Live。可将已保存的 MIDI 和音频直接拖入轨道。支持 macOS 14 及更高版本。",

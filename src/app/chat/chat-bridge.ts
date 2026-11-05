@@ -3638,8 +3638,6 @@ function isSessionCommand(input: ChatBridgeCommandInput): boolean {
     input.kind === "export_artifact" || input.kind === "attach_artifact" ||
     input.kind === "open_attachment" ||
     input.kind === "import_midi_artifact" ||
-    input.kind === "load_midi_continuation" || input.kind === "configure_midi_continuation" ||
-    input.kind === "fill_midi_continuation" || input.kind === "import_midi_continuation" ||
     input.kind === "select_artifact" ||
     input.kind === "capture_device_parameters" || input.kind === "apply_device_parameters" ||
     input.kind === "restore_device_parameters" || input.kind === "keep_device_parameters" ||

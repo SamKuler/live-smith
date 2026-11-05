@@ -1,7 +1,6 @@
 import { isMcpToolActor, type ToolActor } from "../agent/tool-actor.js";
 import { openVerifiedFileStream, type SessionFileExport } from "./file-export.js";
 import { allocateArtifactVersion, artifactVersion, isArtifactLabel, isArtifactVersion, type ArtifactPluginSource, type ArtifactVersion } from "../agent/artifact-contracts.js";
-import { isMidiContinuationBuffer, type MidiContinuationBuffer } from "../agent/midi-continuation-contracts.js";
 import type { NoteDescription } from "@ableton-extensions/sdk";
 import { createHash } from "node:crypto";
 import { Buffer } from "node:buffer";
@@ -23,7 +22,6 @@ import {
   withStorageTransaction,
   writeBytesAtomicallyCreateOnly,
   writeJsonAtomicallyCreateOnly,
-  writeJsonAtomically,
 } from "./persistence.js";
 import { listSessions, persistTransientSessionInTransaction } from "./sessions.js";
 
@@ -34,6 +32,7 @@ export const MAX_MIDI_ARTIFACT_NOTES = 4096;
 export const MAX_MIDI_ARTIFACT_TRACKS = 32;
 const MAX_MIDI_DURATION_BEATS = 100_000;
 const MAX_MIDI_METADATA_BYTES = 4 * 1024;
+const MAX_LEGACY_CONTINUATION_BYTES = 64 * 1024;
 const supportsPosixPermissions = platform !== "win32";
 const metadataKeys = new Set([
   "id", "sessionId", "pluginId", "connectionId", "source", "generationKind", "serverId", "toolName", "label", "byteLength",
@@ -171,8 +170,6 @@ export async function saveMidiArtifact(
   storageDirectory: string | undefined,
   sessionId: string,
   input: MidiArtifactSource & {
-    generationKind?: "continuation";
-    beforeCommit?(): void;
     serverId: string;
     toolName: string;
     label: string;
@@ -184,7 +181,7 @@ export async function saveMidiArtifact(
 ): Promise<MidiArtifact> {
   if (!storageDirectory || !path.isAbsolute(storageDirectory)) throw new MidiArtifactStorageError();
   requireSafeStorageId(sessionId, "Session ID");
-  if (input.generationKind !== undefined && input.generationKind !== "continuation" || !validArtifactSource(input) || !ownerIdPattern.test(input.serverId) ||
+  if (!validArtifactSource(input) || !ownerIdPattern.test(input.serverId) ||
       !ownerIdPattern.test(input.toolName) || !isArtifactLabel(input.label) ||
       !(input.bytes instanceof Uint8Array) || input.bytes.byteLength > MAX_MIDI_ARTIFACT_BYTES) {
     throw new MidiArtifactStorageError();
@@ -195,7 +192,6 @@ export async function saveMidiArtifact(
   const parsed = parseMidiArtifact(bytes, input.signal);
   const artifact: MidiArtifact = {
     id: createStorageId("midi"),
-    ...(input.generationKind ? { generationKind: input.generationKind } : {}),
     sessionId,
     ...(input.source ? { source: { ...input.source } } : input.pluginId === undefined ? { connectionId: input.connectionId } : { pluginId: input.pluginId }),
     serverId: input.serverId,
@@ -233,7 +229,6 @@ export async function saveMidiArtifact(
     await assertDirectory(directory!);
     try {
       throwIfAborted(input.signal);
-      input.beforeCommit?.();
     } catch (error) {
       // Metadata has not been attempted, so this newly written blob has no published owner.
       await assertDirectory(directory!).then(() => removeFileDurably(blobPath(directory!, artifact.id))).catch(() => {});
@@ -274,8 +269,7 @@ export async function hasSessionMidiContent(storageDirectory: string | undefined
   const directory = await bindSessionDirectory(storageDirectory, sessionId);
   if (!directory) return false;
   const entries = await readArtifacts(directory);
-  return entries.artifacts.length > 0 || entries.unavailableCount > 0 ||
-    (await readMidiContinuation(storageDirectory, sessionId)) !== undefined;
+  return entries.artifacts.length > 0 || entries.unavailableCount > 0 || entries.hasLegacyContinuation;
 }
 
 export async function readMidiArtifact(
@@ -407,12 +401,16 @@ async function assertDirectory(binding: DirectoryBinding): Promise<void> {
   }
 }
 
-async function readArtifacts(directory: DirectoryBinding): Promise<MidiArtifactListing & { records: MidiArtifact[] }> {
+async function readArtifacts(directory: DirectoryBinding): Promise<MidiArtifactListing & {
+  records: MidiArtifact[];
+  hasLegacyContinuation: boolean;
+}> {
   const entries = await fs.readdir(directory.path);
   const metadataIds = entries.filter((name) => name.endsWith(".midi.json")).map((name) => name.slice(0, -10));
   const artifacts: MidiArtifact[] = [];
   const records: MidiArtifact[] = [];
   let unavailableCount = 0;
+  let hasLegacyContinuation = false;
   for (const id of metadataIds) {
     if (!isSafeStorageId(id)) throw new MidiArtifactStorageError();
     const artifact = await readMetadata(directory, id);
@@ -443,7 +441,12 @@ async function readArtifacts(directory: DirectoryBinding): Promise<MidiArtifactL
     }
     if (name === "continuation.json" || /^\.continuation\.json\.tmp_[A-Za-z0-9_-]+$/u.test(name)) {
       const info = await fs.lstat(path.join(directory.path, name));
-      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size < 1 || info.size > MAX_MIDI_CONTINUATION_BYTES) throw new MidiArtifactStorageError();
+      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size < 1 ||
+          info.size > MAX_LEGACY_CONTINUATION_BYTES || (supportsPosixPermissions && getuid && info.uid !== getuid())) {
+        throw new MidiArtifactStorageError();
+      }
+      // A committed legacy file still makes this Session nonempty.
+      if (name === "continuation.json") hasLegacyContinuation = true;
       continue;
     }
     if (!name.endsWith(".mid") && !name.endsWith(".midi.json") && !validAtomicTemporary(name)) {
@@ -459,7 +462,8 @@ async function readArtifacts(directory: DirectoryBinding): Promise<MidiArtifactL
   }
   await assertDirectory(directory);
   return { artifacts: artifacts.sort((left, right) =>
-    left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)), unavailableCount, records };
+    left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)),
+    unavailableCount, records, hasLegacyContinuation };
 }
 
 async function storedMidiBytes(directory: DirectoryBinding): Promise<number> {
@@ -571,40 +575,4 @@ function isAlreadyExistsError(error: unknown): boolean {
 }
 function invalidMidi(): MidiArtifactStorageError {
   return new MidiArtifactStorageError("MIDI artifact is not a supported bounded Standard MIDI File.");
-}
-
-
-const MAX_MIDI_CONTINUATION_BYTES = 64 * 1024;
-
-export async function readMidiContinuation(storageDirectory: string | undefined, sessionId: string, signal?: AbortSignal): Promise<MidiContinuationBuffer | undefined> {
-  requireSafeStorageId(sessionId, "Session ID");
-  if (!storageDirectory) return undefined;
-  const directory = await bindSessionDirectory(storageDirectory, sessionId);
-  if (!directory) return undefined;
-  let bytes;
-  try { bytes = await readPrivateFile(path.join(directory.path, "continuation.json"), MAX_MIDI_CONTINUATION_BYTES, signal); }
-  catch (error) { if (isMissingFileError(error)) return undefined; throw error; }
-  await assertDirectory(directory);
-  let value: unknown;
-  try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
-  catch { throw new MidiArtifactStorageError("Saved MIDI continuation data is invalid."); }
-  if (!isMidiContinuationBuffer(value) || value.sessionId !== sessionId) throw new MidiArtifactStorageError("Saved MIDI continuation data is invalid.");
-  return value;
-}
-
-/** Caller holds the owning Session mutation fence across read/modify/save. */
-export async function saveMidiContinuation(storageDirectory: string | undefined, sessionId: string, input: MidiContinuationBuffer, signal: AbortSignal): Promise<void> {
-  requireSafeStorageId(sessionId, "Session ID");
-  if (!storageDirectory || !isMidiContinuationBuffer(input) || input.sessionId !== sessionId ||
-      Buffer.byteLength(JSON.stringify(input, null, 2), "utf8") > MAX_MIDI_CONTINUATION_BYTES) throw new MidiArtifactStorageError("MIDI continuation settings exceed the supported limits.");
-  const value = JSON.parse(JSON.stringify(input)) as MidiContinuationBuffer;
-  await withStorageTransaction(storageDirectory, async (transaction) => {
-    throwIfAborted(signal);
-    await requireSession(storageDirectory, sessionId);
-    await persistTransientSessionInTransaction(transaction, storageDirectory, sessionId);
-    const directory = await bindSessionDirectory(storageDirectory, sessionId, true);
-    await assertDirectory(directory!);
-    await writeJsonAtomically(path.join(directory!.path, "continuation.json"), value);
-    await assertDirectory(directory!);
-  });
 }

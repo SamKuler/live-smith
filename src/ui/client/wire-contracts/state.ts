@@ -37,7 +37,7 @@ import {
   isWireSkillSummary,
 } from "./session.js";
 
-export function createStateValidators({ isWireIntegrationConnections, isWireSunoAccounts, isWireSunoModelCatalog, isWireAudioJobs, isWireInstalledPlugin, isWireSessionToolCatalog, isWireMidiContinuation }: ReturnType<typeof createPluginValidators>) {
+export function createStateValidators({ isWireIntegrationConnections, isWireSunoAccounts, isWireSunoModelCatalog, isWireAudioJobs, isWireInstalledPlugin, isWireSessionToolCatalog }: ReturnType<typeof createPluginValidators>) {
   function isWireChatBridgeState(value: unknown): value is ChatBridgeState {
     if (
       !isWireRecord(value) ||
@@ -50,7 +50,6 @@ export function createStateValidators({ isWireIntegrationConnections, isWireSuno
         "sunoModelCatalog",
         "sessionToolCatalog",
         "audioJobs",
-        "midiContinuation",
         "liveContext",
         "sessionContinueTarget",
         "sessions",
@@ -100,7 +99,6 @@ export function createStateValidators({ isWireIntegrationConnections, isWireSuno
       (value.sessionToolCatalog !== undefined &&
         !isWireSessionToolCatalog(value.sessionToolCatalog, value.activeSessionId)) ||
       (value.audioJobs !== undefined && !isWireAudioJobs(value.audioJobs, value.activeSessionId)) ||
-      (value.midiContinuation !== undefined && !isWireMidiContinuation(value.midiContinuation, value.activeSessionId)) ||
       !isWireLiveContext(value.liveContext) ||
       !isWireRecord(value.sessionContinueTarget) ||
       !hasOnlyWireKeys(value.sessionContinueTarget, ["kind", "label"]) ||

@@ -11,8 +11,6 @@ import { Buffer } from "node:buffer";
 import { readMidiArtifactFile } from "./midi/artifact-file.js";
 export { decidePlanApproval } from "./tools/tool-approvals.js";
 
-import type { MidiContinuationView } from "../agent/midi-continuation-contracts.js";
-import { runMidiContinuationCommand,refreshMidiContinuationView,midiContinuationImportHooks } from "./midi/midi-continuation-command.js";
 import { attachmentQuotaIsWithinLimits } from "../attachments/contracts.js";
 import { selectSavedAttachment } from "./attachments/attachment-selection.js";
 import { ModelInputTooLargeError } from "../model/connection-error.js";
@@ -57,7 +55,6 @@ import { listAudioJobs } from "../storage/audio-jobs.js";
 import { hasSessionMidiContent } from "../storage/midi-artifacts.js";
 import { searchSessions } from "./session/session-search.js";
 import {
-  createHostAbortController,
   throwIfAborted,
   waitForPromiseWithSignal,
 } from "../runtime/host.js";
@@ -494,9 +491,6 @@ export async function createAgentRuntime(
   let status: UiMessage | undefined = dependencies.initialStatus;
   let openSettingsOnLoad = false;
   let activeSessionId: string | undefined = initialSessionId;
-  let loadedMidiContinuation: { owner: string; value: MidiContinuationView } | undefined;
-  const midiContinuationOwner = (state: Pick<ChatDialogState, "integrationConnections" | "plugins">) =>
-    JSON.stringify([state.integrationConnections?.revision ?? "0", state.plugins]);
   let loadedSessionToolCatalog: {
     owner: string;
     value: NonNullable<ChatDialogState["sessionToolCatalog"]>;
@@ -808,7 +802,7 @@ export async function createAgentRuntime(
       const sunoAccounts = await sunoSessions.views(settings.integrationConnections?.connections ?? []);
       const catalog = await sunoModelCatalog.view(settings.integrationConnections?.revision);
       throwIfAborted(signal);
-      const state: ChatDialogState & { midiContinuation?: MidiContinuationView } = {
+      const state: ChatDialogState = {
         contextSummary: conversationContextForSession(activeSession, activeInteraction).summary,
         liveContext: activeInteraction
           ? {
@@ -880,12 +874,6 @@ export async function createAgentRuntime(
         status,
         openSettingsOnLoad: activeProfile ? openSettingsOnLoad : true,
       };
-      if (loadedMidiContinuation?.value.sessionId === activeSession.id) {
-        state.midiContinuation = await refreshMidiContinuationView({
-          context, storageDirectory, projectKey, sessionId: activeSession.id,
-          signal: signal ?? createHostAbortController().signal,
-        }, loadedMidiContinuation.value, loadedMidiContinuation.owner === midiContinuationOwner(state));
-      }
       if (loadedSessionToolCatalog) {
         const owner = sessionToolCatalogOwner(state);
         if (loadedSessionToolCatalog.owner === owner) {
@@ -1735,30 +1723,6 @@ export async function createAgentRuntime(
       });
     }
 
-    if (commandInput.kind === "load_midi_continuation" || commandInput.kind === "configure_midi_continuation" || commandInput.kind === "fill_midi_continuation") {
-      if (commandInput.sessionId !== activeSessionId || sessionMutationFence.hasQueuedOrActive(
-        sessionMutationFenceKey(storageDirectory, commandInput.sessionId), "send",
-      )) throw new ChatBridgeConflictError("Choose an idle active Session for MIDI continuation.");
-      return withNamedSessionMutation(commandInput.sessionId, "send", signal, async () => {
-        if (commandInput.sessionId !== activeSessionId) throw new ChatBridgeConflictError("The active Session changed before MIDI continuation.");
-        try {
-          await commandContext.progress(uiMessage(commandInput.kind === "fill_midi_continuation" ? "Filling MIDI continuation buffer…" : "Loading MIDI continuation sources…"));
-          const value = await runMidiContinuationCommand(commandInput, {
-            context, storageDirectory, projectKey, sessionId: commandInput.sessionId, signal,
-            fetchImpl: providerFetch,
-            withPluginAuthorization: (authorizationSignal, operation) => requestConfigurationFence.run(requestConfigurationFenceKey, authorizationSignal, operation),
-            acquireModel: (session, settings) => acquireSessionModelRequester(session, settings, signal, "sending"),
-            onProgress: (message) => commandContext.progress(typeof message === "string" ? uiMessage(message) : message),
-          });
-          const state = await buildStateAfterCommandMutation(undefined, { heldSessionId: commandInput.sessionId, sessionMutationHeld: true });
-          const owner = midiContinuationOwner(state);
-          if (commandInput.kind !== "load_midi_continuation" && !value.generators.length && loadedMidiContinuation?.owner === owner) value.generators = loadedMidiContinuation.value.generators;
-          loadedMidiContinuation = { owner, value };
-          return { ...state, midiContinuation: value };
-        } finally { notifySessionStateChanged(commandInput.sessionId); }
-      });
-    }
-
     if (commandInput.kind === "capture_device_parameters" || commandInput.kind === "apply_device_parameters" || commandInput.kind === "restore_device_parameters" || commandInput.kind === "keep_device_parameters") {
       if (!storageDirectory) throw new Error("Private storage is required for device parameter artifacts.");
       if (commandInput.sessionId !== activeSessionId || sessionMutationFence.hasQueuedOrActive(
@@ -1791,7 +1755,7 @@ export async function createAgentRuntime(
       });
     }
 
-    if (commandInput.kind === "import_midi_artifact" || commandInput.kind === "import_midi_continuation") {
+    if (commandInput.kind === "import_midi_artifact") {
       if (commandInput.sessionId !== activeSessionId || sessionMutationFence.hasQueuedOrActive(
         sessionMutationFenceKey(storageDirectory, commandInput.sessionId), "send",
       )) throw new ChatBridgeConflictError("Choose an idle active Session before importing MIDI.");
@@ -1805,11 +1769,8 @@ export async function createAgentRuntime(
         if (!sessionInteraction) throw new ChatBridgeResourceNotFoundError("The Live object for this Session is no longer available.");
         try {
           await commandContext.progress(uiMessage("Preparing MIDI import…"));
-          const continuation = commandInput.kind === "import_midi_continuation" ? await midiContinuationImportHooks(commandInput, {
-            context, storageDirectory, projectKey, sessionId: session.id, signal,
-          }) : {};
           const applied = await importMidiArtifact({
-            ...commandInput, kind: "import_midi_artifact", ...continuation, context, storageDirectory, projectKey, interaction: sessionInteraction,
+            ...commandInput, context, storageDirectory, projectKey, interaction: sessionInteraction,
             signal, mutationQueue: liveMutationQueue,
             assertLiveSetCurrent,
             confirm: (plan, guard, operationId) => decidePlanApproval(storageDirectory, session.id, plan, async () => {

@@ -1,6 +1,7 @@
 import { createNativeArtifactDragButton } from "./native-artifact-drag.js";
 import { createLocaleBindings, type LocalizedText } from "./locale-bindings.js";
 import { isArtifactRef, type ArtifactRef } from "../../agent/artifact-contracts.js";
+import type { MidiArtifactImportCommand } from "../../app/midi-artifact-import.js";
 import { createMidiImportDialog, type MidiImportDialogInput } from "./midi-import-dialog.js";
 
 type Artifact = { artifactRef: string; label: string } & (
@@ -9,11 +10,7 @@ type Artifact = { artifactRef: string; label: string } & (
 );
 
 export interface PluginResultActions {
-  create(toolName: string, result: unknown, options?: {
-    importOnly?: boolean;
-    initialStartBeat?: number;
-    onImport?: MidiImportDialogInput["onImport"];
-  }): HTMLElement;
+  create(toolName: string, result: unknown): HTMLElement;
   openMidiImport(input: MidiImportDialogInput): void;
   close(): void;
   setBusy(value: boolean): void;
@@ -25,7 +22,7 @@ interface Dependencies {
   useInChat(text: string): Promise<void>;
   prepareMidiImport(input: { sessionId: string; artifactRef: string }, signal?: AbortSignal): Promise<unknown>;
   transferArtifact(kind: "export_artifact" | "attach_artifact", input: { sessionId: string; artifact: ArtifactRef }): Promise<boolean>;
-  importMidi: NonNullable<MidiImportDialogInput["onImport"]>;
+  importMidi(input: Omit<MidiArtifactImportCommand, "kind">): Promise<boolean>;
 }
 
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -52,15 +49,15 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
     return element;
   };
   return {
-    create(toolName, raw, options = {}) {
-      const card = node("section", options.importOnly ? "plugin-result-import-actions" : "plugin-result-card");
+    create(toolName, raw) {
+      const card = node("section", "plugin-result-card");
       if (!record(raw)) return card;
       const sessionId = deps.getState().activeSessionId;
       const current = () => !busy && Boolean(sessionId) && sessionId === deps.getState().activeSessionId;
       const saved = artifacts(raw);
       const text = Array.isArray(raw.content) ? raw.content.filter((part) => record(part) && part.type === "text" && typeof part.text === "string")
         .map((part) => (part as { text: string }).text).join("\n") : "";
-      if (!options.importOnly) card.append(node("h4", "plugin-result-title", () => t(raw.isError ? "Tool reported an error" : "Tool result")));
+      card.append(node("h4", "plugin-result-title", () => t(raw.isError ? "Tool reported an error" : "Tool result")));
       if (text) card.append(node("p", "plugin-result-summary", text.slice(0, 2000)));
       else if (raw.structuredContent !== undefined) {
         card.append(node("pre", "plugin-result-summary", JSON.stringify(raw.structuredContent, null, 2).slice(0, 2000)));
@@ -76,7 +73,7 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
           (references ? "\n" + references : "");
         void deps.useInChat(prompt);
       });
-      if (!options.importOnly) controls.append(chat);
+      controls.append(chat);
       const midi = saved.filter((artifact) => artifact.kind === "midi");
       if (midi.length && !raw.isError) {
         const launch = node("button", "secondary plugin-result-import", () => t("Import into Live")); launch.type = "button";
@@ -84,8 +81,6 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
         launch.addEventListener("click", () => {
           if (!current() || !sessionId) return;
           importer.open({ sessionId, artifacts: midi,
-            ...(options.initialStartBeat === undefined ? {} : { initialStartBeat: options.initialStartBeat }),
-            ...(options.onImport ? { onImport: options.onImport } : {}),
             onComplete(completed) {
               status.hidden = false;
               bindings.text(status, () => t(completed ? "MIDI import finished. Review the Session result." : "MIDI import did not complete. Review the Session result before retrying."));
@@ -95,7 +90,7 @@ function createPluginResults(deps: Dependencies): PluginResultActions {
         });
         controls.append(launch, status);
       }
-      if (!options.importOnly && !raw.isError) for (const artifact of saved) {
+      if (!raw.isError) for (const artifact of saved) {
         const item = node("div", "plugin-result-file"); item.append(node("p", "field-hint", artifact.label));
         const actions = node("div", "artifact-actions");
         const status = node("p", "plugin-result-import-status"); status.setAttribute("role", "status"); status.hidden = true;

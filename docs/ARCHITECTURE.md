@@ -1173,9 +1173,8 @@ followed by Clip actions targeting their declared references. Existing
 destinations also use preflight-bound references so a new same-name track cannot
 redirect later writes. The shared action limit counts both tracks and Clips.
 SDK handle IDs travel as exact decimal strings without numeric coercion or a
-fixed digit limit; import and continuation share this contract. Live object IDs
-and local storage IDs have separate validators. Destination names must be
-unique in Live.
+fixed digit limit. Live object IDs and local storage IDs have separate validators.
+Destination names must be unique in Live.
 
 `create_midi_clip_from_artifact` materializes one exact `partId` into an ordinary
 validated `create_midi_clip` action. A multitrack source requires `partId` or
@@ -1187,60 +1186,6 @@ queue, drift revalidation and per-action authorization boundaries. Partial
 failures persist the same recovery ledger as chat-driven edits and prevent blind
 retries. All positions are quarter-note beats; tempo, meter and controller events
 are retained only in the source artifact and never materialize Set mutations.
-
-### Bounded MIDI continuation
-
-`app/midi/` owns observed Clip context, generation, and ordered buffer commands.
-The shared `agent/midi-continuation-contracts.ts` DTO is consumed by command
-parsing, storage and browser validation. The Session's private MIDI directory
-owns one atomic `continuation.json` record; immutable source/output SMFs use
-the existing artifact store and quotas. The Session send fence serializes setup,
-Fill and import. Stop and Session admission use the existing command lifecycle.
-
-`live/midi-clip-timing.ts` crops nominal note intervals at Clip markers and loop
-boundaries and expands loops within the selected Clip span. Capture preserves
-Arrangement offsets, fingerprints musical note properties and selected Clip
-timing plus tempo, and excludes editor note selection. It does not synthesize
-probability, velocity variation, instruments or audio. Both raw and expanded
-context are bounded to 4096 notes. Importing a new Clip outside the selected
-source ranges preserves that fingerprint.
-
-Each generated section is conditioned on the original saved source and the
-previous section. Model generation reuses the provider-neutral agent loop and
-Session model admission with only artifact list, inspect and save tools.
-`admittedToolNames` is checked before every dispatch, including built-in Live
-and recovery tools. `save_midi_artifact` validates structured tracks and writes
-format-1 SMF at 960 ticks per quarter note through the shared MIDI writer. Its
-provenance identifies the actual Profile/model. Host context exports have explicit
-host provenance; future sections carry `generationKind: continuation`.
-
-Local Plugin/MCP generation uses the existing artifact grants and staging path.
-A tool declares one `kind: midi` input, one MIDI output and
-`continuation: { lengthArgument }` in its artifact contract; that argument must
-have a numeric schema. Native parameter controls hide the host-owned input and
-length fields. Later calls stage the original and preceding section as independent
-tracks in one conditioning file, retaining their names/channels and avoiding
-inferred voice identities. Output admission runs this same 960-PPQ conditioning
-encoder before publishing a section, enforcing its track/note budgets and timing
-representability. Output length, current tool authorization and source fingerprint
-are also checked before publishing the next slot. Remote MCP endpoints cannot use this local file contract.
-
-Fill records explicit tool-call/result events, never synthetic chat user events.
-Per-section calls bind `parentCandidate` to the actual preceding artifact and
-`requestEventId` to the Fill event, leaving the next-chat artifact selection
-intact. Each completed slot is saved before generating another. Failure or Stop
-preserves completed slots and immutable artifacts. Source checks around byte
-persistence cannot make external Live edits atomic; publication and import
-revalidate again and reject stale context without deleting saved material.
-
-The buffer's next section uses the shared MIDI mapping preview and import
-workflow. A source revalidation callback runs after approval in the mutation
-queue and before each action. The guard checks the materialized plan's actual
-destinations and Clip durations against the protected source ranges. Successful
-execution consumes that exact section inside the import recovery boundary;
-cancellation preserves it. Explicit placement updates the anchor
-for subsequent suggested positions. There is no playback clock, launch scheduler
-or automatic replenishment; Fill/Refill and Use next are user actions.
 
 ### Saved artifacts, versions and lineage
 
@@ -1339,15 +1284,11 @@ reachable through the shared application confirmation surface.
 
 Ordinary chat registers MIDI authoring from `app/midi/midi-artifact-tools.ts`
 and shared list/inspection tools from `app/session/session-artifact-tools.ts`
-whenever private storage is available. Plugin discovery
-contains only Plugin tools; the chat and continuation registries compose the host
-MIDI toolsets explicitly. Structured
-tracks use the same authoring parser and SMF writer as continuation generation.
+whenever private storage is available. Plugin discovery contains only Plugin
+tools. The host validates structured tracks and writes Standard MIDI files.
 Saving needs no Live write scope; import retains its separate approval boundary.
 The selected request parent fixes the revision source for model and Plugin saves.
-Host-owned source/conditioning snapshots remain readable by artifact tools but
-are excluded from the artifact library. Each future section is an independent
-version group, while explicit revisions of a section preserve its existing group.
+Previously saved MIDI outputs remain readable as Session artifacts.
 
 `agent/artifact-contracts.ts` owns the media-neutral version, source and primary
 selection contracts. Version metadata remains on each immutable artifact record.
@@ -1454,7 +1395,7 @@ the view to its first notes.
 cancellation and stale-response rejection. The bound artifact is fixed when
 opened from the library; multi-result tool cards may offer a file choice. The
 dialog closes before invoking the shared command/confirmation flow. Plugin
-results and buffered continuation use this same importer.
+results use this same importer.
 `inspect_midi_artifact` in the host artifact toolset reads one exact source part with a 256-note page and `nextOffset`, allowing subsequent chat turns
 to inspect the saved material without first importing it into Live.
 Chat MIDI cards retain the tool's original input and output in a collapsed
@@ -1472,12 +1413,12 @@ validate Session ownership and group membership. Model artifact listings expose
 `primary` and `defaultForWork` while preserving explicit references. Historical
 `prefer` events remain readable; current library projections and selection
 commands use `continue` and `primary`. Selection events stay outside the visible
-chat timeline. Pending continuation survives compaction and reload through
-these durable events. A successfully persisted initial chat `user` event
-consumes pending continuation and stores its `parentCandidate`.
+chat timeline. These durable events preserve the pending source selection across
+compaction and reload. A successfully persisted initial chat `user` event
+consumes the selection and stores its `parentCandidate`.
 The admitted request carries that fixed reference and its user event ID to every
 subsequent model `tool_call` as `parentCandidate` and `requestEventId`. Steered
-messages and manual tool calls leave pending continuation intact. A failure before
+messages and manual tool calls leave the pending selection intact. A failure before
 the initial message commit therefore leaves the source available for retry.
 
 Generation provenance references the original tool-call and result events and
@@ -2766,9 +2707,9 @@ a scope or choosing New Session does not persist an untouched empty Session.
 The storage module shares these transient records across dialogs for the same
 canonical storage directory. Session reads include them, so Approval mode, model
 selection, Skills, attachments, and Send keep using the same ID. An explicit
-metadata change, archive/restore, or the first event, attachment, MIDI artifact
-or continuation-buffer write persists that Session under the existing storage
-transaction; unrelated transient records
+metadata change, archive/restore, or the first event, attachment, or MIDI
+artifact write persists that Session under the existing storage transaction.
+Unrelated transient records
 are never included in the write. A confirmed saved record supersedes its
 in-memory reservation, including after an uncertain commit. The persisted
 Session format is unchanged. New and renamed titles are limited to 80 Unicode
@@ -2799,7 +2740,7 @@ absent from storage. The claim lasts until that dialog closes; explicit Session
 selection may still join a claimed Session.
 
 Current and History lists keep Sessions with a title, creative brief, events,
-attachments, audio jobs, MIDI artifacts or continuation settings, or window-local
+attachments, audio jobs, MIDI artifacts, or window-local
 draft/queued/running work. The current dialog also keeps every
 Session that has been active in that dialog, so an untouched empty Session remains
 reachable after switching until the dialog closes. With search cleared, unvisited
@@ -3328,7 +3269,7 @@ progress instead of overwriting it.
 
 Send, command, attachment, and Skill attempts capture a
 causal baseline for all Session records, the active Session identity and its
-events, pending attachments, Live context, continuation target, and per-Session
+events, pending attachments, the Live context projection, and per-Session
 activity. Direct responses and response-loss `/state` reconciliation both carry
 that original baseline. A response arriving after a newer command, terminal, or
 approval event uses a three-way merge, so it keeps newer fields and keyed list
@@ -3336,13 +3277,13 @@ entries while accepting non-conflicting changes committed by the response
 instead of trusting cross-connection arrival order. Persisted events are
 immutable and merge by ID only within the same active-Session projection; a
 Session switch adopts the new projection as a whole. A conflicting duplicate
-keeps the already observed entry. A Send owns both pieces of its active Live
-context projection: the summary and the continuation target. It may initialize
+keeps the already observed entry. A Send owns its active Live context projection:
+`contextSummary`, structured `liveContext`, and `sessionContinueTarget`. It may initialize
 its target title only
 while that field still matches the attempt baseline; a later explicit rename
 wins. It also owns consumed attachment IDs, context, and activity.
-Other full-state responses adopt that context pair when the current pair still
-matches their causal baseline, and preserve the current pair when it has moved
+Other full-state responses adopt that projection when its current fields still
+match their causal baseline, and preserve the current projection when it has moved
 ahead independently.
 Rename/approval/Skill commands own only their named Session fields, but a
 baseline-later patch for the same field still wins. Archive/delete own target
@@ -3415,9 +3356,7 @@ renew the rolling window. Successful no-ops and repeated identical observations
 leave it unchanged. The first automatic observation after a particular failure
 has its own progress key and can renew the window once. One send accepts at most
 32 distinct steering IDs. Productive multi-stage work can continue while it
-meets these progress and safety limits. MIDI continuation generation uses a
-smaller loop configuration: an eight-step progress window and eight calls per
-model turn.
+meets these progress and safety limits.
 
 An active partial-recovery ledger accepts at most 5,120 completed-action digests.
 The staged-work threshold preserves repair headroom for the historical
@@ -3509,7 +3448,7 @@ failures still release the admitted Plugin connections.
 
 `createAgentRuntime` 拥有共享的认证 loopback HTTP/WebSocket bridge、订阅、
 Provider 资源和任务。每次打开页面创建独立视图，视图闭包拥有当前 Session、状态
-提示、工具目录、MIDI continuation 展示缓存、Session claims 与 Plugin App 实例。
+提示、工具目录、Session claims 与 Plugin App 实例。
 每个视图独立持有模型发现目录、OAuth 草稿与登录 owner，回收时执行临时认证清理；
 底层 backend manager 和 Profile/provider/auth generation 互斥继续共享。
 Session 数据、Send、待审批操作、Stop、存储互斥和 Live 写入队列属于共享运行环境。

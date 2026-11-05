@@ -4,7 +4,6 @@ import { MidiClip, TakeLane, type NoteDescription } from "@ableton-extensions/sd
 import { validateAgentPlan } from "../../src/agent/actions.js";
 import { preflightAgentPlan } from "../../src/app/agent-request.js";
 import { executeAgentPlanWithProgress } from "../../src/live/executor.js";
-import { projectMidiClipNotes } from "../../src/live/midi-clip-timing.js";
 import { createHostAbortController } from "../../src/runtime/host.js";
 import { midiPreviewFixture } from "./support/action-preview.test-harness.js";
 
@@ -51,7 +50,11 @@ for (const session of [false, true]) for (const timing of timingCases) {
       ? { type: "create_session_midi_clip", slotIndex: 0 }
       : { type: "create_midi_clip", startBeat: 32 };
     await apply(h, { message: "Author section", actions: [{ ...action, trackName: "Bass", name: "Phrase", durationBeats: 8, notes: authored }] });
-    assert.deepEqual(projectMidiClipNotes(destination.notes, destination, 4096), authored);
+    assert.deepEqual(destination.notes, authored);
+    assert.equal(destination.startMarker, 0);
+    assert.equal(destination.endMarker, 8);
+    assert.equal(destination.duration, 8);
+    assert.equal(destination.looping, false);
     assert.notEqual(destination, h.clip);
     assert.equal(h.writes, 0);
   });
@@ -65,7 +68,12 @@ for (const session of [false, true]) {
     const result = await apply(h, { message: "Author section", actions: [{ ...action, trackName: "Bass", name: "Phrase", durationBeats: 8, notes: authored }] });
     assert.equal(result.mutationCount, 1);
     assert.equal(h.writes, 1);
-    assert.deepEqual(projectMidiClipNotes(h.notes, h.clip, 4096), authored);
+    assert.deepEqual(h.notes, authored);
+    assert.equal(h.clip.startMarker, 0);
+    assert.equal(h.clip.duration, 8);
+    assert.equal(h.clip.looping, true);
+    assert.equal(h.clip.loopStart, 2);
+    assert.equal(h.clip.loopEnd, 8);
   });
 
   test(`incompatible ${session ? "Session" : "Arrangement"} creation rejects a later edit of the replaced Clip`, async () => {

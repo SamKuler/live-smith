@@ -19,12 +19,6 @@ import { isSafeStorageId } from "../storage/id.js";
 import { copyAudioFileSafely } from "../live/audio-attachment-source.js";
 import type { PluginArtifactToolContract, PluginToolResult } from "./contracts.js";
 
-export interface MidiArtifactOutputPolicy {
-  validate(bytes: Uint8Array): Promise<void>;
-  beforeCommit(): void;
-  generationKind: "continuation";
-}
-
 export type PluginSavedArtifact = (MidiArtifact & { kind: "midi" }) | (PluginAudioArtifact & { kind: "audio" });
 
 export const LIVE_SMITH_ARTIFACT_META_KEY = "io.github.samkuler/live-smith-artifacts";
@@ -58,6 +52,7 @@ export const midiArtifactImportActionSchema: Record<string, unknown> = {
 export function pluginArtifactContract(tool: Tool): PluginArtifactToolContract | undefined {
   const raw = tool._meta?.[LIVE_SMITH_ARTIFACT_META_KEY];
   if (raw === undefined) return undefined;
+  // Older v1 tools may include a continuation hint; their ordinary artifact I/O remains supported.
   if (!plainRecord(raw) || Object.keys(raw).some((key) => !["version", "inputs", "outputs", "continuation"].includes(key)) ||
       raw.version !== 1 || !Array.isArray(raw.inputs) || !Array.isArray(raw.outputs) ||
       raw.inputs.length > MAX_ARTIFACT_INPUTS || raw.outputs.length !== 1) {
@@ -84,13 +79,7 @@ export function pluginArtifactContract(tool: Tool): PluginArtifactToolContract |
   });
   const argumentsSet = new Set([...inputs, ...outputs].map((entry) => entry.argument));
   if (argumentsSet.size !== inputs.length + outputs.length) throw new Error("Plugin artifact arguments conflict.");
-  const continuation = raw.continuation;
-  if (continuation !== undefined && (!plainRecord(continuation) || Object.keys(continuation).length !== 1 ||
-      typeof continuation.lengthArgument !== "string" || !argumentPattern.test(continuation.lengthArgument) ||
-      argumentsSet.has(continuation.lengthArgument) || inputs.length !== 1 || inputs[0]?.kind !== "midi" || outputs[0]?.kind !== "midi")) {
-    throw new Error("MIDI continuation requires one MIDI conditioning input and a distinct length argument.");
-  }
-  return { inputs, outputs, ...(continuation ? { continuation: { lengthArgument: (continuation as { lengthArgument: string }).lengthArgument } } : {}) };
+  return { inputs, outputs };
 }
 
 export function modelSchemaForArtifactTool(
@@ -123,13 +112,6 @@ export function modelSchemaForArtifactTool(
     delete properties[output.argument];
     required.delete(output.argument);
   }
-  if (contract.continuation) {
-    const length = properties[contract.continuation.lengthArgument];
-    if (!plainRecord(length) || length.type !== "number" && length.type !== "integer") {
-      throw new Error("MIDI continuation length argument must be numeric.");
-    }
-    required.add(contract.continuation.lengthArgument);
-  }
   return {
     ...schema,
     properties,
@@ -139,7 +121,6 @@ export function modelSchemaForArtifactTool(
 
 export async function callPluginToolWithArtifacts(input: ArtifactPluginSource & {
   contract: PluginArtifactToolContract;
-  outputPolicy?: MidiArtifactOutputPolicy;
   argumentsValue: unknown;
   storageDirectory: string | undefined;
   temporaryDirectory: string | undefined;
@@ -183,7 +164,6 @@ export async function callPluginToolWithArtifacts(input: ArtifactPluginSource & 
       argumentsValue[descriptor.argument] = target;
     }
     const output = input.contract.outputs[0]!;
-    if (input.outputPolicy && output.kind !== "midi") throw new Error("MIDI continuation requires a MIDI output.");
     const outputName = output.kind === "midi" ? "1.mid" : `1.${output.format}`;
     const outputPath = path.join(outputDirectory, outputName);
     argumentsValue[output.argument] = outputPath;
@@ -219,15 +199,12 @@ export async function callPluginToolWithArtifacts(input: ArtifactPluginSource & 
       return { result, artifacts: [{ ...artifact, kind: "audio" }] };
     }
     parseMidiArtifact(bytes, input.signal);
-    await input.outputPolicy?.validate(bytes);
     const artifact = await saveMidiArtifact(input.storageDirectory, input.sessionId, {
       ...(input.pluginId === undefined ? { connectionId: input.connectionId } : { pluginId: input.pluginId }),
       serverId: input.serverId,
       toolName: input.toolName,
       label: output.label,
       ...(input.revisionOf?.kind === "midi" ? { revisionOf: input.revisionOf.id } : {}),
-
-      ...(input.outputPolicy ? { generationKind: input.outputPolicy.generationKind, beforeCommit: input.outputPolicy.beforeCommit } : {}),
       bytes,
       signal: input.signal,
     });

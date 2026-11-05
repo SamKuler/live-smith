@@ -18,9 +18,6 @@ import { createSessionArtifactToolset } from "../../../src/app/session/session-a
 import { parseCommandInput } from "../../../src/app/chat/chat-bridge-http.js";
 import { runAgentLoop } from "../../../src/agent/loop.js";
 import { createHostAbortController } from "../../../src/runtime/host.js";
-import { fillMidiContinuation } from "../../../src/app/midi/midi-continuation.js";
-import { generateMidiContinuationWithModel } from "../../../src/app/midi/midi-continuation-model.js";
-import { continuationHarness } from "../midi/support/continuation-harness.js";
 import { saveGlobalSettings } from "../../../src/storage/settings.js";
 import { createRequestPluginTools } from "../../../src/app/plugins/request-plugin-tools.js";
 import { runPluginParameterTool } from "../../../src/app/plugins/plugin-parameter-tool.js";
@@ -199,49 +196,6 @@ test("a stopped chat error permits the same Plugin tool to recover provenance fr
   const catalog = await listSessionArtifacts({ storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal });
   assert.equal(catalog.artifacts[0]?.generation?.callEventId, events[3]!.id);
   assert.deepEqual(JSON.parse(catalog.artifacts[0]!.generation!.parameters), { style: "manual" });
-});
-
-test("Fill retains its enclosing lifecycle across recoverable model errors and cancelled inner calls", async (t) => {
-  const h = await continuationHarness(t);
-  const cancelled = createHostAbortController();
-  const fill = (stop: boolean) => {
-    const signal = stop ? cancelled.signal : h.signal;
-    return fillMidiContinuation({ ...h, signal, bufferId: h.buffer.id,
-      validateGenerator: async () => {}, onProgress: async () => {},
-      generate: (buffer, onEvent) => {
-        let turns = 0;
-        return generateMidiContinuationWithModel({
-        storageDirectory: h.directory, buffer, signal, runtimeProfile: h.runtime, onEvent, onProgress: async () => {},
-        readTools: createSessionArtifactToolset({ storageDirectory: h.directory, sessionId: h.session.id, signal }),
-        beforeCommit: () => {}, beforeSave: async () => {
-          if (stop) { cancelled.abort(new Error("Stopped Fill")); throw cancelled.signal.reason; }
-        },
-        requestTurn: async () => ++turns === 1
-          ? { content: null, toolCalls: Array.from({ length: 9 }, (_, index) => ({ id: `excess-${index}`, name: "save_midi_artifact", arguments: "{}" })) }
-          : ({ content: null, toolCalls: [{ id: "save", name: "save_midi_artifact", arguments: JSON.stringify({
-          label: `Section ${buffer.nextSequence + 1}`, tracks: [{ name: "Bass", channel: 1,
-            notes: [{ pitch: 48, startTime: 0, duration: 4, velocity: 90 }] }],
-        }) }] }),
-        });
-      },
-    });
-  };
-  await assert.rejects(fill(true), /Stopped Fill/);
-  const stopped = await loadSessionEvents(h.directory, h.session.id);
-  assert.deepEqual(stopped.map((event) => [event.kind, event.name]), [
-    ["tool_call", "fill_midi_continuation"], ["error", undefined],
-    ["tool_call", "save_midi_artifact"], ["tool_result", "fill_midi_continuation"],
-  ]);
-  const filled = await fill(false);
-  const events = await loadSessionEvents(h.directory, h.session.id);
-  assert.equal(events.some((event) => event.kind === "user"), false);
-  const request = events.filter((event) => event.kind === "tool_call" && event.name === "fill_midi_continuation").at(-1)!;
-  const generations = artifactGenerationsFromEvents(events);
-  for (const [index, section] of filled.queue.entries()) {
-    const generation = generations.get(`midi:${section.artifactRef}`);
-    assert.equal(generation?.generation.requestEventId, request.id);
-    assert.equal(generation?.parent?.id, index ? filled.queue[index - 1]!.artifactRef : h.buffer.sourceArtifactRef);
-  }
 });
 
 test("an unscoped error cannot disambiguate overlapping same-name calls", () => {

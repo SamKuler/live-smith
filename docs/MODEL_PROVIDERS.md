@@ -595,23 +595,6 @@ Attachment storage IDs and filesystem paths never enter model input.
 Base64 bytes appear only in the send-scoped provider request for a supported
 input type.
 
-## MIDI continuation requests
-
-The current-model continuation source uses the Session's admitted Profile/model
-and saved creative brief. It sends a bounded tool request with saved MIDI
-references, paginated note inspection and one structured MIDI save operation.
-It requires tool-call support, uses the ordinary provider adapters and consumes
-model usage normally. Native audio or MIDI input capability is unnecessary: the
-host reads symbolic notes and saves the returned tracks as Standard MIDI.
-
-Continuation requests admit only the Session artifact list, MIDI inspection and
-MIDI save tools at execution. Hosted Web Search, Live actions, recovery
-operations, and unrelated paid Plugin tools are excluded. A local conditioning
-Plugin/MCP source runs through its own approved artifact contract without a
-chat-model request.
-The ordered-buffer workflow and persistence boundaries are described in
-[Architecture](ARCHITECTURE.md#bounded-midi-continuation).
-
 ## Provider-hosted Web Search
 
 Hosted Web Search is an explicit per-model opt-in for Direct API OpenAI

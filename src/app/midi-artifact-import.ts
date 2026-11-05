@@ -5,7 +5,6 @@ import { summarizeActionPlan, type AgentPlan } from "../agent/actions.js";
 import { assertEditScopesAllow, EditScopeDeniedError, resolveEditScopes, type EditScope } from "../agent/edit-scopes.js";
 import { digestActionIdentity, type AgentConfirmationDecision } from "../agent/loop.js";
 import { requiredEditScopesForAction, requiredEditScopesForPlan } from "../live/action-permissions.js";
-import type { AgentPlanBindings } from "../live/action-bindings.js";
 import type { LiveInteractionContext } from "../live/context.js";
 import { AgentPlanExecutionError, executeAgentPlanWithProgress } from "../live/executor.js";
 import { materializeMidiArtifactActionPlan } from "../plugins/artifacts.js";
@@ -41,8 +40,6 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
   signal: AbortSignal;
   mutationQueue: LiveMutationQueue;
   assertLiveSetCurrent?: () => void;
-  validateSource?(plan: AgentPlan, bindings: AgentPlanBindings): void;
-  onApplied?(): Promise<void>;
   confirm(plan: AgentPlan, guard: Awaited<ReturnType<typeof preflightAgentPlan>>, operationId: string): Promise<AgentConfirmationDecision>;
 }): Promise<boolean> {
   let plan: AgentPlan | undefined;
@@ -115,7 +112,6 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
     const guard = await preflightAgentPlan(input.context, input.interaction, plan, input.signal,
       undefined, undefined, { refresh, assert: (candidate, bindings) => {
         input.assertLiveSetCurrent?.();
-        input.validateSource?.(candidate, bindings);
         assertEditScopesAllow(requiredEditScopesForPlan(input.context, candidate, bindings), currentScopes());
       } });
     operationId = createStorageId("apply");
@@ -134,14 +130,12 @@ export async function importMidiArtifact(input: MidiArtifactImportCommand & {
       return executeAgentPlanWithProgress(input.context, importPlan, input.interaction.target, input.signal, bindings,
         (index, action) => {
           input.assertLiveSetCurrent?.();
-          input.validateSource?.(importPlan, bindings);
           assertEditScopesAllow(requiredEditScopesForAction(input.context, action, index, bindings), currentScopes());
           mutationStarted = true;
         });
     });
     completedActionCount = plan.actions.length;
     completedActionKeys = guard.actionKeys ?? [];
-    await input.onApplied?.();
     try {
       await record("apply_result", ["Applied:", ...outcome.results.map((result) => `- ${result}`)].join("\n"), "applied");
     } catch (cause) {

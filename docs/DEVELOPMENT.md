@@ -245,9 +245,10 @@ path and validated before immutable Session storage. Its descriptor is
 `{ "argument": "destination", "kind": "midi", "label": "Variation" }` or
 `{ "argument": "destination", "kind": "audio", "format": "wav", "label": "Processed take" }`.
 Audio accepts `wav` (the default) or `mp3`; detected bytes must match the declaration.
-Outputs are not automatically imported into Live. MIDI conditioning requires one
-MIDI input and one MIDI output. Artifact input and output permissions are approved
-independently after the MCP server itself.
+Importing saved output into Live is a separate operation. Artifact input and
+output permissions are approved independently after the MCP server itself.
+Older version 1 declarations may include a `continuation` hint. The host ignores
+that hint and uses the tool's declared artifact inputs and outputs normally.
 
 The committed fixtures under `test-fixtures/plugins/` exercise portable, Codex,
 and Claude package discovery. `tests/plugins/compatibility-fixtures.test.ts` packs
@@ -327,8 +328,8 @@ accept path text and grant no file access by themselves.
       "type": "string", "title": "Style", "description": "Default music style",
       "options": ["ambient", "jazz"], "default": "ambient"
     },
-    "buffer_bars": {
-      "type": "number", "title": "Buffer bars", "description": "Target buffered bars",
+    "phrase_bars": {
+      "type": "number", "title": "Phrase length", "description": "Default phrase length in bars",
       "min": 1, "max": 32, "default": 8
     }
   }
@@ -463,7 +464,7 @@ and model metadata. Important locations include:
 | `suno-session-<serviceId>.json` | Suno/Clerk Cookie fields saved separately for each audio connection |
 | `live-smith-audio/<sessionId>/` | Built-in audio jobs and their input/output assets |
 | `live-smith-audio-artifacts/<sessionId>/` | Audio results from external Plugins |
-| `live-smith-midi/<sessionId>/` | MIDI artifacts and continuation state |
+| `live-smith-midi/<sessionId>/` | MIDI artifacts and retained historical continuation files |
 | `live-smith-device-parameters/<sessionId>/` | Device parameter snapshots, application baselines, progress, and results |
 | `live-smith-plugins/` | Installed archives, catalog, runtime files, configuration, and mutable Plugin data |
 

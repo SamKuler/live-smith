@@ -226,8 +226,10 @@ files initially show a 16-beat window near the first relevant note. **Preview
 part** selects one MIDI track/channel part to display. The saved file and export
 keep every part; **Import into Live** carries the part choice into the import dialog.
 
-Newly saved model and Plugin MIDI results also appear in chat. Expand the tool
-result for a note preview, part selection and the **Export MIDI**, **Import into Live**
+Ask in chat to create a MIDI idea and save it to the Session. Newly saved model
+and Plugin MIDI results appear in chat. Previously saved MIDI results stay
+available in **Artifacts**. Expand the tool result for a note preview, part
+selection and the **Export MIDI**, **Import into Live**
 and **Open artifact** actions. Each card refers to its saved version. Older
 text-only results remain available through Artifacts. Saving a MIDI file uses
 local artifact storage; importing it into Live is a separate edit.
@@ -337,31 +339,6 @@ other capture methods. Display labels are shown as supplied by Live, while
 comparisons and edits use raw numeric values. A snapshot can hold up to 4,096
 parameters and 4 MiB. Capture succeeds with the complete snapshot or reports
 that a limit was exceeded.
-
-### MIDI continuation
-
-**Session → Tools → MIDI continuation** builds an ordered buffer of up to four
-future sections from selected MIDI Clips. Choose the current Session model or an
-approved local Plugin/MCP tool that declares MIDI conditioning, then save the
-source selection, section length and capacity. **Fill buffer** generates only the
-vacant slots; each section uses the original context and its preceding section.
-The current model uses the Session's saved creative brief. **Import next section** offers the
-usual part-to-track import preview. Only a successful import advances the buffer;
-cancelling the preview leaves it intact. **Fill buffer** continues from the last saved
-section, and **Stop** retains completed artifacts.
-
-Live Smith checks source notes, Clip markers, loops and Live tempo again before
-generation and import. If the sources or generator settings change, save a new
-setup. You control when to audition and import each section.
-
-Source capture uses the Clip's stored notes, cropped to its markers and expanded
-across its loops. Instrument audio and playback variations from note probability
-or velocity randomization stay in Live. The context supports up to 16 source
-Clips and 4,096 expanded notes. Each future section starts its own version group;
-revising a saved artifact leaves the queued section intact. Local Plugin tools
-receive source parts as separate MIDI tracks at 960 ticks per beat, within
-32-track and 4,096-note limits. Their output is checked for compatible timing
-and overlapping notes of the same pitch before it enters the buffer.
 
 ## Audio services
 

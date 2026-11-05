@@ -41,28 +41,15 @@
             return node;
           }
 
-          function defaults(panel, initialValues) {
+          function defaults(panel) {
             return new Map(panel.fields.map((field) => [field.name, {
-              included: field.required || (initialValues ? Object.hasOwn(initialValues, field.name) : field.default !== undefined),
-              value: initialValues && Object.hasOwn(initialValues, field.name) && typedScalar(field, initialValues[field.name])
-                ? initialValues[field.name] : field.default ?? (field.enum ? field.enum[0] : field.type === "boolean" ? false : ""),
+              included: field.required || field.default !== undefined,
+              value: field.default ?? (field.enum ? field.enum[0] : field.type === "boolean" ? false : ""),
             }]));
           }
 
           function argumentValue(field, value) {
             return ["number", "integer"].includes(field.type) && value !== "" ? Number(value) : value;
-          }
-
-          function hasUnsavedChanges(panel, initialValues) {
-            const draft = drafts.get(panel.toolName + ":" + panel.signature);
-            if (!draft) return false;
-            const initial = defaults(panel, initialValues);
-            return panel.fields.some((field) => {
-              const saved = draft.get(field.name);
-              const base = initial.get(field.name);
-              return saved.included !== base.included || saved.included &&
-                argumentValue(field, saved.value) !== argumentValue(field, base.value);
-            });
           }
 
           function currentOwner() {
@@ -120,12 +107,12 @@
             for (const region of root.querySelectorAll(".plugin-parameter-last-result")) renderResult(region);
           }
 
-          function create(panel, options = {}) {
+          function create(panel) {
             const nextOwner = currentOwner();
             if (owner !== nextOwner) { owner = nextOwner; drafts.clear(); }
             const sessionId = getState().activeSessionId;
             const key = panel.toolName + ":" + panel.signature;
-            if (!drafts.has(key)) drafts.set(key, defaults(panel, options.initialValues));
+            if (!drafts.has(key)) drafts.set(key, defaults(panel));
             const draft = drafts.get(key);
             const container = element("div", "plugin-parameter-panel");
             const form = element("form", "plugin-parameters");
@@ -212,7 +199,6 @@
                 control.setCustomValidity("");
                 saved.value = field.enum ? field.enum[Number(control.value)] : field.type === "boolean" ? control.checked : control.value;
                 if (slider && control.value !== "") slider.value = control.value;
-                options.onChange?.();
               };
               control.addEventListener("input", update);
               control.addEventListener("change", update);
@@ -221,7 +207,6 @@
                 control.disabled = !include.checked;
                 control.setCustomValidity("");
                 if (slider) slider.disabled = control.disabled;
-                options.onChange?.();
               });
               if (field.description) {
                 const hint = element("p", "field-hint", field.description);
@@ -238,22 +223,19 @@
             const reset = element("button", "secondary", () => t("Reset parameters"));
             reset.type = "button";
             reset.addEventListener("click", () => {
-              drafts.set(key, defaults(panel, options.initialValues));
-              container.replaceWith(create(panel, options));
-              options.onChange?.();
+              drafts.set(key, defaults(panel));
+              container.replaceWith(create(panel));
             });
-            const run = element("button", "primary", () => t(options.submitLabel || "Run tool"));
+            const run = element("button", "primary", () => t("Run tool"));
             run.type = "submit";
             run.disabled = disabled;
             actions.append(reset, run);
             fieldset.append(actions);
-            form.append(element("p", "field-hint", () => t(options.description || "Runs this tool with these values. Results are saved in this Session.")));
-            if (options.showResult !== false) {
-              const region = element("div", "plugin-parameter-last-result");
-              region.dataset.toolName = panel.toolName;
-              renderResult(region);
-              container.append(region);
-            }
+            form.append(element("p", "field-hint", () => t("Runs this tool with these values. Results are saved in this Session.")));
+            const region = element("div", "plugin-parameter-last-result");
+            region.dataset.toolName = panel.toolName;
+            renderResult(region);
+            container.append(region);
             form.addEventListener("submit", async (event) => {
               event.preventDefault();
               if (disabled || currentOwner() !== nextOwner || sessionId !== getState().activeSessionId) return;
@@ -267,10 +249,6 @@
                 entries.push([field.name, value]);
               }
               if (!form.reportValidity()) return;
-              if (options.onSubmit) {
-                await options.onSubmit(Object.fromEntries(entries));
-                return;
-              }
               await runCommand("run_plugin_tool", {
                 sessionId, toolName: panel.toolName, signature: panel.signature, arguments: Object.fromEntries(entries),
               }, { cancellable: true });
@@ -283,6 +261,6 @@
             for (const run of document.querySelectorAll('.plugin-parameters button[type="submit"]')) run.disabled = disabled;
           }
 
-          return { create, setBusy, hasUnsavedChanges, refreshResults, refreshLocale: () => bindings.refresh(document.documentElement) };
+          return { create, setBusy, refreshResults };
         };
       })();
