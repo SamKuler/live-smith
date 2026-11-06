@@ -870,6 +870,13 @@ isolation follows the visible main page; closing the overlay restores visible
 focus. Main-page navigation retains draft and scroll state and controls artifact
 preview suspension independently of Inspector tabs.
 
+Shared CSS motion rules own disclosure, page and floating-surface reveals.
+Disclosure arrows use the same rotation timing, while content and page transitions
+use short opacity animations. Native `open`, `hidden`, focus restoration and
+resource cleanup remain synchronous; animation completion never commits UI state.
+Reduced-motion preferences remove positional movement and long-running text pans
+while retaining brief opacity and color feedback.
+
 Extensions owns Audio services, MCP, Skills, and Plugins. Its editors manage
 account settings, server configuration and permissions, standalone Skill
 definitions, and package lifecycle. The Session Skills panel stores activation

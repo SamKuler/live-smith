@@ -5,6 +5,7 @@
         if (!factories) throw new Error(t("Live Smith UI factories are missing."));
 
         const inlineHelp = factories.createInlineHelp();
+        factories.installDisclosureMotion();
         let applicationState = window.__LIVE_SMITH_STATE__;
         const bridgeConfig = window.__LIVE_SMITH_BRIDGE__;
         const hostAdapter = window.LiveSmithHostAdapter;

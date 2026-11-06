@@ -7,7 +7,7 @@
   .settings-disclosure > summary {
     @apply m-0 grid min-h-control cursor-pointer list-none items-center gap-2 rounded-control p-2 text-small text-muted font-medium;
     grid-template-columns: minmax(0, 1fr) auto;
-    transition: background-color 120ms ease, color 120ms ease;
+    transition: background-color var(--motion-feedback) var(--motion-easing), color var(--motion-feedback) var(--motion-easing);
   }
 
   .settings-disclosure > summary::-webkit-details-marker {
@@ -25,6 +25,7 @@
   .settings-disclosure > summary:not(:has(.settings-disclosure-chevron))::after {
     content: "›";
     @apply text-heading;
+    transition: transform var(--motion-movement) var(--motion-easing);
   }
 
   .settings-disclosure[open] > summary:not(:has(.settings-disclosure-chevron))::after {
@@ -45,7 +46,7 @@
     @apply grid size-[18px] place-items-center border-0 text-[18px] text-muted;
     line-height: 1;
     transform: rotate(0deg);
-    transition: color 120ms ease, transform 120ms ease;
+    transition: color var(--motion-feedback) var(--motion-easing), transform var(--motion-movement) var(--motion-easing);
   }
 
   .settings-disclosure > summary:hover .settings-disclosure-chevron,
@@ -82,7 +83,7 @@
     stroke-width: 1.5;
     stroke-linecap: round;
     stroke-linejoin: round;
-    transition: transform 120ms ease;
+    transition: transform var(--motion-movement) var(--motion-easing);
   }
 
   .section-disclosure[open] > summary > .section-disclosure-chevron {

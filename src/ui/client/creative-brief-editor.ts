@@ -1,6 +1,7 @@
 import { isCreativeBrief, isCreativeBriefProposal, MAX_CREATIVE_BRIEF_CODE_POINTS, type CreativeBriefProposal } from "../../agent/creative-brief.js";
 import type { ChatBridgeState } from "../chat-state.js";
 import { uiMessage, type UiMessage } from "../../i18n/ui-message.js";
+import { revealDisclosure } from "./disclosure-motion.js";
 
 interface BriefDraft { value: string; base: string }
 interface Dependencies {
@@ -77,6 +78,7 @@ export function createCreativeBriefEditor(deps: Dependencies) {
       disclosure.open = Boolean(saved || draft.value || proposal);
       renderedSessionId = state.activeSessionId;
     } else if (proposal && proposal.creativeBrief !== previousProposal) {
+      revealDisclosure(disclosure);
       disclosure.open = true;
     }
     const buttonState = proposal ? "suggestion" : dirty ? "draft" : saved ? "saved" : "empty";
@@ -147,7 +149,9 @@ export function createCreativeBriefEditor(deps: Dependencies) {
   }
   return { initialize, render, hasDraft,
     open() {
-      element<HTMLDetailsElement>("creativeBriefDisclosure").open = true;
+      const disclosure = element<HTMLDetailsElement>("creativeBriefDisclosure");
+      revealDisclosure(disclosure);
+      disclosure.open = true;
       input.focus({ preventScroll: true });
     },
     hasUnsavedChanges: () => [...drafts.keys()].some(hasDraft),

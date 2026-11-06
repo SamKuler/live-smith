@@ -1571,9 +1571,12 @@
 
       function markMessageArrival(item) {
         item.classList.add("message-enter");
-        item.addEventListener("animationend", () => {
+        const finish = (event) => {
+          if (event.target !== item) return;
           item.classList.remove("message-enter");
-        }, { once: true });
+          item.removeEventListener("animationend", finish);
+        };
+        item.addEventListener("animationend", finish);
       }
 
       function messageItemForRender(existing, key, snapshot, build, animate) {

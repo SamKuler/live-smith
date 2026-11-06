@@ -6,6 +6,7 @@
 @import "./components/disclosures.css";
 @import "./components/auth.css";
 @import "./components/mcp-service.css";
+@import "./components/motion.css";
 
 :root {
   color-scheme: dark;
@@ -534,7 +535,7 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
 
 .message-actions {
   @apply flex flex-none items-center gap-[2px] opacity-0 pointer-events-none;
-  transition: opacity 120ms ease-out;
+  transition: opacity var(--motion-feedback) var(--motion-easing);
 }
 
 .timeline-item:hover .message-actions,
@@ -579,13 +580,13 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
 }
 
 .timeline-item.message-enter {
-  animation: message-arrive 160ms ease-out;
+  animation: message-arrive var(--motion-message) var(--motion-easing);
 }
 
 @keyframes message-arrive {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(var(--motion-message-distance));
   }
 
   to {
@@ -927,7 +928,7 @@ details.timeline-item > summary::before {
   border-left: 5px solid currentColor;
   border-top: 4px solid transparent;
   border-bottom: 4px solid transparent;
-  transition: transform 120ms ease;
+  transition: transform var(--motion-movement) var(--motion-easing);
 }
 
 details.timeline-item[open] > summary::before {
@@ -978,7 +979,7 @@ details.timeline-item > summary:hover {
   border-left: 4px solid currentColor;
   border-top: 3px solid transparent;
   border-bottom: 3px solid transparent;
-  transition: transform 120ms ease;
+  transition: transform var(--motion-movement) var(--motion-easing);
 }
 
 .timeline-activity-group[open] > summary::before,
@@ -1886,7 +1887,7 @@ details.timeline-item > .timeline-content {
 .tab-bar button {
   @apply h-control-compact min-w-0 flex-auto shrink-0 whitespace-nowrap rounded-control border border-transparent bg-transparent px-1 py-0 text-label text-quiet normal-case;
   letter-spacing: 0;
-  transition: color 120ms, background-color 120ms, border-color 120ms;
+  transition: color var(--motion-feedback), background-color var(--motion-feedback), border-color var(--motion-feedback);
 }
 
 .tab-bar button:hover {
@@ -1911,20 +1912,6 @@ details.timeline-item > .timeline-content {
 
 .tab-panel[hidden] {
   @apply hidden;
-}
-
-.inspector-pane .tab-panel:not([hidden]) {
-  animation: inspector-panel-arrive 140ms ease-out;
-}
-
-@keyframes inspector-panel-arrive {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
 }
 
 .settings {
@@ -2198,7 +2185,7 @@ details.timeline-item > .timeline-content {
   @apply flex min-h-control list-none items-center gap-2 px-2 py-1 text-label text-muted cursor-pointer;
 }
 .session-results > summary::-webkit-details-marker { @apply hidden; }
-.session-results > summary::before { content: "›"; @apply text-heading; transform-origin: center; transition: transform 120ms ease-out; }
+.session-results > summary::before { content: "›"; @apply text-heading; transform-origin: center; transition: transform var(--motion-movement) var(--motion-easing); }
 .session-results[open] > summary::before { transform: rotate(90deg); }
 .session-results > summary:hover { @apply bg-surface-hover text-text; }
 .session-results .result-count { @apply text-quiet; font-variant-numeric: tabular-nums; }
@@ -2672,14 +2659,14 @@ label {
 
 .settings-switch-track {
   @apply relative h-4 w-7 rounded-full bg-border-hover;
-  transition: background-color 120ms ease;
+  transition: background-color var(--motion-feedback) var(--motion-easing);
 }
 
 .settings-switch-track::after {
   content: "";
   @apply absolute left-[2px] top-[2px] size-3 rounded-full bg-text;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-  transition: transform 120ms ease;
+  transition: transform var(--motion-movement) var(--motion-easing);
 }
 
 .settings-switch > input:checked + .settings-switch-track {
@@ -3231,17 +3218,6 @@ label {
 
   .settings-actions button {
     @apply w-full min-w-0 px-[6px];
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
   }
 }
 

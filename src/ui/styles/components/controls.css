@@ -75,7 +75,7 @@
     @apply rounded-control border-0;
     font: inherit;
     cursor: pointer;
-    transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+    transition: border-color var(--motion-feedback) var(--motion-easing), background var(--motion-feedback) var(--motion-easing), color var(--motion-feedback) var(--motion-easing);
   }
 
   button:disabled {

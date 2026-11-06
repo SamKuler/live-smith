@@ -1,0 +1,80 @@
+:root {
+  --motion-feedback: 120ms;
+  --motion-disclosure: 140ms;
+  --motion-page: 140ms;
+  --motion-surface: 120ms;
+  --motion-movement: 120ms;
+  --motion-message: 160ms;
+  --motion-message-distance: 4px;
+  --motion-easing: ease-out;
+}
+
+@layer components {
+  @keyframes ui-reveal {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  details.motion-disclosure[open] > :not(summary, style, script, [hidden]) {
+    animation: ui-reveal var(--motion-disclosure) var(--motion-easing);
+  }
+
+  :where(details:not(.settings-disclosure, .section-disclosure, .session-results)) > summary {
+    list-style: none;
+  }
+
+  :where(details:not(.settings-disclosure, .section-disclosure, .session-results)) > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  :where(details:not(.settings-disclosure, .section-disclosure, .session-results)) > summary::before {
+    content: "";
+    display: inline-block;
+    width: 0;
+    height: 0;
+    margin-inline-end: 6px;
+    border-top: 3px solid transparent;
+    border-bottom: 3px solid transparent;
+    border-left: 4px solid currentColor;
+    transform: rotate(0deg);
+    transition: transform var(--motion-movement) var(--motion-easing);
+  }
+
+  :where(details[open]:not(.settings-disclosure, .section-disclosure, .session-results)) > summary::before {
+    transform: rotate(90deg);
+  }
+
+  .main-page:not([hidden]),
+  .inspector-pane .tab-panel:not([hidden], #extensionsPanel),
+  .extension-page:not([hidden]) {
+    animation: ui-reveal var(--motion-page) var(--motion-easing);
+  }
+
+  .floating-surface:not([hidden]),
+  .session-action-menu:not([hidden]),
+  .inline-help-content:not([hidden]),
+  .app-confirmation-layer:not([hidden]) > .app-confirmation-card,
+  dialog[open],
+  dialog[open]::backdrop {
+    animation: ui-reveal var(--motion-surface) var(--motion-easing);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-feedback: 80ms;
+    --motion-disclosure: 70ms;
+    --motion-page: 70ms;
+    --motion-surface: 70ms;
+    --motion-movement: 0ms;
+    --motion-message: 70ms;
+    --motion-message-distance: 0px;
+  }
+
+  *, *::before, *::after { scroll-behavior: auto !important; }
+
+  .session-entry:is(:hover, :focus-within) .session-meta.is-overflowing .session-meta-content {
+    animation: none;
+    transform: none;
+  }
+}
