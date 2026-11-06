@@ -1,6 +1,5 @@
 export const templateMessages: Record<string, string> = {
   "Pending send": "待发送",
-  "Attach again": "再次附加",
   "Follow-up messages help": "后续消息处理说明",
   "Queue starts a new request after the current response. Steer adds your message and attachments to the current task when it can accept the next update.": "排队：在当前回复结束后发起新请求。引导：将消息和附件补充给当前任务，在下一次可接收输入时生效。",
   "Loading retrieves tool descriptions from enabled, approved connections. No tool is executed. Tools may change with connection settings and the next message's inputs.": "加载会从已启用并批准的连接获取工具说明，不会执行工具。工具可能随连接设置和下一条消息的输入而变化。",
@@ -68,7 +67,7 @@ export const templateMessages: Record<string, string> = {
   "Parameter application": "参数应用",
   "Operation history": "操作历史",
   "Prepare import": "准备导入",
-  "Attach": "附到消息",
+  "Attach": "附加",
   "Continue creating": "继续创作",
   "Artifact type": "产物类型",
   "Browse artifacts": "浏览产物",

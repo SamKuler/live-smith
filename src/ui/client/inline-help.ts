@@ -1,4 +1,5 @@
 import { autoUpdate, computePosition, flip, offset, shift, size } from "@floating-ui/dom";
+import { isImeKeyboardEvent } from "./ime-keyboard.js";
 
 /** One help surface serves both authored fields and dynamically rendered controls. */
 export function createInlineHelp() {
@@ -11,14 +12,14 @@ export function createInlineHelp() {
   let leaveTimer: number | undefined;
   let stopPositioning: (() => void) | undefined;
   const buttonAt = (target: EventTarget | null) => target instanceof Element
-    ? target.closest<HTMLButtonElement>("button.inline-help[data-tooltip]") ?? undefined : undefined;
+    ? target.closest<HTMLButtonElement>("button:is(.inline-help, .action-tooltip)[data-tooltip]") ?? undefined : undefined;
   const observer = new MutationObserver(refresh);
 
   function close() {
     window.clearTimeout(leaveTimer);
     stopPositioning?.(); stopPositioning = undefined; observer.disconnect();
     if (active) {
-      active.setAttribute("aria-expanded", "false");
+      if (active.classList.contains("inline-help")) active.setAttribute("aria-expanded", "false");
       const ids = (active.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(id => id && id !== tip.id);
       if (ids.length) active.setAttribute("aria-describedby", ids.join(" ")); else active.removeAttribute("aria-describedby");
     }
@@ -55,7 +56,7 @@ export function createInlineHelp() {
     if (!button.dataset.tooltip || button.disabled) return;
     document.body.append(tip);
     active = button; tip.textContent = button.dataset.tooltip; tip.hidden = false;
-    button.setAttribute("aria-expanded", "true");
+    if (button.classList.contains("inline-help")) button.setAttribute("aria-expanded", "true");
     const ids = new Set((button.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean));
     ids.add(tip.id); button.setAttribute("aria-describedby", [...ids].join(" "));
     stopPositioning = autoUpdate(button, tip, position);
@@ -89,6 +90,7 @@ export function createInlineHelp() {
   function onClick(event: MouseEvent) {
     const button = buttonAt(event.target);
     if (!button) return;
+    if (button.classList.contains("action-tooltip")) { if (active === button) close(); return; }
     if (active === button && pinned) close();
     else { open(button); pinned = true; }
   }
@@ -96,6 +98,7 @@ export function createInlineHelp() {
     if (active && !active.contains(event.target as Node) && !tip.contains(event.target as Node)) close();
   }
   function onKey(event: KeyboardEvent) {
+    if (isImeKeyboardEvent(event)) return;
     if (event.key === "Escape" && active) { close(); event.preventDefault(); event.stopImmediatePropagation(); }
   }
   document.addEventListener("pointerover", onPointerOver);

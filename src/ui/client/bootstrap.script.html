@@ -249,6 +249,7 @@
 
         let bridgeClient;
         const composerInput = factories.createComposerInput({
+          isImeKeyboardEvent: factories.isImeKeyboardEvent,
           getState,
           requestSubmit: () => {
             if (
@@ -947,15 +948,13 @@
           const toggle = document.getElementById("sessionsToggleButton");
           if (!pane || !toggle) return;
           const focusWasInside = pane.contains(document.activeElement);
-          const backdrop = document.getElementById("sessionsBackdrop");
-          const focusWasOnBackdrop = document.activeElement === backdrop;
           sessionsPaneCollapsed = Boolean(collapsed);
           document.querySelector(".app").classList.toggle(
             "sessions-collapsed",
             sessionsPaneCollapsed,
           );
-          pane.hidden = sessionsPaneCollapsed;
-          document.getElementById("sessionsBackdrop").hidden = !(mainView === "artifacts" && compactArtifactLayout && !sessionsPaneCollapsed);
+          if (sessionsPaneCollapsed && focusWasInside) toggle.focus({ preventScroll: true });
+          factories.setPaneOpen(pane, !sessionsPaneCollapsed, "left");
           toggle.setAttribute("aria-expanded", String(!sessionsPaneCollapsed));
           const label = sessionsPaneCollapsed
             ? t("Show Sessions")
@@ -963,9 +962,10 @@
           toggle.setAttribute("aria-label", label);
           toggle.title = label;
           synchronizeInspectorIsolation();
-          if ((sessionsPaneCollapsed && focusWasInside) || (backdrop.hidden && focusWasOnBackdrop)) {
-            toggle.focus({ preventScroll: true });
-          }
+        }
+
+        function isSessionOverlayOpen() {
+          return mainView === "artifacts" && compactArtifactLayout && !sessionsPaneCollapsed;
         }
 
         function toggleSessionsPane() {
@@ -1005,16 +1005,17 @@
           const inspector = document.getElementById("inspectorPane");
           if (!inspector) return;
           const sessions = document.getElementById("sessionsPane");
+          const sessionsOverlayOpen = isSessionOverlayOpen();
           const sessionsCovered = compactArtifactLayout && !inspector.hidden;
           let focusWasCovered = sessionsCovered && sessions.contains(document.activeElement);
-          sessions.toggleAttribute("inert", sessionsCovered);
+          sessions.toggleAttribute("inert", sessions.hidden || sessionsCovered);
           for (const page of document.querySelectorAll("[data-main-view]")) {
-            const isolated = page.hidden || !inspector.hidden || !document.getElementById("sessionsBackdrop").hidden;
+            const isolated = page.hidden || !inspector.hidden || sessionsOverlayOpen;
             focusWasCovered ||= isolated && page.contains(document.activeElement);
             page.toggleAttribute("inert", isolated);
           }
-          if (focusWasCovered && !document.getElementById("sessionsBackdrop").hidden) {
-            document.getElementById("sessionsToggleButton").focus({ preventScroll: true });
+          if (focusWasCovered && sessionsOverlayOpen) {
+            document.getElementById("sessionSearch").focus({ preventScroll: true });
           } else if (focusWasCovered && !inspector.hidden) {
             inspector.querySelector('[role="tab"][aria-selected="true"]')?.focus({ preventScroll: true });
           }
@@ -1024,16 +1025,16 @@
           if (open && mainView === "artifacts" && compactArtifactLayout && !sessionsPaneCollapsed) setSessionsPaneCollapsed(true);
           const inspector = document.getElementById("inspectorPane");
           const focusWasInside = !open && inspector.contains(document.activeElement);
-          inspector.hidden = !open;
-          syncArtifactSummaryVisibility();
           const settingsButton = document.getElementById("settingsButton");
+          if (focusWasInside) settingsButton.focus({ preventScroll: true });
+          factories.setPaneOpen(inspector, open, "right");
+          syncArtifactSummaryVisibility();
           settingsButton.setAttribute("aria-expanded", String(open));
           settingsButton.setAttribute(
             "aria-label",
             open ? t("Close Inspector") : t("Open Inspector"),
           );
           synchronizeInspectorIsolation();
-          if (focusWasInside) (mainView === "artifacts" ? document.getElementById("artifactsPage") : settingsButton).focus({ preventScroll: true });
         }
 
         function openInspector(tab) {
@@ -2019,12 +2020,18 @@
             else synchronizeInspectorIsolation();
           });
           document.addEventListener("keydown", (event) => {
-            if (event.key !== "Escape" || event.defaultPrevented || mainView !== "artifacts" ||
+            if (event.key !== "Escape" || event.defaultPrevented || factories.isImeKeyboardEvent(event) ||
               event.target.closest?.("dialog, [role='dialog'], [role='alertdialog']")) return;
-            event.preventDefault();
-            if (!document.getElementById("sessionsBackdrop").hidden) setSessionsPaneCollapsed(true);
-            else if (!document.getElementById("inspectorPane").hidden) setInspectorOpen(false);
-            else returnToChat();
+            if (isSessionOverlayOpen()) {
+              event.preventDefault();
+              setSessionsPaneCollapsed(true);
+            } else if (!document.getElementById("inspectorPane").hidden) {
+              event.preventDefault();
+              setInspectorOpen(false);
+            } else if (mainView === "artifacts") {
+              event.preventDefault();
+              returnToChat();
+            }
           });
           const inspector = document.getElementById("inspectorPane");
           const initialFocus = inspector.hidden

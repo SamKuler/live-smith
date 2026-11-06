@@ -76,11 +76,14 @@ h1 {
 main {
   @apply relative grid min-h-0 overflow-hidden;
   grid-template-columns: var(--sessions-pane-width) minmax(0, 1fr);
+  transition: grid-template-columns var(--motion-pane) var(--motion-easing);
 }
 
 .app.sessions-collapsed main {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: 0px minmax(0, 1fr);
 }
+
+.main-page { grid-column: 2; grid-row: 1; }
 
 .sessions-pane,
 .chat-pane,
@@ -89,9 +92,13 @@ main {
 }
 
 .sessions-pane {
-  @apply grid overflow-hidden;
+  @apply grid min-w-0 overflow-hidden;
+  grid-column: 1;
+  grid-row: 1;
   grid-template-rows: auto auto minmax(0, 1fr);
 }
+
+.sessions-pane > * { width: calc(var(--sessions-pane-width) - 1px); }
 
 .session-search { @apply grid min-w-0 gap-2; padding: var(--sessions-padding) var(--sessions-padding) 0; }
 .session-search input, .artifact-search-input { @apply min-w-0 w-full; }
@@ -119,10 +126,8 @@ main {
   @apply flex h-10 items-center justify-between gap-2 border-b border-b-border px-3 text-label text-muted font-semibold;
 }
 
-.sessions-backdrop { position: absolute; inset: 0; z-index: 10; border: 0; border-radius: 0; background: rgba(0, 0, 0, 0.28); }
-.sessions-backdrop[hidden] { display: none; }
-.compact-artifacts main { grid-template-columns: minmax(0, 1fr); }
-.compact-artifacts .sessions-pane { position: absolute; inset: 0 auto 0 0; width: var(--sessions-pane-width); z-index: 20; }
+.compact-artifacts main { grid-template-columns: 0px minmax(0, 1fr); }
+.compact-artifacts .sessions-pane { position: absolute; inset: 0 auto 0 0; width: var(--sessions-pane-width); z-index: 20; box-shadow: var(--shadow-session-overlay); }
 @media (max-width: 640px) {
   .inspector-pane { width: min(var(--inspector-pane-width), 100%); }
 }
@@ -1861,6 +1866,11 @@ details.timeline-item > .timeline-content {
   @apply hidden;
 }
 
+:is(.sessions-pane, .inspector-pane)[hidden][data-pane-exit] {
+  display: grid;
+  pointer-events: none;
+}
+
 .inspector-scope-switch {
   @apply grid grid-cols-2 gap-1 border-b border-b-border bg-chrome px-3 py-2;
 }
@@ -3267,6 +3277,8 @@ label {
 .attachment-audio-actions { @apply flex flex-wrap items-center gap-1; }
 .attachment-audio-select, .attachment-reuse { @apply shrink-0 border-0 bg-transparent px-2 py-1 text-small text-muted; }
 .attachment-audio-select:hover, .attachment-reuse:hover { @apply text-text; }
+.attachment-reuse-icon { @apply grid size-6 place-items-center self-center justify-self-end p-0; }
+.attachment-reuse-icon:is(:hover, :focus-visible) { @apply bg-focus-soft text-text; }
 .attachment-audio-editor { width: min(720px, calc(100% - 32px)); }
 .attachment-audio-editor-content { @apply flex min-w-0 flex-col gap-4 overflow-auto p-4; }
 .attachment-waveform { width: 100%; height: 140px; border-radius: 4px; background: #1d1d1d; }

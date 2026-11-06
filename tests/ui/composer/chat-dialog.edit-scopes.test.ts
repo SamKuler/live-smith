@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readInlineHelp } from "../support/inline-help.js";
 
 import { EDIT_SCOPES, EDIT_SCOPE_LABELS } from "../../../src/agent/edit-scopes.js";
 import {
@@ -32,7 +33,8 @@ function selectedScopes(harness: Harness): string[] {
 }
 
 test("independent Approval and Scope entries retain accessible inline help and legacy All scopes", async () => {
-  const harness = await createDialogHarness(initialState());
+  const state = initialState();
+  const harness = await createDialogHarness(state);
   try {
     const button = control<HTMLButtonElement>(harness, "#editScopeButton");
     const panel = control<HTMLElement>(harness, "#editScopePanel");
@@ -80,20 +82,16 @@ test("independent Approval and Scope entries retain accessible inline help and l
     const readOnly = control<HTMLButtonElement>(harness, "#editScopeReadOnlyButton");
     assert.equal(panel.contains(readOnly), true);
     assert.equal(readOnly.getAttribute("aria-disabled"), "false");
-    for (const selector of [
-      "#editScopeHelp", "#editScopeDevicesHelp", "#editScopeStructureHelp",
-    ]) {
-      const help = control(harness, selector);
-      assert.equal(help.textContent, "?");
-      assert.equal(help.classList.contains("inline-help"), true);
+    for (const [selector, name, copy] of [
+      ["#editScopeHelp", "Edit scope help", /selected categories.*read-only.*Reading Live state.*save immediately/i],
+      ["#editScopeDevicesHelp", "Devices help", /Instruments.*effects.*Racks.*Drum Pads.*Simpler sample changes/i],
+      ["#editScopeStructureHelp", "Track and Set structure help", /Tracks.*Cue Points.*tempo.*permission for its contents/i],
+    ] as const) {
+      const help = control<HTMLButtonElement>(harness, selector);
       assert.equal(help.tabIndex, 0);
-      assert.ok(help.dataset.tooltip && help.dataset.tooltip.length > 1);
-      assert.equal(help.getAttribute("aria-label"), help.dataset.tooltip);
-      help.focus();
-      assert.equal(harness.document.activeElement, help);
+      assert.equal(help.getAttribute("aria-label"), name);
+      assert.match(readInlineHelp(help), copy);
     }
-    assert.equal(control(harness, "#editScope-devices").getAttribute("aria-describedby"), "editScopeDevicesHelp");
-    assert.equal(control(harness, "#editScope-structure").getAttribute("aria-describedby"), "editScopeStructureHelp");
     assert.equal(commandCalls(harness).length, 0);
     control(harness, "#editScopeStructureHelp").dispatchEvent(new harness.window.KeyboardEvent(
       "keydown", { key: "Escape", bubbles: true, cancelable: true },
@@ -106,6 +104,22 @@ test("independent Approval and Scope entries retain accessible inline help and l
     assert.equal(panel.hidden, true);
     assert.equal(harness.document.activeElement, button);
     assert.equal(commandCalls(harness).length, 0);
+
+    harness.emitServerEvent({
+      type: "global_settings_changed", commandId: "peer-language", uiLanguage: "zh-CN", uiLanguageRevision: "1",
+      defaultFollowUpBehavior: state.settings.defaultFollowUpBehavior,
+      defaultFollowUpBehaviorRevision: state.settings.defaultFollowUpBehaviorRevision,
+      showContextUsage: state.settings.showContextUsage,
+      contextUsageVisibilityRevision: state.settings.contextUsageVisibilityRevision,
+    });
+    await harness.settle();
+    button.click();
+    const devices = control<HTMLButtonElement>(harness, "#editScopeDevicesHelp");
+    assert.equal(devices.getAttribute("aria-label"), "设备说明");
+    assert.match(readInlineHelp(devices), /乐器、效果器.*Simpler/);
+    const structure = control<HTMLButtonElement>(harness, "#editScopeStructureHelp");
+    assert.equal(structure.getAttribute("aria-label"), "轨道和工程结构说明");
+    assert.match(readInlineHelp(structure), /轨道.*速度/);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

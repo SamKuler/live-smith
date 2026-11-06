@@ -4,6 +4,7 @@
   --motion-page: 140ms;
   --motion-surface: 120ms;
   --motion-movement: 120ms;
+  --motion-pane: 180ms;
   --motion-message: 160ms;
   --motion-message-distance: 4px;
   --motion-easing: ease-out;
@@ -67,6 +68,7 @@
     --motion-page: 70ms;
     --motion-surface: 70ms;
     --motion-movement: 0ms;
+    --motion-pane: 0ms;
     --motion-message: 70ms;
     --motion-message-distance: 0px;
   }
