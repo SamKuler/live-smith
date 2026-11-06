@@ -1,10 +1,12 @@
 import { isCreativeBrief, isCreativeBriefProposal, MAX_CREATIVE_BRIEF_CODE_POINTS, type CreativeBriefProposal } from "../../agent/creative-brief.js";
 import type { ChatBridgeState } from "../chat-state.js";
+import { uiMessage, type UiMessage } from "../../i18n/ui-message.js";
 
 interface BriefDraft { value: string; base: string }
 interface Dependencies {
   getState(): ChatBridgeState;
   isBusy(): boolean;
+  confirmAction(input: { title: UiMessage; message: UiMessage; acceptLabel: UiMessage }): Promise<boolean>;
   runCommand(kind: string, input: { sessionId: string; creativeBrief: string; expectedCreativeBrief: string }, options: { cancellable: boolean }): Promise<boolean>;
 }
 
@@ -16,12 +18,12 @@ export function createCreativeBriefEditor(deps: Dependencies) {
   };
   let input: HTMLTextAreaElement;
   let save: HTMLButtonElement;
-  let reset: HTMLButtonElement;
   let rebase: HTMLButtonElement;
   let useProposal: HTMLButtonElement;
   const drafts = new Map<string, BriefDraft>();
   let pendingSessionId: string | undefined;
   let proposal: CreativeBriefProposal | undefined;
+  let renderedSessionId: string | undefined;
 
   function current() {
     const state = deps.getState();
@@ -46,7 +48,6 @@ export function createCreativeBriefEditor(deps: Dependencies) {
     set(input, "value", draft.value);
     set(input, "disabled", pendingSessionId !== undefined || !session);
     set(save, "disabled", busy || !dirty || conflict || !isCreativeBrief(draft.value));
-    set(reset, "disabled", pendingSessionId !== undefined || !dirty);
     set(rebase, "disabled", pendingSessionId !== undefined);
     set(rebase, "hidden", !conflict);
     const conflictPanel = element("creativeBriefConflict");
@@ -58,7 +59,8 @@ export function createCreativeBriefEditor(deps: Dependencies) {
     set(element("creativeBriefStatus"), "textContent", pendingSessionId === state.activeSessionId
       ? t("Saving…") : conflict ? t("The saved brief changed. Review it before saving your draft.")
         : !isCreativeBrief(draft.value) ? t("Creative brief is too long.")
-          : dirty ? t("Unsaved changes") : saved ? t("Saved for this Session") : t("No creative brief yet"));
+          : dirty ? t("Unsaved changes") : saved ? t("Saved for this Session") : "");
+    const previousProposal = proposal?.creativeBrief;
     proposal = undefined;
     const event = state.events.findLast((entry) => entry.kind === "tool_result" && entry.name === "propose_creative_brief");
     if (event) {
@@ -69,7 +71,14 @@ export function createCreativeBriefEditor(deps: Dependencies) {
     }
     set(element("creativeBriefProposal"), "hidden", !proposal);
     set(element("creativeBriefProposalText"), "textContent", proposal?.creativeBrief || t("Empty brief"));
-    set(useProposal, "disabled", pendingSessionId !== undefined || dirty || !proposal);
+    set(useProposal, "disabled", pendingSessionId !== undefined || !proposal);
+    const disclosure = element<HTMLDetailsElement>("creativeBriefDisclosure");
+    if (renderedSessionId !== state.activeSessionId) {
+      disclosure.open = Boolean(saved || draft.value || proposal);
+      renderedSessionId = state.activeSessionId;
+    } else if (proposal && proposal.creativeBrief !== previousProposal) {
+      disclosure.open = true;
+    }
     const buttonState = proposal ? "suggestion" : dirty ? "draft" : saved ? "saved" : "empty";
     const button = element<HTMLButtonElement>("briefShortcut");
     set(button, "textContent", t("Brief"));
@@ -82,7 +91,6 @@ export function createCreativeBriefEditor(deps: Dependencies) {
     input = element<HTMLTextAreaElement>("creativeBrief");
     input.maxLength = MAX_CREATIVE_BRIEF_CODE_POINTS * 2;
     save = element<HTMLButtonElement>("saveCreativeBriefButton");
-    reset = element<HTMLButtonElement>("resetCreativeBriefButton");
     rebase = element<HTMLButtonElement>("rebaseCreativeBriefButton");
     useProposal = element<HTMLButtonElement>("useCreativeBriefProposalButton");
     input.addEventListener("input", () => {
@@ -91,18 +99,27 @@ export function createCreativeBriefEditor(deps: Dependencies) {
       drafts.set(state.activeSessionId, { ...draft, value: input.value });
       render();
     });
-    reset.addEventListener("click", () => {
-      drafts.delete(deps.getState().activeSessionId);
-      render();
-    });
     rebase.addEventListener("click", () => {
       const { draft, saved } = current();
       draft.base = saved;
       render();
     });
-    useProposal.addEventListener("click", () => {
+    useProposal.addEventListener("click", async () => {
       if (!proposal || useProposal.disabled) return;
-      drafts.set(deps.getState().activeSessionId, { value: proposal.creativeBrief, base: proposal.expectedCreativeBrief });
+      const sessionId = deps.getState().activeSessionId;
+      const choice = proposal;
+      const { draft, saved } = current();
+      const value = draft.value, base = draft.base;
+      if (value !== saved && !await deps.confirmAction({
+        title: uiMessage("Replace this draft with the suggestion?"),
+        message: uiMessage("Your unsaved changes will be replaced. The saved brief stays unchanged until you save."),
+        acceptLabel: uiMessage("Use suggestion"),
+      })) return;
+      if (deps.getState().activeSessionId !== sessionId || pendingSessionId !== undefined ||
+          proposal?.creativeBrief !== choice.creativeBrief || proposal.expectedCreativeBrief !== choice.expectedCreativeBrief) return;
+      const latest = current();
+      if (latest.saved !== saved || latest.draft.value !== value || latest.draft.base !== base) return;
+      drafts.set(sessionId, { value: choice.creativeBrief, base: choice.expectedCreativeBrief });
       render();
       input.focus();
     });
@@ -129,6 +146,10 @@ export function createCreativeBriefEditor(deps: Dependencies) {
     return Boolean(draft && session && draft.value !== draft.base && draft.value !== (session.creativeBrief ?? ""));
   }
   return { initialize, render, hasDraft,
+    open() {
+      element<HTMLDetailsElement>("creativeBriefDisclosure").open = true;
+      input.focus({ preventScroll: true });
+    },
     hasUnsavedChanges: () => [...drafts.keys()].some(hasDraft),
   };
 }

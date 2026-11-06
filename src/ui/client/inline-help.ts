@@ -69,8 +69,11 @@ export function createInlineHelp() {
   }
   function onPointerOver(event: Event) {
     const button = buttonAt(event.target);
-    if (button) open(button);
-    if (button || tip.contains(event.target as Node)) { pointerInside = true; window.clearTimeout(leaveTimer); }
+    if (button && (!pinned && document.activeElement !== active)) open(button);
+    if ((button && button === active) || tip.contains(event.target as Node)) {
+      pointerInside = true;
+      window.clearTimeout(leaveTimer);
+    }
   }
   function onPointerOut(event: PointerEvent) {
     if (!active) return;
@@ -103,5 +106,11 @@ export function createInlineHelp() {
   document.addEventListener("pointerdown", onOutside, true);
   document.addEventListener("keydown", onKey, true);
   window.addEventListener("pagehide", close);
-  return { refresh, close };
+  return {
+    refresh,
+    close,
+    contains(owner: Element, target: EventTarget | null) {
+      return Boolean(active && owner.contains(active) && target instanceof Node && tip.contains(target));
+    },
+  };
 }

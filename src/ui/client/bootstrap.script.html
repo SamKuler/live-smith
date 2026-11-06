@@ -55,6 +55,10 @@
           audio: "Audio",
           structure: "Structure",
         };
+        const editScopeHelp = {
+          devices: { id: "editScopeDevicesHelp", message: "Instruments, effects, Racks, Drum Pads, and Simpler sample changes." },
+          structure: { id: "editScopeStructureHelp", message: "Tracks, Scenes, Cue Points, Take Lanes, and tempo. Deleting or duplicating a container also needs permission for its contents." },
+        };
         let permissionsSessionId = null;
         let pendingEditScopes = null;
 
@@ -288,6 +292,9 @@
           openAttachment: bridgeClient.openAttachment,
           showStatus: bridgeClient.showStatus,
         });
+        const sessionAttachments = factories.createSessionAttachments({
+          getState, attachmentViewer, isReuseBlocked: bridgeClient.isAttachmentOperationLocked,
+        });
         const attachments = factories.createAttachments({
           attachmentViewer,
           revealComposer: returnToChat,
@@ -449,6 +456,7 @@
         const actionPreview = factories.createActionPreview();
         const creativeBriefEditor = factories.createCreativeBriefEditor({
           getState,
+          confirmAction,
           isBusy: () => Boolean(composerOperationState.commandKind) ||
             composerOperationState.sendInProgress || composerOperationState.attachmentInProgress ||
             composerOperationState.skillInProgress,
@@ -609,7 +617,7 @@
             }
             setAttributeIfChanged(indicator, "aria-label", unavailable);
             setPropertyIfChanged(indicator, "title", unavailable);
-            setPropertyIfChanged(value, "textContent", "?");
+            setPropertyIfChanged(value, "textContent", "—");
             return;
           }
           const percentage = Math.min(
@@ -627,23 +635,6 @@
           setAttributeIfChanged(indicator, "aria-label", description);
           setPropertyIfChanged(indicator, "title", description);
           setPropertyIfChanged(value, "textContent", `${roundedPercentage}%`);
-        }
-
-        function renderContextAttachments() {
-          const attachments = bridgeClient.getComposerAttachments();
-          const sessionId = getState().activeSessionId;
-          document.getElementById("contextAttachmentEmpty").hidden = attachments.length > 0;
-          document.getElementById("contextAttachmentList").replaceChildren(...attachments.map((attachment) => {
-            const item = document.createElement("li");
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "attachment-chip-label";
-            button.textContent = attachment.fileName;
-            button.setAttribute("translate", "no");
-            button.addEventListener("click", () => attachmentViewer.open(sessionId, attachment));
-            item.append(button);
-            return item;
-          }));
         }
 
         function contextPresentationTitle(context) {
@@ -1061,6 +1052,11 @@
         function openInspectorSection(tab, sectionId) {
           openInspector(tab);
           const section = document.getElementById(sectionId);
+          if (sectionId === "creativeBriefSection") {
+            creativeBriefEditor.open();
+            section?.scrollIntoView?.({ block: "start" });
+            return;
+          }
           if (section?.closest("#skillLibrary")) skillManager.showLibrary();
           const category = section?.closest("[data-extension-page]")?.dataset.extensionPage;
           if (category) openExtensionCategory(category);
@@ -1221,13 +1217,10 @@
             const caption = control.parentElement.querySelector("[data-scope-caption]");
             if (caption) setPropertyIfChanged(caption, "textContent", t(editScopeShortLabels[scope]));
           }
-          for (const [id, message] of [
-            ["editScopeDevicesHelp", "Instruments, effects, Racks, Drum Pads, and Simpler sample changes."],
-            ["editScopeStructureHelp", "Tracks, Scenes, Cue Points, Take Lanes, and tempo. Deleting or duplicating a container also needs permission for its contents."],
-          ]) {
+          for (const [scope, { id, message }] of Object.entries(editScopeHelp)) {
             const help = document.getElementById(id);
             if (help) {
-              setAttributeIfChanged(help, "aria-label", t(message));
+              setAttributeIfChanged(help, "aria-label", t("{label} help", { label: t(editScopeLabels[scope]) }));
               setDataIfChanged(help, "tooltip", t(message));
             }
           }
@@ -1349,21 +1342,16 @@
             caption.textContent = t(editScopeShortLabels[scope]);
             label.append(control, caption);
             row.append(label);
-            const helpText = scope === "devices"
-              ? t("Instruments, effects, Racks, Drum Pads, and Simpler sample changes.")
-              : scope === "structure"
-                ? t("Tracks, Scenes, Cue Points, Take Lanes, and tempo. Deleting or duplicating a container also needs permission for its contents.")
-                : null;
-            if (helpText) {
+            const helpInfo = editScopeHelp[scope];
+            if (helpInfo) {
               const help = document.createElement("button");
               help.type = "button";
-              help.id = scope === "devices" ? "editScopeDevicesHelp" : "editScopeStructureHelp";
+              help.id = helpInfo.id;
               help.className = "inline-help";
               help.tabIndex = 0;
-              help.setAttribute("aria-label", helpText);
-              help.dataset.tooltip = helpText;
+              help.setAttribute("aria-label", t("{label} help", { label: t(editScopeLabels[scope]) }));
+              help.dataset.tooltip = t(helpInfo.message);
               help.textContent = "?";
-              control.setAttribute("aria-describedby", help.id);
               row.append(help);
             }
             options.append(row);
@@ -1386,9 +1374,10 @@
             closeEditScopes();
           });
           function dismissEditScopesOutside(event) {
+            const shell = document.getElementById("editScopeShell");
             if (
               permissionsSessionId &&
-              !document.getElementById("editScopeShell").contains(event.target)
+              !shell.contains(event.target) && !inlineHelp.contains(shell, event.target)
             ) closeEditScopes(false);
           }
           document.addEventListener("mousedown", dismissEditScopesOutside);
@@ -1418,7 +1407,7 @@
           renderComposerRuntimeControls();
           renderSendPresentation();
           renderComposerContextUsage();
-          renderContextAttachments();
+          sessionAttachments.render();
           bridgeClient.renderDefaultFollowUpBehavior();
           bridgeClient.renderNetworkProxySettings();
           bridgeClient.renderCustomInstructions();
@@ -1915,7 +1904,7 @@
           renderSettingsForm: renderSettingsFormFromState,
           renderTimeline: () => { sessionTimeline.renderTimeline(); creativeBriefEditor.render(); artifactSummary.render(); },
           renderSendPresentation,
-          renderPendingAttachments: () => { attachments.renderPending(); renderContextAttachments(); },
+          renderPendingAttachments: () => { attachments.renderPending(); sessionAttachments.render(); },
           setOperationState,
           setConfirmationState: sessionTimeline.setConfirmationState,
           renderConnections: connectionsManager.render,

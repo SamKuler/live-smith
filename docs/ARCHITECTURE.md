@@ -858,6 +858,11 @@ tab. The document bootstrap owns one local `chat`/`artifacts` main
 view selection; it is independent of Session storage and other window views.
 The template places both pages beside the Session list. `session-timeline` owns
 Inspector navigation. The Brief shortcut opens the creative brief inside Context.
+The brief editor owns its disclosure state: an empty Session starts collapsed,
+and its shortcut or a new proposal opens the editor. Session attachment rows are
+derived from persisted event metadata and pending attachments in the canonical
+browser state. They reuse the existing preview and attachment-copy routes;
+compaction checkpoints preserve the underlying attachment history.
 Artifact shortcuts open the Session summary; its rows and exact saved chat links
 open the main workspace. Draft, attachment
 and timeline approval paths reveal chat before focusing its controls. Inspector

@@ -2504,7 +2504,7 @@
           return {
             key,
             label,
-            mark: "?",
+            mark: t("Unverified"),
             state: "unverified",
             value: t("Unverified"),
           };
@@ -2585,8 +2585,8 @@
             ? [t("Provider reasoning metadata is retained without enabling unverified controls.")]
             : []),
         ];
-        setPropertyIfChanged(note, "hidden", messages.length === 0);
-        setPropertyIfChanged(note, "textContent", messages.join(" "));
+        setPropertyIfChanged(note, "hidden", !positiveVideoEvidence);
+        setPropertyIfChanged(note, "textContent", positiveVideoEvidence ? t("Live Smith cannot send video attachments.") : "");
         const reasoningDetails = Object.entries(reasoning)
           .map(([key, value]) => `${key}=${String(value)}`);
         const inputDetails = [
@@ -2609,8 +2609,11 @@
           ...(reasoningDetails.length
             ? [t("Provider reasoning: {value}", { value: reasoningDetails.join(", ") })]
             : []),
-        ].join(". ");
-        setPropertyIfChanged(note, "title", title);
+        ];
+        const technicalDetails = document.getElementById("providerCapabilityDetails");
+        const technicalText = document.getElementById("providerCapabilityDetailsText");
+        setPropertyIfChanged(technicalDetails, "hidden", !messages.length && !title.length);
+        setPropertyIfChanged(technicalText, "textContent", [...messages, ...title].join("\n"));
       }
 
       function updateDraftActions() {

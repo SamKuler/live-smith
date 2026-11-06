@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readInlineHelp } from "../support/inline-help.js";
 
 import { murekaPlugin, MUREKA_MUSIC_MODELS } from "../../../src/plugins/builtins/mureka.js";
 import { createDialogHarness } from "../support/chat-dialog.test-harness.js";
@@ -21,7 +22,7 @@ test("Mureka uses the named API-key workflow and provider-owned model suggestion
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceKeyField")!.hidden, false);
     assert.equal(harness.document.querySelector<HTMLElement>("#audioServiceModelField")!.hidden, false);
     assert.match(harness.document.querySelector("#audioServiceOperations")!.textContent!, /Generate lyrics.*Lyrics to song.*Music generation/);
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /prompt.*external service.*API charges/i);
+    assert.match(readInlineHelp(harness.document.querySelector<HTMLButtonElement>("#audioServiceDisclosure")!), /prompt.*external service.*API charges/i);
     assert.match(harness.document.querySelector("#audioServiceModelHint")!.textContent!, /auto.*prompt-based generation/i);
 
     const model = harness.document.querySelector<HTMLInputElement>("#audioServiceModel")!;

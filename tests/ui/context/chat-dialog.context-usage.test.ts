@@ -16,11 +16,12 @@ import {
 type Harness = Awaited<ReturnType<typeof createDialogHarness>>;
 
 async function startHeldSend(harness: Harness, prompt: string): Promise<string> {
+  const previousSendCount = harness.sendIds.length;
   harness.holdNextSend();
   harness.input("#prompt", prompt);
   harness.click("#sendButton");
   await waitForCondition(
-    () => Boolean(harness.sendIds.at(-1)),
+    () => harness.sendIds.length > previousSendCount,
     "Expected a held send to start.",
   );
   return harness.sendIds.at(-1)!;
@@ -299,7 +300,9 @@ test("context usage rejects stale, mismatched, and malformed updates per Session
   const state = stateFixture();
   state.openSettingsOnLoad = false;
   const harness = await createDialogHarness(state);
+  let sendHeld = false;
   try {
+    sendHeld = true;
     const firstSendId = await startHeldSend(harness, "Measure Bass context");
     harness.emitServerEvent(usageUpdate(firstSendId, "session-1", 1, 250));
     assert.equal(usageValue(harness), "25%");
@@ -330,11 +333,13 @@ test("context usage rejects stale, mismatched, and malformed updates per Session
     }
 
     harness.releaseHeldSend();
+    sendHeld = false;
     await harness.settle();
     assert.equal(usageValue(harness), "25%", "terminal sends retain exact usage");
 
     await selectSession(harness, "session-2");
-    assert.equal(usageValue(harness), "?");
+    assert.equal(usageValue(harness), "—");
+    sendHeld = true;
     const secondSendId = await startHeldSend(harness, "Measure Lead context");
     harness.emitServerEvent(usageUpdate(secondSendId, "session-2", 1, 500));
     assert.equal(usageValue(harness), "50%");
@@ -345,7 +350,7 @@ test("context usage rejects stale, mismatched, and malformed updates per Session
     assert.equal(usageValue(harness), "25%");
     assert.deepEqual(harness.errors, []);
   } finally {
-    harness.releaseHeldSend();
+    if (sendHeld) harness.releaseHeldSend();
     await harness.settle();
     harness.close();
   }
@@ -355,13 +360,17 @@ test("accepted missing usage clears evidence while send-start reconnect preserve
   const state = stateFixture();
   state.openSettingsOnLoad = false;
   const harness = await createDialogHarness(state);
+  let sendHeld = false;
   try {
+    sendHeld = true;
     const firstSendId = await startHeldSend(harness, "Initial exact usage");
     harness.emitServerEvent(usageUpdate(firstSendId, "session-1", 1, 250));
     assert.equal(usageValue(harness), "25%");
     harness.releaseHeldSend();
+    sendHeld = false;
     await harness.settle();
 
+    sendHeld = true;
     const sendId = await startHeldSend(harness, "Reconnect usage");
     harness.emitServerEvent(modelTurnState(sendId, undefined, 0));
     assert.equal(usageValue(harness), "25%");
@@ -379,17 +388,17 @@ test("accepted missing usage clears evidence while send-start reconnect preserve
     assert.equal(usageValue(harness), "40%");
 
     harness.emitServerEvent(modelTurnState(sendId, null, 2));
-    assert.equal(usageValue(harness), "?", "reconnect recovers a missed clear");
+    assert.equal(usageValue(harness), "—", "reconnect recovers a missed clear");
     harness.emitServerEvent(modelTurnState(sendId, {
       usedTokens: 300,
       contextWindowTokens: 1_000,
     }, 2));
     assert.equal(usageValue(harness), "30%");
     harness.emitServerEvent(usageUpdate(sendId, "session-1", 3, null));
-    assert.equal(usageValue(harness), "?", "accepted missing usage clears live");
+    assert.equal(usageValue(harness), "—", "accepted missing usage clears live");
     assert.deepEqual(harness.errors, []);
   } finally {
-    harness.releaseHeldSend();
+    if (sendHeld) harness.releaseHeldSend();
     await harness.settle();
     harness.close();
   }
@@ -414,7 +423,7 @@ test("authoritative Session removal clears retained context usage", async () => 
       await ui.runCommand("delete_session", { sessionId: "session-1" }),
       true,
     );
-    assert.equal(usageValue(harness), "?");
+    assert.equal(usageValue(harness), "—");
 
     const reintroduced = stateFixture();
     reintroduced.openSettingsOnLoad = false;
@@ -423,7 +432,7 @@ test("authoritative Session removal clears retained context usage", async () => 
       await ui.runCommand("select_session", { sessionId: "session-1" }),
       true,
     );
-    assert.equal(usageValue(harness), "?");
+    assert.equal(usageValue(harness), "—");
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -451,7 +460,7 @@ test("manual compaction clears retained context usage at its checkpoint boundary
     );
     await harness.settle();
 
-    assert.equal(usageValue(harness), "?");
+    assert.equal(usageValue(harness), "—");
     assert.deepEqual(commandCalls(harness).at(-1), {
       path: "/command",
       body: {
@@ -544,7 +553,7 @@ test("changing the active Profile endpoint clears context usage for the same mod
       }),
       true,
     );
-    assert.equal(usageValue(harness), "?");
+    assert.equal(usageValue(harness), "—");
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();
@@ -586,7 +595,7 @@ test("a subscription auth generation change clears retained context usage", asyn
       true,
     );
 
-    assert.equal(usageValue(harness), "?");
+    assert.equal(usageValue(harness), "—");
     assert.match(
       harness.document.querySelector("#contextUsage")?.getAttribute("aria-label") ?? "",
       /unavailable/i,

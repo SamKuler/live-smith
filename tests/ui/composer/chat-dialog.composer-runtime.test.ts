@@ -1471,7 +1471,7 @@ test("the context ring distinguishes unavailable and exact latest-turn usage", a
     const usage = harness.document.querySelector<HTMLElement>("#contextUsage");
     const value = harness.document.querySelector("#contextUsageValue");
     assert.equal(usage?.dataset.state, "unavailable");
-    assert.equal(value?.textContent, "?");
+    assert.equal(value?.textContent, "—");
     assert.match(usage?.getAttribute("aria-label") ?? "", /usage unavailable/i);
     assert.match(usage?.getAttribute("title") ?? "", /usage unavailable/i);
 
@@ -1512,7 +1512,7 @@ test("the context ring distinguishes unavailable and exact latest-turn usage", a
     assert.equal(value?.textContent, "100%", "reasoning-only changes keep usage");
     harness.select("#composerModel", "model-b");
     await harness.settle();
-    assert.equal(value?.textContent, "?", "model changes clear old-model usage");
+    assert.equal(value?.textContent, "—", "model changes clear old-model usage");
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

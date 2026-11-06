@@ -5495,7 +5495,6 @@
             result.error || `${response.status} ${response.statusText}`,
           );
           error.httpStatus = response.status;
-          if (isWireUiMessage(result.displayMessage)) error.displayMessage = result.displayMessage;
           if (result.commandOutcome === "unknown") {
             error.attachmentFailureKind = "unknown";
             if (isWireChatBridgeState(result.state)) {
@@ -5963,7 +5962,6 @@
         if (!response.ok) {
           const error = new Error(result.error || `${response.status} ${response.statusText}`);
           error.httpStatus = response.status;
-          if (isWireUiMessage(result.displayMessage)) error.displayMessage = result.displayMessage;
           if (result.commandOutcome === "unknown") {
             if (isWireChatBridgeState(result.state)) {
               applyCommandState("plugin_reconcile", result.state, causalAttempt);
@@ -7865,6 +7863,7 @@
         isOperationInProgress,
         isProfileSettingsOperationInProgress,
         isSessionNavigationBlocked,
+        isAttachmentOperationLocked,
         isCommandInProgress: () => Boolean(viewNavigationAttempt) || Boolean(commandInProgress) ||
           commandReconciliationBlocked ||
           globalStateRefresh !== null ||

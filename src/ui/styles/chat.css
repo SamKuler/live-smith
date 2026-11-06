@@ -435,7 +435,7 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
 }
 
 .edit-scope-option {
-  @apply relative flex min-h-6 items-center justify-between gap-1 rounded-control px-[5px] py-0;
+  @apply relative flex min-h-6 items-center gap-1 rounded-control px-[5px] py-0;
 }
 
 .edit-scope-option:hover,
@@ -444,8 +444,10 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
 }
 
 .edit-scope-option label {
-  @apply flex min-w-0 flex-1 self-stretch items-center cursor-pointer;
+  @apply flex min-w-0 self-stretch items-center cursor-pointer;
 }
+
+.edit-scope-option label:last-child { flex: 1; }
 
 
 .edit-scope-options {
@@ -1952,11 +1954,20 @@ details.timeline-item > .timeline-content {
 }
 
 .context-attachment-list {
-  @apply m-0 grid list-none gap-2 p-0 text-label text-muted;
+  @apply m-0 grid list-none gap-1 p-0 text-label text-muted;
   overflow-wrap: anywhere;
 }
 
 .context-attachment-list:empty { @apply hidden; }
+
+.context-attachment-row {
+  @apply grid min-w-0 items-center gap-2;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.context-attachment-open { @apply min-h-control-compact; }
+.context-attachment-status { @apply px-2 text-small text-quiet; }
+.context-attachment-reuse { @apply h-control-compact px-2 text-small; }
 
 .skill-library {
   @apply grid gap-2;
@@ -2645,6 +2656,11 @@ label {
   @apply mt-1;
 }
 
+.provider-capability-details {
+  @apply my-2 min-w-0 whitespace-pre-wrap text-small text-muted;
+  overflow-wrap: anywhere;
+}
+
 .settings-switch {
   @apply relative grid items-center gap-2;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3085,6 +3101,10 @@ label {
   @apply mt-4 border-t border-t-divider pt-4;
 }
 
+.context-settings .settings-scope > .inspector-scope-header {
+  @apply mb-2;
+}
+
 .custom-instructions-settings > .inspector-scope-header {
   @apply mb-2;
 }
@@ -3114,16 +3134,16 @@ label {
 }
 
 .creative-brief-settings textarea {
-  @apply mt-2 w-full min-h-40;
+  @apply w-full min-h-32;
   resize: vertical;
 }
 
 .creative-brief-actions {
-  @apply mt-2 flex flex-wrap justify-end gap-2;
+  @apply flex flex-wrap justify-end gap-2;
 }
 
 .creative-brief-conflict, .creative-brief-proposal {
-  @apply mt-3 rounded-control border border-border p-2;
+  @apply rounded-control border border-border p-2;
 }
 
 .creative-brief-settings pre {
@@ -3364,6 +3384,13 @@ input.piano-roll-position[hidden] { display: none; }
 
 .artifact-native-drag { cursor: grab; touch-action: none; user-select: none; }
 .artifact-native-drag:active { cursor: grabbing; }
+.artifact-native-drag[data-preparation-failed] {
+  height: auto;
+  padding-block: 4px;
+  white-space: normal;
+  cursor: pointer;
+}
+.artifact-native-drag .field-hint { display: block; }
 
 .help-details { margin: 8px 0; font-size: 12px; line-height: 1.6; }
 .help-details summary { cursor: pointer; color: var(--color-muted); }

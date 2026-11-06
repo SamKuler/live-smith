@@ -23,9 +23,9 @@ test("a typed non-catalog model stays unverified after Save and Use", async () =
     harness.click("#setDefaultModelButton");
 
     const expected = [
-      ["Image ?", "unverified"],
-      ["Audio ?", "unverified"],
-      ["PDF ?", "unverified"],
+      ["Image Unverified", "unverified"],
+      ["Audio Unverified", "unverified"],
+      ["PDF Unverified", "unverified"],
     ];
     assert.deepEqual(renderedCapabilityStatuses(harness), expected);
 
@@ -111,17 +111,22 @@ test("explicit model input evidence survives Save and Use", async () => {
     const expected = [
       ["Image ✓", "supported"],
       ["Audio ×", "unsupported"],
-      ["PDF ?", "unverified"],
+      ["PDF Unverified", "unverified"],
     ];
     assert.deepEqual(renderedCapabilityStatuses(harness), expected);
     const providerNote = harness.document.querySelector<HTMLElement>(
       "#providerCapabilityNote",
     );
     assert.equal(providerNote?.hidden, false);
-    assert.match(providerNote?.textContent ?? "", /video input/i);
-    assert.match(providerNote?.textContent ?? "", /3 MIME capability entries/i);
-    assert.match(providerNote?.textContent ?? "", /reasoning metadata/i);
-    assert.match(providerNote?.title ?? "", /audio\/m4a/u);
+    assert.equal(providerNote?.textContent, "Live Smith cannot send video attachments.");
+    const details = harness.document.querySelector<HTMLDetailsElement>("#providerCapabilityDetails")!;
+    assert.equal(details.open, false);
+    harness.click("#providerCapabilityDetails > summary");
+    assert.equal(details.open, true);
+    const technical = details.querySelector("pre")?.textContent ?? "";
+    assert.match(technical, /3 MIME capability entries/i);
+    assert.match(technical, /reasoning metadata/i);
+    assert.match(technical, /audio\/m4a/u);
 
     harness.input("#profileName", "Evidence renamed");
     harness.click("#saveProfileButton");
@@ -159,10 +164,13 @@ test("provider MIME wildcards and conflicting video evidence remain visible", as
       "#providerCapabilityNote",
     );
     assert.equal(providerNote?.hidden, false);
-    assert.match(providerNote?.textContent ?? "", /conflicting video capability/i);
-    assert.match(providerNote?.textContent ?? "", /3 MIME capability entries/i);
-    assert.match(providerNote?.title ?? "", /\*\/\*=true/u);
-    assert.match(providerNote?.title ?? "", /video\/audio\/s16le=true/u);
+    assert.equal(providerNote?.textContent, "Live Smith cannot send video attachments.");
+    harness.click("#providerCapabilityDetails > summary");
+    const technical = harness.document.querySelector("#providerCapabilityDetailsText")?.textContent ?? "";
+    assert.match(technical, /conflicting video capability/i);
+    assert.match(technical, /3 MIME capability entries/i);
+    assert.match(technical, /\*\/\*=true/u);
+    assert.match(technical, /video\/audio\/s16le=true/u);
     assert.deepEqual(harness.errors, []);
   } finally {
     harness.close();

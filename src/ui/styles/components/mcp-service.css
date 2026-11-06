@@ -1,6 +1,6 @@
 @layer components {
   #mcpOutwardService {
-    @apply grid min-w-0 gap-2 border-b border-b-divider pb-4 mb-4;
+    @apply min-w-0 border-t border-t-divider pt-3;
   }
   #mcpOutwardService[hidden] { @apply hidden; }
   #mcpOutwardService :is(h3, p, .field) { @apply m-0; }

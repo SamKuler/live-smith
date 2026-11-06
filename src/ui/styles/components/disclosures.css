@@ -1,5 +1,6 @@
 @layer components {
-  .settings-disclosure {
+  .settings-disclosure,
+  .section-disclosure {
     @apply m-0 min-w-0 border-0 bg-transparent;
   }
 
@@ -58,5 +59,33 @@
 
   .settings-disclosure > .advanced-fields {
     @apply p-2;
+  }
+
+  .section-disclosure > summary {
+    @apply m-0 cursor-pointer list-none p-0;
+  }
+
+  .section-disclosure > summary::-webkit-details-marker {
+    @apply hidden;
+  }
+
+  .section-disclosure > summary > .field-label-row {
+    @apply min-w-0 flex-1;
+  }
+
+  .section-disclosure-body {
+    @apply grid min-w-0 gap-3 pt-2;
+  }
+
+  .section-disclosure-chevron {
+    @apply size-3 shrink-0 fill-none stroke-current text-muted;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 120ms ease;
+  }
+
+  .section-disclosure[open] > summary > .section-disclosure-chevron {
+    transform: rotate(90deg);
   }
 }

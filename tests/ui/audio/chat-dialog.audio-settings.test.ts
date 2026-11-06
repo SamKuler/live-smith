@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readInlineHelp } from "../support/inline-help.js";
 import { chatDialogStateForWire, serializeChatStateForHtml } from "../../../src/ui/chat-state.js";
 import { createDialogHarness, waitForCondition } from "../support/chat-dialog.test-harness.js";
 import { builtInAudioPluginId } from "../../../src/plugins/builtins/index.js";
@@ -102,7 +103,7 @@ test("multiple providers and same-provider accounts save, clear, and remove only
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceEnabled")!.checked, true);
     assert.equal(harness.document.querySelector("#audioServiceKeyStatus")!.textContent, "API key configured");
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceModel")!.value, "music_v2");
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /separate API charges/);
+    assert.match(readInlineHelp(harness.document.querySelector<HTMLButtonElement>("#audioServiceDisclosure")!), /separate API charges/);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }
 });
@@ -310,7 +311,7 @@ test("Suno exposes account controls instead of API-key fields and keeps help key
     const operations = harness.document.querySelector<HTMLElement>("#audioServiceOperations")!;
     assert.equal(operations.hidden, false);
     assert.match(operations.textContent!, /Custom lyrics.*Extend.*Library.*Retrieve/);
-    assert.match(harness.document.querySelector("#audioServiceDisclosure")!.getAttribute("aria-label")!, /Suno credits.*save.*never retried/i);
+    assert.match(readInlineHelp(harness.document.querySelector<HTMLButtonElement>("#audioServiceDisclosure")!), /Suno credits.*save.*never retried/i);
     const help = harness.document.querySelector<HTMLElement>("#sunoFeatureHelp")!;
     const disclosure = help.closest("details")!;
     assert.equal(disclosure.open, false);

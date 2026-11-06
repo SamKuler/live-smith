@@ -155,6 +155,8 @@ test("only new messages enter with motion, not history or a persisted pending-me
     const pending = harness.document.querySelector(".local-user-message");
     assert.ok(pending);
     assert.equal(pending.classList.contains("message-enter"), true);
+    pending.querySelector(".timeline-content")!.dispatchEvent(new harness.window.Event("animationend", { bubbles: true }));
+    assert.equal(pending.classList.contains("message-enter"), true);
     pending.dispatchEvent(new harness.window.Event("animationend"));
     assert.equal(pending.classList.contains("message-enter"), false);
     harness.emitServerEvent({

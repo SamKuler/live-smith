@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readInlineHelp } from "../support/inline-help.js";
 import { isAudioServiceCallbackUrl } from "../../../src/model/profile.js";
 import { builtInAudioPluginId } from "../../../src/plugins/builtins/index.js";
 import { migrateAudioServiceConnection } from "../../../src/plugins/integration-connections.js";
@@ -21,18 +22,19 @@ test("Add SunoAPI requires a user callback to enable, keeps other services, and 
     const callback = harness.document.querySelector<HTMLInputElement>("#audioServiceCallback")!;
     assert.equal(callback.value, "");
     assert.equal(callback.placeholder, "");
-    const disclosure = harness.document.querySelector<HTMLElement>("#audioServiceDisclosure")!;
-    assert.equal(disclosure.textContent, "?");
-    assert.match(disclosure.getAttribute("aria-label")!, /third-party API service/);
-    assert.equal(disclosure.dataset.tooltip, disclosure.getAttribute("aria-label"));
+    const disclosure = harness.document.querySelector<HTMLButtonElement>("#audioServiceDisclosure")!;
+    assert.equal(disclosure.getAttribute("aria-label"), "Audio provider help");
+    assert.match(readInlineHelp(disclosure), /third-party API service/);
     assert.equal(
       harness.document.querySelector("#audioServiceProvider")!.getAttribute("aria-describedby"),
-      "audioServiceOperations audioServiceDisclosure",
+      "audioServiceOperations",
     );
-    const callbackHelp = harness.document.querySelector<HTMLElement>("#audioServiceCallbackHint")!;
-    assert.equal(callbackHelp.textContent, "?");
-    assert.match(callbackHelp.getAttribute("aria-label")!, /notifications here.*polls for results/);
-    assert.equal(callbackHelp.dataset.tooltip, callbackHelp.getAttribute("aria-label"));
+    const callbackHelp = harness.document.querySelector<HTMLButtonElement>("#audioServiceCallbackHint")!;
+    assert.equal(callbackHelp.getAttribute("aria-label"), "Callback URL help");
+    assert.match(readInlineHelp(callbackHelp), /notifications here.*polls for results/);
+    const requirement = harness.document.getElementById(callback.getAttribute("aria-describedby") ?? "");
+    assert.ok(requirement && !requirement.closest("[hidden]"));
+    assert.match(requirement.textContent ?? "", /required when enabled.*HTTP\(S\) URL/i);
     assert.match(harness.document.querySelector("#audioServiceModelHint")!.textContent!, /V6/);
     assert.equal(harness.document.querySelector<HTMLInputElement>("#audioServiceModel")!.getAttribute("list"), "audioServiceModelOptions");
     assert.deepEqual(Array.from(harness.document.querySelectorAll<HTMLOptionElement>("#audioServiceModelOptions option"))

@@ -7,16 +7,18 @@ import { createAudioConnectionEditor } from "./audio-connection-editor.js";
 import { createConnectionState } from "./connection-state.js";
 import { createWireValidators } from "./wire-contracts.js";
 import { createSessionSearch } from "./session-search.js";
+import { createSessionAttachments } from "./session-attachments.js";
 import { sessionActivityAt } from "../../app/session/session-activity.js";
 import { createActionDetails } from "./action-details.js";
 
 const browser = window as typeof window & {
-  LiveSmithFactories?: { createInlineHelp?: typeof createInlineHelp; createArtifactSummary?: typeof createArtifactSummary; createActionDetails?: typeof createActionDetails; sessionActivityAt?: typeof sessionActivityAt; createSessionSearch?: typeof createSessionSearch; createActionPreview?: typeof createActionPreview; sessionInspectorTabs?: typeof sessionInspectorTabs; sessionShortcutIds?: typeof sessionShortcutIds; createCreativeBriefEditor?: typeof createCreativeBriefEditor; createAudioConnectionEditor?: typeof createAudioConnectionEditor; createWireValidators?: typeof createWireValidators; createConnectionState?: typeof createConnectionState };
+  LiveSmithFactories?: { createInlineHelp?: typeof createInlineHelp; createArtifactSummary?: typeof createArtifactSummary; createActionDetails?: typeof createActionDetails; sessionActivityAt?: typeof sessionActivityAt; createSessionSearch?: typeof createSessionSearch; createSessionAttachments?: typeof createSessionAttachments; createActionPreview?: typeof createActionPreview; sessionInspectorTabs?: typeof sessionInspectorTabs; sessionShortcutIds?: typeof sessionShortcutIds; createCreativeBriefEditor?: typeof createCreativeBriefEditor; createAudioConnectionEditor?: typeof createAudioConnectionEditor; createWireValidators?: typeof createWireValidators; createConnectionState?: typeof createConnectionState };
 };
 browser.LiveSmithFactories ??= {};
 browser.LiveSmithFactories.createInlineHelp = createInlineHelp;
 browser.LiveSmithFactories.createArtifactSummary = createArtifactSummary;
 browser.LiveSmithFactories.createSessionSearch = createSessionSearch;
+browser.LiveSmithFactories.createSessionAttachments = createSessionAttachments;
 browser.LiveSmithFactories.sessionActivityAt = sessionActivityAt;
 browser.LiveSmithFactories.createActionDetails = createActionDetails;
 browser.LiveSmithFactories.createActionPreview = createActionPreview;
