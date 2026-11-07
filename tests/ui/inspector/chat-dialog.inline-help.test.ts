@@ -61,3 +61,52 @@ test("open help follows a peer language change without replacing the focused con
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
+
+test("hover does not replace help opened with the keyboard or pinned by click", async () => {
+  const h = await createDialogHarness(stateFixture());
+  try {
+    const baseUrl = h.document.querySelector<HTMLButtonElement>("#baseUrlHelp")!;
+    const models = h.document.querySelector<HTMLButtonElement>("#discoverModelsHelp")!;
+    const hoverModels = () => models.dispatchEvent(new h.window.MouseEvent("pointerover", { bubbles: true }));
+    baseUrl.focus();
+    await h.settle();
+    const tip = h.document.querySelector<HTMLElement>('[role="tooltip"]')!;
+    assert.equal(tip.textContent, baseUrl.dataset.tooltip);
+    hoverModels();
+    assert.equal(tip.textContent, baseUrl.dataset.tooltip);
+
+    h.document.querySelector<HTMLInputElement>("#baseUrl")!.focus();
+    baseUrl.click();
+    hoverModels();
+    assert.equal(tip.hidden, false);
+    assert.equal(tip.textContent, baseUrl.dataset.tooltip);
+    models.click();
+    assert.equal(tip.textContent, models.dataset.tooltip);
+  } finally { h.close(); }
+});
+
+test("clicking the shared help for Edit Scope keeps its parent panel open", async () => {
+  const state = stateFixture();
+  state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state);
+  try {
+    const panel = h.document.querySelector<HTMLElement>("#editScopePanel")!;
+    h.click("#editScopeButton");
+    await h.settle();
+    h.document.querySelector<HTMLButtonElement>("#editScopeHelp")!.focus();
+    await h.settle();
+    const tip = h.document.querySelector<HTMLElement>('[role="tooltip"]')!;
+    assert.equal(tip.hidden, false);
+    tip.dispatchEvent(new h.window.MouseEvent("pointerover", { bubbles: true }));
+    tip.dispatchEvent(new h.window.MouseEvent("pointerdown", { bubbles: true }));
+    tip.dispatchEvent(new h.window.MouseEvent("mousedown", { bubbles: true }));
+    tip.click();
+    await h.settle();
+    assert.equal(panel.hidden, false);
+    assert.equal(tip.hidden, false);
+    h.document.body.dispatchEvent(new h.window.MouseEvent("mousedown", { bubbles: true }));
+    await h.settle();
+    assert.equal(panel.hidden, true);
+    assert.equal(tip.hidden, true);
+  } finally { h.close(); }
+});

@@ -41,7 +41,7 @@ function stateWithHistory() {
   return { state, historical };
 }
 
-test("Session attachments retain exact files and excerpts after compaction and open their originals", async () => {
+test("Session attachments preview the exact audio files and excerpts retained after compaction", async () => {
   const { state, historical } = stateWithHistory();
   const sourceId = "source-audio";
   const excerpt = { ...pendingAudio("excerpt-one", "Audio excerpt.wav"), provenance: {
@@ -78,7 +78,14 @@ test("Session attachments retain exact files and excerpts after compaction and o
       assert.equal(rowButton(row, reuse).hidden, false);
       const fileButton = rowButton(row, preview);
       fileButton.click();
+      const player = harness.document.querySelector<HTMLDialogElement>(".attachment-audio-editor");
+      assert.ok(player);
+      assert.equal(player.open, true);
+      assert.equal(player.querySelector("h2")?.textContent, fileButton.textContent);
+      harness.click(".attachment-audio-editor .attachment-open-external");
       await harness.settle();
+      harness.click(".attachment-audio-editor .attachment-viewer-close");
+      assert.equal(harness.document.querySelector(".attachment-audio-editor"), null);
     }
     assert.deepEqual(commandCalls(harness).map(({ body }) => body), [
       { kind: "open_attachment", sessionId: state.activeSessionId, attachmentId: "excerpt-copy" },

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readInlineHelp } from "../support/inline-help.js";
 
 import {
   commandCalls,
@@ -62,9 +63,8 @@ test("Network settings expose explicit no, system, and manual proxy modes", asyn
     );
     assert.equal(mode?.tagName, "FIELDSET");
     const routeHint = harness.document.querySelector<HTMLButtonElement>("#networkProxyHelp")!;
-    assert.equal(mode?.getAttribute("aria-describedby"), "networkProxyHelp");
-    routeHint.click(); await harness.settle();
-    assert.equal(harness.document.querySelector<HTMLElement>('[role="tooltip"]')!.hidden, false);
+    assert.equal(routeHint.getAttribute("aria-label"), "Network proxy help");
+    assert.match(readInlineHelp(routeHint), /System mode.*PAC\/WPAD.*Manual mode.*Local endpoints stay direct/i);
     routeHint.dispatchEvent(new harness.window.KeyboardEvent("keydown", {key:"Escape",bubbles:true}));
     assert.deepEqual(proxyCommands(harness), []);
     assert.deepEqual(
@@ -87,7 +87,9 @@ test("Network settings expose explicit no, system, and manual proxy modes", asyn
     chooseProxyMode(harness, "manual");
     await harness.settle();
     assert.equal(urlField?.hidden, false);
-    assert.equal(mode?.getAttribute("aria-describedby"), "networkProxyHelp");
+    const urlDescription = harness.document.getElementById(url?.getAttribute("aria-describedby") ?? "");
+    assert.ok(urlDescription && !urlDescription.closest("[hidden]"));
+    assert.match(urlDescription.textContent ?? "", /HTTP.*SOCKS.*without credentials/i);
     assert.equal(harness.document.activeElement, manual);
     assert.deepEqual(proxyCommands(harness), []);
     assert.equal(apply?.disabled, false);

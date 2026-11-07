@@ -48,8 +48,9 @@ test("native drag translates idle, preparing and retry labels without losing the
     replyNativeDrag(h.window, { type: "prepare_failed", id: prepare.id });
     await h.settle();
     await switchLanguage(h, state, "zh-CN", "3");
-    assert.equal(button.textContent, "重试准备文件");
-    assert.equal(button.title, "文件未能准备完成。点击重试，或使用导出。");
+    assert.equal(button.firstChild?.textContent, "重试准备文件");
+    assert.equal(button.querySelector(".field-hint")?.textContent, "也可以使用导出。");
+    assert.equal(button.hasAttribute("title"), false);
     assert.equal(button.hasAttribute("aria-busy"), false);
 
     button.click();
@@ -133,7 +134,7 @@ test("the audio selection dialog updates localized labels while playback and the
     return fetchOriginal(input, init);
   } });
   try {
-    h.click("#pendingAttachments .attachment-audio-select");
+    h.click('#pendingAttachments [data-media-kind="audio"] .attachment-chip-label');
     const dialog = h.document.querySelector(".attachment-audio-editor")!;
     const start = dialog.querySelector<HTMLInputElement>(".attachment-selection-start")!;
     const end = dialog.querySelector<HTMLInputElement>(".attachment-selection-end")!;
@@ -151,7 +152,7 @@ test("the audio selection dialog updates localized labels while playback and the
     media.dispatchEvent(new h.window.Event("play"));
     await switchLanguage(h, state, "zh-CN", "1");
 
-    assert.equal(dialog.getAttribute("aria-label"), "音频选区：Draft.wav");
+    assert.equal(dialog.getAttribute("aria-label"), "音频预览：Draft.wav");
     assert.equal(dialog.querySelector(".attachment-viewer-close")!.getAttribute("aria-label"), "关闭预览");
     assert.equal(dialog.querySelector(".attachment-use-whole")!.textContent, "使用完整文件");
     assert.match(dialog.querySelector(".attachment-viewer-status")!.textContent!, /选区.*0\.500/);

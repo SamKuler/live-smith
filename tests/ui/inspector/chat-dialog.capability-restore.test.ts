@@ -86,14 +86,14 @@ function subscriptionState(loaded = false): ChatBridgeState {
 }
 
 const unknownInputs = [
-  ["Image ?", "unverified"],
-  ["Audio ?", "unverified"],
-  ["PDF ?", "unverified"],
+  ["Image Unverified", "unverified"],
+  ["Audio Unverified", "unverified"],
+  ["PDF Unverified", "unverified"],
 ];
 const modelAInputs = [
   ["Image ✓", "supported"],
   ["Audio ×", "unsupported"],
-  ["PDF ?", "unverified"],
+  ["PDF Unverified", "unverified"],
 ];
 
 test("opening a saved subscription restores every configured model's capabilities without Save", async () => {

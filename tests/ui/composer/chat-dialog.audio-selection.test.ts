@@ -50,8 +50,8 @@ async function setup(options: { lostResponse?: boolean; mp3?: boolean; deferredR
 }
 
 async function openEditor(harness: DialogHarness) {
-  harness.click("#pendingAttachments .attachment-audio-select");
-  await waitForCondition(() => !harness.document.querySelector<HTMLInputElement>(".attachment-selection-start")?.disabled, "Expected the waveform and selection to be ready");
+  harness.click('#pendingAttachments [data-media-kind="audio"] .attachment-chip-label');
+  await waitForCondition(() => harness.document.querySelector<HTMLInputElement>(".attachment-selection-start")?.disabled === false, "Expected the waveform and selection to be ready");
 }
 function field(harness: DialogHarness, selector: string, value: string) { harness.input(selector, value); }
 
@@ -103,7 +103,7 @@ test("MP3 waveform inspection never uploads; only explicit WAV export submits co
 test("closing an audio selection cancels its read and a late waveform cannot submit anything", async () => {
   const scenario = await setup({ deferredRead: true }); const { harness, selections } = scenario;
   try {
-    harness.click("#pendingAttachments .attachment-audio-select"); await harness.settle();
+    harness.click('#pendingAttachments [data-media-kind="audio"] .attachment-chip-label'); await harness.settle();
     harness.click(".attachment-viewer-close");
     assert.equal(scenario.readSignal?.aborted, true);
     scenario.releaseRead(); await harness.settle();
@@ -144,7 +144,12 @@ test("history reuse submits only the saved reference without a file upload", asy
     return original(input, init);
   } });
   try {
+    const reuse = harness.document.querySelector<HTMLButtonElement>(".timeline-attachments .attachment-reuse")!;
+    reuse.focus();
+    const tooltip = harness.document.querySelector<HTMLElement>('[role="tooltip"]')!;
+    assert.equal(tooltip.hidden, false);
     harness.click(".timeline-attachments .attachment-reuse"); await harness.settleAttachmentOperation();
+    assert.equal(tooltip.hidden, true);
     assert.equal(requests.length, 1); assert.equal(requests[0]!.searchParams.get("mode"), "copy"); assert.equal(requests[0]!.searchParams.get("replace"), "false");
     assert.equal(harness.calls.filter((call) => call.path === "/attachments").length, 0);
   } finally { harness.close(); }

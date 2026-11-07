@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readInlineHelp } from "./support/inline-help.js";
 
 import type { DirectApiProfile, SavedProfile } from "../../src/model/profile.js";
 import type { ChatDialogState } from "../../src/ui/chat-state.js";
@@ -209,11 +210,15 @@ test("the dialog exposes accessible names, tabs, and live status semantics", asy
     );
     assert.equal(harness.document.getElementById("apiModeHelp"), null);
     assert.equal(harness.document.getElementById("followUpSettingsOwnerHelp"), null);
-    for (const id of ["baseUrlHelp", "discoverModelsHelp"]) {
-      const help = harness.document.getElementById(id);
-      assert.equal(help?.tabIndex, 0);
-      assert.equal(help?.tagName, "BUTTON");
-      assert.equal(help?.dataset.tooltip, help?.getAttribute("aria-label"));
+    for (const [selector, name, copy] of [
+      ["#baseUrlHelp", "Endpoint URL help", /provider API version path.*\/v1/i],
+      ["#discoverModelsHelp", "Model catalog help", /catalog.*Direct API reloads.*OAuth reloads/i],
+    ] as const) {
+      const help = harness.document.querySelector<HTMLButtonElement>(selector)!;
+      assert.equal(help.tabIndex, 0);
+      assert.equal(help.tagName, "BUTTON");
+      assert.equal(help.getAttribute("aria-label"), name);
+      assert.match(readInlineHelp(help), copy);
     }
     harness.document.getElementById("discoverModelsHelp")?.focus();
     assert.equal(harness.document.activeElement?.id, "discoverModelsHelp");
@@ -1375,14 +1380,10 @@ test("a running Session can be left in the background and shows an unread comple
       harness.document.querySelector<HTMLButtonElement>("#contextTab")?.disabled,
       false,
     );
-    assert.match(
-      harness.document.querySelector("#approvalModeHint")?.textContent ?? "",
-      /Low Risk auto-applies/i,
-    );
-    assert.equal(
-      harness.document.querySelector("#approvalMode")?.getAttribute("aria-describedby"),
-      "approvalModeHelp approvalModeHint",
-    );
+    const approval = harness.document.querySelector<HTMLSelectElement>("#approvalMode")!;
+    const approvalDescription = harness.document.getElementById(approval.getAttribute("aria-describedby") ?? "");
+    assert.ok(approvalDescription);
+    assert.match(approvalDescription.textContent ?? "", /Low Risk auto-applies/i);
     assert.equal(
       harness.document.querySelector("#approvalModeLockHint"),
       null,
@@ -3480,16 +3481,16 @@ test("input capability preview distinguishes unverified fields from unsupported 
     assert.ok(originalBaseUrl);
     harness.input("#baseUrl", "https://unverified.example/v1");
     assert.deepEqual(preview(), [
-      ["Image ?", "unverified"],
-      ["Audio ?", "unverified"],
-      ["PDF ?", "unverified"],
+      ["Image Unverified", "unverified"],
+      ["Audio Unverified", "unverified"],
+      ["PDF Unverified", "unverified"],
     ]);
 
     harness.select("#overrideInputImage", "true");
     assert.deepEqual(preview(), [
       ["Image ✓", "supported"],
-      ["Audio ?", "unverified"],
-      ["PDF ?", "unverified"],
+      ["Audio Unverified", "unverified"],
+      ["PDF Unverified", "unverified"],
     ]);
 
     harness.input("#baseUrl", originalBaseUrl);

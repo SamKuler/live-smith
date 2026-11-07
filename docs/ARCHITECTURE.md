@@ -874,6 +874,22 @@ Shared CSS motion rules own disclosure, page and floating-surface reveals.
 Disclosure arrows use the same rotation timing, while content and page transitions
 use short opacity animations. Native `open`, `hidden`, focus restoration and
 resource cleanup remain synchronous; animation completion never commits UI state.
+The Inspector and compact Session overlay use interruptible Web Animations for
+both opening and closing. During an exit, a temporary display override keeps the panel visible
+while `hidden`, `inert`, and `aria-hidden` already prevent interaction. Animation
+completion only removes that override. In the docked layout, the Session list
+clips fixed-width content as its grid track transitions. The shared boundary
+with the main page stays aligned during reversal. Main pages keep an explicit
+column so collapsing the list preserves the content layout.
+Escape closes the active overlay on either main page after inner help, menu,
+and dialog handlers have handled their own dismissal.
+Both side panels use the page's normal background and their own header toggle
+or Escape for dismissal. Covered-page isolation derives from the visible panel
+and layout. Focus enters the opened panel when it would otherwise be covered,
+and closing a focused panel restores its header toggle.
+Composer and overlay keyboard handlers share document-level IME tracking so
+candidate-selection keys remain with the input method, including boundary events
+whose `isComposing` flag is false.
 Reduced-motion preferences remove positional movement and long-running text pans
 while retaining brief opacity and color feedback.
 
@@ -1357,7 +1373,7 @@ resource-only download tickets.
 再由 `storage/artifact-exports.ts` 在私有目录中写入副本。同一原生窗口内相同的
 Session 与产物引用复用一次准备及同一份副本。
 
-`runtime/native-chat-window.ts` 通过私有进程管道把文件路径交给 `NativeChat`，聊天页面
+`runtime/native-chat-window.ts` 通过私有进程管道把文件路径交给原生应用，聊天页面
 只接收对应令牌。AppKit 在发起文件 URL 的复制拖放前发送 `claim`，收到宿主保留确认后
 再检查当前鼠标手势和文件，随后向系统提交拖放。窗口结束时，由仍在运行的
 Extension Host 清理未领取副本。已领取副本独立于窗口和 Session 持久保留，
@@ -3496,11 +3512,11 @@ host capability is fixed when created, so changing the preference only affects
 future invocations. Browser documents hide the modal Close control.
 
 `native` 模式由 `window-hosts.ts` 为每个窗口启动独立聊天运行时，并由
-`runtime/native-chat-window.ts` 启动 macOS 上内嵌的 `NativeChat` 应用。该应用使用
+`runtime/native-chat-window.ts` 启动 macOS 上内嵌的 `Live Smith.app`。该应用使用
 非模态 AppKit 窗口与非持久化 WKWebView 加载同一聊天页面。主框架导航和原生消息
 桥接限定到启动时指定的带令牌本机 `/chat` 页面，桥接仅接收主框架消息。程序在
 聊天关闭入口就绪后报告 `ready`。用户在就绪前主动关闭窗口或退出应用时，
-`NativeChat` 发送 `cancelled`。宿主等待进程结束和清理流程完成，再抛出
+原生应用发送 `cancelled`。宿主等待进程结束和清理流程完成，再抛出
 `NativeChatCancelledError`，控制器随后正常结束本次打开。原生程序不可用或启动失败时，
 控制器打开 Live 模态对话框，保留偏好设置入口。
 

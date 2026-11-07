@@ -50,7 +50,7 @@ export function createSessionAttachments({ getState, attachmentViewer, isReuseBl
     reuse.type = "button";
     reuse.className = "secondary context-attachment-reuse";
     bindings.text(status, () => t("Pending send"));
-    bindings.text(reuse, () => t("Attach again"));
+    bindings.text(reuse, () => t("Attach"));
     element.append(open, status, reuse);
     let entry: Entry;
     open.addEventListener("click", () => {

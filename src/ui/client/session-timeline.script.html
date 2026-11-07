@@ -316,8 +316,8 @@
         list.setAttribute("role", "list");
         list.setAttribute("aria-label", t("File attachments"));
         for (const attachment of attachments) {
-          const chip = document.createElement("span");
-          chip.className = "timeline-attachment-chip";
+          const chip = document.createElement("div");
+          chip.className = "timeline-attachment-chip attachment-card";
           chip.setAttribute("role", "listitem");
           chip.dataset.attachmentId = attachment.id;
           const reference = attachment;
@@ -328,23 +328,27 @@
           }
           const button = document.createElement("button");
           button.type = "button";
-          button.className = "timeline-attachment-open";
+          button.className = "timeline-attachment-open attachment-file-label";
           const details = `${attachment.fileName} · ${
             attachmentTypeLabel(attachment)
           } · ${formatAttachmentBytes(attachment.byteLength)}`;
           button.textContent = attachment.kind === "audio" ? attachment.fileName : details;
           button.title = details;
-          button.setAttribute("aria-label", t(attachment.kind === "image" ? "Preview attached image {fileName}" : "Open attached file {fileName}", { fileName: attachment.fileName }));
+          button.setAttribute("aria-label", t(attachment.kind === "image" ? "Preview attached image {fileName}" : attachment.kind === "audio" ? "Preview attached audio {fileName}" : "Open attached file {fileName}", { fileName: attachment.fileName }));
           button.addEventListener("click", () => { void attachmentViewer.open(sessionId, reference); });
-          if (attachment.kind === "audio") chip.prepend(button);
-          else chip.append(button);
+          const fileRow = document.createElement("div");
+          fileRow.className = "attachment-file-row";
+          const attachmentActions = document.createElement("div");
+          attachmentActions.className = "attachment-file-actions";
+          fileRow.append(button, attachmentActions);
+          chip.append(fileRow);
           const reuse = document.createElement("button");
           reuse.type = "button";
-          reuse.className = "attachment-reuse";
-          reuse.textContent = t("Use again");
+          reuse.className = "attachment-reuse attachment-reuse-icon action-tooltip";
+          setMessageActionIcon(reuse, "attach");
+          reuse.dataset.tooltip = t("Attach");
           reuse.setAttribute("aria-label", t("Use {fileName} in the next request", { fileName: attachment.fileName }));
           reuse.addEventListener("click", () => { void attachmentViewer.reuse(sessionId, reference); });
-          const attachmentActions = preview?.querySelector(".attachment-audio-actions") || chip;
           attachmentActions.append(reuse);
           if (attachment.provenance?.startSeconds !== undefined) {
             const original = document.createElement("button");
@@ -1414,6 +1418,7 @@
 
       function setMessageActionIcon(button, name) {
         const paths = {
+          attach: "M12 5v14 M5 12h14",
           copy: "M9 9h11v11H9z M15 5V3H3v12h2",
           edit: "m16 3 5 5-12 12H4v-5z M13 6l5 5",
           check: "m5 12 4 4L19 6",

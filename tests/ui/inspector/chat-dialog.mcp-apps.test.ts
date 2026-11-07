@@ -97,7 +97,6 @@ test("automatic App discovery adds the Plugin card entry without visiting Tools 
     const parameterLabel = entry.querySelector<HTMLLabelElement>('.plugin-parameters label[for]')!;
     assert.ok(entry.querySelector("#" + parameterLabel.htmlFor));
     assert.equal(entry.querySelector<HTMLDetailsElement>(".tool-parameter-fallback")!.open, false);
-    assert.equal(entry.querySelector<HTMLDetailsElement>(".tool-information")!.open, false);
     assert.equal(entry.querySelector('.plugin-parameters button[type="submit"]')!.textContent, "Run tool");
     await expectFailedOpen(h, ".tool-entry .plugin-open-app", state.activeSessionId, "b".repeat(64));
     assert.equal(h.calls.filter((call) => call.path === "/session-tools").length, 1);

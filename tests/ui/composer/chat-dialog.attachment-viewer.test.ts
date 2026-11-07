@@ -277,6 +277,8 @@ test("inline media failures keep retry and native open reachable with safe feedb
     assert.match(status.textContent!, /open the file in the default app/i);
     harness.click('[data-attachment-id="failed-audio"] .attachment-chip-label');
     await harness.settle();
+    harness.click(".attachment-open-external");
+    await harness.settle();
     assert.deepEqual(attachmentOpenCommands(harness), [{
       kind: "open_attachment", sessionId: state.activeSessionId, attachmentId: "failed-audio",
     }]);
@@ -413,6 +415,11 @@ test("document, audio, MIDI, and historical Office references submit their own i
     for (const attachment of attachments) {
       harness.click(`#pendingAttachments [data-attachment-id="${attachment.id}"] .attachment-chip-label`);
       await harness.settle();
+      if (attachment.kind === "audio") {
+        harness.click(".attachment-open-external");
+        await harness.settle();
+        closePreview(harness);
+      }
     }
     harness.click('[data-event-id="old-message"] .timeline-attachment-open');
     await harness.settle();
@@ -420,7 +427,7 @@ test("document, audio, MIDI, and historical Office references submit their own i
       kind: "open_attachment", sessionId: state.activeSessionId, attachmentId: attachment.id,
     })));
     assert.equal(harness.document.querySelector(".attachment-viewer"), null);
-    assert.deepEqual(reads, []);
+    assert.deepEqual(reads.map(read => read.url.pathname), ["/attachments/audio-file"]);
     assert.deepEqual(created, []);
     assert.deepEqual(harness.errors, []);
   } finally { harness.close(); }

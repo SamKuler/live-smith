@@ -1111,7 +1111,7 @@ test("Inspector tabs and focus isolation follow the visible artifact page withou
     h.click('#skillsTab'); h.click('#contextTab'); await h.settle();
     assert.equal(h.document.querySelector('.artifact-card audio'), player); assert.equal(s.readCount, reads + 1, "Opening the summary reads metadata without replacing the full preview");
     h.document.getElementById('contextTab')!.focus(); h.click('#settingsButton');
-    assert.equal(page.hasAttribute('inert'), false); assert.equal(h.document.activeElement, page);
+    assert.equal(page.hasAttribute('inert'), false); assert.equal(h.document.activeElement?.id, 'settingsButton');
     page.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     assert.equal(page.hidden, true); assert.equal(h.document.activeElement?.id, 'prompt'); assert.deepEqual(h.errors, []);
   } finally { h.close(); }

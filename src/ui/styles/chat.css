@@ -631,30 +631,37 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
   max-width: 100%;
 }
 
-.timeline-attachment-chip {
-  @apply inline-flex max-w-full rounded-control border-0 bg-field text-small text-muted;
+.attachment-card {
+  @apply grid w-full min-w-0 max-w-full overflow-hidden rounded-control border-0 bg-field text-small text-muted;
+  grid-template-columns: minmax(0, 1fr);
   overflow-wrap: anywhere;
 }
 
-.timeline-attachment-open {
-  @apply min-w-0 bg-transparent px-[6px] py-[3px] text-left;
+.attachment-file-row {
+  @apply grid min-w-0 items-center;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.attachment-file-row > .attachment-file-label {
+  @apply min-w-0 bg-transparent px-[6px] py-[3px] text-left text-small text-muted;
   color: inherit;
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
-.timeline-attachment-open:hover,
-.timeline-attachment-open:focus-visible {
+.attachment-file-actions { @apply flex shrink-0 items-center gap-1 p-[3px]; }
+
+.attachment-file-label:hover,
+.attachment-file-label:focus-visible {
   text-decoration: underline;
 }
 
-.timeline-attachment-chip[data-media-kind] {
-  @apply grid min-w-0 border-0 bg-transparent text-text;
-  width: 100%;
-  grid-template-columns: minmax(0, 1fr);
+.attachment-file-row:has(.attachment-file-label:is(:hover, :focus-visible)) {
+  @apply bg-surface-hover;
 }
 
-.timeline-attachment-chip[data-media-kind="image"] {
-  width: min(280px, 100%);
+.attachment-card[data-media-kind="audio"] > .attachment-media-preview {
+  @apply px-[6px] pt-[3px];
 }
 
 .attachment-media-preview {
@@ -665,7 +672,7 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
 .attachment-image-preview {
   @apply relative grid w-full place-items-center overflow-hidden bg-[#1d1d1d] p-0 text-muted;
   aspect-ratio: 16 / 9;
-  border-radius: 5px;
+  border-radius: 0;
 }
 
 .attachment-image-preview:focus-visible {
@@ -737,15 +744,6 @@ input.attachment-audio-seek {
   @apply whitespace-nowrap text-small text-muted;
   font-variant-numeric: tabular-nums;
 }
-
-.timeline-attachment-chip[data-media-kind] .timeline-attachment-open {
-  @apply overflow-hidden px-0 py-1 text-small text-muted text-ellipsis whitespace-nowrap;
-}
-.timeline-attachment-chip[data-media-kind="audio"] .timeline-attachment-open {
-  @apply py-0 text-label text-text;
-}
-.timeline-attachment-chip[data-media-kind] .timeline-attachment-open:hover,
-.timeline-attachment-chip[data-media-kind] .timeline-attachment-open:focus-visible { color: var(--color-text); }
 
 .attachment-media-unavailable {
   @apply block px-2 py-3 text-small;
@@ -1515,7 +1513,7 @@ details.timeline-item > .timeline-content {
 }
 
 .pending-attachments {
-  @apply grid min-w-0 items-start justify-items-start gap-2 mb-[7px] overflow-y-auto;
+  @apply grid auto-rows-max content-start min-w-0 items-start justify-items-start gap-2 mb-[7px] overflow-y-auto;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   width: min(360px, 100%);
   max-height: min(180px, 25vh);
@@ -1526,25 +1524,10 @@ details.timeline-item > .timeline-content {
 }
 
 .attachment-chip {
-  @apply inline-grid items-center rounded-control border border-border bg-pane-raised text-text;
-  grid-template-columns: minmax(0, auto) auto;
-  max-width: min(100%, 360px);
   grid-column: 1 / -1;
 }
 
-.attachment-chip[data-media-kind] {
-  width: 100%;
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.attachment-chip[data-media-kind="audio"] {
-  @apply border-0 bg-transparent;
-}
-.attachment-chip[data-media-kind="audio"] .attachment-remove { border: 0; }
-.attachment-chip[data-media-kind="audio"] .attachment-chip-label { @apply p-0 text-label; }
-
 .attachment-chip[data-media-kind="image"] {
-  width: min(160px, 100%);
   grid-column: auto;
 }
 
@@ -1556,11 +1539,6 @@ details.timeline-item > .timeline-content {
 .attachment-chip-label:hover,
 .attachment-chip-label:focus-visible {
   text-decoration: underline;
-}
-
-.attachment-chip:not([data-media-kind]):has(> .attachment-chip-label:is(:hover, :focus-visible)),
-.timeline-attachment-chip:not([data-media-kind]):has(> .timeline-attachment-open:is(:hover, :focus-visible)) {
-  @apply bg-surface-hover;
 }
 
 .attachment-viewer {
@@ -1629,10 +1607,7 @@ details.timeline-item > .timeline-content {
 }
 
 .attachment-remove {
-  @apply size-control-compact min-w-[28px] bg-transparent p-0 text-[17px] text-muted;
-  border: 0;
-  border-left: 1px solid var(--color-border);
-  border-radius: 0 4px 4px 0;
+  @apply grid size-6 place-items-center rounded-control border-0 bg-transparent p-0 text-[17px] text-muted;
   line-height: 1;
 }
 
@@ -2230,6 +2205,7 @@ details.timeline-item > .timeline-content {
 .audio-settings-actions { @apply mt-1 flex flex-wrap gap-1; }
 .audio-settings-actions:not(.settings-peer-actions) { @apply justify-end; }
 .connection-list { @apply grid max-h-[276px] overflow-y-auto overscroll-contain rounded-control border border-border; }
+.connection-list:empty { @apply hidden; }
 .connection-row { @apply min-w-0; }
 .connection-row + .connection-row { @apply border-t border-t-divider; }
 .connection-row:has(.connection-choice[aria-pressed="true"]) { @apply bg-pane-raised; }
@@ -3274,9 +3250,8 @@ label {
 .audio-parameter-field input[type="checkbox"] { @apply m-0 size-[14px] shrink-0 p-0; }
 
 .attachment-selection-label { @apply block text-small text-muted; grid-column: 1 / -1; }
-.attachment-audio-actions { @apply flex flex-wrap items-center gap-1; }
-.attachment-audio-select, .attachment-reuse { @apply shrink-0 border-0 bg-transparent px-2 py-1 text-small text-muted; }
-.attachment-audio-select:hover, .attachment-reuse:hover { @apply text-text; }
+.attachment-reuse { @apply shrink-0 border-0 bg-transparent px-2 py-1 text-small text-muted; }
+.attachment-reuse:hover { @apply text-text; }
 .attachment-reuse-icon { @apply grid size-6 place-items-center self-center justify-self-end p-0; }
 .attachment-reuse-icon:is(:hover, :focus-visible) { @apply bg-focus-soft text-text; }
 .attachment-audio-editor { width: min(720px, calc(100% - 32px)); }

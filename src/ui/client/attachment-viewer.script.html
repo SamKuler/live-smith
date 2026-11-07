@@ -167,16 +167,6 @@
       function createPreview(sessionId, attachment) {
         if (attachment.kind === "audio") {
           const player = createAudioPlayer(sessionId, attachment, getAttachmentUrl(sessionId, attachment.id));
-          const select = document.createElement("button");
-          select.type = "button";
-          select.className = "attachment-audio-select";
-          select.textContent = t("Select excerpt");
-          select.setAttribute("aria-label", t("Select an excerpt from {fileName}", { fileName: attachment.fileName }));
-          select.addEventListener("click", () => { void openAudio(sessionId, attachment); });
-          const actions = document.createElement("div");
-          actions.className = "attachment-audio-actions";
-          actions.append(select);
-          player.element.append(actions);
           return player.element;
         }
         if (attachment.kind !== "image") return null;
@@ -331,6 +321,7 @@
 
       async function open(sessionId, attachment) {
         if (getState().activeSessionId !== sessionId) return;
+        if (attachment.kind === "audio") return openAudio(sessionId, attachment);
         const attachmentId = attachment.id;
         if (attachment.kind !== "image") {
           try { await openAttachment(sessionId, attachmentId); }
@@ -562,7 +553,7 @@
         close({ restoreFocus: false });
         const dialog = document.createElement("dialog");
         dialog.className = "attachment-viewer attachment-audio-editor";
-        audioLocale.attribute(dialog, "aria-label", () => t("Audio selection: {fileName}", { fileName: attachment.fileName }));
+        audioLocale.attribute(dialog, "aria-label", () => t("Audio preview: {fileName}", { fileName: attachment.fileName }));
         const make = (tag, className, source) => {
           const node = document.createElement(tag);
           node.className = className;
@@ -600,10 +591,12 @@
           ? "MP3 excerpts are explicitly exported as 16-bit PCM WAV at the original sample rate and channel count. The original MP3 is kept."
           : "WAV excerpts copy the selected samples with the same encoding, sample rate and channels. The original file is kept.");
         const actions = make("div", "attachment-viewer-actions");
+        const openStatus = make("p", "attachment-viewer-open-status", "The file could not be opened. Try again."); openStatus.hidden = true; openStatus.setAttribute("role", "status");
+        const openFile = make("button", "secondary attachment-open-external", "Open in default app"); openFile.type = "button";
         const whole = make("button", "secondary attachment-use-whole", "Use whole file"); whole.type = "button";
         const excerpt = make("button", "secondary attachment-use-excerpt", attachment.mediaType === "audio/mpeg" ? "Export selection as WAV and attach" : "Use selected excerpt"); excerpt.type = "button"; excerpt.disabled = true;
         const original = make("button", "secondary attachment-use-original", "Use original file"); original.type = "button"; original.hidden = attachment.provenance?.startSeconds === undefined;
-        actions.append(original, whole, excerpt); content.append(status, svg, fields, player.element, note); dialog.append(header, content, actions);
+        actions.append(openStatus, openFile, original, whole, excerpt); content.append(status, svg, fields, player.element, note); dialog.append(header, content, actions);
         const view = { sessionId, attachmentId: attachment.id, dialog, media, player, controller: new window.AbortController(), previousFocus: document.activeElement, decoded: null, context: null, frame: null, duration: attachment.durationSeconds, busy: false, ready: false,
           replace: getComposerAttachments().some((item) => item.id === attachment.id) };
         activeAudio = view;
@@ -641,9 +634,23 @@
         closeButton.addEventListener("click", () => closeAudio());
         dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeAudio(); });
         dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); closeAudio(); } });
+        const setBusy = (busy) => {
+          view.busy = busy;
+          openFile.disabled = original.disabled = whole.disabled = busy;
+          update();
+        };
+        openFile.addEventListener("click", async () => {
+          if (activeAudio !== view || view.busy) return;
+          setBusy(true); media.pause(); openStatus.hidden = true;
+          try {
+            const opened = await openAttachment(sessionId, attachment.id);
+            if (activeAudio === view) openStatus.hidden = opened !== false;
+          } catch { if (activeAudio === view) openStatus.hidden = false; }
+          finally { if (activeAudio === view) setBusy(false); }
+        });
         const apply = async (useExcerpt, useOriginal = false) => {
           if (view.busy || useExcerpt && excerpt.disabled) return;
-          view.busy = true; original.disabled = whole.disabled = true; excerpt.disabled = true; media.pause();
+          setBusy(true); media.pause();
           audioLocale.text(status, () => t("Preparing the next request…"));
           try {
             checkAudioView(view);
@@ -662,7 +669,7 @@
             }
             if (activeAudio === view) { closeAudio(); showStatus(t("Added to the next request.")); }
           } catch (error) {
-            if (activeAudio === view) { view.busy = false; original.disabled = whole.disabled = false; update(); audioLocale.text(status, error.localizedMessage ?? (error.message || String(error))); }
+            if (activeAudio === view) { setBusy(false); audioLocale.text(status, error.localizedMessage ?? (error.message || String(error))); }
           }
         };
         original.addEventListener("click", () => { void apply(false, true); });

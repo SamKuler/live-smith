@@ -108,8 +108,8 @@
         strip.hidden = attachments.length === 0;
         strip.setAttribute("aria-busy", String(busy));
         for (const attachment of attachments) {
-          const chip = document.createElement("span");
-          chip.className = "attachment-chip";
+          const chip = document.createElement("div");
+          chip.className = "attachment-chip attachment-card";
           chip.dataset.attachmentId = attachment.id;
           chip.setAttribute("role", "listitem");
           const reference = attachment;
@@ -121,7 +121,7 @@
 
           const label = document.createElement("button");
           label.type = "button";
-          label.className = "attachment-chip-label";
+          label.className = "attachment-chip-label attachment-file-label";
           const details = [
             attachment.fileName,
             attachmentTypeLabel(attachment),
@@ -132,28 +132,33 @@
           ].filter(Boolean);
           label.textContent = attachment.kind === "audio" ? attachment.fileName : details.join(" · ");
           label.title = attachment.kind === "audio" ? details.join(" · ") : attachment.fileName;
-          label.setAttribute("aria-label", t(attachment.kind === "image" ? "Preview attached image {fileName}" : "Open attached file {fileName}", { fileName: attachment.fileName }));
+          label.setAttribute("aria-label", t(attachment.kind === "image" ? "Preview attached image {fileName}" : attachment.kind === "audio" ? "Preview attached audio {fileName}" : "Open attached file {fileName}", { fileName: attachment.fileName }));
           label.addEventListener("click", () => { void attachmentViewer.open(sessionId, reference); });
 
           const remove = document.createElement("button");
-          remove.className = "attachment-remove";
+          remove.className = "attachment-remove action-tooltip";
           remove.type = "button";
           remove.disabled = busy;
           const restoresSource = attachment.provenance?.replacedIds?.length > 0;
           remove.setAttribute("aria-label", restoresSource ? t("Undo selection and restore the source file") : t("Remove attached file {fileName}", { fileName: attachment.fileName }));
-          remove.title = t(restoresSource ? "Undo selection and restore the previous file" : "Remove attachment");
+          remove.dataset.tooltip = t(restoresSource ? "Undo selection and restore the previous file" : "Remove attachment");
           remove.textContent = "×";
           remove.addEventListener("click", () => {
             void removePending(attachment.id);
           });
-          chip.append(label, remove);
+          const fileRow = document.createElement("div");
+          fileRow.className = "attachment-file-row";
+          const actions = document.createElement("div");
+          actions.className = "attachment-file-actions";
+          actions.append(remove);
+          fileRow.append(label, actions);
+          chip.append(fileRow);
           if (attachment.provenance?.startSeconds !== undefined) {
             const selection = document.createElement("span");
             selection.className = "attachment-selection-label";
             selection.textContent = t("Selected excerpt: {start}–{end} s", { start: attachment.provenance.startSeconds.toFixed(3), end: attachment.provenance.endSeconds.toFixed(3) });
             chip.append(selection);
           }
-          if (attachment.kind === "audio" && preview) chip.append(preview);
           strip.append(chip);
         }
         renderedAttachmentsKey = renderKey;

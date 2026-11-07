@@ -9,6 +9,20 @@ function state() {
   return { ...stateFixture(), mcpServer: { settings: { enabled: false, port: 17853, revision: "0" }, status: "disabled" as const,
     url: "http://127.0.0.1:17853/mcp", clients: [] } };
 }
+test("external-client service settings are disclosed separately and preserve an in-progress draft", async () => {
+  const h = await createDialogHarness(state());
+  try {
+    h.click("#extensionsTab"); h.click("#mcpExtensionTab");
+    const outward = h.document.querySelector<HTMLDetailsElement>("#mcpOutwardService")!;
+    assert.equal(outward.open, false);
+    h.click("#mcpOutwardService > summary");
+    assert.equal(outward.open, true);
+    h.input("#mcpServerPort", "18553");
+    h.click("#mcpOutwardService > summary"); h.click("#mcpOutwardService > summary");
+    assert.equal(h.document.querySelector<HTMLInputElement>("#mcpServerPort")!.value, "18553");
+    assert.deepEqual(commandCalls(h), []);
+  } finally { h.close(); }
+});
 test("MCP settings save an explicit local service config and create a Session-bound client", async () => {
   const h = await createDialogHarness(state());
   try {

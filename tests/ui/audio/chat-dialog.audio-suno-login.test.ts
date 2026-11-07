@@ -310,6 +310,9 @@ test("Chinese Cookie connection labels, help, account name and local-clear confi
   state.settings.uiLanguage = "zh-CN";
   const harness = await createDialogHarness(state);
   try {
+    harness.click("#extensionsTab");
+    harness.click("#audioExtensionTab");
+    selectAudioService(harness, website.id);
     assert.equal(text(harness, '#audioServiceProvider option[value="suno"]'), "Suno.com 订阅（实验性）");
     assert.equal(text(harness, "#openSunoWebsiteButton"), "打开 Suno");
     assert.equal(harness.document.querySelector("#openSunoWebsiteButton")?.getAttribute("aria-label"), "在默认浏览器中打开 Suno");
@@ -317,6 +320,9 @@ test("Chinese Cookie connection labels, help, account name and local-clear confi
     assert.equal(text(harness, "#refreshSunoLoginButton"), "刷新连接");
     assert.equal(text(harness, "#logoutSunoButton"), "清除本地 Cookie");
     assert.equal(text(harness, "#sunoAccountName"), "Suno 账户：Personal musician");
+    const cookieEditor = harness.document.querySelector<HTMLDetailsElement>("#sunoCookieEditor")!;
+    if (!cookieEditor.open) cookieEditor.querySelector("summary")!.click();
+    assert.equal(cookieEditor.open, true);
     const cookieHelp = harness.document.querySelector<HTMLElement>(
       "#sunoCookieHelp",
     )!;
@@ -326,17 +332,15 @@ test("Chinese Cookie connection labels, help, account name and local-clear confi
     disclosure.querySelector("summary")!.click();
     assert.equal(disclosure.open, true);
     assert.match(disclosure.querySelector("summary")!.textContent!, /如何/);
+    assert.match(cookieHelp.textContent ?? "", /开发者工具.*Network/);
     disclosure.querySelector("summary")!.click();
     assert.equal(disclosure.open, false);
     assert.equal(cookie.value, "unsaved-cookie-draft");
     cookie.value = "";
     assert.equal(harness.document.querySelector("#sunoCookieHint"), null);
-    assert.equal(
-      harness.document.querySelector("#sunoSessionValue")?.getAttribute(
-        "aria-describedby",
-      ),
-      "audioServiceDisclosure",
-    );
+    const safety = harness.document.getElementById(cookie.getAttribute("aria-describedby") ?? "");
+    assert.ok(safety && !safety.closest("[hidden]"));
+    assert.match(safety.textContent ?? "", /仅在此处粘贴凭据.*请勿发送到聊天/);
     harness.click("#logoutSunoButton");
     await harness.settle();
     assert.match(text(harness, "body"), /浏览器中的 Suno 登录和窗口会保留/);
