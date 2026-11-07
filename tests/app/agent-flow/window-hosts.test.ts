@@ -220,24 +220,6 @@ test('unavailable or failed native launch leaves the existing modal settings wor
   }
 });
 
-test('cancelling native startup closes its backend without opening the fallback modal', async () => {
-  const { createWindowHostController } = await import('../../../src/app/window-hosts.js');
-  const { NativeChatCancelledError } = await import('../../../src/runtime/native-chat-window.js');
-  const { saveGlobalSettings } = await import('../../../src/storage/settings.js');
-  const directory = await mkdtemp(join(tmpdir(), 'window-native-cancel-'));
-  let modalCount = 0; let nativeUrl = '';
-  const context = { application: { song: { handle: { id: 1n }, tracks: [], scenes: [] } }, environment: { storageDirectory: directory },
-    ui: { showModalDialog: async () => { modalCount++; return ''; } } };
-  const controller = createWindowHostController(context as never, { renderHtml: () => '<html></html>',
-    nativeChatHost: { supported: true, open: async input => { nativeUrl = input.url; throw new NativeChatCancelledError(); } } });
-  try {
-    await saveGlobalSettings(directory, { interfaceMode: 'native' });
-    await controller.open(interaction);
-    assert.equal(modalCount, 0);
-    await assert.rejects(fetch(nativeUrl));
-  } finally { await controller.close(); await rm(directory, { recursive: true, force: true }); }
-});
-
 test('native shutdown releases its window registration when backend cleanup fails', { timeout: 5_000 }, async (t) => {
   const { createWindowHostController } = await import('../../../src/app/window-hosts.js');
   const { saveGlobalSettings } = await import('../../../src/storage/settings.js');
@@ -272,3 +254,20 @@ test('native shutdown releases its window registration when backend cleanup fail
   await closing;
 });
 
+test('cancelling native startup closes its backend without opening the fallback modal', async () => {
+  const { createWindowHostController } = await import('../../../src/app/window-hosts.js');
+  const { NativeChatCancelledError } = await import('../../../src/runtime/native-chat-window.js');
+  const { saveGlobalSettings } = await import('../../../src/storage/settings.js');
+  const directory = await mkdtemp(join(tmpdir(), 'window-native-cancel-'));
+  let modalCount = 0; let nativeUrl = '';
+  const context = { application: { song: { handle: { id: 1n }, tracks: [], scenes: [] } }, environment: { storageDirectory: directory },
+    ui: { showModalDialog: async () => { modalCount++; return ''; } } };
+  const controller = createWindowHostController(context as never, { renderHtml: () => '<html></html>',
+    nativeChatHost: { supported: true, open: async input => { nativeUrl = input.url; throw new NativeChatCancelledError(); } } });
+  try {
+    await saveGlobalSettings(directory, { interfaceMode: 'native' });
+    await controller.open(interaction);
+    assert.equal(modalCount, 0);
+    await assert.rejects(fetch(nativeUrl));
+  } finally { await controller.close(); await rm(directory, { recursive: true, force: true }); }
+});

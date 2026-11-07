@@ -37,6 +37,8 @@ from global **Settings** (**Agent**, **Extensions**, **App**). Context contains 
 creative brief, bound Live object, context usage and the next message's
 attachments. **Skills** lets you choose workflow instructions for the Session.
 **Artifacts** provides a compact saved-work summary. Select a work to open its full detail page.
+Press **Esc** to close the Inspector from either the conversation or artifact
+workspace. Open help, menus, and dialogs handle **Esc** first.
 
 ### Interface help
 
@@ -85,8 +87,12 @@ track roles, and material to preserve in one editable document. Open
 **Session → Context**, or use the **Brief** shortcut above the message input,
 edit the brief and choose **Save brief**. It can hold up to 8,000 characters and
 stays available after model changes and context compaction.
+The Chinese interface calls this **创作要求**, with an **要求** shortcut.
+An empty editor starts collapsed in Context. The shortcut opens it and focuses
+the input; saved requirements and new model suggestions remain easy to review.
 
 The model can suggest a brief. **Edit suggestion** puts it into a local draft;
+confirm replacing any unsaved edits when opening a suggestion.
 **Save brief** accepts it. Unsaved drafts remain separate for each Session in
 that window. If another window changes the saved brief, review the current
 text before keeping or replacing your draft. Use the brief for creative intent;
@@ -159,8 +165,9 @@ the exact displayed version in the standalone detail page. **Open artifact libra
 opens the complete library with its search and type filters cleared. The Session
 list keeps its existing collapse control, and the Inspector remains available over the
 current main page. Narrow artifact pages initially collapse Sessions; its header
-control opens the Session list over the page. Escape or the backdrop closes the
-list. Returning to chat restores the chat's previous Session-list layout.
+control opens the Session list over the page. Both side panels retain the page's
+normal brightness and close through their own header control or **Esc**, returning
+focus to that control. Returning to chat restores the chat's previous Session-list layout.
 **Browse artifacts** opens the work list at narrow widths. Parameter tables and
 expanded source details follow the detail page's vertical scroll.
 Switching works stops the previous audio preview. Select a version to inspect,
@@ -477,7 +484,7 @@ directions.
 
 ### 对外 MCP 服务
 
-在 **Settings → Extensions → MCP → External tool access** 中启用本机服务，
+在 **设置 → 扩展 → MCP → 允许外部客户端访问** 中展开并启用本机服务，
 选择端口并保存。默认地址为 `http://127.0.0.1:17853/mcp`。
 运行状态会显示监听是否成功；端口占用时可修改端口后重新保存。
 
@@ -612,17 +619,26 @@ the message and its files to the current task at its next safe boundary;
 **Queue** keeps them together for a new request after the current response.
 Later files stay with the next composer draft. Images appear as thumbnails that
 open a larger preview when clicked; audio includes playback and seek controls.
-Select another file's name to open it with the system's default application.
+Select an audio file's name to open its full preview, or another file's name to
+open it with the system's default application. Media previews also provide
+**Open in default app**.
 External applications receive a temporary copy, so their edits do not replace
 the saved chat attachment. Text and code copies open as `.txt` files.
-The original remains saved in the Session. **Use again** on a history attachment
+The original remains saved in the Session. The **+** button on a history attachment
 adds a saved copy to the next request. Removing that copy preserves the source.
+**Session → Context → Session attachments** collects files from the conversation
+and the pending draft. Open a file to preview it, or use **Attach** to add a
+saved copy to the next message. Repeated copies are grouped; distinct audio
+excerpts remain separate. Files waiting to be sent show **Pending send**.
+The artifact library holds generated MIDI, audio, and device parameter versions;
+uploaded reference images and documents remain in Session attachments.
 Attachment changes affect the next draft; files already submitted through Send,
 Steer or Queue stay with their request.
 
 ### Audio excerpts
 
-**Select excerpt** opens an audio waveform with start/end times and loop playback.
+Open an audio attachment by its file name to view its waveform, start/end times
+and loop playback in the full audio preview.
 Choose **Use whole file** or **Use selected excerpt**; the **Next request** list
 shows the exact files and excerpt ranges being sent. WAV selection copies whole
 samples without changing encoding, sample rate or channels. MP3 selection requires

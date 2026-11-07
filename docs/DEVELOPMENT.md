@@ -75,7 +75,7 @@ embedded into the generated dialog HTML; the WebView does not load Tailwind, a C
 or a separate stylesheet at runtime.
 
 扩展包内嵌两个面向 macOS 14 及以上版本的 AppKit/WebKit 应用。聊天窗口使用
-`src/runtime/native/chat-capsule.json` 中的 `NativeChat`，Suno 在请求人工验证时使用
+`src/runtime/native/chat-capsule.json` 中的 `Live Smith.app`，Suno 在请求人工验证时使用
 `src/runtime/native/verifier-capsule.json` 中的验证程序。
 `scripts/native-app-capsule.ts` 在开发和生产构建中校验程序内容及源文件、Info.plist
 和构建脚本的指纹。输入变化后，macOS 构建使用单独安装的 Command Line Tools 生成

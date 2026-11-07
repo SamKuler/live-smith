@@ -10,7 +10,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import test from "node:test";
 import { createNativeChatHost } from "../../src/runtime/native-chat-window.js";
 
-const capsule = JSON.stringify({ version: 1, files: ["Contents/MacOS/NativeChat", "Contents/Info.plist", "Contents/_CodeSignature/CodeResources"].map(path => {
+const capsule = JSON.stringify({ version: 1, files: ["Contents/MacOS/Live Smith", "Contents/Info.plist", "Contents/_CodeSignature/CodeResources"].map(path => {
   const bytes = Buffer.from(path); return { path, base64: bytes.toString("base64"), sha256: createHash("sha256").update(bytes).digest("hex") };
 }) });
 const url = "http://127.0.0.1:54321/chat?token=private-window-token";
@@ -29,6 +29,26 @@ async function waitFor<T>(read: () => T | undefined): Promise<T> {
   throw new Error("Native protocol response did not arrive");
 }
 const input = { sessionId: "session-one", artifact: { kind: "midi" as const, id: "midi-one" } };
+
+test("native chat stages the bundled Live Smith app for launch", async () => {
+  const bundledCapsule = await fs.readFile(new URL("../../src/runtime/native/chat-capsule.json", import.meta.url), "utf8");
+  const p = processFixture();
+  let executable = "";
+  const host = createNativeChatHost({
+    platform: "darwin", osRelease: "23.0.0", capsule: bundledCapsule,
+    launch: file => { executable = file; return p.child as unknown as ChildProcessWithoutNullStreams; }
+  });
+  const window = await host.open({ url, prepareArtifact: async () => { throw new Error("Unexpected drag request"); } });
+  try {
+    const app = path.join(executable, "..", "..", "..");
+    assert.equal(path.basename(app), "Live Smith.app");
+    assert.equal(path.relative(app, executable), path.join("Contents", "MacOS", "Live Smith"));
+    assert.ok((await fs.stat(executable)).isFile());
+  } finally {
+    window.close();
+    await window.closed;
+  }
+});
 
 test("native preparation reuses one copy and keeps a claimed file after chat shutdown", async t => {
   const directory = await fs.mkdtemp("/private/tmp/native-chat-runtime-");

@@ -77,8 +77,12 @@ export function createWindowHostController(context: Api, dependencies: WindowDep
           }
           await window.closed;
         } finally {
-          try { await runtime?.close(); }
-          finally { nativeOperations.delete(operation); finish(); }
+          try {
+            await runtime?.close();
+          } finally {
+            nativeOperations.delete(operation);
+            finish();
+          }
         }
         return;
       }
