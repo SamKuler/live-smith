@@ -928,6 +928,11 @@ tool list.
 查询结果与任务投影音频参数建议，按现有签名匹配表单，并沿用目录的总字节限制。
 建议更新保留工具定义、授权签名与发现时间；工具面板依据更新后的投影重新渲染。
 
+内置工具的用户说明由 `ui/i18n/tool-messages.ts` 和 `audio-tool-help.ts` 管理，
+通过稳定工具名映射到界面；模型调用规则仍由工具定义拥有。界面说明操作目的和
+用户需要判断的后果，费用、权限、覆盖范围和输出格式变化保留。第三方工具描述
+沿用提供者内容；模型能力的原始诊断数据与审批原始参数保留在可展开详情中。
+
 `plugins/parameter-panel.ts` derives native parameter controls from a supported
 MCP tool input schema. It owns the scalar field contract, argument validation,
 and schema signature. The signature binds the package digest, Connection

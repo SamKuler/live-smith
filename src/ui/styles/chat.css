@@ -1995,7 +1995,6 @@ details.timeline-item > .timeline-content {
 .tool-group-content > .field-hint { @apply my-2; overflow-wrap: anywhere; }
 .tool-entry { @apply border-t border-t-divider py-1; }
 .tool-entry > summary { @apply cursor-pointer py-1 text-label text-text; overflow-wrap: anywhere; }
-.tool-name { @apply block text-small text-quiet; overflow-wrap: anywhere; }
 .tool-description-label { @apply mt-2 block text-small text-quiet; }
 .tool-description { @apply my-1 whitespace-pre-wrap text-label text-muted; overflow-wrap: anywhere; }
 .plugin-parameters { @apply mt-3 border-t border-t-divider pt-3; }

@@ -3167,7 +3167,7 @@
         waitForSse,
       ) {
         showStatus(
-          window.LiveSmithI18n.message("Lost the command response. Waiting for authoritative bridge state…"),
+          window.LiveSmithI18n.message("Confirming the operation result…"),
           true,
         );
         let outcome = waitForSse
@@ -5777,7 +5777,7 @@
         causalAttempt,
       ) {
         showStatus(
-          window.LiveSmithI18n.message("Lost the Skill response. Waiting for authoritative bridge state…"),
+          window.LiveSmithI18n.message("Confirming the operation result…"),
           true,
         );
         try {
@@ -5923,7 +5923,7 @@
         } catch (error) {
           if (error.pluginNetworkFailure !== true) throw error;
           reportStatus(
-            window.LiveSmithI18n.message("Lost the Plugin response. Waiting for authoritative bridge state…"),
+            window.LiveSmithI18n.message("Confirming the operation result…"),
             true,
           );
           try {

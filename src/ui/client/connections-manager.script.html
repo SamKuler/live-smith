@@ -302,7 +302,7 @@
               (value) => { current.artifactInputApproved = value; });
             switchField(form, "Audio or MIDI output", "artifactOutputApproved", current.artifactOutputApproved,
               (value) => { current.artifactOutputApproved = value; });
-            hint(form, "Audio or MIDI input grants temporary read-only copies of selected Session artifacts. Audio or MIDI output grants a temporary output file that Live Smith validates and saves. Neither permission changes Live.");
+            hint(form, "Input lets the tool read Session audio or MIDI supplied to its tools. Output lets it save audio or MIDI to the Session. Import into Live is a separate step.");
           }
         }
 
@@ -403,7 +403,7 @@
           textField(fields, "Registered callback port (optional)", "mcpOAuthCallbackPort", String(current.oauth.callbackPort || ""), (value) => {
             if (value) current.oauth.callbackPort = Number(value); else delete current.oauth.callbackPort;
           }, { type: "number", maxLength: 5 });
-          hint(fields, "Leave both fields blank for automatic client registration. A registered public client needs a fixed port and redirect URI http://127.0.0.1:PORT/mcp/oauth/callback.");
+          hint(fields, "Leave both fields blank for automatic setup. If the server requires a registered client, use its ID and port. The redirect URL is http://127.0.0.1:PORT/mcp/oauth/callback.");
           if (connectOnSave(current)) {
             hint(form, "Connect saves this account and opens your browser for sign-in.");
             return;

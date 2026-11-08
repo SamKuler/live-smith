@@ -51,7 +51,7 @@ export const audioMessages = {
   "Close preview of {output} · {job}": "关闭{output}的预览 · {job}",
   "Save this output to the Session?": "将此结果保存到会话？",
   "Download only {output} using {connection}. This may use up to one existing Suno download allowance. The file stays in this Session for playback, model listening and a separate scoped Live import. No allowance or quota will be purchased.": "使用 {connection} 仅下载{output}。这可能消耗最多 1 次现有 Suno 下载额度。文件会保存在此会话中，可试听、供支持音频输入的模型使用，或通过单独执行的范围内操作导入 Live。不会购买下载次数或额度。",
-  "Downloaded files stay in this Session. Export a copy through your default browser; keep Live Smith open until it finishes. Export does not contact an audio service or use provider allowance. Importing into Live is a separate edit subject to your scope and approval settings.": "下载的文件保存在此会话中。导出会通过默认浏览器另存一份；完成前请保持 Live Smith 打开。导出不会请求音频服务或消耗其额度。导入 Live 是另一项编辑操作，仍遵守范围与审批设置。",
+  "Export saves a copy without using service credits. Keep this window open until it finishes. Import into Live uses your edit scope and approval settings.": "导出会另存副本，不消耗服务额度，完成前请保持窗口开启。导入 Live 时会遵循编辑范围和审批设置。",
   "Audio is saved in this Session. Importing into Live is a separate scoped operation.": "音频已保存到会话。导入 Live 是单独执行的范围内操作。",
   "Audio is saved in this Session. Some confirmed outputs failed to generate. Importing into Live is a separate scoped operation.": "音频已保存到会话。部分已确认的版本生成失败。导入 Live 是单独执行的范围内操作。",
   "Audio is ready online. Preview a version or save it to this Session before a separate scoped Live import.": "音频已生成，可在线预览。可选择一个版本保存到会话，再通过单独执行的范围内操作导入 Live。",

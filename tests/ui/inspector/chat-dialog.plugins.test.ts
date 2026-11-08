@@ -351,7 +351,7 @@ test("Plugin enable, disable, server approval, and deletion use explicit command
       () => harness.document.querySelector<HTMLElement>("#appConfirmation")?.hidden === false,
       "Expected artifact input confirmation.",
     );
-    assert.match(harness.document.querySelector("#appConfirmationMessage")?.textContent ?? "", /read-only temporary copies.*not sandboxed/is);
+    assert.match(harness.document.querySelector("#appConfirmationMessage")?.textContent ?? "", /read Session audio or MIDI supplied to its tools.*system account.*does not isolate/is);
     await harness.acceptAppConfirmation();
     await waitForPluginIdle(harness);
     assert.deepEqual(commandCalls(harness).at(-1)?.body, {

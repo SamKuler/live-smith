@@ -332,7 +332,7 @@ test("Chinese Cookie connection labels, help, account name and local-clear confi
     disclosure.querySelector("summary")!.click();
     assert.equal(disclosure.open, true);
     assert.match(disclosure.querySelector("summary")!.textContent!, /如何/);
-    assert.match(cookieHelp.textContent ?? "", /开发者工具.*Network/);
+    assert.match(cookieHelp.textContent ?? "", /开发者工具.*网络/);
     disclosure.querySelector("summary")!.click();
     assert.equal(disclosure.open, false);
     assert.equal(cookie.value, "unsaved-cookie-draft");

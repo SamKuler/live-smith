@@ -2576,14 +2576,6 @@
               : inputs.supportsVideo === false
                 ? [t("Provider reports video input as unsupported.")]
                 : []),
-          ...(reportedMimeTypes.length
-            ? [reportedMimeTypes.length === 1
-                ? t("Provider returned {count} MIME capability entry; only the Supported input rows authorize formats Live Smith can send.", { count: reportedMimeTypes.length })
-                : t("Provider returned {count} MIME capability entries; only the Supported input rows authorize formats Live Smith can send.", { count: reportedMimeTypes.length })]
-            : []),
-          ...(Object.keys(reasoning).length
-            ? [t("Provider reasoning metadata is retained without enabling unverified controls.")]
-            : []),
         ];
         setPropertyIfChanged(note, "hidden", !positiveVideoEvidence);
         setPropertyIfChanged(note, "textContent", positiveVideoEvidence ? t("Live Smith cannot send video attachments.") : "");

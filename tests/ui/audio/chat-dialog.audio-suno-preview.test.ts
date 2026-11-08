@@ -84,7 +84,7 @@ test("unrelated state and language updates preserve the actual online frame and 
     assert.equal(h.document.querySelector("[data-remote-audio-key]"), card);
     assert.match(player.title, /Suno 在线播放器/);
     assert.equal(button(h, "[data-download-local-audio]").textContent, "导出 MP3");
-    assert.match(h.document.querySelector<HTMLElement>("#audioResultsHelp")!.dataset.tooltip!, /浏览器.*保持 Live Smith 开启/);
+    assert.match(h.document.querySelector<HTMLElement>("#audioResultsHelp")!.dataset.tooltip!, /完成前请保持窗口开启.*编辑范围和审批设置/);
     assert.equal(commandCalls(h).length, 0);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }

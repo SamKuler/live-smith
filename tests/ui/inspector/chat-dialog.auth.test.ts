@@ -1192,7 +1192,7 @@ test("connection selection separates Direct API from experimental ChatGPT subscr
         (item) => item.textContent,
       ),
       [
-        "No provider CLI or API key is required.",
+        "Sign in with your account. No API key is needed.",
         "OAuth credentials stay in Live Smith’s private Ableton storage.",
       ],
     );

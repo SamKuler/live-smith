@@ -124,8 +124,8 @@ test("explicit model input evidence survives Save and Use", async () => {
     harness.click("#providerCapabilityDetails > summary");
     assert.equal(details.open, true);
     const technical = details.querySelector("pre")?.textContent ?? "";
-    assert.match(technical, /3 MIME capability entries/i);
-    assert.match(technical, /reasoning metadata/i);
+    assert.match(technical, /supportsThinking=true/);
+    assert.match(technical, /thinkingBudget=-1/);
     assert.match(technical, /audio\/m4a/u);
 
     harness.input("#profileName", "Evidence renamed");
@@ -168,7 +168,6 @@ test("provider MIME wildcards and conflicting video evidence remain visible", as
     harness.click("#providerCapabilityDetails > summary");
     const technical = harness.document.querySelector("#providerCapabilityDetailsText")?.textContent ?? "";
     assert.match(technical, /conflicting video capability/i);
-    assert.match(technical, /3 MIME capability entries/i);
     assert.match(technical, /\*\/\*=true/u);
     assert.match(technical, /video\/audio\/s16le=true/u);
     assert.deepEqual(harness.errors, []);

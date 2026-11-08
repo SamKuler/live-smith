@@ -745,7 +745,7 @@ export function createAudioConnectionEditor(options: AudioEditorOptions) {
           : service.provider === "suno-platform"
             ? t("Official Suno API connection. Create its key at platform.suno.com. Platform access and usage are separate from the Suno.com subscription Cookie connection.")
             : service.provider === "google-lyria"
-              ? t("Google Lyria generation uses Gemini API billing. Batch songs are single-turn and watermarked; the experimental realtime model produces instrumental WAV audio through a bounded WebSocket stream.")
+              ? t("Google Lyria uses Gemini API billing. Batch generation produces a watermarked song from a single prompt. The experimental realtime model produces instrumental WAV audio.")
               : supported.includes("separate_stems")
                 ? t("Selected audio is sent to this external service. Stem separation uses processing minutes for each requested stem.")
                 : t("Generation sends your prompt to this external service and may incur separate API charges. A website subscription may not include API access.");

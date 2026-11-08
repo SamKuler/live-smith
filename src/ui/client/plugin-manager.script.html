@@ -419,10 +419,10 @@
         if (approved) {
           const input = permission === "input";
           if (!(await confirmAction({
-            title: window.LiveSmithI18n.message(input ? "Allow staged audio or MIDI input?" : "Allow validated audio or MIDI output?"),
+            title: window.LiveSmithI18n.message(input ? "Allow audio or MIDI input?" : "Allow audio or MIDI output?"),
             message: input
-              ? window.LiveSmithI18n.message("Plugin {pluginId} MCP server {serverId} may receive read-only temporary copies of exact Session audio or MIDI artifacts selected for its declared tools. The local process still runs as your operating-system user and is not sandboxed by Live Smith.", { pluginId: plugin.id, serverId: server.id })
-              : window.LiveSmithI18n.message("Plugin {pluginId} MCP server {serverId} may write only its declared temporary output file. Live Smith validates it as audio or MIDI and saves it to the current Session; this permission does not import or change anything in Live.", { pluginId: plugin.id, serverId: server.id }),
+              ? window.LiveSmithI18n.message("Allow {pluginId} ({serverId}) to read Session audio or MIDI supplied to its tools. The local process runs with your system account's permissions; Live Smith does not isolate it.", { pluginId: plugin.id, serverId: server.id })
+              : window.LiveSmithI18n.message("Allow {pluginId} ({serverId}) to save its audio or MIDI output to this Session. Import into Live is a separate step.", { pluginId: plugin.id, serverId: server.id }),
             acceptLabel: window.LiveSmithI18n.message("Allow"),
           }))) return;
         }

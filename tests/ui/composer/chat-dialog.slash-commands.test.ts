@@ -829,7 +829,7 @@ for (const command of [
       harness.input("#prompt", command);
       submitComposer(harness);
       await waitForCondition(
-        () => /waiting for authoritative bridge state/i.test(
+        () => /confirming the operation result/i.test(
           harness.document.querySelector("#status")?.textContent ?? "",
         ),
         "Expected the command response loss to enter reconciliation.",

@@ -12,12 +12,11 @@ import { audioToolHelp, audioToolHelpMessages } from "../../../src/ui/i18n/audio
 import { builtInAudioToolNames } from "../../../src/plugins/builtins/audio-toolsets.js";
 import { audioMessages } from "../../../src/ui/i18n/audio-messages.js";
 import { connectionsMessages } from "../../../src/ui/i18n/connections-messages.js";
-import { toolMessages } from "../../../src/ui/i18n/tool-messages.js";
+import { liveToolHelp, toolMessages } from "../../../src/ui/i18n/tool-messages.js";
 import { AUDIO_OUTPUT_LABELS } from "../../../src/audio-services/contracts.js";
 import { actionMessages } from "../../../src/ui/i18n/action-messages.js";
 import { sessionNativeTools } from "../../../src/app/tools/tool-runtime.js";
 import { BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS } from "../../../src/plugins/builtins/index.js";
-import { MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH } from "../../../src/ui/chat-state.js";
 import { UI_LANGUAGES, DEFAULT_UI_LOCALE } from "../../../src/i18n/languages.js";
 const translatedLocales = UI_LANGUAGES.map(language => language.id).filter(id => id !== DEFAULT_UI_LOCALE);
 
@@ -95,11 +94,10 @@ test("explicit client messages and static template markers all have translations
     assert.ok(help, name);
     requireTranslation(help[0], name);
   }
-  for (const { function: { name, description } } of sessionNativeTools(true, true)) {
-    const displayed = description.length > MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH
-      ? description.slice(0, MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH - 1) + "…"
-      : description;
-    requireTranslation(displayed, name);
+  for (const { function: { name } } of sessionNativeTools(true, true)) {
+    const help = liveToolHelp[name];
+    assert.ok(help, name);
+    requireTranslation(help[0], name);
   }
   assert.deepEqual([...missing], []);
 });

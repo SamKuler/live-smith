@@ -88,7 +88,7 @@ test("MP3 waveform inspection never uploads; only explicit WAV export submits co
   const scenario = await setup({ mp3: true }); const { harness, selections } = scenario;
   try {
     await openEditor(harness); assert.equal(scenario.decodeCount, 1); assert.equal(selections.length, 0);
-    assert.match(harness.document.querySelector(".attachment-selection-note")!.textContent!, /16-bit PCM WAV.*original MP3 is kept/);
+    assert.match(harness.document.querySelector(".attachment-selection-note")!.textContent!, /saved as WAV.*original file is kept/);
     field(harness, ".attachment-selection-start", ".25"); field(harness, ".attachment-selection-end", ".5");
     harness.click(".attachment-use-excerpt"); await harness.settleAttachmentOperation();
     await waitForCondition(() => selections.length === 1, "Expected the explicit converted selection submission");

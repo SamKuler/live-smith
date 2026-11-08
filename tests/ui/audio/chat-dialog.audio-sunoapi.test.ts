@@ -31,7 +31,7 @@ test("Add SunoAPI requires a user callback to enable, keeps other services, and 
     );
     const callbackHelp = harness.document.querySelector<HTMLButtonElement>("#audioServiceCallbackHint")!;
     assert.equal(callbackHelp.getAttribute("aria-label"), "Callback URL help");
-    assert.match(readInlineHelp(callbackHelp), /notifications here.*polls for results/);
+    assert.match(readInlineHelp(callbackHelp), /HTTP or HTTPS callback URL.*SunoAPI\.org/);
     const requirement = harness.document.getElementById(callback.getAttribute("aria-describedby") ?? "");
     assert.ok(requirement && !requirement.closest("[hidden]"));
     assert.match(requirement.textContent ?? "", /required when enabled.*HTTP\(S\) URL/i);

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readInlineHelp } from "../support/inline-help.js";
 
 import { AgentPartialCompletionError } from "../../../src/agent/loop.js";
 import { normalizeCodexSearchOutput } from "../../../src/model/oauth/codex-search-output.js";
@@ -874,13 +873,6 @@ test("assistant Web Search citations render as bounded source links", async () =
     assert.match(searchStatus?.textContent ?? "", /latest Ableton Live version/);
     assert.match(searchStatus?.textContent ?? "", /Source pages/);
     assert.equal(searchStatus?.querySelector(".web-search-source-note"), null);
-    const sourceHelp = searchStatus?.querySelector<HTMLButtonElement>(
-      ".inline-help",
-    );
-    assert.ok(sourceHelp);
-    assert.equal(sourceHelp.tabIndex, 0);
-    assert.equal(sourceHelp.getAttribute("aria-label"), "Source pages help");
-    assert.match(readInlineHelp(sourceHelp), /page text is available.*source links.*citations/i);
     const reviewedPages = [...searchStatus?.querySelectorAll<HTMLAnchorElement>(
       ".web-search-source-list a",
     ) ?? []];
@@ -1448,10 +1440,6 @@ test("Web Search pages appear live and reconcile into the persisted search card"
       "Source pages",
     );
     assert.equal(terminalCard?.querySelector(".web-search-source-note"), null);
-    const sourceHelp = terminalCard?.querySelector<HTMLButtonElement>(".inline-help");
-    assert.ok(sourceHelp);
-    assert.equal(sourceHelp.getAttribute("aria-label"), "Source pages help");
-    assert.match(readInlineHelp(sourceHelp), /page text is available to the model/i);
     assert.equal(
       harness.document.querySelector<HTMLAnchorElement>(
         ".timeline-item.web_search .web-search-source-list a",

@@ -4,13 +4,15 @@ import test from "node:test";
 import { liveSmithTools } from "../../../src/agent/tool-definitions.js";
 import { audioParameterGroups } from "../../../src/plugins/builtins/parameter-panel.js";
 import { MAX_SESSION_TOOL_CATALOG_DESCRIPTION_LENGTH } from "../../../src/ui/chat-state.js";
-import { uiCatalogs } from "../../../src/ui/i18n/messages.js";
+import { liveToolHelp } from "../../../src/ui/i18n/tool-messages.js";
 import { createDialogHarness, stateFixture } from "../support/chat-dialog.test-harness.js";
 
-test("the open tool details translate built-in help and keep external descriptions verbatim", async () => {
+test("built-in tools use user-facing help independently of model instructions and preserve external descriptions", async () => {
   const state = stateFixture();
   state.settings.uiLanguage = "en";
-  const { name, description } = liveSmithTools().find(tool => tool.function.name === "inspect_current_object")!.function;
+  const { name } = liveSmithTools().find(tool => tool.function.name === "inspect_current_object")!.function;
+  const description = "Model-only pagination instructions changed independently of the UI.";
+  const [english, chinese] = liveToolHelp[name]!;
   state.sessionToolCatalog = {
     sessionId: state.activeSessionId, loadedAt: "2026-11-08T00:00:00.000Z",
     modelToolsSupported: true, truncated: false, issues: [],
@@ -27,7 +29,7 @@ test("the open tool details translate built-in help and keep external descriptio
       const group = `[data-tool-source="${source}"]`;
       h.click(`${group} > summary`);
       h.click(`${group} .tool-entry > summary`);
-      assert.equal(h.document.querySelector(`${group} .tool-description`)!.textContent, description);
+      assert.equal(h.document.querySelector(`${group} .tool-description`)!.textContent, source === "live" ? english : description);
     }
 
     h.emitServerEvent({
@@ -45,8 +47,7 @@ test("the open tool details translate built-in help and keep external descriptio
 
     const live = h.document.querySelector('[data-tool-source="live"]')!;
     assert.notEqual(live.querySelector(".tool-description")!.textContent, description);
-    assert.equal(live.querySelector(".tool-description")!.textContent, uiCatalogs["zh-CN"][description]);
-    assert.equal(live.querySelector(".tool-name")!.textContent, name);
+    assert.equal(live.querySelector(".tool-description")!.textContent, chinese);
     const external = h.document.querySelector('[data-tool-source="mcp"]')!;
     assert.equal(external.querySelector(".tool-description")!.textContent, description);
     assert.equal(external.querySelector(".tool-entry > summary")!.textContent, name);

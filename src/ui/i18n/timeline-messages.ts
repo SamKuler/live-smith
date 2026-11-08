@@ -73,7 +73,6 @@ export const timelineMessages: Record<string, string> = {
   "Query": "查询",
   "Queries": "查询",
   "Source pages": "来源页面",
-  "Page text is available to the model; Live Smith receives source links, not excerpts. Citations appear with the answer when the provider returns them.": "模型可以访问页面文本；Live Smith 接收来源链接，不接收摘录。提供商返回引用时，引用会随回答显示。",
   "Web Search failed before result pages were returned.": "网页搜索在返回结果页面前失败。",
   "Waiting for result pages…": "正在等待结果页面…",
   "The provider returned no result page URLs for this search.": "提供商未返回此次搜索的结果页面链接。",

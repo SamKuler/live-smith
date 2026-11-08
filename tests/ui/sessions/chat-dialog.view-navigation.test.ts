@@ -47,7 +47,7 @@ for (const kind of ["command", "send"] as const) {
     const h = await createDialogHarness(state, bridge);
     try {
       h.click("#sessionInspectorScope"); h.click("#toolsTab"); await h.settle();
-      assert.match(h.document.querySelector("#sessionToolCatalog")?.textContent ?? "", /local_view_tool/);
+      assert.match(h.document.querySelector("#sessionToolCatalog")?.textContent ?? "", /Local view tool/);
       if (kind === "command") h.emitServerEvent({ type: "command_activity", command: peerCommand, bridgeStateRevision: "100" });
       else h.emitServerEvent({ type: "send_activity", sendId: "peer-send", sessionId: "session-1",
         activity: { status: "running", message: "Peer is working" }, bridgeStateRevision: "100" });
@@ -59,8 +59,8 @@ for (const kind of ["command", "send"] as const) {
         ? { type: "state", commandId: peerCommand.id, state: terminal }
         : { type: "done", sendId: "peer-send", sessionId: "session-1", state: terminal });
       await h.settle();
-      assert.match(h.document.querySelector("#sessionToolCatalog")?.textContent ?? "", /local_view_tool/);
-      assert.doesNotMatch(h.document.querySelector("#sessionToolCatalog")?.textContent ?? "", /peer_view_tool/);
+      assert.match(h.document.querySelector("#sessionToolCatalog")?.textContent ?? "", /Local view tool/);
+      assert.doesNotMatch(h.document.querySelector("#sessionToolCatalog")?.textContent ?? "", /Peer view tool/);
       assert.doesNotMatch(h.document.querySelector("#status")?.textContent ?? "", /Other view private status/);
       assert.deepEqual(h.errors, []);
     } finally { h.close(); }

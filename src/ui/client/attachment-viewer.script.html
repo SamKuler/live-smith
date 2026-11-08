@@ -481,7 +481,7 @@
       async function mp3Peaks(bytes, view, attachment) {
         const maxDecodedBytes = __MAX_AUDIO_ATTACHMENT_BYTES__;
         if (attachment.durationSeconds * attachment.sampleRate * attachment.channels * 4 > maxDecodedBytes) {
-          throw audioSelectionError(m("This MP3 exceeds the 128 MiB decoded-audio budget. Export a shorter WAV in an audio editor, or use the whole original MP3."));
+          throw audioSelectionError(m("This audio cannot be trimmed here. Use the complete file or shorten it in an audio editor."));
         }
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         if (!AudioContext) throw audioSelectionError(m("MP3 waveform decoding is unavailable in this browser. Use the original file or export a WAV in an audio editor."));
@@ -502,7 +502,7 @@
           const decoded = view.decoded;
           if (decoded.length * decoded.numberOfChannels * 4 > maxDecodedBytes || decoded.sampleRate !== attachment.sampleRate || decoded.numberOfChannels !== attachment.channels) {
             view.decoded = null;
-            throw audioSelectionError(m("The browser cannot decode this MP3 within the audio budget while preserving its sample rate and channels."));
+            throw audioSelectionError(m("This audio cannot be trimmed here. Use the complete file or shorten it in an audio editor."));
           }
           const peaks = new Float32Array(480);
           for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
@@ -528,7 +528,7 @@
         const last = Math.min(decoded.length, Math.round(end * decoded.sampleRate));
         const channels = decoded.numberOfChannels;
         const length = (last - first) * channels * 2;
-        if (length <= 0 || length + 44 > __MAX_AUDIO_ATTACHMENT_BYTES__) throw audioSelectionError(m("The WAV excerpt exceeds the 128 MiB attachment limit."));
+        if (length <= 0 || length + 44 > __MAX_AUDIO_ATTACHMENT_BYTES__) throw audioSelectionError(m("The excerpt exceeds the 128 MiB attachment limit. Shorten the selection."));
         const bytes = new Uint8Array(44 + length);
         const data = new DataView(bytes.buffer);
         const put = (offset, text) => { for (let i = 0; i < text.length; i++) bytes[offset + i] = text.charCodeAt(i); };
@@ -588,8 +588,8 @@
         media.classList.add("attachment-selection-audio");
         media.preload = "metadata";
         const note = make("p", "attachment-selection-note", attachment.mediaType === "audio/mpeg"
-          ? "MP3 excerpts are explicitly exported as 16-bit PCM WAV at the original sample rate and channel count. The original MP3 is kept."
-          : "WAV excerpts copy the selected samples with the same encoding, sample rate and channels. The original file is kept.");
+          ? "Excerpts are saved as WAV. The original file is kept."
+          : "The original file is kept.");
         const actions = make("div", "attachment-viewer-actions");
         const openStatus = make("p", "attachment-viewer-open-status", "The file could not be opened. Try again."); openStatus.hidden = true; openStatus.setAttribute("role", "status");
         const openFile = make("button", "secondary attachment-open-external", "Open in default app"); openFile.type = "button";

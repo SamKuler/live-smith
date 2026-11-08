@@ -252,7 +252,7 @@ for (const [isNew, withState] of [[false, false], [false, true], [true, false], 
       await harness.settle();
       if (!withState) {
         assert.equal(harness.document.querySelector<HTMLButtonElement>("#saveAudioServiceButton")!.disabled, true);
-        assert.match(harness.document.querySelector("#status")!.textContent!, /Waiting for authoritative bridge state/);
+        assert.match(harness.document.querySelector("#status")!.textContent!, /Confirming the operation result/);
         // Keep reconciliation pending, then supply a publication whose causal cut
         // covers the attempted command while the saved audio collection stays unchanged.
         harness.holdNextState();

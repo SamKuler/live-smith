@@ -1,4 +1,5 @@
 import { audioToolHelp } from "./i18n/audio-tool-help.js";
+import { liveToolHelp } from "./i18n/tool-messages.js";
 import { serializeUiI18nData } from "./i18n/messages.js";
 import { inputTransportSupportTable } from "../model/input-support.js";
 import {
@@ -226,6 +227,9 @@ function injectEditScopeContract(script: string): string {
 
 function injectSessionContract(script: string): string {
   return script
+    .replaceAll("__BUILT_IN_LIVE_TOOL_HELP__", () => JSON.stringify(Object.fromEntries(
+      Object.entries(liveToolHelp).map(([name, help]) => [name, help[0]]),
+    )))
     .replaceAll("__BUILT_IN_AUDIO_TOOL_NAMES__", () => JSON.stringify(builtInAudioToolNames()))
     .replaceAll("__BUILT_IN_AUDIO_TOOL_HELP__", () => JSON.stringify(Object.fromEntries(
       Object.entries(builtInAudioToolNames()).map(([name, localName]) => [name, audioToolHelp[localName]?.[0]]),

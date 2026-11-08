@@ -271,7 +271,7 @@ export function createAudioParameterPanels(deps: Dependencies): AudioParameterPa
         const panel = tool.audioPanel; offeredSuggestions = panel.suggestions ?? {}; const key = JSON.stringify([panel.toolName, panel.signature, panel.connectionId, panel.schema]);
         if (!drafts.has(key)) drafts.set(key, initial(panel.schema)); const draft = drafts.get(key)!;
         const checks: (() => boolean)[] = []; const fields = render(panel.schema, draft, "Parameters", "", true, checks); fields.classList.add("audio-parameter-root"); form.append(fields);
-        form.append(node("p", "field-hint", () => t("Running uses the current connection's allowance. Results appear in this Session's audio area or tool history.")));
+        form.append(node("p", "field-hint", () => t("Running this tool may use your connection's paid allowance.")));
         const run = node("button", "primary", () => t("Run tool")); run.type = "submit"; run.disabled = busy; const footer = node("footer", "audio-parameter-footer"); footer.append(run); form.append(footer);
         form.addEventListener("submit", async (event) => {
           event.preventDefault(); if (busy || active !== opened || owner !== currentOwner()) return;

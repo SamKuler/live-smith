@@ -5,6 +5,7 @@
         const t = (source, params) => window.LiveSmithI18n.t(source, params);
         const descriptors = Object.assign(Object.create(null), __BUILT_IN_INTEGRATION_CONNECTION_DESCRIPTORS__);
         const audioHelp = Object.assign(Object.create(null), __BUILT_IN_AUDIO_TOOL_HELP__);
+        const liveHelp = Object.assign(Object.create(null), __BUILT_IN_LIVE_TOOL_HELP__);
         const parameterPanels = window.LiveSmithFactories.createPluginParameterPanels({ getState, runCommand, resultActions });
         let renderedKey = null;
         let disabled = false;
@@ -136,15 +137,11 @@
             entry.dataset.toolKey = section.dataset.toolKey + ":" + tool.name;
             const title = element("summary", "");
             title.textContent = group.kind === "mcp" ? tool.name : humanizeToolName(tool.name);
-            const name = element("code", "tool-name", tool.name);
-            name.setAttribute("translate", "no");
-            const help = group.kind === "audio" ? audioHelp[tool.name] : undefined;
-            const description = element("p", "tool-description",
-              group.kind === "live" ? t(tool.description) : help ? t(help) : tool.description);
-            if (group.kind !== "live" && !help) description.setAttribute("translate", "no");
+            const help = group.kind === "live" ? liveHelp[tool.name] : group.kind === "audio" ? audioHelp[tool.name] : undefined;
+            const description = element("p", "tool-description", help ? t(help) : group.kind === "live" ? "" : tool.description);
+            if (!help) description.setAttribute("translate", "no");
             entry.append(title);
-            if (group.kind !== "mcp") entry.append(name);
-            entry.append(description);
+            if (description.textContent) entry.append(description);
             if (tool.audioPanel) {
               const open = element("button", "secondary audio-open-panel", t("Open controls"));
               open.type = "button";
@@ -216,7 +213,7 @@
             : catalog ? t("Loaded at {time}.", {
               time: new Intl.DateTimeFormat(window.LiveSmithI18n.locale, { hour: "2-digit", minute: "2-digit" })
                 .format(new Date(catalog.loadedAt)),
-            }) : t("Tool descriptions load automatically when this Session is idle. Connection status below reflects saved settings.");
+            }) : t("Tools load automatically when this conversation is idle.");
           const root = document.getElementById("sessionToolCatalog");
           if (renderedSessionId !== state.activeSessionId) openToolKeys.clear();
           else for (const node of root.querySelectorAll("details[data-tool-key]")) {

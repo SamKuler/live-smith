@@ -327,7 +327,7 @@ function createArtifactLibraryView(deps: Dependencies) {
       const generation = element("details", "artifact-details"); generation.append(element("summary", "", () => t("Generation parameters")));
       const tool = element("p", "field-hint");
       const parameters = element("pre", "");
-      const shortened = element("p", "field-hint", () => t("Parameters are shortened here; the original tool call remains in Session history."));
+      const shortened = element("p", "field-hint", () => t("Showing a summary. Full settings are available in the conversation history."));
       generation.append(tool, parameters, shortened); provenance.append(generation); card.append(provenance);
       const history = element("details", "artifact-details artifact-history"); history.append(element("summary", "", () => t("Operation history")));
       const records = element("div", "artifact-history-records"); history.append(records); card.append(history);

@@ -3190,15 +3190,7 @@
         const label = document.createElement("div");
         label.className = "web-search-section-label";
         label.textContent = t("Source pages");
-        const sourceHelp = document.createElement("button");
-        sourceHelp.type = "button";
-        const sourceHelpText = t("Page text is available to the model; Live Smith receives source links, not excerpts. Citations appear with the answer when the provider returns them.");
-        sourceHelp.className = "inline-help";
-        sourceHelp.tabIndex = 0;
-        sourceHelp.textContent = "?";
-        sourceHelp.dataset.tooltip = sourceHelpText;
-        sourceHelp.setAttribute("aria-label", t("Source pages help"));
-        heading.append(label, sourceHelp);
+        heading.append(label);
         section.append(heading);
         if (!sources.length) {
           const empty = document.createElement("p");
