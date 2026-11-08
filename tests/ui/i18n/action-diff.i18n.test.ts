@@ -54,7 +54,7 @@ test("every registered action builds complete catalogued messages within the wir
   }
 });
 
-test("bound action values keep exact names, enum values and JSON after input changes", () => {
+test("bound action values keep exact names, enum values and path positions after input changes", () => {
   const path = { deviceIndex: 2, nested: [{ chainIndex: 0, deviceIndex: 1 }] };
   const sourceName = 'selected Live object <b>{path}</b>';
   const action = {
@@ -69,14 +69,13 @@ test("bound action values keep exact names, enum values and JSON after input cha
     { type: "set_audio_clip_warp", trackName: "Delete", clipName: "Untitled", startBeat: 0, warpMode: "complex_pro", warping: false },
   ]);
   const snapshot = JSON.stringify(groups);
-  const pathJson = JSON.stringify(path);
   action.trackName = "Edited after binding";
   action.source.deviceName = "Changed";
   path.nested[0]!.deviceIndex = 42;
   assert.equal(JSON.stringify(groups), snapshot);
   const text = groups.flatMap((group) => group.rows).map(formatUiMessage).join("\n");
   assert.ok(text.includes(sourceName));
-  assert.ok(text.includes(pathJson));
-  assert.match(text, /warping=false warpMode=complex_pro/);
+  assert.match(text, /device 2 → chain\/device 0\/1/);
+  assert.match(text, /Warp: off.*Warp mode: complex_pro/);
   assert.match(text, /track "Delete"/);
 });

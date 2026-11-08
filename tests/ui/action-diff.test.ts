@@ -51,9 +51,9 @@ test("Session MIDI confirmation distinguishes empty-slot creation from replaceme
   assert.deepEqual(groups, [{
     title: "Write MIDI",
     rows: [
-      '1. ± Create or replace Session MIDI clip "Alternative" in slot 2 on track "Lead" (ref lead) (0 notes, 4 beats)',
-      '2. ± Create or replace Session MIDI clip "Alternative" in slot 2 on track "Lead" (ref lead) (0 notes, 4 beats)',
-      '3. + Create Session MIDI clip "Alternative" in empty slot 2 on track "Lead" (ref lead) (0 notes, 4 beats)',
+      '1. ± Create or replace Session MIDI clip "Alternative" in slot 2 on track "Lead" (0 notes, 4 beats)',
+      '2. ± Create or replace Session MIDI clip "Alternative" in slot 2 on track "Lead" (0 notes, 4 beats)',
+      '3. + Create Session MIDI clip "Alternative" in empty slot 2 on track "Lead" (0 notes, 4 beats)',
     ],
   }]);
 });
@@ -91,12 +91,12 @@ test("compact parameter summaries show operation, resolved target and count whil
   const targets = { bus: { trackName: "Bus" } };
   const rows = boundActionDiffGroups(actions, targets, "summary").flatMap((group) => group.rows).map(formatUiMessage);
   assert.match(rows[2]!, /^3\. Set parameters.*Main Lead.*Operator.*Parameters: 1$/);
-  assert.match(rows[3]!, /^4\. Set parameters.*Bus.*Auto Filter\[0\].*Parameters: 70$/);
+  assert.match(rows[3]!, /^4\. Set parameters.*Bus.*Auto Filter \(device 0\).*Parameters: 70$/);
   assert.doesNotMatch(rows[2]!, /Volume|0\.5/);
   assert.doesNotMatch(rows[3]!, /Parameter 0|0\.7|…/);
   const detailed = actionDiffGroups(actions, targets).flatMap((group) => group.rows);
-  assert.match(detailed[2]!, /Volume = 0\.5/);
-  assert.match(detailed[3]!, /Parameter 69 = 0\.7/);
+  assert.match(detailed[2]!, /Volume: 0\.5/);
+  assert.match(detailed[3]!, /Parameter 69 \[69\]: 0\.7/);
 });
 
 test("actionDiffGroups includes every supported mutating action", () => {
@@ -178,13 +178,39 @@ test("actionDiffGroups resolves existing refs to readable current labels", () =>
 
   assert.match(
     groups.find((group) => group.title === "Track Changes")?.rows[0] ?? "",
-    /1-MIDI.*ref pads.*Dream Pads/,
+    /1-MIDI.*Dream Pads/,
   );
   assert.match(
     groups.find((group) => group.title === "Insert Devices")?.rows[0] ?? "",
-    /Dream Pads.*ref pads/,
+    /track "Dream Pads"/,
   );
 });
+
+test("a rename by current track name updates the bound regular target without renaming a same-name Return track", () => {
+  const rows = actionDiffGroups([
+    { type: "rename_track", trackName: "lead", newName: "Main Lead" },
+    { type: "insert_device", trackRef: "lead-target", deviceName: "Operator" },
+    { type: "insert_device", trackRef: "return-target", deviceName: "Utility" },
+  ], {
+    "lead-target": { trackName: "Lead" },
+    "return-target": { trackRole: "return", trackIndex: 0, trackName: "Lead" },
+  }).flatMap(group => group.rows);
+  assert.match(rows[1]!, /track "Main Lead"$/);
+  assert.match(rows[2]!, /Return track 0 "Lead"$/);
+});
+
+for (const [type, defaultName] of [["create_midi_track", "AI MIDI"], ["create_audio_track", "AI Audio"]] as const) {
+  test(`${type} keeps its identity when its default name is renamed before a referenced action`, () => {
+    const rows = actionDiffGroups([
+      { type, ref: "created-track" },
+      { type: "rename_track", trackName: defaultName, newName: "Untitled" },
+      { type: "insert_device", trackRef: "created-track", deviceName: "Utility" },
+    ]).flatMap(group => group.rows);
+    assert.equal(rows[0], `1. + ${type === "create_midi_track" ? "MIDI" : "Audio"} track "${defaultName}"`);
+    assert.equal(rows[1], `2. ~ track "${defaultName}" → "Untitled"`);
+    assert.equal(rows[2], '3. + [end] Utility on track "Untitled" (created in step 1)');
+  });
+}
 
 test("actionDiffGroups labels Return and Main target refs", () => {
   const groups = actionDiffGroups(
@@ -203,8 +229,8 @@ test("actionDiffGroups labels Return and Main target refs", () => {
     },
   );
 
-  assert.match(groups[0]?.rows[0] ?? "", /Return track index 0.*A-Reverb.*ref bus/i);
-  assert.match(groups[1]?.rows[0] ?? "", /Main track.*Master Bus.*ref main/i);
+  assert.match(groups[0]?.rows[0] ?? "", /Return track 0.*A-Reverb/i);
+  assert.match(groups[1]?.rows[0] ?? "", /Main track.*Master Bus/i);
 
   const unnamed = actionDiffGroups(
     [
@@ -216,8 +242,8 @@ test("actionDiffGroups labels Return and Main target refs", () => {
       main: { trackRole: "main" },
     },
   );
-  assert.match(unnamed[0]?.rows[0] ?? "", /Return track index 0 \(ref bus\)/);
-  assert.match(unnamed[0]?.rows[1] ?? "", /Main track \(ref main\)/);
+  assert.match(unnamed[0]?.rows[0] ?? "", /Return track 0$/);
+  assert.match(unnamed[0]?.rows[1] ?? "", /Main track$/);
 });
 
 test("actionDiffGroups labels actions that consume a creator ref", () => {
@@ -226,8 +252,71 @@ test("actionDiffGroups labels actions that consume a creator ref", () => {
     { type: "insert_device", trackRef: "instrument", deviceName: "Auto Filter" },
   ]);
 
-  assert.match(groups[0]?.rows[0] ?? "", /AI Instrument.*ref instrument/);
-  assert.match(groups[1]?.rows[0] ?? "", /AI Instrument.*ref instrument/);
+  assert.equal(groups[0]?.rows[0], '1. + MIDI track "AI Instrument"');
+  assert.match(groups[1]?.rows[0] ?? "", /AI Instrument.*created in step 1/);
+});
+
+test("readable track identities distinguish same-name creations, Return positions and the Main track through renames", () => {
+  const actions = [
+    { type: "create_midi_track" as const, ref: "first-private-ref", name: "Layer" },
+    { type: "create_midi_track" as const, ref: "second-private-ref", name: "Layer" },
+    { type: "rename_track" as const, trackRef: "first-private-ref", newName: "Lead" },
+    { type: "insert_device" as const, trackRef: "second-private-ref", deviceName: "Operator" },
+    { type: "insert_device" as const, trackRef: "first-private-ref", deviceName: "Utility" },
+    { type: "insert_device" as const, trackRef: "return-a", deviceName: "Utility" },
+    { type: "insert_device" as const, trackRef: "return-b", deviceName: "Utility" },
+    { type: "insert_device" as const, trackRef: "main-private-ref", deviceName: "Utility" },
+  ];
+  const targets = {
+    "return-a": { trackRole: "return" as const, trackIndex: 0, trackName: "Layer" },
+    "return-b": { trackRole: "return" as const, trackIndex: 1, trackName: "Layer" },
+    "main-private-ref": { trackRole: "main" as const, trackName: "Layer" },
+  };
+  for (const presentation of ["summary", "details"] as const) {
+    const rows = actionDiffGroups(actions, targets, presentation).flatMap(group => group.rows);
+    assert.match(rows[2]!, /track "Layer" \(created in step 1\).*Lead/);
+    assert.match(rows[3]!, /track "Layer" \(created in step 2\)/);
+    assert.match(rows[4]!, /track "Lead" \(created in step 1\)/);
+    assert.match(rows[5]!, /Return track 0 "Layer"/);
+    assert.match(rows[6]!, /Return track 1 "Layer"/);
+    assert.match(rows[7]!, /Main track "Layer"/);
+    assert.doesNotMatch(rows.join("\n"), /private-ref|return-a|return-b|trackRef|\(ref /);
+    assert.deepEqual(rows.map(row => Number(row.split(".")[0])), [1, 2, 3, 4, 5, 6, 7, 8]);
+  }
+});
+
+test("unresolved historical targets remain distinguishable without presenting their identifiers as track names", () => {
+  const rows = actionDiffGroups([
+    { type: "delete_track", trackRef: "missing-a" },
+    { type: "delete_track", trackRef: "missing-b" },
+  ]).flatMap(group => group.rows);
+  assert.deepEqual(rows, ["1. - unresolved track (missing-a)", "2. - unresolved track (missing-b)"]);
+});
+
+test("clip switches use musical states while device positions and destructive consequences stay exact", () => {
+  const rows = actionDiffGroups([
+    { type: "set_clip_properties", trackName: "Audio", slotIndex: 0, looping: false, muted: true, color: 0 },
+    { type: "set_audio_clip_warp", trackName: "Audio", slotIndex: 0, warping: false, warpMode: "complex_pro" },
+    { type: "create_session_audio_clip", trackName: "Audio", slotIndex: 2, source: { kind: "selected" }, isWarped: true,
+      loopSettings: { looping: true, loopStart: 2, loopEnd: 6, startMarker: 0, endMarker: 8 } },
+    { type: "delete_device", trackName: "Audio", deviceName: "Utility", devicePath: {
+      deviceIndex: 2, nested: [{ chainIndex: 0, deviceIndex: 1 }, { chainIndex: 3, deviceIndex: 4 }],
+    } },
+  ]).flatMap(group => group.rows);
+  assert.match(rows[0]!, /Session slot 0.*Loop: off.*Mute: on.*Color: 0/);
+  assert.match(rows[1]!, /Warp: off.*Warp mode: complex_pro/);
+  assert.match(rows[2]!, /slot 2.*Warp: on.*Loop range: 2–6.*Start\/end markers: 0–8.*Loop: on.*deletes and recreates/);
+  assert.match(rows[3]!, /Utility \(device 2 → chain\/device 0\/1 → 3\/4\)/);
+  assert.doesNotMatch(rows.join("\n"), /true|false|deviceIndex|chainIndex/);
+});
+
+test("Drum Rack sample changes preserve each same-name Rack's device position", () => {
+  const rows = actionDiffGroups([0, 2].map(deviceIndex => ({
+    type: "configure_drum_pad" as const, trackName: "Drums", rackName: "Drum Rack", rackPath: { deviceIndex },
+    receivingNote: 36, mode: "fill_empty_pad" as const, source: { kind: "selected" as const },
+  }))).flatMap(group => group.rows);
+  assert.match(rows[0]!, /Drum Rack \(device 0\).*pad 36.*track "Drums"/);
+  assert.match(rows[1]!, /Drum Rack \(device 2\).*pad 36.*track "Drums"/);
 });
 
 test("actionDiffGroups discloses whole-Clip MIDI transforms", () => {
@@ -309,7 +398,7 @@ test("actionDiffGroups discloses Rack, sample, mixer, arm, and device lifecycle 
   );
   assert.match(
     groups.find((group) => group.title === "Rack & Samples")?.rows[0] ?? "",
-    /Append empty Chain.*Instrument Rack.*deviceIndex.*1/i,
+    /Append empty Chain.*Instrument Rack.*device 1/i,
   );
   assert.match(
     groups.find((group) => group.title === "Rack & Samples")?.rows[1] ?? "",
@@ -317,7 +406,7 @@ test("actionDiffGroups discloses Rack, sample, mixer, arm, and device lifecycle 
   );
   assert.match(
     groups.find((group) => group.title === "Set Parameters")?.rows[0] ?? "",
-    /send\[0\].*0\.5/i,
+    /send 0.*0\.5/i,
   );
   assert.match(
     groups.find((group) => group.title === "Set Parameters")?.rows[1] ?? "",
@@ -329,7 +418,7 @@ test("actionDiffGroups discloses Rack, sample, mixer, arm, and device lifecycle 
   );
   assert.match(
     groups.find((group) => group.title === "Delete")?.rows[0] ?? "",
-    /Old Rack.*deviceIndex.*2/i,
+    /Old Rack.*device 2/i,
   );
 });
 
@@ -426,11 +515,11 @@ test("actionDiffGroups discloses Arrangement and Session clip writes and destruc
   );
   assert.match(
     groups.find((group) => group.title === "Write Audio")?.rows[2] ?? "",
-    /create or replace.*Warped Loop.*slot 2.*warped=true.*loop=2-6.*deletes and recreates/i,
+    /create or replace.*Warped Loop.*slot 2.*Warp: on.*Loop range: 2–6.*deletes and recreates/i,
   );
   assert.match(
     groups.find((group) => group.title === "Clip Changes")?.rows[0] ?? "",
-    /warping=true.*complex_pro/i,
+    /Warp: on.*complex_pro/i,
   );
   assert.equal(
     groups.find((group) => group.title === "Delete")?.rows.length,
@@ -487,7 +576,7 @@ test("actionDiffGroups shows exact arrangement and Simpler sample-source locator
 
   const rows = groups.find((group) => group.title === "Rack & Samples")?.rows ?? [];
   assert.match(rows[0] ?? "", /Kick Source.*beat 64.*Audio/i);
-  assert.match(rows[1] ?? "", /Source Simpler.*deviceIndex.*2.*chainIndex.*0/i);
+  assert.match(rows[1] ?? "", /Source Simpler.*device 2 → chain\/device 0\/1/i);
   assert.match(rows[2] ?? "", /current request audio input 2/i);
   assert.doesNotMatch(rows[2] ?? "", /event-current/);
 });

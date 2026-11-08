@@ -117,6 +117,11 @@ test("composed confirmation localizes nested refs, sample locators and lane scop
     { type: "set_audio_clip_warp", trackName: "Song", slotIndex: 0, clipName: "Untitled", warpMode: "complex_pro", warping: false },
     { type: "scale_midi_velocity", trackName: "Song", startBeat: 8, clipName: "Delete", factor: 0.5 },
     { type: "replace_simpler_sample", trackName: "Song", simplerName: "Delete", source: { kind: "audio_asset", assetRef: "audio-result-opaque-1" } },
+    { type: "create_midi_track", ref: "first-layer", name: "Layer" },
+    { type: "create_midi_track", ref: "second-layer", name: "Layer" },
+    { type: "rename_track", trackRef: "first-layer", newName: "Lead" },
+    { type: "insert_device", trackRef: "first-layer", deviceName: "Operator" },
+    { type: "insert_device", trackRef: "second-layer", deviceName: "Operator" },
   ], {
     return: { trackRole: "return", trackIndex: 0, trackName: "Delete" },
     main: { trackRole: "main", trackName: "Song" },
@@ -126,18 +131,22 @@ test("composed confirmation localizes nested refs, sample locators and lane scop
   assert.deepEqual(rows(harness), groups.flatMap((group) => group.rows).map(formatUiMessage));
   await language(harness, "zh-CN", "1");
   const rendered = rows(harness);
-  assert.match(rendered[0]!, /返回轨道索引 0 "Delete".*引用 return/);
-  assert.match(rendered[1]!, /主轨道 "Song".*引用 main.*send\[0\] = 0\.25/);
-  assert.ok(rendered[2]!.includes(`路径 ${JSON.stringify(path)}`));
+  assert.match(rendered[0]!, /返回轨道 0 "Delete"/);
+  assert.match(rendered[1]!, /主轨道 "Song".*发送 0 = 0\.25/);
+  assert.match(rendered[2]!, /设备 2 → 链\/设备 0\/1/);
   assert.match(rendered[3]!, /Source 上槽位 0 的会话片段 "Song"/);
   assert.match(rendered[4]!, /Source 上第 16 拍的编曲片段 "Delete"/);
   assert.match(rendered[5]!, /当前请求的音频输入 1/);
   assert.doesNotMatch(rendered[5]!, /private-event-id/);
   assert.match(rendered[6]!, /录音分轨 0 "Take Lane".*创建时要求目标范围为空/);
-  assert.match(rendered[7]!, /原始时长.*选中的 Live 对象.*Warp 启用=false.*循环范围=0-2.*标记=0-4.*循环=false.*要求分轨的目标范围为空/);
-  assert.match(rendered[8]!, /会话槽位 0 中的片段 "Untitled".*Warp 启用=false.*complex_pro/);
+  assert.match(rendered[7]!, /原始时长.*选中的 Live 对象.*Warp：关.*循环范围：0–2.*起止标记：0–4.*循环：关.*要求分轨的目标范围为空/);
+  assert.match(rendered[8]!, /会话槽位 0 中的片段 "Untitled".*Warp：关.*complex_pro/);
   assert.match(rendered[9]!, /编曲中第 8 拍的片段 "Delete".*所有音符力度乘以 0\.5/);
   assert.match(rendered[10]!, /已处理的音频资源 audio-result-opaque-1/);
+  assert.match(rendered[13]!, /轨道 "Layer"（在步骤 12 新建）.*"Lead"/);
+  assert.match(rendered[14]!, /轨道 "Lead"（在步骤 12 新建）/);
+  assert.match(rendered[15]!, /轨道 "Layer"（在步骤 13 新建）/);
+  assert.doesNotMatch(rendered.slice(11).join("\n"), /first-layer|second-layer|trackRef/);
   await language(harness, "en", "2");
   assert.deepEqual(rows(harness), groups.flatMap((group) => group.rows).map(formatUiMessage));
   harness.click("[data-confirm-cancel]");

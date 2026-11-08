@@ -26,7 +26,7 @@ export function createActionDetails() {
       }
       const details = row.firstElementChild as HTMLDetailsElement;
       const label = window.LiveSmithI18n?.format(labels[index]!) ?? formatUiMessage(labels[index]!);
-      details.firstElementChild!.textContent = label.length <= 160 ? label : `${label.slice(0, 159)}…`;
+      details.firstElementChild!.textContent = label;
       const body = details.lastElementChild as HTMLElement;
       body.setAttribute("aria-label", `${window.LiveSmithI18n?.t("Input parameters") ?? "Input parameters"} · ${index + 1}`);
       const parameters = JSON.stringify(action, null, 2);

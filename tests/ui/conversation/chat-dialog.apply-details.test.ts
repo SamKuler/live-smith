@@ -47,6 +47,9 @@ test("direct command approval uses the same ordered compact action disclosures a
     }
     assert.match(rows[4]!.querySelector("summary")!.textContent!, /Set parameters.*Bus.*Auto Filter.*70/);
     assert.doesNotMatch(rows[4]!.querySelector("summary")!.textContent!, /Parameter 0|0\.7/);
+    assert.match(rows[2]!.querySelector("summary")!.textContent!, /track "Lead" \(created in step 1\)/);
+    assert.doesNotMatch(rows.map(row => row.querySelector("summary")!.textContent).join("\n"), /trackRef|\(ref /);
+    assert.deepEqual(JSON.parse(rows[4]!.querySelectorAll("pre")[1]!.textContent!), { targets: orderedPlan.targets });
     const parameters = rows[4]!.querySelector<HTMLElement>('[role="region"]')!;
     parameters.focus(); parameters.scrollTop = 100;
     const settings = h.readBootstrappedClientStateReference().settings;
@@ -65,6 +68,29 @@ test("direct command approval uses the same ordered compact action disclosures a
     assert.equal(jsonCalls(h, "/confirm").length, 1);
     h.emitServerEvent({ type: "command_confirm_resolved", commandId: command.id, sessionId: command.sessionId, id: request.id }); await h.settle();
     assert.equal(h.document.querySelector("[data-pending-confirmation]"), null);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("approval summaries keep complete long target names and deletion positions", async () => {
+  const trackName = "Layered atmospheric strings with evolving harmonics and a slowly rising upper-register melody";
+  const clipName = "Final chorus variation with the original bass motif and extended transition into the closing section";
+  const plan: AgentPlan = { message: "Remove the draft", actions: [{ type: "delete_clip", trackName, clipName, startBeat: 64 }] };
+  const h = await createDialogHarness(stateFixture());
+  const command = { id: "long-target", sessionId: "session-1", stopping: false };
+  try {
+    h.emitServerEvent({ type: "command_activity", command, bridgeStateRevision: "100" });
+    h.emitServerEvent({ type: "command_confirm_request", commandId: command.id, sessionId: command.sessionId,
+      id: "long-target-confirm", kind: "apply", operationId: "long-target-operation", message: plan.message,
+      groups: actionDiffGroups(plan.actions, plan.targets), plan });
+    await h.settle();
+    const details = h.document.querySelector<HTMLDetailsElement>('[data-operation-id="long-target-operation"] details[data-action-index="0"]')!;
+    const summary = details.querySelector<HTMLElement>("summary")!;
+    assert.ok(summary.textContent!.includes(trackName));
+    assert.ok(summary.textContent!.includes(clipName));
+    assert.match(summary.textContent!, /64/);
+    summary.click();
+    assert.deepEqual(JSON.parse(details.querySelector("pre")!.textContent!), plan.actions[0]);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });

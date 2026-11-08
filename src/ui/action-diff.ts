@@ -18,6 +18,7 @@ interface TrackRefLabel {
   name?: UiMessage;
   role?: "return" | "main";
   index?: number;
+  createdAtStep?: number;
 }
 
 type ActionRowPresentation = "details" | "summary";
@@ -47,14 +48,17 @@ export function actionDiffGroups(
     ) {
       refLabels.set(
         action.ref,
-        { name: action.name ?? m(action.type === "create_midi_track" ? "AI MIDI" : "AI Audio") },
+        { name: action.name ?? m(action.type === "create_midi_track" ? "AI MIDI" : "AI Audio"), createdAtStep: index + 1 },
       );
     }
-    if (action.type === "rename_track" && action.trackRef) {
-      refLabels.set(action.trackRef, {
-        ...refLabels.get(action.trackRef),
-        name: action.newName,
-      });
+    if (action.type === "rename_track") {
+      for (const [ref, label] of refLabels) {
+        const currentName = typeof label.name === "string" ? label.name : label.name?.source;
+        const matches = action.trackRef ? ref === action.trackRef
+          : !label.role && currentName !== undefined &&
+            currentName.trim().toLowerCase() === action.trackName?.trim().toLowerCase();
+        if (matches) refLabels.set(ref, { ...label, name: action.newName });
+      }
     }
   }
 
@@ -81,24 +85,24 @@ function actionDiffRow(
   presentation: ActionRowPresentation,
 ): { title: keyof typeof actionMessages; row: UiMessage } {
   if (presentation === "summary" && (action.type === "set_device_parameter" || action.type === "set_device_parameters")) {
-    return { title: "Set Parameters", row: m("Set parameters · {track}.{deviceName}{path} · Parameters: {count}", {
+    return { title: "Set Parameters", row: m("Set parameters · {track} · {deviceName}{path} · Parameters: {count}", {
       track: trackLabel(action, refLabels), deviceName: action.deviceName,
       path: pathSuffix(action.devicePath, action.deviceIndex), count: action.type === "set_device_parameters" ? action.values.length : 1,
     }) };
   }
   switch (action.type) {
     case "create_midi_track":
-      return { title: "Create", row: m('+ MIDI track "{name}"{ref}', {
-        name: action.name ?? m("AI MIDI"), ref: refSuffix(action.ref),
+      return { title: "Create", row: m('+ MIDI track "{name}"', {
+        name: action.name ?? m("AI MIDI"),
       }) };
     case "create_audio_track":
-      return { title: "Create", row: m('+ Audio track "{name}"{ref}', {
-        name: action.name ?? m("AI Audio"), ref: refSuffix(action.ref),
+      return { title: "Create", row: m('+ Audio track "{name}"', {
+        name: action.name ?? m("AI Audio"),
       }) };
     case "create_scene":
       return { title: "Create", row: m('+ Session View Scene "{name}"{index}', {
         name: action.name ?? m("Scene"),
-        index: action.index === undefined ? "" : m(" at index {index}", { index: action.index }),
+        index: action.index === undefined ? "" : m(" at position {index}", { index: action.index }),
       }) };
     case "create_cue_point":
       return { title: "Create", row: m('+ Arrangement Cue Point "{name}" at beat {timeBeat}', {
@@ -122,14 +126,14 @@ function actionDiffRow(
         rackName: action.rackName, path: pathSuffix(action.rackPath), track: trackLabel(action, refLabels),
       }) };
     case "set_device_parameter":
-      return { title: "Set Parameters", row: m("~ {track}.{deviceName}{path}.{parameterName} = {value}", {
+      return { title: "Set Parameters", row: m("~ {track} · {deviceName}{path} · {parameterName}: {value}", {
         track: trackLabel(action, refLabels), deviceName: action.deviceName,
         path: pathSuffix(action.devicePath, action.deviceIndex), parameterName: action.parameterName, value: action.value,
       }) };
     case "set_device_parameters":
-      return { title: "Set Parameters", row: m("~ {track}.{deviceName}{path}: {values}", {
+      return { title: "Set Parameters", row: m("~ {track} · {deviceName}{path}: {values}", {
         track: trackLabel(action, refLabels), deviceName: action.deviceName, path: pathSuffix(action.devicePath, action.deviceIndex),
-        values: action.values.map((entry) => `[${entry.parameterIndex}] ${entry.parameterName} = ${entry.value}`).join(", "),
+        values: action.values.map((entry) => `${entry.parameterName} [${entry.parameterIndex}]: ${entry.value}`).join(", "),
       }) };
     case "duplicate_device":
       return { title: "Insert Devices", row: m("+ Duplicate {deviceName}{path} on {track}", {
@@ -144,12 +148,12 @@ function actionDiffRow(
       return {
         title: "Rack & Samples",
         row: action.mode === "fill_empty_pad"
-          ? m("+ Fill empty Drum Rack {rackName} pad {receivingNote} on {track} from {source}", {
-            rackName: action.rackName, receivingNote: action.receivingNote,
+          ? m("+ Fill empty Drum Rack {rackName}{rackPath} pad {receivingNote} on {track} from {source}", {
+            rackName: action.rackName, rackPath: pathSuffix(action.rackPath), receivingNote: action.receivingNote,
             track: trackLabel(action, refLabels), source: sourceLabel(action.source),
           })
-          : m("~ Replace sample in Simpler {path} on Drum Rack {rackName} pad {receivingNote} on {track} from {source}", {
-            path: pathLabel(action.simplerPath!), rackName: action.rackName, receivingNote: action.receivingNote,
+          : m("~ Replace sample in Simpler {path} on Drum Rack {rackName}{rackPath} pad {receivingNote} on {track} from {source}", {
+            path: pathLabel(action.simplerPath!), rackName: action.rackName, rackPath: pathSuffix(action.rackPath), receivingNote: action.receivingNote,
             track: trackLabel(action, refLabels), source: sourceLabel(action.source),
           }),
       };
@@ -212,15 +216,15 @@ function actionDiffRow(
       return { title: "Clip Changes", row: m("~ {clip} on {track}{rename}{looping}{muted}{color}", {
         clip: clipLocation(action), track: trackLabel(action, refLabels),
         rename: action.newName ? m(' rename to "{name}"', { name: action.newName }) : "",
-        looping: action.looping === undefined ? "" : m(" looping={looping}", { looping: action.looping }),
-        muted: action.muted === undefined ? "" : m(" muted={muted}", { muted: action.muted }),
-        color: action.color === undefined ? "" : m(" color={color}", { color: action.color }),
+        looping: action.looping === undefined ? "" : m(" · Loop: {state}", { state: switchState(action.looping) }),
+        muted: action.muted === undefined ? "" : m(" · Mute: {state}", { state: switchState(action.muted) }),
+        color: action.color === undefined ? "" : m(" · Color: {color}", { color: action.color }),
       }) };
     case "set_audio_clip_warp":
       return { title: "Clip Changes", row: m("~ {clip} on {track}{warping}{warpMode}", {
         clip: clipLocation(action), track: trackLabel(action, refLabels),
-        warping: action.warping === undefined ? "" : m(" warping={warping}", { warping: action.warping }),
-        warpMode: action.warpMode ? m(" warpMode={warpMode}", { warpMode: action.warpMode }) : "",
+        warping: action.warping === undefined ? "" : m(" · Warp: {state}", { state: switchState(action.warping) }),
+        warpMode: action.warpMode ? m(" · Warp mode: {warpMode}", { warpMode: action.warpMode }) : "",
       }) };
     case "set_tempo":
       return { title: "Song", row: m("~ Tempo = {tempo} BPM", { tempo: action.tempo }) };
@@ -255,12 +259,12 @@ function actionDiffRow(
     case "set_track_mixer_parameter":
       return { title: "Set Parameters", row: m("~ {track} mixer {parameter} = {value}", {
         track: trackLabel(action, refLabels),
-        parameter: action.parameter === "send" ? `send[${action.sendIndex}]` : action.parameter, value: action.value,
+        parameter: mixerParameterLabel(action), value: action.value,
       }) };
     case "set_chain_mixer_parameter":
       return { title: "Set Parameters", row: m("~ {track} {rackName}{path} chain {chainIndex} mixer {parameter} = {value}", {
         track: trackLabel(action, refLabels), rackName: action.rackName, path: pathSuffix(action.rackPath), chainIndex: action.chainIndex,
-        parameter: action.parameter === "send" ? `send[${action.sendIndex}]` : action.parameter, value: action.value,
+        parameter: mixerParameterLabel(action), value: action.value,
       }) };
     case "delete_clip":
       return { title: "Delete", row: m('- Arrangement clip "{name}" on {track} at beat {startBeat}', {
@@ -293,21 +297,22 @@ function actionDiffRow(
   }
 }
 
-function refSuffix(ref?: string): UiMessage {
-  return ref ? m(" (ref {ref})", { ref }) : "";
-}
-
 function nameSuffix(name?: UiMessage): UiMessage {
   return name ? m(' "{name}"', { name }) : "";
 }
 
 function pathLabel(path: import("../live/device-tree.js").DevicePath): UiMessage {
-  return m("path {path}", { path: JSON.stringify(path) });
+  return path.nested?.length
+    ? m("device {index} → chain/device {positions}", {
+      index: path.deviceIndex,
+      positions: path.nested.map(segment => `${segment.chainIndex}/${segment.deviceIndex}`).join(" → "),
+    })
+    : m("device {index}", { index: path.deviceIndex });
 }
 
 function pathSuffix(path?: import("../live/device-tree.js").DevicePath, index?: number): UiMessage {
-  return path ? m(" {path}", { path: pathLabel(path) })
-    : index === undefined ? "" : m("[{index}]", { index });
+  const location = path ?? (index === undefined ? undefined : { deviceIndex: index });
+  return location ? m(" ({path})", { path: pathLabel(location) }) : "";
 }
 
 function laneLabel(laneIndex: number, laneName?: string): UiMessage {
@@ -335,8 +340,7 @@ function sourceLabel(source: import("../agent/action-schema.js").SampleSource): 
     case "simpler":
       return m("Simpler {deviceName}{path} on {trackName}", {
         deviceName: source.deviceName,
-        path: source.devicePath ? pathSuffix(source.devicePath) : source.deviceIndex === undefined ? ""
-          : m(" at deviceIndex {deviceIndex}", { deviceIndex: source.deviceIndex }),
+        path: pathSuffix(source.devicePath, source.deviceIndex),
         trackName: source.trackName,
       });
   }
@@ -347,14 +351,22 @@ function audioSettingsLabel(action: {
   loopSettings?: import("../agent/action-schema.js").ClipLoopSettingsInput;
 }): UiMessage {
   return m("{warped}{loop}", {
-    warped: action.isWarped === undefined ? "" : m(" warped={isWarped}", { isWarped: action.isWarped }),
+    warped: action.isWarped === undefined ? "" : m(" · Warp: {state}", { state: switchState(action.isWarped) }),
     loop: action.loopSettings
-      ? m(" loop={loopStart}-{loopEnd} markers={startMarker}-{endMarker} looping={looping}", {
+      ? m(" · Loop range: {loopStart}–{loopEnd} · Start/end markers: {startMarker}–{endMarker} · Loop: {state}", {
         loopStart: action.loopSettings.loopStart, loopEnd: action.loopSettings.loopEnd,
         startMarker: action.loopSettings.startMarker, endMarker: action.loopSettings.endMarker,
-        looping: action.loopSettings.looping,
+        state: switchState(action.loopSettings.looping),
       }) : "",
   });
+}
+
+function switchState(enabled: boolean): UiMessage {
+  return m(enabled ? "on" : "off");
+}
+
+function mixerParameterLabel(action: { parameter: "volume" | "panning" | "send"; sendIndex?: number }): UiMessage {
+  return action.parameter === "send" ? m("send {index}", { index: action.sendIndex! }) : m(action.parameter);
 }
 
 function clipLocation(action: {
@@ -375,15 +387,17 @@ function trackLabel(
   if (action.trackRef) {
     const target = refLabels.get(action.trackRef);
     if (target?.role === "return") {
-      return m("Return track index {index}{name} (ref {ref})", {
-        index: target.index!, name: nameSuffix(target.name), ref: action.trackRef,
+      return m("Return track {index}{name}", {
+        index: target.index!, name: nameSuffix(target.name),
       });
     }
     if (target?.role === "main") {
-      return m("Main track{name} (ref {ref})", { name: nameSuffix(target.name), ref: action.trackRef });
+      return m("Main track{name}", { name: nameSuffix(target.name) });
     }
-    if (target?.name) return m('track "{name}" (ref {ref})', { name: target.name, ref: action.trackRef });
-    return m('track ref "{ref}"', { ref: action.trackRef });
+    if (target?.name) return target.createdAtStep === undefined
+      ? m('track "{name}"', { name: target.name })
+      : m('track "{name}" (created in step {step})', { name: target.name, step: target.createdAtStep });
+    return m("unresolved track ({identifier})", { identifier: action.trackRef });
   }
   return action.trackName ? m('track "{name}"', { name: action.trackName }) : m("target track");
 }
