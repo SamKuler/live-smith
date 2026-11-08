@@ -106,14 +106,14 @@
                     <span id="attachmentCapabilityHint" class="attachment-capability-hint" role="status" aria-live="polite" hidden></span>
                   </div>
                 </div>
-                <div class="approval-mode-shell"><label class="approval-mode-label">
+                <label class="approval-mode-label">
                   <span class="approval-mode-copy visually-hidden" data-i18n="Apply">Apply</span>
-                  <select id="approvalMode" name="approvalMode" class="approval-mode-select composer-select composer-control" aria-label="Apply approval mode" aria-describedby="approvalModeHint" onchange="LiveSmithUI.saveApprovalMode()" data-i18n-aria-label="Apply approval mode">
+                  <select id="approvalMode" name="approvalMode" class="approval-mode-select composer-select composer-control action-tooltip" data-tooltip="Manual asks before each edit plan. Low Risk applies lower-risk changes automatically and asks before protected changes. Accept Everything applies every validated change within the edit scope, including deletes and replacement writes." data-i18n-data-tooltip="Manual asks before each edit plan. Low Risk applies lower-risk changes automatically and asks before protected changes. Accept Everything applies every validated change within the edit scope, including deletes and replacement writes." aria-label="Apply approval mode" aria-describedby="approvalModeHint" onchange="LiveSmithUI.saveApprovalMode()" data-i18n-aria-label="Apply approval mode">
                     <option value="manual" data-i18n="Manual">Manual</option>
                     <option value="low-risk" data-i18n="Low Risk">Low Risk</option>
                     <option value="everything" data-i18n="Accept Everything">Accept Everything</option>
                   </select>
-                </label><button id="approvalModeHelp" type="button" class="inline-help" aria-label="Approval mode help" data-tooltip="Manual asks before each edit plan. Low Risk applies lower-risk changes automatically and asks before protected changes. Accept Everything applies every validated change within the edit scope, including deletes and replacement writes." data-i18n-aria-label="Approval mode help" data-i18n-data-tooltip="Manual asks before each edit plan. Low Risk applies lower-risk changes automatically and asks before protected changes. Accept Everything applies every validated change within the edit scope, including deletes and replacement writes.">?</button></div>
+                </label>
                 <div id="editScopeShell" class="edit-scope-shell">
                   <button id="editScopeButton" class="edit-scope-button composer-select composer-control" type="button" aria-label="Edit scope: All scopes" aria-haspopup="dialog" aria-controls="editScopePanel" aria-expanded="false" data-i18n-aria-label="Edit scope: All scopes" data-i18n="All scopes">All scopes</button>
                   <div id="editScopePanel" class="edit-scope-panel floating-surface" role="dialog" aria-labelledby="editScopeHeading" aria-describedby="editScopeSavedSummary" aria-busy="false" hidden>

@@ -44,10 +44,9 @@ test("independent Approval and Scope entries retain accessible inline help and l
     assert.ok(liveControls);
     assert.equal(approval.tagName, "SELECT");
     assert.equal(panel.contains(approval), false);
-    const approvalHelp = control<HTMLButtonElement>(harness, "#approvalModeHelp");
-    approvalHelp.click(); await harness.settle();
+    approval.focus(); await harness.settle();
     assert.equal(control(harness, '[role="tooltip"]').hidden, false);
-    approvalHelp.dispatchEvent(new harness.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    approval.dispatchEvent(new harness.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     assert.deepEqual(commandCalls(harness), []);
     assert.equal(liveControls.querySelectorAll("#approvalMode").length, 1);
     assert.equal(button.textContent, "All scopes");

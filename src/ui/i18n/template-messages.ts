@@ -5,7 +5,6 @@ export const templateMessages: Record<string, string> = {
   "Loading this list does not run any tools.": "加载此列表不会执行工具。",
   "Loaded at {time}.": "加载于 {time}。",
   "File export help": "文件导出说明",
-  "Approval mode help": "审批模式说明",
   "Edit scope help": "编辑范围说明",
   "API family help": "API 协议说明",
   "API key help": "API 密钥说明",

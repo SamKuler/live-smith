@@ -1,6 +1,71 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDialogHarness, stateFixture } from "../support/chat-dialog.test-harness.js";
+import { commandCalls, createDialogHarness, stateFixture, waitForCondition } from "../support/chat-dialog.test-harness.js";
+
+test("approval mode help follows hover and keyboard focus without intercepting the native selection", async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false;
+  const h = await createDialogHarness(state);
+  try {
+    const control = h.document.querySelector<HTMLSelectElement>("#approvalMode")!;
+    control.dispatchEvent(new h.window.MouseEvent("pointerover", { bubbles: true }));
+    await h.settle();
+    const tip = h.document.querySelector<HTMLElement>('[role="tooltip"]')!;
+    assert.ok(tip && !tip.hidden);
+    assert.equal(tip.textContent, control.dataset.tooltip);
+    assert.ok(control.getAttribute("aria-describedby")?.split(/\s+/u).includes(tip.id));
+    control.dispatchEvent(new h.window.MouseEvent("pointerout", { bubbles: true, relatedTarget: h.document.body }));
+    await waitForCondition(() => tip.hidden, "Hover help should close after leaving the control");
+    assert.equal(control.getAttribute("aria-describedby"), "approvalModeHint");
+
+    control.focus(); await h.settle();
+    assert.equal(tip.hidden, false);
+    const arrow = new h.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
+    control.dispatchEvent(arrow);
+    assert.equal(tip.hidden, true);
+    assert.equal(arrow.defaultPrevented, false);
+    h.document.querySelector<HTMLTextAreaElement>("#prompt")!.focus();
+    control.focus(); await h.settle();
+    assert.equal(tip.hidden, false);
+    const pointer = new h.window.MouseEvent("pointerdown", { bubbles: true, cancelable: true });
+    control.dispatchEvent(pointer);
+    assert.equal(tip.hidden, true);
+    assert.equal(pointer.defaultPrevented, false);
+    control.click(); await h.settle();
+    assert.equal(tip.hidden, true);
+    assert.equal(control.value, "manual");
+    assert.deepEqual(commandCalls(h), []);
+    h.select("#approvalMode", "low-risk"); await h.settle();
+    assert.deepEqual(commandCalls(h).at(-1)?.body, {
+      kind: "set_session_approval_mode", sessionId: state.activeSessionId, approvalMode: "low-risk",
+    });
+    assert.equal(control.value, "low-risk");
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("approval hover help changes language while retaining the selector and saved mode", async () => {
+  const state = stateFixture(); state.openSettingsOnLoad = false; state.settings.uiLanguage = "en";
+  const h = await createDialogHarness(state);
+  try {
+    const control = h.document.querySelector<HTMLSelectElement>("#approvalMode")!;
+    control.focus(); await h.settle();
+    const tip = h.document.querySelector<HTMLElement>('[role="tooltip"]')!;
+    assert.ok(tip && !tip.hidden);
+    const english = tip.textContent;
+    h.emitServerEvent({ type: "global_settings_changed", commandId: "peer-language", defaultFollowUpBehavior: state.settings.defaultFollowUpBehavior, defaultFollowUpBehaviorRevision: state.settings.defaultFollowUpBehaviorRevision, showContextUsage: state.settings.showContextUsage, contextUsageVisibilityRevision: state.settings.contextUsageVisibilityRevision, uiLanguage: "zh-CN", uiLanguageRevision: "1" });
+    await h.settle();
+    assert.notEqual(tip.textContent, english);
+    assert.equal(tip.textContent, control.dataset.tooltip);
+    assert.equal(tip.hidden, false);
+    assert.equal(h.document.activeElement, control);
+    assert.equal(control.value, state.approvalMode);
+    control.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    assert.equal(tip.hidden, true);
+    assert.equal(control.getAttribute("aria-describedby"), "approvalModeHint");
+    assert.deepEqual(commandCalls(h), []);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
 
 test("keyboard collapse dismisses pinned help inside a disclosure and retains summary focus", async () => {
   const h = await createDialogHarness(stateFixture());

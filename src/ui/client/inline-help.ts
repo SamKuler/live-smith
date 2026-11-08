@@ -1,18 +1,20 @@
 import { autoUpdate, computePosition, flip, offset, shift, size } from "@floating-ui/dom";
 import { isImeKeyboardEvent } from "./ime-keyboard.js";
 
+type HelpControl = HTMLButtonElement | HTMLSelectElement;
+
 /** One help surface serves both authored fields and dynamically rendered controls. */
 export function createInlineHelp() {
   const tip = document.createElement("div");
   tip.id = "inline-help-content"; tip.className = "inline-help-content";
   tip.setAttribute("role", "tooltip"); tip.hidden = true;
-  let active: HTMLButtonElement | undefined;
+  let active: HelpControl | undefined;
   let pinned = false;
   let pointerInside = false;
   let leaveTimer: number | undefined;
   let stopPositioning: (() => void) | undefined;
-  const buttonAt = (target: EventTarget | null) => target instanceof Element
-    ? target.closest<HTMLButtonElement>("button:is(.inline-help, .action-tooltip)[data-tooltip]") ?? undefined : undefined;
+  const controlAt = (target: EventTarget | null) => target instanceof Element
+    ? target.closest<HelpControl>("button.inline-help[data-tooltip], :is(button, select).action-tooltip[data-tooltip]") ?? undefined : undefined;
   const observer = new MutationObserver(refresh);
 
   function close() {
@@ -49,7 +51,7 @@ export function createInlineHelp() {
     if (tip.textContent !== active.dataset.tooltip) tip.textContent = active.dataset.tooltip;
     position();
   }
-  function open(button: HTMLButtonElement) {
+  function open(button: HelpControl) {
     window.clearTimeout(leaveTimer);
     if (active === button) return;
     close();
@@ -69,7 +71,7 @@ export function createInlineHelp() {
     }, 150);
   }
   function onPointerOver(event: Event) {
-    const button = buttonAt(event.target);
+    const button = controlAt(event.target);
     if (button && (!pinned && document.activeElement !== active)) open(button);
     if ((button && button === active) || tip.contains(event.target as Node)) {
       pointerInside = true;
@@ -82,23 +84,28 @@ export function createInlineHelp() {
     if (next && (active.contains(next) || tip.contains(next))) return;
     pointerInside = false; leave();
   }
-  function onFocusIn(event: FocusEvent) { const button = buttonAt(event.target); if (button) open(button); }
+  function onFocusIn(event: FocusEvent) {
+    const control = controlAt(event.target);
+    if (control && (!(control instanceof HTMLSelectElement) || control.matches(":focus-visible"))) open(control);
+  }
   function onFocusOut(event: FocusEvent) {
     if (active && event.target === active && !pointerInside && !tip.contains(event.relatedTarget as Node | null)) close();
     else leave();
   }
   function onClick(event: MouseEvent) {
-    const button = buttonAt(event.target);
+    const button = controlAt(event.target);
     if (!button) return;
     if (button.classList.contains("action-tooltip")) { if (active === button) close(); return; }
     if (active === button && pinned) close();
     else { open(button); pinned = true; }
   }
   function onOutside(event: PointerEvent) {
+    if (active instanceof HTMLSelectElement && active === controlAt(event.target)) { close(); return; }
     if (active && !active.contains(event.target as Node) && !tip.contains(event.target as Node)) close();
   }
   function onKey(event: KeyboardEvent) {
     if (isImeKeyboardEvent(event)) return;
+    if (active instanceof HTMLSelectElement && event.key !== "Escape") { close(); return; }
     if (event.key === "Escape" && active) { close(); event.preventDefault(); event.stopImmediatePropagation(); }
   }
   document.addEventListener("pointerover", onPointerOver);

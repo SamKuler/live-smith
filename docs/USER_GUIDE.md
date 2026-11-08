@@ -379,8 +379,9 @@ jobs and provider-specific limits. See [saved results and recovery](MODEL_PROVID
 
 Each Session has separate **Approval** and **Edit Scope** controls in the
 composer, initially labelled **Manual** and **All scopes**. Changes save
-immediately. The **?** hints inside Scope explain the less obvious category
-boundaries.
+immediately. Hover over the Approval selector or focus it with the keyboard to
+read the mode explanations. The **?** hints inside Scope explain the less
+obvious category boundaries.
 
 | Edit Scope | Allowed changes |
 | --- | --- |

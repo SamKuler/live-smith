@@ -3361,6 +3361,5 @@ input.piano-roll-position[hidden] { display: none; }
 .audio-results-heading { margin-bottom: 8px; }
 .audio-results-heading > span { margin: 0; font-size: 12px; }
 
-.approval-mode-shell { display: inline-flex; align-items: center; gap: 0; }
 .approval-mode-hint { margin: 4px 0 0; color: var(--color-muted); font-size: 11px; line-height: 1.5; }
 .context-card pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
