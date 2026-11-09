@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -30,17 +31,20 @@ async function waitFor<T>(read: () => T | undefined): Promise<T> {
 }
 const input = { sessionId: "session-one", artifact: { kind: "midi" as const, id: "midi-one" } };
 
-test("native chat stages the bundled Live Smith app for launch", async () => {
+test("native chat stages and removes its bundled app within the host temporary directory", async t => {
+  const temporaryDirectory = await fs.mkdtemp(path.join(tmpdir(), "native-chat-host-"));
+  t.after(() => fs.rm(temporaryDirectory, { recursive: true, force: true }));
   const bundledCapsule = await fs.readFile(new URL("../../src/runtime/native/chat-capsule.json", import.meta.url), "utf8");
   const p = processFixture();
   let executable = "";
   const host = createNativeChatHost({
-    platform: "darwin", osRelease: "23.0.0", capsule: bundledCapsule,
+    platform: "darwin", osRelease: "23.0.0", capsule: bundledCapsule, temporaryDirectory,
     launch: file => { executable = file; return p.child as unknown as ChildProcessWithoutNullStreams; }
   });
   const window = await host.open({ url, prepareArtifact: async () => { throw new Error("Unexpected drag request"); } });
   try {
     const app = path.join(executable, "..", "..", "..");
+    assert.equal(path.dirname(path.dirname(app)), temporaryDirectory);
     assert.equal(path.basename(app), "Live Smith.app");
     assert.equal(path.relative(app, executable), path.join("Contents", "MacOS", "Live Smith"));
     assert.ok((await fs.stat(executable)).isFile());
@@ -48,6 +52,7 @@ test("native chat stages the bundled Live Smith app for launch", async () => {
     window.close();
     await window.closed;
   }
+  assert.deepEqual(await fs.readdir(temporaryDirectory), []);
 });
 
 test("native preparation reuses one copy and keeps a claimed file after chat shutdown", async t => {

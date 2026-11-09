@@ -5,7 +5,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 
 /** Only the exact executable, plist and signature from the build capsule are staged. */
-export async function stageNativeApp(capsule: string, name: string, prefix: string) {
+export async function stageNativeApp(capsule: string, name: string, prefix: string, temporaryDirectory?: string) {
   const paths = [`Contents/MacOS/${name}`, "Contents/Info.plist", "Contents/_CodeSignature/CodeResources"];
   const data = JSON.parse(capsule) as { version: unknown; files: Array<{ path: string; base64: string; sha256: string }> };
   if (data.version !== 1 || !Array.isArray(data.files) || data.files.length !== paths.length) throw new Error("Invalid native application capsule.");
@@ -15,7 +15,7 @@ export async function stageNativeApp(capsule: string, name: string, prefix: stri
     if (createHash("sha256").update(bytes).digest("hex") !== file.sha256) throw new Error("Invalid native application capsule.");
     return bytes;
   });
-  const directory = await fs.mkdtemp(path.join(tmpdir(), prefix));
+  const directory = await fs.mkdtemp(path.join(temporaryDirectory ?? tmpdir(), prefix));
   const app = path.join(directory, `${name}.app`);
   const dispose = () => fs.rm(directory, { recursive: true, force: true });
   try {

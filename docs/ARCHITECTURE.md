@@ -3601,6 +3601,9 @@ future invocations. Browser documents hide the modal Close control.
 `NativeChatCancelledError`，控制器随后正常结束本次打开。原生程序不可用或启动失败时，
 控制器打开 Live 模态对话框，保留偏好设置入口。
 
+原生聊天与 Suno 验证程序由 `runtime/native-app.ts` 解包到
+`environment.tempDirectory` 下的私有目录，沿用 Extension Host 的文件访问授权。
+
 Extension Host 仍在运行时，关闭窗口会释放聊天运行时，并由宿主清理临时程序包。
 Extension Host 意外退出时，原生应用在进程管道关闭或检测到父进程变化后退出。
 宿主清理流程可能来不及运行，留下临时程序包及未领取的准备副本。该清理流程依赖

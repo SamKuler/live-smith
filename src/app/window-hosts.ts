@@ -17,7 +17,9 @@ type WindowDependencies = AgentFlowDependencies & { openBrowser?: (url: string) 
 /** One activation owns one browser runtime; invocation changes are serialized. */
 export function createWindowHostController(context: Api, dependencies: WindowDependencies = {}) {
   const openBrowser = dependencies.openBrowser ?? createSystemBrowserOpener({ allowLoopbackHttp: true });
-  const nativeHost = dependencies.nativeChatHost ?? createNativeChatHost();
+  const nativeHost = dependencies.nativeChatHost ?? createNativeChatHost({
+    ...(context.environment?.tempDirectory === undefined ? {} : { temporaryDirectory: context.environment.tempDirectory }),
+  });
   const nativeOperations = new Set<{ controller: AbortController; done: Promise<void> }>();
   let browser: { key: string; projectKey: string; runtime: AgentRuntime } | undefined;
   let tail: Promise<unknown> = Promise.resolve();

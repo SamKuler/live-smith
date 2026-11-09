@@ -384,7 +384,9 @@ export async function createAgentRuntime(
     dependencies.verifySunoSession ?? createSunoSessionVerifier(providerFetch));
   const sunoModelCatalog = new SunoModelCatalog(storageDirectory, providerFetch, dependencies.readSunoMusicService);
   let bridge: Awaited<ReturnType<typeof createChatBridge>> | undefined;
-  const nativeChatHost = dependencies.nativeChatHost ?? createNativeChatHost();
+  const nativeChatHost = dependencies.nativeChatHost ?? createNativeChatHost({
+    ...(context.environment?.tempDirectory === undefined ? {} : { temporaryDirectory: context.environment.tempDirectory }),
+  });
   const attachmentOpener = createAttachmentOpener({
     ...(context.environment?.tempDirectory === undefined ? {} : { temporaryDirectory: context.environment.tempDirectory }),
   });

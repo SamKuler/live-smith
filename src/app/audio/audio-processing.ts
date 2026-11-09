@@ -38,6 +38,7 @@ export interface AudioProcessingSnapshot {
 
 export interface AudioProcessingContext {
   storageDirectory: string | undefined;
+  temporaryDirectory?: string;
   sessionId: string;
   signal: AbortSignal;
   /** Selected artifact captured at send admission, before any asynchronous work. */

@@ -17,6 +17,7 @@ export interface NativeSunoVerificationOptions {
   interfaceLanguage: string;
   networkProxy: NetworkProxySettings;
   connectionName: string;
+  temporaryDirectory?: string;
 }
 interface NativeCommandOptions {
   signal: AbortSignal;
@@ -47,7 +48,7 @@ export function createSunoHumanVerifier(options: VerifierOptions = {}) {
       if (platform !== "darwin") throw new SunoVerificationError("unsupported-platform");
       if (request.captchaVersion !== 1 && request.captchaVersion !== 2) throw new SunoVerificationError("invalid-request");
       const networkProxy = normalizeNetworkProxySettings(request.networkProxy);
-      app = await stageNativeApp(capsule, "SunoVerification", "live-smith-verification-");
+      app = await stageNativeApp(capsule, "SunoVerification", "live-smith-verification-", request.temporaryDirectory);
       if (networkProxy.mode === "none") direct = await createNativeVerificationDirectProxy(request.signal);
       active(request.signal);
       const input = JSON.stringify({ protocol: 1, captchaVersion: request.captchaVersion,
@@ -56,7 +57,8 @@ export function createSunoHumanVerifier(options: VerifierOptions = {}) {
         connectionName: String(request.connectionName).replace(/[\u0000-\u001f\u007f]/gu, "").slice(0, 100),
       });
       const output = await run(app.executable, input, {
-        signal: request.signal, timeout: 10 * 60_000, maxBuffer: 65_536, encoding: "utf8", env: {},
+        signal: request.signal, timeout: 10 * 60_000, maxBuffer: 65_536, encoding: "utf8",
+        env: request.temporaryDirectory === undefined ? {} : { LIVE_SMITH_VERIFIER_TEMP_ROOT: request.temporaryDirectory },
       });
       active(request.signal);
       if (Buffer.byteLength(output) > 65_536) throw new SunoVerificationError("invalid-result");

@@ -24,6 +24,7 @@ export interface NativeChatHost {
 }
 interface Options {
   platform?: NodeJS.Platform; osRelease?: string; capsule?: string;
+  temporaryDirectory?: string;
   launch?: (executable: string) => ChildProcessWithoutNullStreams;
 }
 const failure = () => new Error("The separate window could not open. Try again or choose System browser in App Preferences.");
@@ -40,7 +41,7 @@ export function createNativeChatHost(options: Options = {}): NativeChatHost {
       if (!supported) throw new Error("Native chat requires macOS 14 or later. Choose Live dialog or System browser.");
       const url = new URL(input.url);
       if (url.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(url.hostname) || url.pathname !== "/chat" || !url.searchParams.get("token") || url.username || url.password) throw failure();
-      const app = await stageNativeApp(capsule, "Live Smith", "live-smith-native-chat-").catch(() => { throw failure(); });
+      const app = await stageNativeApp(capsule, "Live Smith", "live-smith-native-chat-", options.temporaryDirectory).catch(() => { throw failure(); });
       try { throwIfAborted(input.signal); } catch (error) { await app.dispose(); throw error; }
       const controller = createHostAbortController();
       const entries = new Map<string, { token: string; claimed: boolean; prepared: Promise<NativeDragFile> }>();

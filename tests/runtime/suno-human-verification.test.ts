@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import { createHostAbortController } from "../../src/runtime/host.js";
 import { createSunoHumanVerifier } from "../../src/runtime/suno-human-verification.js";
@@ -14,11 +15,14 @@ const proof = { type: "verified", captchaVersion: 2, token: "PRIVATE_CALLBACK_CA
 const options = () => ({ captchaVersion: 2 as const, signal: createHostAbortController().signal,
   interfaceLanguage: "zh-CN", networkProxy: { mode: "manual" as const, url: "http://127.0.0.1:7897" }, connectionName: "My Suno" });
 
-test("native invocation uses a fixed staged executable, private stdin, no arguments or inherited credentials", async () => {
+test("native invocation stages under the host temporary directory and uses a private stdin exchange", async (t) => {
+  const temporaryDirectory = await fs.mkdtemp("/private/tmp/live-smith-suno-host-");
+  t.after(() => fs.rm(temporaryDirectory, { recursive: true, force: true }));
   let directory = "";
   const verify = createSunoHumanVerifier({ platform: "darwin", capsule, styles: "compiled-own-style", run: async (executable, input, command) => {
     assert.ok(executable.endsWith("SunoVerification.app/Contents/MacOS/SunoVerification"));
     directory = executable.slice(0, executable.indexOf("/SunoVerification.app/"));
+    assert.equal(path.dirname(directory), temporaryDirectory);
     assert.equal((await fs.stat(directory)).mode & 0o777, 0o700);
     const request = JSON.parse(input);
     assert.equal(request.protocol, 1);
@@ -27,15 +31,15 @@ test("native invocation uses a fixed staged executable, private stdin, no argume
     assert.deepEqual(Object.keys(request).sort(), ["captchaVersion", "connectionName", "networkProxy", "protocol", "script"]);
     assert.equal(request.script.includes("compiled-own-style"), true);
     assert.equal(command.signal.aborted, false);
-    assert.deepEqual(command.env, {});
+    assert.deepEqual(command.env, { LIVE_SMITH_VERIFIER_TEMP_ROOT: temporaryDirectory });
     assert.equal(command.maxBuffer, 65536);
     assert.equal(command.timeout, 600000);
     return JSON.stringify(proof);
   } });
-  const result = await verify(options());
+  const result = await verify({ ...options(), temporaryDirectory });
   assert.equal(result.token, proof.token);
   assert.deepEqual(Object.keys(result).sort(), ["captchaVersion", "issuedAtMs", "token"]);
-  await assert.rejects(fs.stat(directory));
+  await assert.rejects(fs.stat(directory), { code: "ENOENT" });
 });
 
 test("untrusted native output or command errors never expose tokens, private causes or stderr", async () => {

@@ -85,7 +85,9 @@ export function createAppSunoGenerationAdapter(
       };
       await context.onProgress?.(m("Complete Suno verification in the Live Smith window"));
       const result = await verify({ captchaVersion, signal, networkProxy: lease.selection,
-        interfaceLanguage: saved.uiLanguage, connectionName: settings.name });
+        interfaceLanguage: saved.uiLanguage, connectionName: settings.name,
+        ...(context.temporaryDirectory === undefined ? {} : { temporaryDirectory: context.temporaryDirectory }),
+      });
       await validateLease(signal);
       proof = result;
       return result;

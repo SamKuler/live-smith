@@ -2,6 +2,7 @@
 #import <WebKit/WebKit.h>
 #import <Network/Network.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -11,14 +12,17 @@
 static NSString *capsuleAppPath;
 
 static void removeOwnCapsule(void) {
-  // Executable identity and the Darwin user temp directory are available even
-  // before AppKit initializes its bundle/environment metadata.
   NSString *app = capsuleAppPath;
   NSString *stage = app.stringByDeletingLastPathComponent;
+  // The launcher passes its staging root when running inside the extension host.
+  const char *root = getenv("LIVE_SMITH_VERIFIER_TEMP_ROOT");
   char temp[PATH_MAX];
-  size_t tempSize = confstr(_CS_DARWIN_USER_TEMP_DIR, temp, sizeof(temp));
-  if (!app || !tempSize || tempSize > sizeof(temp)) return;
-  NSString *temporary = [NSString stringWithUTF8String:temp].stringByResolvingSymlinksInPath;
+  if (!root) {
+    size_t tempSize = confstr(_CS_DARWIN_USER_TEMP_DIR, temp, sizeof(temp));
+    if (!tempSize || tempSize > sizeof(temp)) return;
+    root = temp;
+  }
+  NSString *temporary = [NSString stringWithUTF8String:root].stringByResolvingSymlinksInPath;
   if (![app.lastPathComponent isEqualToString:@"SunoVerification.app"] ||
       ![stage.lastPathComponent hasPrefix:@"live-smith-verification-"] ||
       ![stage.stringByDeletingLastPathComponent.stringByResolvingSymlinksInPath isEqualToString:temporary]) return;

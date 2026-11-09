@@ -97,10 +97,12 @@ export async function createRequestAudioTools(input: {
   };
   await registerAssets(audioAssetsFromJobs(jobs));
   await registerAssets(await listPluginAudioArtifacts(input.storageDirectory, input.sessionId));
+  const temporaryDirectory = input.context.environment?.tempDirectory;
   const processing: AudioProcessingContext = {
     storageDirectory: input.storageDirectory, sessionId: input.sessionId,
     signal: input.signal, onProgress: input.onProgress, ...input.processing,
     admittedConnections,
+    ...(temporaryDirectory === undefined ? {} : { temporaryDirectory }),
     ...(input.artifactSource ? { artifactSource: { ...input.artifactSource } } : {}),
     ...(input.withGenerationAuthorization ? { withGenerationAuthorization: input.withGenerationAuthorization } : {}),
   };

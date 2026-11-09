@@ -1,6 +1,7 @@
 import { formatUiMessage } from "../../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import { createHostAbortController } from "../../../../src/runtime/host.js";
 import { createSession } from "../../../../src/storage/sessions.js";
@@ -31,7 +32,8 @@ async function harness(t: { after(fn: () => Promise<void>): void }) {
   const controller = createHostAbortController();
   const progress: string[] = [];
   const fence = new SessionMutationFence();
-  const context = { storageDirectory: directory, sessionId: chat.id, signal: controller.signal,
+  const context = { storageDirectory: directory, temporaryDirectory: path.join(directory, "host-temp"),
+    sessionId: chat.id, signal: controller.signal,
     onProgress: (message: string) => { progress.push(message); },
     withGenerationAuthorization: <T>(signal: AbortSignal, operation: () => Promise<T>) => fence.run("settings", signal, operation),
   };
@@ -52,7 +54,8 @@ test("the production Suno factory privately continues one request, persists rece
     assert.equal(options.captchaVersion, 2);
     assert.equal(options.signal, h.controller.signal);
     assert.equal(options.connectionName, connection.name);
-    assert.deepEqual(Object.keys(options).sort(), ["captchaVersion", "connectionName", "interfaceLanguage", "networkProxy", "signal"]);
+    assert.equal(options.temporaryDirectory, h.context.temporaryDirectory);
+    assert.deepEqual(Object.keys(options).sort(), ["captchaVersion", "connectionName", "interfaceLanguage", "networkProxy", "signal", "temporaryDirectory"]);
     assert.ok(!JSON.stringify(options).includes(sunoSession.clientToken));
     assert.equal(wire.api().length, 2);
     return { captchaVersion: 2, token: secret, issuedAtMs: Date.now() };
