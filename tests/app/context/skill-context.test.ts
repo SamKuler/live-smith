@@ -12,6 +12,7 @@ import {
   resolveSkillContext,
   skillMentionCandidates,
 } from "../../../src/app/context/skill-context.js";
+import { readStoredBytes, writeStoredBytes } from "../../../src/storage/sqlite.js";
 import { deleteInstalledSkill, installSkill } from "../../../src/storage/skills.js";
 import { installPlugin, setPluginEnabled } from "../../../src/storage/plugins.js";
 
@@ -305,8 +306,8 @@ test("skill context reads only selected bodies and names safe unavailable IDs", 
     "inactive-review",
     "SKILL.md",
   );
-  const inactiveBytes = await fs.readFile(inactiveTarget);
-  await fs.writeFile(inactiveTarget, Buffer.alloc(inactiveBytes.byteLength, 0x78));
+  const inactiveBytes = await readStoredBytes(directory, inactiveTarget);
+  await writeStoredBytes(directory, inactiveTarget, Buffer.alloc(inactiveBytes.byteLength, 0x78));
 
   assert.deepEqual(
     (await resolveSkillContext({

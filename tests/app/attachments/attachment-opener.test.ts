@@ -1,3 +1,4 @@
+import { readStoredBytes } from "../../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import * as fs from "node:fs/promises";
@@ -67,7 +68,7 @@ test("the default application receives a private MIME-named copy, and edits surv
   await fs.writeFile(target, "Edited in the default application.");
   await opener.open(await readSessionAttachment(input.storageDirectory, "session-open", input.value.attachment.id));
   assert.deepEqual(opened, [target, target]);
-  assert.deepEqual(new Uint8Array(await fs.readFile(input.blob)), input.value.bytes);
+  assert.deepEqual(new Uint8Array(await readStoredBytes(input.storageDirectory, input.blob)), input.value.bytes);
   assert.equal(await fs.readFile(target, "utf8"), "Edited in the default application.");
   assert.equal((await fs.readdir(input.temporaryDirectory)).length, 1);
   assert.equal((await fs.readdir(path.dirname(target))).length, 1);
@@ -198,4 +199,32 @@ test("close preserves a copy while the external handler is still opening it", as
   await pending;
   assert.ok(target);
   assert.deepEqual(new Uint8Array(await fs.readFile(target)), input.value.bytes);
+});
+
+test("streamed attachments retain dispatched edits and remove failed copies", async t => {
+  const input = await fixture(t);
+  const { sessionAttachmentExport } = await import("../../../src/storage/attachments.js");
+  const file = await sessionAttachmentExport(input.storageDirectory, "session-open", input.value.attachment.id);
+  const opened: string[] = [];
+  const opener = createAttachmentOpener({
+    platform: "darwin", temporaryDirectory: input.temporaryDirectory,
+    runOpenCommand: async (_executable, args) => { opened.push(args[0]!); },
+  });
+  await opener.open({ attachment: input.value.attachment, file });
+  assert.deepEqual(new Uint8Array(await fs.readFile(opened[0]!)), input.value.bytes);
+  await fs.writeFile(opened[0]!, "edited");
+  await opener.open({ attachment: input.value.attachment, file });
+  opener.close();
+  assert.deepEqual(opened, [opened[0], opened[0]]);
+  assert.equal(await fs.readFile(opened[0]!, "utf8"), "edited");
+
+  const failing = createAttachmentOpener({
+    platform: "darwin", temporaryDirectory: input.temporaryDirectory,
+    runOpenCommand: async () => assert.fail("Failed streaming must not dispatch."),
+  });
+  await assert.rejects(failing.open({
+    attachment: input.value.attachment,
+    file: { ...file, async open() { throw new Error("unavailable"); } },
+  }), /could not be opened/);
+  failing.close();
 });

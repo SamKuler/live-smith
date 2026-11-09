@@ -1,5 +1,6 @@
+import { writeStoredTestFile } from "./support/stored-media-test-helpers.js";
+import { readStoredText, storedEntry, removeStoredEntry } from "../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
@@ -28,7 +29,7 @@ test("jobs persist complete host metadata with independent returned snapshots an
     { pluginId: loaded.pluginId, toolId: loaded.toolId, toolVersion: loaded.toolVersion },
     { pluginId: "live-smith.lalal", toolId: "separate_stems", toolVersion: "1" },
   );
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(h.directory, `${h.job.id}.job.json`), "utf8")), loaded);
+  assert.deepEqual(JSON.parse(await readStoredText(h.storage, path.join(h.directory, `${h.job.id}.job.json`))), loaded);
   loaded.stems.length = 0;
   assert.deepEqual((await loadAudioJob(h.storage, h.session.id, h.job.id)).stems, ["vocals", "drums"]);
   assert.equal((await listAudioJobs(h.storage, h.session.id)).length, 1);
@@ -53,7 +54,7 @@ test("writing a job promotes only its existing transient Session", async (t) => 
   const selected = await createSession(h.storage, sessionInput, { transient: true });
   const unrelated = await createSession(h.storage, sessionInput, { transient: true });
   await createAudioJob(h.storage, selected.id, { ...separationJobInput, stems: ["bass"] });
-  const saved = JSON.parse(await fs.readFile(path.join(h.storage, "live-smith-sessions.json"), "utf8")) as { id: string }[];
+  const saved = JSON.parse(await readStoredText(h.storage, path.join(h.storage, "live-smith-sessions.json"))) as { id: string }[];
   assert.ok(saved.some((session) => session.id === selected.id));
   assert.ok(!saved.some((session) => session.id === unrelated.id));
 });
@@ -96,7 +97,7 @@ test("job IDs and asset references cannot cross Session or job ownership", async
 test("strict bounded job metadata rejects corrupt reads and invalid writes without replacing saved state", async (t) => {
   const h = await audioStorageHarness(t);
   const target = path.join(h.directory, `${h.job.id}.job.json`);
-  const initial = await fs.readFile(target, "utf8");
+  const initial = await readStoredText(h.storage, target);
   for (const update of [
     { status: "invented" }, { message: "x".repeat(MAX_AUDIO_JOB_METADATA_BYTES) },
     { apiKey: "not-a-real-key" }, { remoteTaskId: "https://example.test/task?token=private" },
@@ -106,7 +107,7 @@ test("strict bounded job metadata rejects corrupt reads and invalid writes witho
     { id: "other-job" }, { sessionId: "other-session" },
   ]) {
     await assert.rejects(updateAudioJob(h.storage, h.session.id, h.job.id, update as never));
-    assert.equal(await fs.readFile(target, "utf8"), initial);
+    assert.equal(await readStoredText(h.storage, target), initial);
   }
   for (const mutated of [
     { ...h.job, provider: "other" }, { ...h.job, stems: ["vocals", "vocals"] },
@@ -116,15 +117,14 @@ test("strict bounded job metadata rejects corrupt reads and invalid writes witho
     await overwriteJson(target, mutated);
     await assert.rejects(listAudioJobs(h.storage, h.session.id), AudioStorageError);
     await assert.rejects(updateAudioJob(h.storage, h.session.id, h.job.id, { status: "failed" }), AudioStorageError);
-    assert.deepEqual(JSON.parse(await fs.readFile(target, "utf8")), mutated);
+    assert.deepEqual(JSON.parse(await readStoredText(h.storage, target)), mutated);
   }
-  await fs.writeFile(target, " ".repeat(MAX_AUDIO_JOB_METADATA_BYTES + 1));
+  await writeStoredTestFile(h.storage, target, " ".repeat(MAX_AUDIO_JOB_METADATA_BYTES + 1));
   await assert.rejects(loadAudioJob(h.storage, h.session.id, h.job.id), AudioStorageError);
-  await fs.writeFile(target, "{incomplete");
+  await writeStoredTestFile(h.storage, target, "{incomplete");
   await assert.rejects(loadAudioJob(h.storage, h.session.id, h.job.id), AudioStorageError);
   await overwriteJson(target, h.job);
-  await fs.rename(target, `${target}.original`);
-  await fs.symlink(`${target}.original`, target);
+  await removeStoredEntry(h.storage, target);
   await assert.rejects(loadAudioJob(h.storage, h.session.id, h.job.id), AudioStorageError);
 });
 
@@ -171,8 +171,8 @@ test("legacy LALAL jobs normalize the service ID without rewriting until an auth
   } = current;
   const target = path.join(h.directory, `${h.job.id}.job.json`);
   await overwriteJson(target, legacy);
-  const raw = await fs.readFile(target, "utf8");
-  const before = await fs.stat(target);
+  const raw = await readStoredText(h.storage, target);
+  const before = await storedEntry(h.storage, target);
   const expected = {
     ...legacy,
     serviceId: LEGACY_AUDIO_SERVICE_ID,
@@ -182,13 +182,13 @@ test("legacy LALAL jobs normalize the service ID without rewriting until an auth
   };
   assert.deepEqual(await loadAudioJob(h.storage, h.session.id, h.job.id), expected);
   assert.deepEqual(await listAudioJobs(h.storage, h.session.id), [expected]);
-  assert.equal(await fs.readFile(target, "utf8"), raw);
-  assert.equal((await fs.stat(target)).mtimeMs, before.mtimeMs);
-  assert.equal((await fs.stat(target)).ino, before.ino);
+  assert.equal(await readStoredText(h.storage, target), raw);
+  assert.equal((await storedEntry(h.storage, target))!.revision, before!.revision);
+  assert.equal((await storedEntry(h.storage, target))!.revision, before!.revision);
   const updated = await updateAudioJob(h.storage, h.session.id, h.job.id, { status: "completed" });
   assert.equal(updated.serviceId, LEGACY_AUDIO_SERVICE_ID);
   assert.deepEqual(updated.outputAssets, [output]);
-  assert.deepEqual(JSON.parse(await fs.readFile(target, "utf8")), updated);
+  assert.deepEqual(JSON.parse(await readStoredText(h.storage, target)), updated);
 });
 
 test("job creation and persisted reads reject incompatible providers, operations, stems and connection metadata", async (t) => {
@@ -218,7 +218,7 @@ test("job creation and persisted reads reject incompatible providers, operations
     await assert.rejects(loadAudioJob(h.storage, h.session.id, h.job.id), AudioStorageError);
     await assert.rejects(listAudioJobs(h.storage, h.session.id), AudioStorageError);
     await assert.rejects(updateAudioJob(h.storage, h.session.id, h.job.id, { status: "failed" }), AudioStorageError);
-    assert.deepEqual(JSON.parse(await fs.readFile(target, "utf8")), invalid);
+    assert.deepEqual(JSON.parse(await readStoredText(h.storage, target)), invalid);
   }
 });
 
@@ -248,18 +248,18 @@ test("generation jobs reject source fields and never inherit a missing legacy se
   for (const { input } of generationJobCases) {
     const h = await audioStorageHarness(t, input);
     const target = path.join(h.directory, `${h.job.id}.job.json`);
-    const original = await fs.readFile(target, "utf8");
+    const original = await readStoredText(h.storage, target);
     for (const patch of [{ sourceAssetId: "source_1" }, { remoteSourceId: "source_1" }]) {
       await assert.rejects(updateAudioJob(h.storage, h.session.id, h.job.id, patch), AudioStorageError);
-      assert.equal(await fs.readFile(target, "utf8"), original);
+      assert.equal(await readStoredText(h.storage, target), original);
       await overwriteJson(target, { ...h.job, ...patch });
       await assert.rejects(loadAudioJob(h.storage, h.session.id, h.job.id), AudioStorageError);
-      await fs.writeFile(target, original);
+      await writeStoredTestFile(h.storage, target, original);
     }
     const { serviceId: _, ...missingService } = h.job;
     await overwriteJson(target, missingService);
     await assert.rejects(listAudioJobs(h.storage, h.session.id), AudioStorageError);
-    assert.deepEqual(JSON.parse(await fs.readFile(target, "utf8")), missingService);
+    assert.deepEqual(JSON.parse(await readStoredText(h.storage, target)), missingService);
   }
 });
 

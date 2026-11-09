@@ -1,19 +1,23 @@
+import { pipeline } from "node:stream/promises";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
 import { ATTACHMENT_FORMATS } from "../../attachments/contracts.js";
-import { throwIfAborted } from "../../runtime/host.js";
+import { createHostAbortController, throwIfAborted } from "../../runtime/host.js";
 import { createSystemOpener, type SystemOpenerOptions } from "../../runtime/system-open.js";
-import type { ReadSessionAttachmentResult } from "../../storage/attachments.js";
+import type { ReadSessionAttachmentResult, SessionAttachmentRef } from "../../storage/attachments.js";
+import type { SessionFileExport } from "../../storage/file-export.js";
 import { createStorageId } from "../../storage/id.js";
 
 export interface AttachmentOpenerOptions extends SystemOpenerOptions {
   temporaryDirectory?: string;
 }
 
+export type AttachmentOpenValue = ReadSessionAttachmentResult | { attachment: SessionAttachmentRef; file: SessionFileExport };
+
 export interface AttachmentOpener {
-  open(value: ReadSessionAttachmentResult, signal?: AbortSignal): Promise<void>;
+  open(value: AttachmentOpenValue, signal?: AbortSignal): Promise<void>;
   close(): void;
 }
 
@@ -43,18 +47,26 @@ export function createAttachmentOpener(
     }
   }
 
-  async function createCopy(bytes: Uint8Array, extension: string): Promise<string> {
+  async function createCopy(value: AttachmentOpenValue, extension: string, signal?: AbortSignal): Promise<string> {
     let target: string | undefined;
     let created = false;
     try {
       directory ??= await createDirectory();
       target = path.join(directory, `${createStorageId("attachment")}.${extension}`);
-      const handle = await fs.open(target, "wx", 0o600);
-      created = true;
-      try {
-        await handle.writeFile(bytes);
-      } finally {
-        await handle.close();
+      if ("file" in value) {
+        if (value.file.byteLength !== value.attachment.byteLength || value.file.mediaType !== value.attachment.mediaType || value.file.fileName !== value.attachment.fileName) throw new Error("Attachment identity mismatch.");
+        const stream = await value.file.open(signal ?? createHostAbortController().signal);
+        let handle;
+        try { handle = await fs.open(target, "wx", 0o600); }
+        catch (error) { stream.destroy(); throw error; }
+        created = true;
+        const destination = handle.createWriteStream();
+        if (signal) await pipeline(stream, destination, { signal });
+        else await pipeline(stream, destination);
+      } else {
+        const handle = await fs.open(target, "wx", 0o600);
+        created = true;
+        try { await handle.writeFile(value.bytes); } finally { await handle.close(); }
       }
       return target;
     } catch {
@@ -83,7 +95,7 @@ export function createAttachmentOpener(
       let dispatched = false;
       try {
         if (target === undefined) {
-          target = await createCopy(value.bytes, format.extensions[0]);
+          target = await createCopy(value, format.extensions[0], signal);
           created = true;
         }
         active(signal);

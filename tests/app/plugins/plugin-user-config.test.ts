@@ -2,7 +2,7 @@ import { openBridgeEvents, readEvent } from "../chat/support/bridge-events.js";
 import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { fstatSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -290,21 +290,15 @@ test("saved configuration reaches selected Skill instructions and a real MCP pro
 
 test("a configuration durability failure reports an unknown outcome with the readable committed revision", { timeout: 10_000 }, async (t) => {
   const { directory, plugin } = await fixture(t);
-  const packageDirectory = path.join(directory, "live-smith-plugins", "packages", pluginId);
-  const handle = await fs.open(packageDirectory, "r");
-  const identity = await handle.stat();
-  const prototype = Object.getPrototypeOf(handle) as fs.FileHandle;
-  const sync = prototype.sync;
-  await handle.close();
+  const exec = DatabaseSync.prototype.exec;
   let armed = false;
   let injected = false;
-  t.mock.method(prototype, "sync", async function (this: fs.FileHandle) {
-    const current = fstatSync(this.fd);
-    if (armed && !injected && current.dev === identity.dev && current.ino === identity.ino) {
+  t.mock.method(DatabaseSync.prototype, "exec", function (this: DatabaseSync, sql: string) {
+    exec.call(this, sql);
+    if (armed && !injected && sql === "COMMIT") {
       injected = true;
-      throw new Error("Injected directory durability failure.");
+      throw new Error("Injected configuration commit acknowledgement failure.");
     }
-    return sync.call(this);
   });
   await withFlow(directory, async (bridge) => {
     const stream = await collectEvents(bridge);

@@ -1,6 +1,6 @@
+import { writeStoredTestFile } from "../../../storage/support/stored-media-test-helpers.js";
 import assert from "node:assert/strict";
-import { fstatSync } from "node:fs";
-import * as fs from "node:fs/promises";
+import fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { TestContext } from "node:test";
@@ -18,7 +18,7 @@ import { createChatBridge, ChatBridgeSendFailureError, type PromptPersistence } 
 import { liveContextPresentationFixture } from "../../context/support/live-context.test-harness.js";
 import { runtimeProfileForSavedProfile } from "../../../../src/app/model/model-request.js";
 
-type ReceiptScenario = "audio-stop" | "commit-stop" | "corrupt-audio" |
+type ReceiptScenario = "initialization-stop" | "commit-stop" | "corrupt-audio" |
   "reject-commit" | "unknown-visible" | "unknown-absent" | "success";
 
 function deferred() {
@@ -58,29 +58,12 @@ export async function requestReceiptHarness(t: TestContext, scenario: ReceiptSce
   const sendFinished = deferred();
   const buildState = async () => ({ ...state, events: await loadSessionEvents(storage, session.id) });
   let jobPath: string | undefined;
-  if (scenario === "audio-stop" || scenario === "corrupt-audio") {
+  if (scenario === "initialization-stop" || scenario === "corrupt-audio") {
     const job = await createAudioJob(storage, session.id, {
       provider: "elevenlabs", serviceId: "fixture-service", operation: "generate_music",
       connectionFingerprint: "a".repeat(64), stems: [],
     });
     jobPath = path.join(storage, "live-smith-audio", session.id, `${job.id}.job.json`);
-  }
-  if (scenario === "audio-stop") {
-    const probe = await fs.open(jobPath!);
-    const identity = await probe.stat();
-    const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
-    const read = prototype.read;
-    await probe.close();
-    let held = false;
-    t.mock.method(prototype, "read", async function (this: fs.FileHandle, ...args: unknown[]) {
-      const actual = fstatSync(this.fd);
-      if (!held && actual.dev === identity.dev && actual.ino === identity.ino) {
-        held = true;
-        boundary.resolve();
-        await release.promise;
-      }
-      return Reflect.apply(read, this, args);
-    });
   }
   const bridge = await createChatBridge({
     buildState, renderHtml: () => "", handleCommand: buildState,
@@ -99,6 +82,10 @@ export async function requestReceiptHarness(t: TestContext, scenario: ReceiptSce
               assert.ok((await loadSessionEvents(storage, session.id)).some((saved) => saved.id === event.id));
               published.push(event);
               await stream.sessionEvent(event);
+              if (event.kind === "user" && scenario === "initialization-stop") {
+                boundary.resolve();
+                await release.promise;
+              }
             },
           },
           async () => { calls.model++; return { content: "Finished.", toolCalls: [] }; },
@@ -108,7 +95,7 @@ export async function requestReceiptHarness(t: TestContext, scenario: ReceiptSce
             if (scenario === "unknown-absent") throw new StorageCommitOutcomeUnknownError(new Error("Unconfirmed user event."));
             const event = await appendSessionEvent(...args);
             if (scenario === "unknown-visible") throw new StorageCommitOutcomeUnknownError(new Error("Unconfirmed durability."));
-            if (scenario === "corrupt-audio") await fs.writeFile(jobPath!, "{}");
+            if (scenario === "corrupt-audio") await writeStoredTestFile(storage, jobPath!, "{}");
             if (scenario === "commit-stop") {
               boundary.resolve();
               await release.promise;

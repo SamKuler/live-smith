@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { platform } from "node:process";
 import { isDeepStrictEqual, types } from "node:util";
 
 import { allocateArtifactVersion, isArtifactLabel, isArtifactRef, isArtifactVersion, type ArtifactPluginSource, type ArtifactRef, type ArtifactVersion } from "../agent/artifact-contracts.js";
@@ -11,22 +9,19 @@ import { audioArtifactOutputDescriptor, audioOutputsCanShareWork } from "../audi
 import { cloneJsonValue } from "../model/json-clone.js";
 import { isSafePluginId } from "../plugins/contracts.js";
 import { throwIfAborted } from "../runtime/host.js";
-import { listAudioAssetRecords, readAudioAsset, audioAssetExport } from "./audio-assets.js";
-import { openVerifiedFileStream, type SessionFileExport } from "./file-export.js";
+import { listAudioAssetRecords, readAudioAsset, audioAssetExport, audioAssetWaveform } from "./audio-assets.js";
+import { audioArtifactFileName, readStoredWaveform, openVerifiedStoredStream, type SessionFileExport } from "./file-export.js";
 import {
-  AudioStorageError, assertAudioDirectory, assertAudioJsonSize, audioAssetInspectionLimits, audioDirectoryEntries,
+  AudioStorageError, assertAudioJsonSize, audioAssetInspectionLimits, audioDirectoryEntries,
   audioRecordHasOnly, boundedAudioText, isAudioHash, listAudioJobs, readAudioJson,
   readBoundedAudioFile, requireAudioSession, requireAudioStorage, type AudioDirectoryBinding,
 } from "./audio-jobs.js";
 import { storedSessionAudioBytes } from "./audio-storage-budget.js";
-import { isMissingFileError } from "./errors.js";
 import { createStorageId, isSafeStorageId, requireSafeStorageId } from "./id.js";
 import { readMidiArtifact } from "./midi-artifacts.js";
 import { readDeviceParameterArtifact } from "./device-parameter-artifacts.js";
-import {
-  ensurePrivateDirectoryDurably, removeDirectoryDurably, removeFileDurably, withStorageTransaction,
-  writeBytesAtomicallyCreateOnly, writeJsonAtomicallyCreateOnly,
-} from "./persistence.js";
+import { withStorageTransaction } from "./persistence.js";
+import { listStoredChildren, storedEntry, storedTreeExists, removeStoredEntry, removeStoredTree, writeStoredBytes, writeStoredJson } from "./sqlite.js";
 
 const ROOT = "live-smith-audio-artifacts";
 const MAX_METADATA_BYTES = 4096;
@@ -90,17 +85,14 @@ export async function savePluginAudioArtifact(
       ...(sourceArtifact ? { sourceArtifact } : {}),
     };
     assertAudioJsonSize(artifact, MAX_METADATA_BYTES);
-    await assertAudioDirectory(directory);
     throwIfAborted(input.signal);
-    await writeBytesAtomicallyCreateOnly(path.join(directory.directory, `${id}.audio`), bytes);
-    await assertAudioDirectory(directory);
+    await writeStoredBytes(storageDirectory, path.join(directory.directory, `${id}.audio`), bytes, { createOnly: true, storage: "file" });
     try { throwIfAborted(input.signal); }
     catch (error) {
-      await removeFileDurably(path.join(directory.directory, `${id}.audio`)).catch(() => undefined);
+      await removeStoredEntry(storageDirectory, path.join(directory.directory, `${id}.audio`)).catch(() => undefined);
       throw error;
     }
-    await writeJsonAtomicallyCreateOnly(path.join(directory.directory, `${id}.artifact.json`), artifact);
-    await assertAudioDirectory(directory);
+    await writeStoredJson(storageDirectory, path.join(directory.directory, `${id}.artifact.json`), artifact, { createOnly: true });
     return cloneJsonValue(artifact);
   });
 }
@@ -128,13 +120,11 @@ export async function listPluginAudioArtifacts(storageDirectory: string | undefi
   const directory = (await bindDirectory(storageDirectory, sessionId))!;
   const artifacts: PluginAudioArtifact[] = [];
   for (const record of records) {
-    let info;
-    try { info = await fs.lstat(path.join(directory.directory, `${record.id}.audio`)); }
-    catch (error) { if (isMissingFileError(error)) continue; throw new AudioStorageError(); }
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size !== record.byteLength) throw new AudioStorageError();
+    const info = await storedEntry(storageDirectory, path.join(directory.directory, `${record.id}.audio`));
+    if (!info) continue;
+    if (info.byteLength !== record.byteLength) throw new AudioStorageError();
     artifacts.push(record);
   }
-  await assertAudioDirectory(directory);
   return artifacts;
 }
 
@@ -174,21 +164,52 @@ export async function readSessionAudioArtifact(
   return result;
 }
 
-export async function sessionAudioArtifactExport(storageDirectory: string, sessionId: string, id: string): Promise<SessionFileExport> {
+export async function sessionAudioArtifactExport(storageDirectory: string, sessionId: string, id: string, expectedArtifact?: SessionAudioArtifact): Promise<SessionFileExport> {
   requireAudioStorage(storageDirectory, sessionId); requireSafeStorageId(id, "Audio artifact ID");
   await requireAudioSession(storageDirectory, sessionId);
   if (!id.startsWith("audio_artifact_")) {
     const expected = (await listAudioJobs(storageDirectory, sessionId)).flatMap(job => job.outputAssets).find(asset => asset.id === id);
     if (!expected) throw new AudioArtifactNotFoundError();
+    if (expectedArtifact && !isDeepStrictEqual(expected,expectedArtifact)) throw new AudioStorageError("The audio source changed since it was selected.");
     return audioAssetExport(storageDirectory, sessionId, expected);
   }
   const directory = await bindDirectory(storageDirectory, sessionId);
   const artifact = directory && await readRecord(directory, sessionId, id);
   if (!directory || !artifact) throw new AudioArtifactNotFoundError();
-  return { fileName: artifact.label, mediaType: artifact.mediaType, byteLength: artifact.byteLength,
-    open: signal => openVerifiedFileStream({ path: path.join(directory.directory, `${id}.audio`), byteLength: artifact.byteLength, sha256: artifact.sha256, signal,
-      assertCurrent: async () => { await assertAudioDirectory(directory); if (!isDeepStrictEqual(await readRecord(directory, sessionId, id), artifact)) throw new AudioStorageError(); } }),
+  if (expectedArtifact && !isDeepStrictEqual(artifact,expectedArtifact)) throw new AudioStorageError("The audio source changed since it was selected.");
+  return { fileName: audioArtifactFileName(artifact), mediaType: artifact.mediaType, byteLength: artifact.byteLength,
+    open: (signal, range) => openVerifiedStoredStream({ storageDirectory, ...(range ? { range } : {}), key: path.join(directory.directory, `${id}.audio`), byteLength: artifact.byteLength, sha256: artifact.sha256, signal,
+      assertCurrent: async () => { if (!isDeepStrictEqual(await readRecord(directory, sessionId, id), artifact)) throw new AudioStorageError(); } }),
   };
+}
+
+export async function readSessionAudioArtifactWaveform(storageDirectory: string, sessionId: string, id: string, options: { signal?: AbortSignal } = {}) {
+  requireAudioStorage(storageDirectory, sessionId); requireSafeStorageId(id, "Audio artifact ID");
+  await requireAudioSession(storageDirectory, sessionId);
+  if (!id.startsWith("audio_artifact_")) {
+    const expected = (await listAudioJobs(storageDirectory, sessionId)).flatMap(job => job.outputAssets).find(asset => asset.id === id);
+    if (!expected) throw new AudioArtifactNotFoundError();
+    return audioAssetWaveform(storageDirectory, sessionId, expected, options.signal);
+  }
+  const directory = await bindDirectory(storageDirectory, sessionId);
+  const artifact = directory && await readRecord(directory, sessionId, id);
+  if (!directory || !artifact) throw new AudioArtifactNotFoundError();
+  if (artifact.mediaType !== "audio/wav") return undefined;
+  return readStoredWaveform({ storageDirectory, key: path.join(directory.directory, `${id}.audio`),
+    byteLength: artifact.byteLength, sha256: artifact.sha256, ...(options.signal ? { signal: options.signal } : {}),
+    assertCurrent: async () => { if (!isDeepStrictEqual(await readRecord(directory, sessionId, id), artifact)) throw new AudioStorageError(); },
+  });
+}
+
+export async function openExpectedSessionAudioArtifact(
+  storageDirectory: string | undefined, sessionId: string, expected: SessionAudioArtifact, signal: AbortSignal,
+) {
+  throwIfAborted(signal);
+  requireAudioStorage(storageDirectory,sessionId);
+  const snapshot = cloneJsonValue(expected);
+  if (snapshot.sessionId !== sessionId) throw new AudioStorageError();
+  const file = await sessionAudioArtifactExport(storageDirectory,sessionId,snapshot.id,snapshot);
+  return file.open(signal);
 }
 
 export async function readExpectedSessionAudioArtifact(
@@ -210,11 +231,10 @@ export async function storedAudioArtifactBytes(storageDirectory: string, session
     const temporary = /^\.(audio_artifact_[A-Za-z0-9_-]+)\.audio\.(tmp_[A-Za-z0-9_-]+)$/u.test(name);
     if (!name.endsWith(".audio") && !temporary) continue;
     if (!temporary && !validId(name.slice(0, -6))) throw new AudioStorageError();
-    const info = await fs.lstat(path.join(directory.directory, name));
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size < (temporary ? 0 : 1) || info.size > MAX_AUDIO_ASSET_BYTES) throw new AudioStorageError();
-    bytes += info.size;
+    const info = await storedEntry(directory.storageDirectory, path.join(directory.directory, name));
+    if (!info || info.byteLength < (temporary ? 0 : 1) || info.byteLength > MAX_AUDIO_ASSET_BYTES) throw new AudioStorageError();
+    bytes += info.byteLength;
   }
-  await assertAudioDirectory(directory);
   return bytes;
 }
 
@@ -224,49 +244,22 @@ export async function deleteSessionPluginAudioArtifacts(storageDirectory: string
   await withStorageTransaction(storageDirectory, async () => {
     const directory = await bindDirectory(storageDirectory, sessionId);
     if (!directory) return;
-    await assertAudioDirectory(directory);
-    await removeDirectoryDurably(directory.directory);
+    await removeStoredTree(storageDirectory, directory.directory);
   });
 }
 
 export async function listSessionPluginAudioDirectoryIds(storageDirectory: string | undefined): Promise<string[]> {
   if (storageDirectory === undefined) return [];
-  const root = path.join(storageDirectory, ROOT);
-  let before;
-  try { before = await fs.lstat(root); }
-  catch (error) { if (isMissingFileError(error)) return []; throw new AudioStorageError(); }
-  if (!before.isDirectory() || before.isSymbolicLink()) throw new AudioStorageError();
-  const ids: string[] = [];
-  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.isSymbolicLink() || !isSafeStorageId(entry.name)) throw new AudioStorageError();
-    ids.push(entry.name);
-  }
-  const after = await fs.lstat(root);
-  if (!after.isDirectory() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) throw new AudioStorageError();
-  return ids.sort();
+  const ids = await listStoredChildren(storageDirectory, ROOT);
+  if (ids.some(id => !isSafeStorageId(id))) throw new AudioStorageError();
+  return ids;
 }
 
 async function bindDirectory(storageDirectory: string, sessionId: string, create = false): Promise<AudioDirectoryBinding | undefined> {
   requireAudioStorage(storageDirectory, sessionId);
-  const root = path.join(storageDirectory, ROOT);
-  const directory = path.join(root, sessionId);
-  const identities: AudioDirectoryBinding["identities"] = [];
-  for (const target of [root, directory]) {
-    let info;
-    try { info = await fs.lstat(target); }
-    catch (error) {
-      if (!isMissingFileError(error)) throw new AudioStorageError();
-      if (!create) return undefined;
-      await ensurePrivateDirectoryDurably(target);
-      info = await fs.lstat(target);
-    }
-    if (!info.isDirectory() || info.isSymbolicLink()) throw new AudioStorageError();
-    if (platform !== "win32" && (info.mode & 0o7777) !== 0o700) await fs.chmod(target, 0o700);
-    identities.push({ path: target, dev: info.dev, ino: info.ino });
-  }
-  const binding = { directory, identities };
-  await assertAudioDirectory(binding);
-  return binding;
+  const directory = path.resolve(storageDirectory, ROOT, sessionId);
+  if (!create && !await storedTreeExists(storageDirectory, directory)) return undefined;
+  return { storageDirectory, directory };
 }
 
 async function readRecord(directory: AudioDirectoryBinding, sessionId: string, id: string): Promise<PluginAudioArtifact | undefined> {

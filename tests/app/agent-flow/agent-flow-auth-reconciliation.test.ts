@@ -1,3 +1,5 @@
+import { writeStoredBytes, readStoredText } from "../../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -742,7 +744,7 @@ test("a later modal retries unknown Profile OAuth cleanup after the owner closes
         });
         assert.equal(response.status, 500);
         assert.notEqual(committedSettings, "");
-        await fs.writeFile(settingsPath, committedSettings, "utf8");
+        await writeStoredBytes(directory, settingsPath, Buffer.from(committedSettings));
       },
     },
   } as never, interaction, {
@@ -750,8 +752,8 @@ test("a later modal retries unknown Profile OAuth cleanup after the owner closes
     modelBackendManager: manager,
     saveSavedProfile: async (storageDirectory, profile, options) => {
       await saveSavedProfile(storageDirectory, profile, options);
-      committedSettings = await fs.readFile(settingsPath, "utf8");
-      await fs.writeFile(settingsPath, "{invalid", "utf8");
+      committedSettings = await readStoredText(directory, settingsPath);
+      await writeStoredBytes(directory, settingsPath, Buffer.from("{invalid"));
       throw new StorageCommitOutcomeUnknownError(
         new Error("Injected unknown Profile save outcome"),
       );
@@ -940,7 +942,7 @@ test("known Profile commits report failed OAuth cleanup as unknown and retry saf
         accountId: "account-1",
       });
       const credentialsPath = path.join(directory, "oauth", "credentials.json");
-      const validCredentialStore = await fs.readFile(credentialsPath, "utf8");
+      const validCredentialStore = await readStoredText(directory, credentialsPath);
       const target: SavedProfile = {
         ...directProfile,
         id: subscriptionProfile.id,
@@ -973,7 +975,7 @@ test("known Profile commits report failed OAuth cleanup as unknown and retry saf
       interaction.selectionContext = { refresh: () => interaction };
       const corruptCredentialsAfter = async <T>(mutation: Promise<T>): Promise<T> => {
         const result = await mutation;
-        await fs.writeFile(credentialsPath, "{invalid", "utf8");
+        await writeStoredBytes(directory, credentialsPath, Buffer.from("{invalid"));
         return result;
       };
 
@@ -1022,7 +1024,7 @@ test("known Profile commits report failed OAuth cleanup as unknown and retry saf
               operation === "save" ? "direct-api" : undefined,
             );
 
-            await fs.writeFile(credentialsPath, validCredentialStore, "utf8");
+            await writeStoredBytes(directory, credentialsPath, Buffer.from(validCredentialStore));
             const reconciled = await getState(url);
             assert.equal(
               reconciled.settings.profiles.find(
@@ -1077,9 +1079,7 @@ test("inactive OAuth Profile mutations wait for legacy credential preparation", 
       await saveSavedProfile(directory, directProfile);
       const credentialsPath = path.join(directory, "oauth", "credentials.json");
       await fs.mkdir(path.dirname(credentialsPath), { recursive: true });
-      await fs.writeFile(
-        credentialsPath,
-        JSON.stringify({
+      await writeStoredBytes(directory, credentialsPath, Buffer.from(JSON.stringify({
           schemaVersion: 1,
           credentials: {
             openai: {
@@ -1091,9 +1091,7 @@ test("inactive OAuth Profile mutations wait for legacy credential preparation", 
               unexpected: true,
             },
           },
-        }),
-        "utf8",
-      );
+        })));
       const converted: SavedProfile = {
         ...directProfile,
         id: subscriptionProfile.id,
@@ -1161,9 +1159,7 @@ test("inactive OAuth Profile mutations wait for legacy credential preparation", 
               "oauth-subscription",
             );
 
-            await fs.writeFile(
-              credentialsPath,
-              JSON.stringify({
+            await writeStoredBytes(directory, credentialsPath, Buffer.from(JSON.stringify({
                 schemaVersion: 1,
                 credentials: {
                   openai: {
@@ -1174,9 +1170,7 @@ test("inactive OAuth Profile mutations wait for legacy credential preparation", 
                     accountId: "legacy-account",
                   },
                 },
-              }),
-              "utf8",
-            );
+              })));
             const retried = await command(url, mutation);
             assert.equal(retried.status, 200, await retried.clone().text());
             assert.equal(mutationWrites, 1);
@@ -1188,7 +1182,7 @@ test("inactive OAuth Profile mutations wait for legacy credential preparation", 
               operation === "save" ? "direct-api" : undefined,
             );
             await assert.rejects(
-              fs.readFile(credentialsPath, "utf8"),
+              readStoredText(directory, credentialsPath),
               (error: unknown) =>
                 error instanceof Error &&
                 "code" in error &&
@@ -1382,7 +1376,7 @@ test("Direct-only OAuth discard bypasses backend and credential storage", async 
   await saveSavedProfile(directory, directProfile);
   const credentialsPath = path.join(directory, "oauth", "credentials.json");
   await fs.mkdir(path.dirname(credentialsPath), { recursive: true });
-  await fs.writeFile(credentialsPath, "{invalid", "utf8");
+  await writeStoredBytes(directory, credentialsPath, Buffer.from("{invalid"));
   let backendCalls = 0;
   const manager = {
     async oauth() { backendCalls += 1; throw new Error("unused"); },
@@ -1417,7 +1411,7 @@ test("Direct-only OAuth discard bypasses backend and credential storage", async 
   });
 
   assert.equal(backendCalls, 0);
-  assert.equal(await fs.readFile(credentialsPath, "utf8"), "{invalid");
+  assert.equal(await readStoredText(directory, credentialsPath), "{invalid");
 });
 
 test("modal close retires every Profile auth scope before reporting one cleanup failure", async (t) => {

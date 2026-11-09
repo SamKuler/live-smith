@@ -61,6 +61,15 @@ Within Current, History and Archived, results are ordered by the latest saved
 message or Session settings change. The **Updated** date shows that activity
 time.
 
+### Reading a conversation
+
+A Session opens at the latest page of its conversation and activity history.
+Use **Load earlier messages** to extend the view. A message match from **Search
+sessions** opens the page containing that message. From there, use **Load
+earlier messages**, **Load newer messages**, or **Return to latest**.
+These controls only change the conversation view. The Session's saved history,
+attachments, and model context have their own lifecycles.
+
 ### Saved context and drafts
 
 **Sessions** keep conversation and action history with their Live context.
@@ -198,8 +207,9 @@ selected version and audio playback; **Back to chat** pauses artifact audio and
 returns to the composer with its draft and attachments. Continuing in chat,
 preparing an audio import and attaching a saved file also return to chat.
 A manual parameter or MIDI approval opens the corresponding timeline review.
-Saved audio offers a decoded waveform, seek, volume and
-loop controls. Waveform failures offer retry while keeping playback available.
+Saved audio offers a waveform, seek, volume and loop controls. WAV previews use
+sampled peaks and may miss brief transients. Playback remains available if the
+waveform cannot be loaded.
 **Operation history** shows persisted parameter applications and associated import
 outcomes. Version links only change the preview. Interrupted operations remain
 unknown; partial results retain their status. Older imports without a saved source
@@ -626,7 +636,8 @@ open it with the system's default application. Media previews also provide
 External applications receive a temporary copy, so their edits do not replace
 the saved chat attachment. Text and code copies open as `.txt` files.
 The original remains saved in the Session. The **+** button on a history attachment
-adds a saved copy to the next request. Removing that copy preserves the source.
+adds it to the next request. The new reference shares the original file content.
+Removing the draft reference preserves the source.
 **Session → Context → Session attachments** collects files from the conversation
 and the pending draft. Open a file to preview it, or use **Attach** to add a
 saved copy to the next message. Repeated copies are grouped; distinct audio
@@ -638,16 +649,19 @@ Steer or Queue stay with their request.
 
 ### Audio excerpts
 
-Open an audio attachment by its file name to view its waveform, start/end times
-and loop playback in the full audio preview.
+Open an audio attachment by its file name for its waveform, start and end times,
+and loop playback. The WAV waveform samples peaks for navigation and may miss
+brief transients.
 Choose **Use whole file** or **Use selected excerpt**; the **Next request** list
 shows the exact files and excerpt ranges being sent. WAV selection copies whole
 samples without changing encoding, sample rate or channels. MP3 selection requires
 **Export selection as WAV and attach**, which explicitly produces 16-bit PCM WAV
-at the original sample rate and channel count. MP3 preview/export depends on the
-browser decoder, has a 30-second decoding deadline and a 128 MiB decoded-sample
-budget. Files above that decoding budget can still be played and sent intact;
-export a shorter WAV in an audio editor to create an excerpt.
+at the original sample rate and channel count. MP3 waveform and excerpt controls
+depend on the browser decoder. The original MP3 and its decoded samples must
+each fit within 128 MiB, and decoding has a 30-second deadline. Larger MP3s can
+still be played locally or reused as whole files. To create an excerpt from a
+larger MP3, export the desired range as WAV in an audio editor.
+Saved excerpts can be up to 128 MiB and 15 minutes.
 
 **Use original file** restores the original to the next request. Removing an
 unsent excerpt restores the previous draft file. Excerpts and reused files
@@ -679,20 +693,21 @@ formats; incomplete evidence stays Unverified. See
 Video capability may appear in provider metadata; the attachment formats above
 cover the inputs Live Smith accepts.
 
-Each Session can hold four pending files and 256 MiB total, with these category
-limits:
+Each Session can hold up to four pending files within these category limits.
 
 | Category | Limits |
 | --- | --- |
 | Images | 5 MiB per image and 16 MiB total. Source images being converted can be up to 20 MiB. |
-| Documents, text and MIDI | 20 MiB total; each MIDI file can be up to 8 MiB. |
-| Audio | Two files, up to 128 MiB and 15 minutes each. |
+| Documents, text and MIDI | 20 MiB per file and in total. Each MIDI file can be up to 8 MiB. |
+| Audio | Up to two local WAV or MP3 originals, 2 GiB per file with persistent storage. |
 
-Model requests have a separate 128 MiB binary-file budget across the current
-message and included history. Provider limits can be lower. If a request is
-too large, choose a shorter excerpt or fewer files; attached audio retains
-its saved quality and length. Extracted text has a separate context limit and
-shows a truncation notice when reached.
+The local audio limit covers saving, playback, and reuse. Model requests admit
+audio up to 15 minutes per file within a separate 128 MiB binary-file budget
+across the current message and included history. Audio services use their own
+[processing limits](MODEL_PROVIDERS.md#stem-separation). Provider limits can be
+lower. If a request is too large, choose a shorter excerpt or fewer files. The saved
+original retains its quality and length. Extracted text has a separate context
+limit and shows a truncation notice when reached.
 
 Office and OpenDocument extraction uses bundled libraries and runs locally,
 with a 30-second parsing deadline and a memory limit. Spreadsheets retain sheet

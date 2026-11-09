@@ -1,13 +1,17 @@
+import { createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import type { Readable } from "node:stream";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import type { ExtensionContext } from "@ableton-extensions/sdk";
 
 import {
-  readSessionAttachmentBytes,
-  readSessionAttachment,
+  readSessionAttachmentMetadata,
+  sessionAttachmentRefFromStored,
   type AudioSessionAttachmentRef,
 } from "../../storage/attachments.js";
+import { openVerifiedAttachmentForUse } from "../attachments/attachment-stream.js";
 import { createStorageId } from "../../storage/id.js";
 import { throwIfAborted } from "../../runtime/host.js";
 import { AgentPlanExecutionError } from "../../live/executor.js";
@@ -42,10 +46,10 @@ export async function addSessionAudioSampleSources(input: {
   context: Api; storageDirectory: string | undefined; sessionId: string; signal: AbortSignal;
 }, sources: Map<string, ManagedSampleSource>, attachmentIds: readonly string[]): Promise<void> {
   for (const attachmentId of new Set(attachmentIds)) {
-    const { attachment: ref } = await readSessionAttachment(input.storageDirectory, input.sessionId, attachmentId, { signal: input.signal });
+    const ref = sessionAttachmentRefFromStored(await readSessionAttachmentMetadata(input.storageDirectory, input.sessionId, attachmentId));
     if (ref.kind !== "audio") throw new Error("The selected Session attachment is not audio.");
     const prepared = createManagedSampleImport({ ...input, mediaType: ref.mediaType,
-      readBytes: () => readSessionAttachmentBytes(input.storageDirectory, input.sessionId, ref.id, { expectedRef: ref, signal: input.signal }),
+      openStream: () => openVerifiedAttachmentForUse(input.storageDirectory, input.sessionId, ref, input.signal),
       failureMessage: importFailureMessage });
     sources.set(`session-attachment:${ref.id}`, { kind: "session_audio_attachment", attachmentId: ref.id,
       label: ref.fileName, identity: `session-attachment:${ref.id}`, get filePath() { return prepared.filePath; }, prepare: prepared.prepare });
@@ -88,12 +92,7 @@ function requestAudioSampleSource(
   const prepared = createManagedSampleImport({
     ...input,
     mediaType: expectedRef.mediaType,
-    readBytes: () => readSessionAttachmentBytes(
-      input.storageDirectory,
-      input.sessionId,
-      expectedRef.id,
-      { expectedRef, signal: input.signal },
-    ),
+    openStream: () => openVerifiedAttachmentForUse(input.storageDirectory, input.sessionId, expectedRef, input.signal),
     failureMessage: importFailureMessage,
   });
   return {
@@ -200,14 +199,13 @@ export function mergeRequestAudioImportProgress(
   );
 }
 
-interface ManagedSampleImportInput {
+type ManagedSampleImportInput = {
   context: Api;
   storageDirectory: string | undefined;
   signal: AbortSignal;
   mediaType: "audio/wav" | "audio/mpeg";
-  readBytes(): Promise<Uint8Array>;
   failureMessage: string;
-}
+} & ({ readBytes(): Promise<Uint8Array>; openStream?: never } | { openStream(): Promise<Readable>; readBytes?: never });
 
 /** Lazy staging and import; prepare is called only within the confirmed plan queue. */
 export function createManagedSampleImport(
@@ -234,9 +232,7 @@ async function importManagedSample(
   input: ManagedSampleImportInput,
   beforeImport?: () => void,
 ): Promise<string> {
-  const bytes = await input.readBytes();
   throwIfAborted(input.signal);
-
   const temporaryRoot = input.context.environment.tempDirectory ??
     input.storageDirectory;
   if (!temporaryRoot || !path.isAbsolute(temporaryRoot)) {
@@ -257,7 +253,14 @@ async function importManagedSample(
           input.mediaType === "audio/wav" ? ".wav" : ".mp3"
         }`,
       );
-      await fs.writeFile(stagingPath, bytes, { flag: "wx", mode: 0o600 });
+      if (input.openStream) {
+        const stream = await input.openStream();
+        await pipeline(stream, createWriteStream(stagingPath, { flags: "wx", mode: 0o600 }), { signal: input.signal });
+      } else {
+        const bytes = await input.readBytes();
+        throwIfAborted(input.signal);
+        await fs.writeFile(stagingPath, bytes, { flag: "wx", mode: 0o600 });
+      }
     } catch {
       throwIfAborted(input.signal);
       throw new Error(input.failureMessage);

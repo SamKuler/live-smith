@@ -453,7 +453,6 @@ async function createDialogHarness(
     scrollendSupported?: boolean;
     navigatorLanguages?: string[];
     webCryptoAvailable?: boolean;
-    webCryptoDigestFails?: boolean;
     serverState?: ChatBridgeState;
     initialCommandError?: string;
     holdInitialCommand?: boolean;
@@ -1165,16 +1164,7 @@ async function createDialogHarness(
           configurable: true,
           value: options.webCryptoAvailable === false
             ? { randomUUID: () => "test-random-id" }
-            : options.webCryptoDigestFails
-              ? {
-                  randomUUID: () => webcrypto.randomUUID(),
-                  subtle: {
-                    digest: async () => {
-                      throw new Error("Web Crypto digest failed.");
-                    },
-                  },
-                }
-              : webcrypto,
+            : webcrypto,
         });
         window.addEventListener("error", (event) => errors.push(event.error));
         Object.defineProperty(window, "requestAnimationFrame", {

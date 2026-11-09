@@ -1,6 +1,7 @@
+import { interceptStoredWrites } from "../../storage/support/sqlite-fault-test-helpers.js";
+import { writeStoredTestFile } from "../../storage/support/stored-media-test-helpers.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import test from "node:test";
 import { listAudioJobs, updateAudioJob } from "../../../src/storage/audio-jobs.js";
 import { audioJobViews, resumeAudioJob, separateAudioStems } from "../../../src/app/audio/audio-processing.js";
@@ -152,21 +153,14 @@ for (const provider of ["lalal", "sunoapi"] as const) {
     assert.equal(h.calls.length, before);
   });
 
-  test(`${provider} does not treat a systemic file-write failure as a skippable bad output`, async (t) => {
+  test(`${provider} does not treat a systemic database-write failure as a skippable bad output`, async (t) => {
     const h = await audioRecoveryHarness(t, provider);
-    const probe = await fs.open(h.storage);
-    const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
-    const original = prototype.writeFile;
-    await probe.close();
     const adapter = provider === "lalal" ? h.adapter : h.generationAdapter;
     const inspect = adapter.inspect!;
     // Introduce the storage outage only after input upload and paid submission.
     adapter.inspect = (async (...args: unknown[]) => {
       const result = await (inspect as (...args: unknown[]) => Promise<unknown>)(...args);
-      t.mock.method(prototype, "writeFile", async function (this: fs.FileHandle, ...values: Parameters<fs.FileHandle["writeFile"]>) {
-        if (values[0] instanceof Uint8Array) throw new Error("disk unavailable");
-        return original.apply(this, values);
-      });
+      interceptStoredWrites(t, { beforeWrite: ({ key }) => { if (key.endsWith(".audio")) throw new Error("disk unavailable"); } });
       return result;
     }) as NonNullable<typeof adapter.inspect>;
     const job = await h.run();
@@ -181,7 +175,7 @@ test("local recovery verifies bytes before completing even when the remote conne
   const first = await h.run();
   await updateAudioJob(h.storage, h.session.id, first.id, { status: "collecting", outputAssets: [] });
   const asset = first.outputAssets[0]!;
-  await fs.writeFile(`${h.storage}/live-smith-audio/${h.session.id}/${asset.id}.audio`, new Uint8Array(asset.byteLength));
+  await writeStoredTestFile(h.storage, `${h.storage}/live-smith-audio/${h.session.id}/${asset.id}.audio`, new Uint8Array(asset.byteLength));
   await h.change("remove");
   await assert.rejects(resumeAudioJob(h.context, first.id), /invalid|changed/);
   assert.equal(h.calls.filter((call) => call === "submit").length, 1);

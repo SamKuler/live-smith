@@ -3,7 +3,6 @@ import test from "node:test";
 import { URL } from "node:url";
 
 import { audioParameterGroups } from "../../../src/plugins/builtins/parameter-panel.js";
-import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
 import { audioState, job } from "../support/chat-dialog.audio-test-helpers.js";
 import { createDialogHarness, pendingAudio, stateFixture, waitForCondition, type DialogHarness } from "../support/chat-dialog.test-harness.js";
 import { installNativeDragBridge, nativeBridge, replyNativeDrag, type NativeDragMessage } from "../support/native-drag.test-harness.js";
@@ -127,9 +126,12 @@ test("the audio selection dialog updates localized labels while playback and the
   state.pendingAttachments = [pendingAudio("draft-audio", "Draft.wav")];
   const h = await createDialogHarness(state);
   const fetchOriginal = h.window.fetch;
+  const waveformRequests: URL[] = [];
   Object.defineProperty(h.window, "fetch", { configurable: true, value: (input: string | URL, init?: RequestInit) => {
-    if (new URL(String(input)).pathname === "/attachments/draft-audio") {
-      return Promise.resolve(new Response(new Uint8Array(waveBytes(1)), { headers: { "Content-Type": "audio/wav" } }));
+    const url = new URL(String(input));
+    if (url.pathname === "/attachments/draft-audio" && url.searchParams.get("waveform") === "1") {
+      waveformRequests.push(url);
+      return Promise.resolve(Response.json({ peaks: [0, 0.25, 1], durationSeconds: 1 }));
     }
     return fetchOriginal(input, init);
   } });
@@ -141,6 +143,8 @@ test("the audio selection dialog updates localized labels while playback and the
     const media = dialog.querySelector<HTMLAudioElement>(".attachment-selection-audio")!;
     const loop = dialog.querySelector<HTMLInputElement>(".attachment-selection-loop")!;
     await waitForCondition(() => !start.disabled, "Expected the waveform and selection to be ready");
+    assert.equal(waveformRequests.length, 1);
+    assert.ok(dialog.querySelector(".attachment-waveform path")!.getAttribute("d"));
     h.input(".attachment-selection-start", "0.25");
     h.input(".attachment-selection-end", "0.75");
     loop.click();

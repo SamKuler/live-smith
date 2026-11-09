@@ -1,6 +1,5 @@
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getuid, platform } from "node:process";
@@ -19,15 +18,16 @@ import { isMissingFileError } from "./errors.js";
 import { canonicalStorageDirectory } from "./scope.js";
 import {
   StorageCommitOutcomeUnknownError,
-  removeDirectoryDurably,
-  removeFileDurably,
   requireActiveStorageTransaction,
   trackStorageTransactionOperation,
   withStorageTransaction,
-  writeBytesAtomicallyCreateOnly,
-  writeJsonAtomically,
   type StorageTransactionContext,
 } from "./persistence.js";
+
+import {
+  readStoredBytes, removeStoredEntry, removeStoredTree, storedEntry,
+  writeStoredBytes, writeStoredJson,
+} from "./sqlite.js";
 
 export interface InstalledPlugin {
   id: string;
@@ -60,15 +60,19 @@ export interface PreparedPluginRuntime {
   userConfig?: StoredPluginConfig;
 }
 
+interface StoredPlugin extends InstalledPlugin {
+  dataGeneration: string | null;
+}
+
 interface StoredPluginCatalog {
-  schemaVersion: 2;
+  schemaVersion: 3;
   revision: string;
-  plugins: InstalledPlugin[];
+  plugins: StoredPlugin[];
   pendingCleanup: PendingPluginCleanup[];
 }
 
 type PendingPluginCleanup =
-  | { kind: "delete"; pluginId: string }
+  | { kind: "delete"; pluginId: string; dataGeneration: string | null }
   | { kind: "replace"; pluginId: string; sha256: string };
 
 const rootName = "live-smith-plugins";
@@ -79,13 +83,14 @@ const maximumPlugins = 32;
 const maximumStoredBytes = 256 * 1024 * 1024;
 const maximumPendingCleanup = 128;
 const shaPattern = /^[a-f0-9]{64}$/u;
+const dataGenerationPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u;
 const revisionPattern = /^(?:0|[1-9]\d*)$/u;
 const supportsPosixPermissions = platform !== "win32";
 const catalogKeys = new Set(["schemaVersion", "revision", "plugins", "pendingCleanup"]);
 const pluginKeys = new Set([
   "id", "version", "description", "sourceFormat", "components", "sha256", "byteLength",
   "unsupportedComponents", "enabled", "approvedMcpServerIds", "approvedArtifactInputServerIds",
-  "approvedArtifactOutputServerIds", "installedAt", "updatedAt",
+  "approvedArtifactOutputServerIds", "installedAt", "updatedAt", "dataGeneration",
 ]);
 const componentKeys = new Set(["skillsDirectory", "mcpConfigPath", "mcpManifestPath"]);
 
@@ -120,7 +125,7 @@ export async function installPlugin(
     if (total > maximumStoredBytes) throw new Error("Installed Plugin storage limit reached.");
     const now = new Date().toISOString();
     const { userConfig: _definition, ...manifestMetadata } = opened.manifest;
-    const next: InstalledPlugin = {
+    const next: StoredPlugin = {
       ...manifestMetadata,
       components: { ...opened.manifest.components },
       sha256: digest,
@@ -129,15 +134,15 @@ export async function installPlugin(
       approvedMcpServerIds: [],
       approvedArtifactInputServerIds: [],
       approvedArtifactOutputServerIds: [],
+      dataGeneration: previous ? previous.dataGeneration : randomUUID(),
       installedAt: previous?.installedAt ?? now,
       updatedAt: now,
     };
-    await ensureCatalogDirectories(directory, next.id);
     const target = archiveTarget(directory, next.id, digest);
     try {
-      await writeBytesAtomicallyCreateOnly(target, owned);
+      await writeStoredBytes(directory, target, owned, { createOnly: true });
     } catch (error) {
-      if (!isAlreadyExistsError(error) || !equalBytes(await readPrivateFile(target, owned.byteLength), owned)) throw error;
+      if (!isAlreadyExistsError(error) || !equalBytes(await readStoredPluginBytes(directory, target, owned.byteLength), owned)) throw error;
     }
     const plugins = [...state.plugins];
     if (index < 0) plugins.push(next);
@@ -246,8 +251,8 @@ export async function readInstalledPluginArchive(
 }
 
 async function readVerifiedArchive(storageDirectory: string, plugin: InstalledPlugin): Promise<Uint8Array> {
-  const bytes = await readPrivateFile(archiveTarget(storageDirectory, plugin.id, plugin.sha256), plugin.byteLength);
-  if (createHash("sha256").update(bytes).digest("hex") !== plugin.sha256) throw new PluginStorageCorruptionError();
+  const bytes = await readStoredPluginBytes(storageDirectory, archiveTarget(storageDirectory, plugin.id, plugin.sha256), plugin.byteLength);
+  if (bytes.byteLength !== plugin.byteLength || createHash("sha256").update(bytes).digest("hex") !== plugin.sha256) throw new PluginStorageCorruptionError();
   const opened = await openPluginArchive(bytes);
   if (opened.manifest.id !== plugin.id || opened.manifest.version !== plugin.version) throw new PluginStorageCorruptionError();
   return new Uint8Array(bytes);
@@ -329,7 +334,7 @@ export function setPluginMcpServerApprovedInTransaction(
     const approvedIds = new Set(current.approvedMcpServerIds);
     if (approved) approvedIds.add(serverId);
     else approvedIds.delete(serverId);
-    const next: InstalledPlugin = {
+    const next: StoredPlugin = {
       ...current,
       components: { ...current.components },
       approvedMcpServerIds: [...approvedIds].sort(),
@@ -400,7 +405,7 @@ export function setPluginArtifactPermissionApprovedInTransaction(
     const ids = new Set(current[field]);
     if (approved) ids.add(serverId);
     else ids.delete(serverId);
-    const next: InstalledPlugin = {
+    const next: StoredPlugin = {
       ...current,
       components: { ...current.components },
       approvedMcpServerIds: [...current.approvedMcpServerIds],
@@ -421,7 +426,16 @@ export async function pluginRuntimePaths(
   storageDirectory: string, plugin: Pick<InstalledPlugin, "id" | "sha256">,
 ): Promise<{ pluginRoot: string; pluginData: string }> {
   const directory = await canonicalStorageDirectory(storageDirectory);
-  return { pluginRoot: materializedTarget(directory, plugin.id, plugin.sha256), pluginData: pluginDataDirectory(directory, plugin.id) };
+  const current = (await readCatalog(directory)).plugins.find((entry) => entry.id === plugin.id);
+  if (!current || current.sha256 !== plugin.sha256) throw new Error("This Plugin package has changed.");
+  return runtimePaths(directory, current);
+}
+
+function runtimePaths(storageDirectory: string, plugin: StoredPlugin): { pluginRoot: string; pluginData: string } {
+  return {
+    pluginRoot: materializedTarget(storageDirectory, plugin.id, plugin.sha256),
+    pluginData: pluginDataDirectory(storageDirectory, plugin.id, plugin.dataGeneration),
+  };
 }
 
 export async function preparePluginRuntime(
@@ -434,8 +448,8 @@ export async function preparePluginRuntime(
     if (!plugin) throw new Error("This Plugin is not installed.");
     if (!plugin.enabled) throw new Error("This Plugin is disabled.");
     const archive = await openPluginArchive(await readVerifiedArchive(directory, plugin));
-    await ensureRuntimeDirectories(directory, plugin.id);
-    const { pluginRoot, pluginData } = await pluginRuntimePaths(directory, plugin);
+    await ensureRuntimeDirectories(directory, plugin);
+    const { pluginRoot, pluginData } = runtimePaths(directory, plugin);
     await ensureMaterializedPackage(pluginRoot, archive.files);
     return {
       plugin: clonePlugin(plugin),
@@ -488,14 +502,14 @@ export function savePluginConfigInTransaction(
         revoked = await deleteMcpOAuthCredentialsInTransaction(transaction, directory, { pluginId: plugin.id, serverId: server.id }) || revoked;
       }
     }
-    await writeAfterMcpRevocation(revoked, () => writeJsonAtomically(path.join(pluginDirectory(directory, plugin.id), "user-config.json"), next));
+    await writeAfterMcpRevocation(revoked, () => writeStoredJson(directory, path.join(pluginDirectory(directory, plugin.id), "user-config.json"), next));
   })();
   return trackStorageTransactionOperation(transaction, storageDirectory, operation);
 }
 
 async function readPluginConfigFile(directory: string, pluginId: string): Promise<StoredPluginConfig> {
   let bytes;
-  try { bytes = await readPrivateFile(path.join(pluginDirectory(directory, pluginId), "user-config.json"), MAX_PLUGIN_CONFIG_BYTES); }
+  try { bytes = await readStoredPluginBytes(directory, path.join(pluginDirectory(directory, pluginId), "user-config.json"), MAX_PLUGIN_CONFIG_BYTES); }
   catch (error) { if (isMissingFileError(error)) return emptyPluginConfig(); throw error; }
   try { return decodeStoredPluginConfig(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))); }
   catch { throw new PluginStorageCorruptionError(); }
@@ -523,7 +537,7 @@ export function deletePluginInTransaction(
       plugins: state.plugins.filter((entry) => entry.id !== pluginId),
       pendingCleanup: [
         ...state.pendingCleanup.filter((entry) => entry.pluginId !== pluginId),
-        { kind: "delete" as const, pluginId },
+        { kind: "delete" as const, pluginId, dataGeneration: plugin.dataGeneration },
       ],
     };
     if (committed.pendingCleanup.length > maximumPendingCleanup) {
@@ -537,23 +551,20 @@ export function deletePluginInTransaction(
 }
 
 async function loadCatalog(storageDirectory: string): Promise<StoredPluginCatalog> {
-  const root = catalogRoot(storageDirectory);
-  try {
-    await requirePrivateDirectory(root);
-  } catch (error) {
-    if (isMissingFileError(error)) return { schemaVersion: 2, revision: "0", plugins: [], pendingCleanup: [] };
-    throw new PluginStorageCorruptionError(error);
-  }
+  return resumePendingCleanup(storageDirectory, await readCatalog(storageDirectory));
+}
+
+async function readCatalog(storageDirectory: string): Promise<StoredPluginCatalog> {
   let bytes: Uint8Array;
   try {
-    bytes = await readPrivateFile(catalogTarget(storageDirectory), maximumCatalogBytes);
+    bytes = await readStoredPluginBytes(storageDirectory, catalogTarget(storageDirectory), maximumCatalogBytes);
   } catch (error) {
-    if (isMissingFileError(error)) return { schemaVersion: 2, revision: "0", plugins: [], pendingCleanup: [] };
+    if (isMissingFileError(error)) return { schemaVersion: 3, revision: "0", plugins: [], pendingCleanup: [] };
     throw new PluginStorageCorruptionError(error);
   }
   try {
     const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-    return await resumePendingCleanup(storageDirectory, decodeCatalog(value));
+    return decodeCatalog(value);
   } catch (error) {
     if (error instanceof PluginStorageCorruptionError) throw error;
     throw new PluginStorageCorruptionError(error);
@@ -561,28 +572,43 @@ async function loadCatalog(storageDirectory: string): Promise<StoredPluginCatalo
 }
 
 function decodeCatalog(value: unknown): StoredPluginCatalog {
-  if (!recordWithKeys(value, catalogKeys) || (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
+  if (!recordWithKeys(value, catalogKeys) || (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3) ||
       typeof value.revision !== "string" || !revisionPattern.test(value.revision) || !Array.isArray(value.plugins)) {
     throw new PluginStorageCorruptionError();
   }
-  const plugins = value.plugins.map(decodePlugin);
+  const plugins = value.plugins.map((entry) => decodePlugin(entry, value.schemaVersion as number));
   if (plugins.length > maximumPlugins || plugins.some((entry, index) => index > 0 && plugins[index - 1]!.id >= entry.id) ||
       plugins.reduce((sum, entry) => sum + entry.byteLength, 0) > maximumStoredBytes) {
     throw new PluginStorageCorruptionError();
   }
-  if (value.schemaVersion === 2 && value.pendingCleanup === undefined) {
+  if (value.schemaVersion !== 1 && value.pendingCleanup === undefined) {
     throw new PluginStorageCorruptionError();
   }
   const pendingCleanup = value.pendingCleanup === undefined ? [] : value.pendingCleanup;
-  if (!Array.isArray(pendingCleanup) || pendingCleanup.length > maximumPendingCleanup ||
-      pendingCleanup.some((entry) => !recordWithKeys(entry, new Set(["kind", "pluginId", "sha256"])) ||
-        (entry.kind !== "delete" && entry.kind !== "replace") || !isSafePluginId(entry.pluginId) ||
-        (entry.kind === "delete" && entry.sha256 !== undefined) ||
-        (entry.kind === "replace" && (typeof entry.sha256 !== "string" || !shaPattern.test(entry.sha256))))) {
+  if (!Array.isArray(pendingCleanup) || pendingCleanup.length > maximumPendingCleanup) throw new PluginStorageCorruptionError();
+  return {
+    schemaVersion: 3,
+    revision: value.revision,
+    plugins,
+    pendingCleanup: pendingCleanup.map((entry) => decodePendingCleanup(entry, value.schemaVersion as number)),
+  };
+}
+
+function decodePendingCleanup(value: unknown, schemaVersion: number): PendingPluginCleanup {
+  if (!recordWithKeys(value, new Set(["kind", "pluginId", "sha256", "dataGeneration"])) || !isSafePluginId(value.pluginId)) {
     throw new PluginStorageCorruptionError();
   }
-  return { schemaVersion: 2, revision: value.revision, plugins,
-    pendingCleanup: pendingCleanup as PendingPluginCleanup[] };
+  if (value.kind === "replace" && typeof value.sha256 === "string" && shaPattern.test(value.sha256) && value.dataGeneration === undefined) {
+    return { kind: "replace", pluginId: value.pluginId, sha256: value.sha256 };
+  }
+  const dataGeneration = schemaVersion === 3 ? value.dataGeneration : null;
+  if (value.kind !== "delete" || value.sha256 !== undefined || !validDataGeneration(dataGeneration) ||
+      (schemaVersion !== 3 && value.dataGeneration !== undefined)) throw new PluginStorageCorruptionError();
+  return { kind: "delete", pluginId: value.pluginId, dataGeneration };
+}
+
+function validDataGeneration(value: unknown): value is string | null {
+  return value === null || typeof value === "string" && dataGenerationPattern.test(value);
 }
 
 async function resumePendingCleanup(
@@ -598,11 +624,11 @@ async function resumePendingCleanup(
     }
     try {
       if (entry.kind === "delete") {
-        await removeManagedDirectory(storageDirectory, pluginDirectory(storageDirectory, entry.pluginId));
+        await removeStoredTree(storageDirectory, pluginDirectory(storageDirectory, entry.pluginId));
         await removeManagedDirectory(storageDirectory, materializedPluginDirectory(storageDirectory, entry.pluginId));
-        await removeManagedDirectory(storageDirectory, pluginDataDirectory(storageDirectory, entry.pluginId));
+        await removeManagedDirectory(storageDirectory, pluginDataDirectory(storageDirectory, entry.pluginId, entry.dataGeneration));
       } else if (!state.plugins.some((plugin) => plugin.id === entry.pluginId && plugin.sha256 === entry.sha256)) {
-        await removeManagedFile(storageDirectory, archiveTarget(storageDirectory, entry.pluginId, entry.sha256));
+        await removeStoredEntry(storageDirectory, archiveTarget(storageDirectory, entry.pluginId, entry.sha256));
         await removeManagedDirectory(storageDirectory, materializedTarget(storageDirectory, entry.pluginId, entry.sha256));
       }
     } catch {
@@ -628,7 +654,8 @@ async function cleanupTargetInfo(
   if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new PluginStorageCorruptionError();
   }
-  await requirePrivateDirectory(root);
+  try { await requirePrivateDirectory(root); }
+  catch (error) { if (isMissingFileError(error)) return undefined; throw error; }
   let parent = root;
   for (const segment of relative.split(path.sep).slice(0, -1)) {
     parent = path.join(parent, segment);
@@ -644,18 +671,10 @@ async function removeManagedDirectory(storageDirectory: string, target: string):
   if (!info) return;
   if (!info.isDirectory() || info.isSymbolicLink() ||
       (supportsPosixPermissions && getuid && info.uid !== getuid())) throw new PluginStorageCorruptionError();
-  await removeDirectoryDurably(target);
+  await fs.rm(target, { recursive: true, force: true });
 }
 
-async function removeManagedFile(storageDirectory: string, target: string): Promise<void> {
-  const info = await cleanupTargetInfo(storageDirectory, target);
-  if (!info) return;
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 ||
-      (supportsPosixPermissions && getuid && info.uid !== getuid())) throw new PluginStorageCorruptionError();
-  await removeFileDurably(target);
-}
-
-function decodePlugin(value: unknown): InstalledPlugin {
+function decodePlugin(value: unknown, schemaVersion: number): StoredPlugin {
   if (!recordWithKeys(value, pluginKeys) || !isSafePluginId(value.id) ||
       (value.version !== undefined && (typeof value.version !== "string" || !safeMetadataString(value.version, 128))) ||
       (value.description !== undefined && (typeof value.description !== "string" || !safeMetadataString(value.description, 1024))) ||
@@ -663,6 +682,10 @@ function decodePlugin(value: unknown): InstalledPlugin {
       !recordWithKeys(value.components, componentKeys) || typeof value.sha256 !== "string" || !shaPattern.test(value.sha256) ||
       !Number.isInteger(value.byteLength) || (value.byteLength as number) <= 0 || (value.byteLength as number) > 20 * 1024 * 1024 ||
       typeof value.enabled !== "boolean" || !validTimestamp(value.installedAt) || !validTimestamp(value.updatedAt)) {
+    throw new PluginStorageCorruptionError();
+  }
+  const dataGeneration = schemaVersion === 3 ? value.dataGeneration : null;
+  if (!validDataGeneration(dataGeneration) || (schemaVersion !== 3 && value.dataGeneration !== undefined)) {
     throw new PluginStorageCorruptionError();
   }
   const components = value.components as Record<string, unknown>;
@@ -695,26 +718,28 @@ function decodePlugin(value: unknown): InstalledPlugin {
       unsupportedComponents.some((entry, index) => index > 0 && unsupportedComponents[index - 1] >= entry)) {
     throw new PluginStorageCorruptionError();
   }
-  return clonePlugin({
-    ...(value as unknown as InstalledPlugin),
-    approvedMcpServerIds,
-    approvedArtifactInputServerIds,
-    approvedArtifactOutputServerIds,
-    ...(unsupportedComponents.length ? { unsupportedComponents } : {}),
-  });
+  return {
+    ...clonePlugin({
+      ...(value as unknown as StoredPlugin),
+      dataGeneration,
+      approvedMcpServerIds,
+      approvedArtifactInputServerIds,
+      approvedArtifactOutputServerIds,
+      ...(unsupportedComponents.length ? { unsupportedComponents } : {}),
+    }),
+    dataGeneration,
+  };
 }
 
-async function ensureCatalogDirectories(storageDirectory: string, pluginId: string): Promise<void> {
+async function ensureRuntimeDirectories(storageDirectory: string, plugin: StoredPlugin): Promise<void> {
   await ensurePrivateDirectorySafe(catalogRoot(storageDirectory));
-  await ensurePrivateDirectorySafe(packagesRoot(storageDirectory));
-  await ensurePrivateDirectorySafe(pluginDirectory(storageDirectory, pluginId));
-}
-
-async function ensureRuntimeDirectories(storageDirectory: string, pluginId: string): Promise<void> {
   await ensurePrivateDirectorySafe(materializedRoot(storageDirectory));
-  await ensurePrivateDirectorySafe(materializedPluginDirectory(storageDirectory, pluginId));
+  await ensurePrivateDirectorySafe(materializedPluginDirectory(storageDirectory, plugin.id));
   await ensurePrivateDirectorySafe(pluginDataRoot(storageDirectory));
-  await ensurePrivateDirectorySafe(pluginDataDirectory(storageDirectory, pluginId));
+  await ensurePrivateDirectorySafe(pluginDataDirectory(storageDirectory, plugin.id, null));
+  if (plugin.dataGeneration !== null) {
+    await ensurePrivateDirectorySafe(pluginDataDirectory(storageDirectory, plugin.id, plugin.dataGeneration));
+  }
 }
 
 async function ensureMaterializedPackage(
@@ -725,7 +750,7 @@ async function ensureMaterializedPackage(
     await verifyMaterializedPackage(target, files);
     return;
   } catch (error) {
-    if (!isMissingFileError(error)) await removeDirectoryDurably(target);
+    if (!isMissingFileError(error)) await fs.rm(target, { recursive: true, force: true });
   }
   const parent = path.dirname(target);
   const staging = await fs.mkdtemp(path.join(parent, ".staging-"));
@@ -751,7 +776,7 @@ async function verifyMaterializedPackage(
 ): Promise<void> {
   const root = await fs.lstat(target);
   if (!root.isDirectory() || root.isSymbolicLink()) throw new PluginStorageCorruptionError();
-  if (supportsPosixPermissions) await fs.chmod(target, 0o700);
+  if (supportsPosixPermissions && (root.mode & 0o7777) !== 0o700) await fs.chmod(target, 0o700);
   const actual = new Map<string, Uint8Array>();
   await collectMaterializedFiles(target, "", actual);
   if (actual.size !== expected.size) throw new PluginStorageCorruptionError();
@@ -774,12 +799,12 @@ async function collectMaterializedFiles(
     const stat = await fs.lstat(target);
     if (stat.isSymbolicLink()) throw new PluginStorageCorruptionError();
     if (stat.isDirectory()) {
-      if (supportsPosixPermissions) await fs.chmod(target, 0o700);
+      if (supportsPosixPermissions && (stat.mode & 0o7777) !== 0o700) await fs.chmod(target, 0o700);
       await collectMaterializedFiles(root, childRelative, output);
       continue;
     }
     if (!stat.isFile() || stat.nlink !== 1) throw new PluginStorageCorruptionError();
-    if (supportsPosixPermissions) await fs.chmod(target, 0o500);
+    if (supportsPosixPermissions && (stat.mode & 0o7777) !== 0o500) await fs.chmod(target, 0o500);
     output.set(childRelative, new Uint8Array(await fs.readFile(target)));
   }
 }
@@ -794,7 +819,7 @@ async function writeAfterMcpRevocation(revoked: boolean, write: () => Promise<vo
 }
 
 async function saveCatalog(storageDirectory: string, state: StoredPluginCatalog): Promise<void> {
-  await writeJsonAtomically(catalogTarget(storageDirectory), state);
+  await writeStoredJson(storageDirectory, catalogTarget(storageDirectory), state);
 }
 
 async function requirePrivateDirectory(target: string): Promise<void> {
@@ -813,39 +838,18 @@ async function requirePrivateDirectory(target: string): Promise<void> {
 async function ensurePrivateDirectorySafe(target: string): Promise<void> {
   try {
     await fs.mkdir(target, { mode: 0o700 });
-    if (supportsPosixPermissions) {
-      const parent = await fs.open(path.dirname(target), "r");
-      try { await parent.sync(); } finally { await parent.close(); }
-    }
   } catch (error) {
     if (!isAlreadyExistsError(error)) throw error;
   }
   await requirePrivateDirectory(target);
 }
 
-async function readPrivateFile(target: string, maximumBytes: number): Promise<Uint8Array> {
-  const before = await fs.lstat(target);
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > maximumBytes ||
-      (supportsPosixPermissions && getuid && before.uid !== getuid())) throw new PluginStorageCorruptionError();
-  const handle = await fs.open(target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-  try {
-    let opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
-      throw new PluginStorageCorruptionError();
-    }
-    if (supportsPosixPermissions && (opened.mode & 0o7777) !== 0o600) await handle.chmod(0o600);
-    opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size ||
-        (supportsPosixPermissions && (opened.mode & 0o7777) !== 0o600)) {
-      throw new PluginStorageCorruptionError();
-    }
-    const bytes = new Uint8Array(await handle.readFile());
-    const after = await handle.stat();
-    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || bytes.byteLength !== opened.size) {
-      throw new PluginStorageCorruptionError();
-    }
-    return bytes;
-  } finally { await handle.close(); }
+async function readStoredPluginBytes(storageDirectory: string, target: string, maximumBytes: number): Promise<Uint8Array> {
+  const entry = await storedEntry(storageDirectory, target);
+  if (entry && entry.byteLength > maximumBytes) throw new PluginStorageCorruptionError();
+  const bytes = await readStoredBytes(storageDirectory, target);
+  if (bytes.byteLength > maximumBytes) throw new PluginStorageCorruptionError();
+  return bytes;
 }
 
 function requireStorageDirectory(value: string | undefined): string {
@@ -853,9 +857,10 @@ function requireStorageDirectory(value: string | undefined): string {
   return value;
 }
 
-function clonePlugin(value: InstalledPlugin): InstalledPlugin {
+function clonePlugin(value: StoredPlugin): InstalledPlugin {
+  const { dataGeneration: _dataGeneration, ...publicValue } = value;
   return {
-    ...value,
+    ...publicValue,
     components: { ...value.components },
     approvedMcpServerIds: [...value.approvedMcpServerIds],
     approvedArtifactInputServerIds: [...value.approvedArtifactInputServerIds],
@@ -896,14 +901,14 @@ function isAlreadyExistsError(error: unknown): boolean {
   return error !== null && typeof error === "object" && "code" in error &&
     (error as { code?: unknown }).code === "EEXIST";
 }
-function catalogRoot(storageDirectory: string): string { return path.join(storageDirectory, rootName); }
+function catalogRoot(storageDirectory: string): string { return path.resolve(storageDirectory, rootName); }
 function catalogTarget(storageDirectory: string): string { return path.join(catalogRoot(storageDirectory), catalogName); }
 function packagesRoot(storageDirectory: string): string { return path.join(catalogRoot(storageDirectory), packagesName); }
 function pluginDirectory(storageDirectory: string, pluginId: string): string { return path.join(packagesRoot(storageDirectory), pluginId); }
 function archiveTarget(storageDirectory: string, pluginId: string, sha256: string): string {
   return path.join(pluginDirectory(storageDirectory, pluginId), `${sha256}.zip`);
 }
-function materializedRoot(storageDirectory: string): string { return path.join(catalogRoot(storageDirectory), "runtime"); }
+function materializedRoot(storageDirectory: string): string { return path.join(catalogRoot(storageDirectory), "runtime-cache"); }
 function materializedPluginDirectory(storageDirectory: string, pluginId: string): string {
   return path.join(materializedRoot(storageDirectory), pluginId);
 }
@@ -911,8 +916,9 @@ function materializedTarget(storageDirectory: string, pluginId: string, sha256: 
   return path.join(materializedPluginDirectory(storageDirectory, pluginId), sha256);
 }
 function pluginDataRoot(storageDirectory: string): string { return path.join(catalogRoot(storageDirectory), "data"); }
-function pluginDataDirectory(storageDirectory: string, pluginId: string): string {
-  return path.join(pluginDataRoot(storageDirectory), pluginId);
+function pluginDataDirectory(storageDirectory: string, pluginId: string, dataGeneration: string | null): string {
+  const root = path.join(pluginDataRoot(storageDirectory), pluginId);
+  return dataGeneration === null ? root : path.join(root, dataGeneration);
 }
 function isContainedPath(root: string, target: string): boolean {
   const relative = path.relative(root, target);

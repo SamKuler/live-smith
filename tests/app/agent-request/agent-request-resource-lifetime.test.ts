@@ -1,6 +1,6 @@
+import { interceptStoredWrites } from "../../storage/support/sqlite-fault-test-helpers.js";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execPath, kill } from "node:process";
@@ -14,9 +14,9 @@ import { saveGlobalSettings } from "../../../src/storage/settings.js";
 import { agentRequestContext } from "./support/agent-context.js";
 import { liveContextPresentationFixture } from "../context/support/live-context.test-harness.js";
 
-test("request initialization closes an admitted MCP process when the Session title cannot be saved", async () => {
+test("request initialization closes an admitted MCP process when the Session title cannot be saved", async (t) => {
   const directory = await fs.mkdtemp(join(tmpdir(), "request-init-lifetime-"));
-  const rename = fs.rename;
+  let restore: (() => void) | undefined;
   try {
     const server = join(directory, "server.mjs");
     const pidFile = join(directory, "server.pid");
@@ -33,13 +33,11 @@ test("request initialization closes an admitted MCP process when the Session tit
       connection: { kind: "direct-api", apiFamily: "openai", apiMode: "responses", baseUrl: "https://example.test/v1", apiKey: "test" },
       defaultModel: "gpt-5.4", models: [{ model: "gpt-5.4", parameters: { maxOutputTokens: 4096, reasoning: { mode: "default" } }, advanced: {} }],
     });
-    fs.rename = async (source, target) => {
-      if (String(target) === join(directory, "live-smith-sessions.json")) {
+    restore = interceptStoredWrites(t, { beforeWrite({ key }) {
+      if (key === "live-smith-sessions.json") {
         throw Object.assign(new Error("Session title write unavailable"), { code: "EIO" });
       }
-      return rename(source, target);
-    };
-    syncBuiltinESMExports();
+    } });
     let modelCalls = 0;
     await assert.rejects(handleAgentRequest(
       agentRequestContext({ environment: { storageDirectory: directory } } as never), directory,
@@ -52,8 +50,7 @@ test("request initialization closes an admitted MCP process when the Session tit
     const pid = Number(await fs.readFile(pidFile, "utf8"));
     assert.throws(() => kill(pid, 0), { code: "ESRCH" }, "The real child process must be gone before failure returns");
   } finally {
-    fs.rename = rename;
-    syncBuiltinESMExports();
+    restore?.();
     await closeActiveMcpConnection(directory, "fixture-mcp");
     await fs.rm(directory, { recursive: true, force: true });
   }

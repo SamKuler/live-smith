@@ -125,10 +125,12 @@ See the [user guide](docs/USER_GUIDE.md) and
 ## Privacy
 
 Profiles, connections, Sessions, attachments, Skills and Plugin data are stored
-locally. Model requests send your prompt, relevant Live context, saved creative
-brief, selected Skill guidance and supported attachment content to the provider
-you choose. Requested audio listening can also send an Arrangement render or a
-saved Session audio asset.
+locally. With persistent storage, SQLite holds Session history and media
+references, and a private media directory holds the original files. Model
+requests send your prompt, relevant Live context, saved creative brief,
+selected Skill guidance and supported attachment content to the provider you
+choose. Requested audio listening can also send an Arrangement render or a saved
+Session audio asset.
 
 Audio services and MCP servers receive the inputs used by their tools. Local
 MCP processes run as your operating-system user; review their code, launch

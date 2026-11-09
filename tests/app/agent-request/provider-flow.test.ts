@@ -1,5 +1,7 @@
+import { writeStoredTestFile } from "../../storage/support/stored-media-test-helpers.js";
 import { agentRequestContext } from "./support/agent-context.js";
 import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
+import { webSearchSummary } from "../../../src/agent/loop.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
@@ -1168,7 +1170,7 @@ test("unknown hosted Web Search commit reconciles without duplicate append or pu
   );
 });
 
-test("unknown hosted Web Search outcome is reconciled before one safe retry", async () => {
+test("unknown hosted Web Search outcome retries after a matching historical search was compacted", async () => {
   const directory = await fs.mkdtemp(path.join(
     os.tmpdir(),
     "live-smith-web-search-unknown-before-commit-",
@@ -1192,6 +1194,9 @@ test("unknown hosted Web Search outcome is reconciled before one safe retry", as
     parameters: { maxOutputTokens: 1024, reasoning: { mode: "default" } },
     advanced: { hostedTools: { webSearch: true } },
   });
+  const oldSearch = completedWebSearch("search-unknown-before-commit");
+  const historical = await appendSessionEvent(directory,existing.id,{kind:"web_search",content:webSearchSummary(oldSearch),webSearch:oldSearch});
+  await appendSessionEvent(directory,existing.id,{kind:"compaction",content:"Earlier research finished."});
   const commitError = new StorageCommitOutcomeUnknownError(
     Object.assign(new Error("rename outcome unavailable"), { code: "EIO" }),
   );
@@ -1252,7 +1257,8 @@ test("unknown hosted Web Search outcome is reconciled before one safe retry", as
   const events = await loadSessionEvents(directory, existing.id);
   assert.equal(webSearchAppendAttempts, 2);
   assert.equal(reconciliationLoads, 1);
-  assert.equal(events.filter((event) => event.kind === "web_search").length, 1);
+  assert.equal(events.filter((event) => event.kind === "web_search").length, 2);
+  assert.notEqual(publishedEvents.find(event => event.kind === "web_search")?.id,historical.id);
   assert.equal(
     publishedEvents.filter((event) => event.kind === "web_search").length,
     1,
@@ -2198,7 +2204,7 @@ test("handleAgentRequest skips consumed corrupt metadata while validating curren
     fileName: "current-valid.png",
     bytes: attachmentPng(2),
   }, { preSavePendingAttachmentRefs: [] });
-  await fs.writeFile(
+  await writeStoredTestFile(dir,
     path.join(
       dir,
       "live-smith-attachments",
@@ -2279,7 +2285,7 @@ test("handleAgentRequest fails closed for unconsumed corrupt attachment metadata
     fileName: "pending-corrupt.png",
     bytes: attachmentPng(1),
   }, { preSavePendingAttachmentRefs: [] });
-  await fs.writeFile(
+  await writeStoredTestFile(dir,
     path.join(
       dir,
       "live-smith-attachments",

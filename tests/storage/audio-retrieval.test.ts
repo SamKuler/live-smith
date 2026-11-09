@@ -1,5 +1,5 @@
+import { readStoredText, listStoredChildren } from "../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import test from "node:test";
 import { AudioStorageError, createAudioJob, loadAudioJob, updateAudioJob } from "../../src/storage/audio-jobs.js";
 import { audioStorageHarness, fingerprint } from "./support/audio-storage-test-helpers.js";
@@ -17,7 +17,7 @@ test("first durable retrieval record contains its immutable ID and role receipt"
   const initial = { remoteTaskId: receipt.remoteTaskId, expectedOutputs: receipt.expectedOutputs.map((entry) => ({ ...entry })) };
   const job = await createAudioJob(h.storage, h.session.id, configuration, initial);
   initial.expectedOutputs[0]!.key = second;
-  const saved = JSON.parse(await fs.readFile(`${h.directory}/${job.id}.job.json`, "utf8"));
+  const saved = JSON.parse(await readStoredText(h.storage, `${h.directory}/${job.id}.job.json`));
   assert.deepEqual(saved.expectedOutputs, receipt.expectedOutputs);
   assert.equal(saved.remoteTaskId, first);
   assert.equal(saved.operation, "retrieve_music");
@@ -33,7 +33,7 @@ test("first durable retrieval record contains its immutable ID and role receipt"
 
 test("initial receipts are required for retrieval and cannot spoof generation submission", async (t) => {
   const h = await audioStorageHarness(t);
-  const before = await fs.readdir(h.directory);
+  const before = await listStoredChildren(h.storage, h.directory);
   await assert.rejects(createAudioJob(h.storage, h.session.id, configuration), AudioStorageError);
   for (const input of [undefined, {}, { ...receipt, remoteTaskId: second },
     { ...receipt, expectedOutputs: [] }, { ...receipt, expectedOutputs: [...receipt.expectedOutputs].reverse() },
@@ -44,5 +44,5 @@ test("initial receipts are required for retrieval and cannot spoof generation su
     await assert.rejects(createAudioJob(h.storage, h.session.id, configuration, input as never), AudioStorageError);
   }
   await assert.rejects(createAudioJob(h.storage, h.session.id, { ...configuration, operation: "generate_music" }, receipt), AudioStorageError);
-  assert.deepEqual(await fs.readdir(h.directory), before);
+  assert.deepEqual(await listStoredChildren(h.storage, h.directory), before);
 });

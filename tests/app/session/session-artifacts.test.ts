@@ -1,3 +1,4 @@
+import { readStoredBytes, writeStoredBytes, writeStoredJson, removeStoredEntry } from "../../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as fs from "node:fs/promises";
@@ -325,6 +326,7 @@ test("MIDI revisions form one logical library item before pagination and exact r
   assert.deepEqual(exact.artifact.versions, work.versions);
   const audioDetail = await readSessionArtifact({ ...input, artifact: { kind: "audio", id: audio.id } });
   assert.deepEqual(audioDetail.artifact, all.find((artifact) => artifact.ref.id === audio.id));
+  assert.doesNotMatch(JSON.stringify(audioDetail), /sha256|connectionId|storageDirectory|"bytes"/);
   assert.doesNotMatch(JSON.stringify(exact), /sha256|byteLength|connectionId|storageDirectory|bytes/);
   const other = await createSession(h.storage, { title: "Other", projectKey: "test-project", scope: { kind: "selection", identity: "other", label: "Other" } });
   for (const patch of [{ sessionId: other.id }, { projectKey: "foreign-project" },
@@ -343,7 +345,7 @@ test("unreadable MIDI revisions fall back to the newest readable version without
     label: "Theme", bytes: midiBytes({ tracks: [noteTrack()] }), ...(revisionOf ? { revisionOf } : {}), signal: h.signal });
   const original = await save(); const revision = await save(original.id);
   const blob = path.join(h.storage, "live-smith-midi", h.session.id, `${revision.id}.mid`);
-  const bytes = await fs.readFile(blob); bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 1; await fs.writeFile(blob, bytes);
+  const bytes = await readStoredBytes(h.storage, blob); bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 1; await writeStoredBytes(h.storage, blob, bytes);
   const catalog = await listSessionArtifacts(input);
   assert.equal(catalog.total, 1); assert.equal(catalog.unavailableCount, 1);
   assert.equal(catalog.artifacts[0]!.ref.id, original.id);
@@ -407,7 +409,7 @@ test("primary commands reject other works and Sessions; unavailable saved primar
   assert.equal((await loadSessionEvents(h.storage, h.session.id)).length, 0);
   await selectSessionArtifact({ ...input, selection: { action: "primary", group, candidate: ref(original.id) } });
   const blob = path.join(h.storage, "live-smith-midi", h.session.id, `${original.id}.mid`);
-  const bytes = await fs.readFile(blob); bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 1; await fs.writeFile(blob, bytes);
+  const bytes = await readStoredBytes(h.storage, blob); bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 1; await writeStoredBytes(h.storage, blob, bytes);
   const fallback = (await listSessionArtifacts(input)).artifacts.find((entry) => entry.version?.groupId === original.id)!;
   assert.equal(fallback.ref.id, revision.id); assert.equal(fallback.primary, undefined);
   await appendSessionEvent(h.storage, h.session.id, { kind: "candidate", content: "Stale primary",
@@ -456,7 +458,7 @@ test("artifact command parser admits scoped primary set and clear without accept
 test("Plugin audio uses the same version group as its built-in source without fabricated jobs", async (t) => {
   const h = await rawAudioStorageHarness(t, generationJobCases[0]!.input);
   const { version: _version, ...source } = await h.save("music");
-  await fs.writeFile(path.join(h.directory, `${source.id}.asset.json`), JSON.stringify(source));
+  await writeStoredJson(h.storage, path.join(h.directory, `${source.id}.asset.json`), source);
   await updateAudioJob(h.storage, h.session.id, h.job.id, { outputAssets: [source] });
   const parent = { kind: "audio" as const, id: source.id };
   const call = await appendSessionEvent(h.storage, h.session.id, { kind: "tool_call", name: "transform_audio", content: '{"amount":0.5}', parentCandidate: parent });
@@ -479,7 +481,7 @@ test("Plugin audio uses the same version group as its built-in source without fa
   const exact = await readSessionArtifact({ ...input, artifact: { kind: "audio", id: plugin.id } });
   assert.equal(exact.artifact.ref.id, plugin.id); assert.deepEqual(exact.artifact.primary, parent);
   const blob = path.join(h.storage, "live-smith-audio-artifacts", h.session.id, `${plugin.id}.audio`);
-  await fs.rm(blob);
+  await removeStoredEntry(h.storage, blob);
   await selectSessionArtifact({ ...input, selection: { action: "primary", group: parent, candidate: null } });
   const fallback = await listSessionArtifacts(input);
   assert.equal(fallback.artifacts[0]!.ref.id, source.id);
@@ -552,9 +554,10 @@ test("service and Plugin audio expose their validated decoding metadata in catal
   for (const saved of [service, plugin]) {
     const detail = await readSessionArtifact({ ...input, artifact: { kind: 'audio', id: saved.id } });
     for (const artifact of [catalog.artifacts.find(entry => entry.ref.id === saved.id)!, detail.artifact]) {
+      assert.equal(artifact.audio!.byteLength, saved.byteLength);
       assert.equal(artifact.audio!.sampleRate, saved.sampleRate); assert.equal(artifact.audio!.channels, saved.channels);
       assert.equal(isSessionArtifactDetail({ sessionId: h.session.id, artifact }), true);
-      for (const patch of [{ sampleRate: undefined }, { channels: undefined }, { sampleRate: 0 }, { channels: 1.5 }]) {
+      for (const patch of [{ byteLength: undefined }, { byteLength: 0 }, { sampleRate: undefined }, { channels: undefined }, { sampleRate: 0 }, { channels: 1.5 }]) {
         assert.equal(isSessionArtifactDetail({ sessionId: h.session.id, artifact: { ...artifact, audio: { ...artifact.audio, ...patch } } }), false);
       }
     }

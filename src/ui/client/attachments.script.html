@@ -26,7 +26,7 @@
       ]);
       const maxImageAttachmentBytes = __MAX_IMAGE_ATTACHMENT_BYTES__;
       const maxDocumentAttachmentBytes = __MAX_DOCUMENT_ATTACHMENT_BYTES__;
-      const maxAudioAttachmentBytes = __MAX_AUDIO_ATTACHMENT_BYTES__;
+      const maxAudioAttachmentBytes = __MAX_LOCAL_AUDIO_ATTACHMENT_BYTES__;
       const maxPendingAttachmentCount = __MAX_PENDING_ATTACHMENT_COUNT__;
       const maxPendingImageBytes = __MAX_PENDING_IMAGE_ATTACHMENT_BYTES__;
       const maxPendingDocumentBytes = __MAX_PENDING_DOCUMENT_ATTACHMENT_BYTES__;
@@ -58,7 +58,8 @@
         if (byteLength < 1024) return `${byteLength} B`;
         const kibibytes = byteLength / 1024;
         if (kibibytes < 1024) return `${formatUnit(kibibytes)} KiB`;
-        return `${formatUnit(kibibytes / 1024)} MiB`;
+        const mebibytes = kibibytes / 1024;
+        return mebibytes < 1024 ? `${formatUnit(mebibytes)} MiB` : `${formatUnit(mebibytes / 1024)} GiB`;
       }
 
       function formatUnit(value) {

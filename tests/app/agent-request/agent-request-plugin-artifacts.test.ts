@@ -1,3 +1,4 @@
+import { listStoredChildren, removeStoredEntry } from "../../../src/storage/sqlite.js";
 import { modelMessageText } from "../../model/support/model-message-test-helpers.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -236,7 +237,7 @@ test("damaged saved MIDI metadata does not block a normal send and surfaces a wa
     pluginId: "audio-to-midi", serverId: "local", toolName: "transcribe",
     label: "Missing MIDI", bytes: midiFile(), signal,
   });
-  await fs.rm(path.join(directory, "live-smith-midi", session.id, `${artifact.id}.mid`));
+  await removeStoredEntry(directory, path.join(directory, "live-smith-midi", session.id, `${artifact.id}.mid`));
   const progress: UiMessage[] = [];
   const result = await handleAgentRequest(
     { application: { song: { handle: { id: 1n }, tempo: 120, tracks: [],
@@ -257,7 +258,7 @@ test("damaged saved MIDI metadata does not block a normal send and surfaces a wa
   assert.ok(progress.some((message) => typeof message === "object" &&
     message.source === "{count} saved MIDI artifacts are unavailable; their metadata was preserved." &&
     message.values.count === 1));
-  assert.ok((await fs.readdir(path.join(directory, "live-smith-midi", session.id)))
+  assert.ok((await listStoredChildren(directory, path.join(directory, "live-smith-midi", session.id)))
     .includes(`${artifact.id}.midi.json`));
 });
 

@@ -4,7 +4,6 @@ import { URL } from "node:url";
 import type { SessionArtifact, SessionArtifacts } from "../../../src/app/session/session-artifacts.js";
 import { captureParameterDevice } from "../../../src/live/device-parameters.js";
 import { deviceParameterFixture } from "../../live/support/device-parameter-fixture.js";
-import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
 import { commandCalls, createDialogHarness, stateFixture, waitForCondition } from "../support/chat-dialog.test-harness.js";
 
 type Input = { sessionId: string; offset: number; query?: string; kind?: "audio" | "midi" | "device-parameters" };
@@ -19,7 +18,7 @@ async function setup(read?: (input: Input) => Promise<SessionArtifacts>) {
     history: [{ id: 'application', artifact: { kind: 'device-parameters', id: 'parameters-v2' }, createdAt: saved.createdAt, action: 'parameters', status: 'kept' }] };
   const audio: SessionArtifact = { ref: { kind: 'audio', id: 'audio-a' }, label: 'Texture', sourceLabel: 'Plugin-generated audio', createdAt: saved.createdAt,
     version: { groupId: 'audio-a', number: 1, groupLabel: 'Texture' }, versions: [{ id: 'audio-a', number: 1, label: 'Texture', createdAt: saved.createdAt }],
-    audio: { durationSeconds: 1, mediaType: 'audio/wav', sampleRate: 8000, channels: 1 } };
+    audio: { byteLength: 16_044, durationSeconds: 1, mediaType: 'audio/wav', sampleRate: 8000, channels: 1 } };
   const midi: SessionArtifact = { ref: { kind: 'midi', id: 'midi-a' }, label: 'Melody', sourceLabel: 'AI-generated MIDI', createdAt: saved.createdAt,
     version: { groupId: 'midi-a', number: 1, groupLabel: 'Melody' }, versions: [{ id: 'midi-a', number: 1, label: 'Melody', createdAt: saved.createdAt }],
     midi: { durationBeats: 4, noteCount: 1, omittedNoteCount: 0, parts: [{ id: 'track-0-channel-1', channel: 1, sourceTrackIndex: 0, noteCount: 1, durationBeats: 4 }],
@@ -35,7 +34,7 @@ async function setup(read?: (input: Input) => Promise<SessionArtifacts>) {
       return { ok: true, json: async () => result };
     }
     if (path === '/device-parameters') return { ok: true, json: async () => ({ sessionId: body.sessionId, devices: [snapshot.target], artifact: saved, current: snapshot }) };
-    if (path === '/audio-assets/audio-a') { const bytes = waveBytes(); return { ok: true, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) }; }
+    if (path === '/audio-assets/audio-a') return { ok: true, json: async () => ({ peaks: [0, .5], durationSeconds: 1 }) };
     return original(input, init);
   } });
   const openSummary = async () => { h.click('#artifactsShortcut'); await h.settle(); };

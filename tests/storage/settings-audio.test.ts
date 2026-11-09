@@ -1,5 +1,7 @@
+import { readStoredText, writeStoredBytes, STORAGE_DATABASE_NAME } from "../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -134,7 +136,7 @@ test("schema v8 audioServices migrate losslessly to schema v10 Integration Conne
 });
 
 test("SunoAPI configuration persists without exposing secrets and enabling requires callback plus key", async () => {
-  const { file, save } = await fixture();
+  const { directory, file, save } = await fixture();
   await save(upsert());
   const suno = connection({
     id: "suno-api",
@@ -144,7 +146,7 @@ test("SunoAPI configuration persists without exposing secrets and enabling requi
     apiKey: "",
   });
   const disabled = await save({ action: "upsert", expectedRevision: "1", connection: suno });
-  const before = await readFile(file, "utf8");
+  const before = await readStoredText(directory, file);
   await assert.rejects(save({ action: "upsert", expectedRevision: "2", connection: {
     ...suno,
     enabled: true,
@@ -156,7 +158,7 @@ test("SunoAPI configuration persists without exposing secrets and enabling requi
     enabled: true,
     configuration: { callbackUrl },
   } }), /API key/);
-  assert.equal(await readFile(file, "utf8"), before);
+  assert.equal(await readStoredText(directory, file), before);
   const saved = await save({ action: "upsert", expectedRevision: "2", connection: {
     ...suno,
     enabled: true,
@@ -262,7 +264,7 @@ test("historical single LALAL connection migrates on read and the next write per
       revision: "9007199254740999",
     },
   });
-  await writeFile(file, source);
+  await writeStoredBytes(directory, file, Buffer.from(source));
   const loaded = await loadAgentSettings(directory);
   assert.deepEqual(loaded.integrationConnections, {
     revision: "9007199254740999",
@@ -272,7 +274,7 @@ test("historical single LALAL connection migrates on read and the next write per
       apiKey: "fixture-legacy",
     })],
   });
-  assert.equal(await readFile(file, "utf8"), source);
+  assert.equal(await readStoredText(directory, file), source);
   const { secrets: _omitted, ...fields } = loaded.integrationConnections!.connections[0]!;
   const saved = await save({
     action: "upsert",
@@ -281,7 +283,7 @@ test("historical single LALAL connection migrates on read and the next write per
   });
   assert.equal(saved.integrationConnections?.revision, "9007199254741000");
   assert.equal(saved.integrationConnections?.connections[0]!.secrets.apiKey, "fixture-legacy");
-  const persisted = JSON.parse(await readFile(file, "utf8"));
+  const persisted = JSON.parse(await readStoredText(directory, file));
   assert.equal(persisted.schemaVersion, 10);
   assert.equal(Object.hasOwn(persisted, "audioService"), false);
   assert.equal(Object.hasOwn(persisted, "audioServices"), false);
@@ -340,8 +342,8 @@ test("same-Plugin accounts preserve independent secrets; Plugin switches never i
     [[false, ""], [true, "fixture-personal"], [true, "fixture-music"]]);
   const removed = await save({ action: "remove", connectionId: "audio-personal", expectedRevision: "5" });
   assert.deepEqual(removed.integrationConnections?.connections.map((entry) => entry.id), ["audio-work", "audio-music"]);
-  assert.doesNotMatch(await readFile(file, "utf8"), /fixture-work|fixture-personal/);
-  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  assert.doesNotMatch(await readStoredText(directory, file), /fixture-work|fixture-personal/);
+  assert.equal((await stat(join(directory, STORAGE_DATABASE_NAME))).mode & 0o777, 0o600);
 
   const switched = connection({ provider: "suno", enabled: true, apiKey: "" });
   const { secrets: _none, ...switchedFields } = switched;
@@ -353,7 +355,7 @@ test("same-Plugin accounts preserve independent secrets; Plugin switches never i
 test("stale, invalid, and missing-target writes are atomic; one collection revision wins", async () => {
   const { directory, file, save } = await fixture();
   await save(upsert());
-  const before = await readFile(file, "utf8");
+  const before = await readStoredText(directory, file);
   await assert.rejects(save(upsert("0", { apiKey: "fixture-stale" })), /changed in another window/);
   await assert.rejects(save({ action: "remove", connectionId: "missing", expectedRevision: "1" }), /no longer exists/);
   await assert.rejects(save(upsert("1", { id: "duplicate-name" })), /unique/);
@@ -363,7 +365,7 @@ test("stale, invalid, and missing-target writes are atomic; one collection revis
     expectedRevision: "1",
     connection: { ...invalidMissingKey, enabled: true },
   }), /API key/);
-  assert.equal(await readFile(file, "utf8"), before);
+  assert.equal(await readStoredText(directory, file), before);
   const results = await Promise.allSettled([
     save(upsert("1", { apiKey: "fixture-one" })),
     save(upsert("1", { apiKey: "fixture-two" })),

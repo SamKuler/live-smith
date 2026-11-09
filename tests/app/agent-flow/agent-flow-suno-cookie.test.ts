@@ -1,3 +1,4 @@
+import { interceptStoredWrites } from "../../storage/support/sqlite-fault-test-helpers.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test from "node:test";
@@ -101,10 +102,9 @@ test("partial Cookie cleanup returns authoritative disconnected state and invali
     application: { song: { handle: { id: 1n } } }, environment: { storageDirectory: storage },
     ui: { showModalDialog: async (url: string) => {
       const endpoint = new URL(url); endpoint.pathname = "/command";
-      const handle = await fs.open(storage);
-      const prototype = Object.getPrototypeOf(handle) as fs.FileHandle;
-      await handle.close();
-      const fault = t.mock.method(prototype, "writeFile", async () => { throw new Error("Injected settings failure"); });
+      const restore = interceptStoredWrites(t, { beforeWrite({ key }) {
+        if (key === "live-smith-settings.json") throw new Error("Injected settings failure");
+      } });
       try {
         const response = await fetch(endpoint, { method: "POST", headers: {
           "Content-Type": "application/json", "X-Live-Smith-Command-Id": "suno-partial-remove",
@@ -119,7 +119,7 @@ test("partial Cookie cleanup returns authoritative disconnected state and invali
         assert.deepEqual(failure.state.sunoAccounts, [{ serviceId: connection.id, status: "signed_out" }]);
         assert.equal(failure.state.integrationConnections.connections[0].id, connection.id);
         assert.equal(invalidations, 1);
-      } finally { fault.mock.restore(); }
+      } finally { restore(); }
     } },
   } as never, interaction, { renderHtml: () => "<html></html>" });
 });

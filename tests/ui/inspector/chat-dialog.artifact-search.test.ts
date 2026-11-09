@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import * as fs from "node:fs/promises";
+import { removeStoredEntry } from "../../../src/storage/sqlite.js";
 import * as path from "node:path";
 import { URL } from "node:url";
 import { audioStorageHarness } from "../../storage/support/audio-storage-test-helpers.js";
@@ -12,7 +12,7 @@ import { cloneState, commandCalls, createDialogHarness, stateFixture, waitForCon
 
 type Query = { sessionId: string; offset: number; query?: string; kind?: "midi" | "audio" | "device-parameters" };
 const audio = (id: string, label: string): SessionArtifact => ({ ref: { kind: "audio", id }, label,
-  createdAt: "2026-10-03T00:00:00Z", sourceLabel: "Music generator", audio: { durationSeconds: 32, mediaType: "audio/wav", sampleRate: 8000, channels: 1 } });
+  createdAt: "2026-10-03T00:00:00Z", sourceLabel: "Music generator", audio: { byteLength: 512_044, durationSeconds: 32, mediaType: "audio/wav", sampleRate: 8000, channels: 1 } });
 const all = [audio("audio-a", "Arrangement"), audio("audio-b", "晨光")];
 const page = (input: Query, artifacts = all, total = artifacts.length): SessionArtifacts => ({ ...input, artifacts, total, unavailableCount: 0 });
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (error: Error) => void;
@@ -162,7 +162,7 @@ for (const scenario of [
       action(h, "Next page"); await waitForCondition(() => pages.at(-1)?.offset === offset, "Expected next search page"); await h.settle();
     }
     for (const artifact of saved.slice(scenario.remaining)) {
-      await fs.unlink(path.join(storage.storage, "live-smith-midi", storage.session.id, `${artifact.id}.mid`));
+      await removeStoredEntry(storage.storage, path.join(storage.storage, "live-smith-midi", storage.session.id, `${artifact.id}.mid`));
     }
     const beforeRefresh = pages.length;
     action(h, "Refresh artifacts");

@@ -1,3 +1,5 @@
+import { hashFileContent } from "./file-hash.js";
+import { createSessionHistory } from "./session-history.js";
 import { installDisclosureMotion } from "./disclosure-motion.js";
 import { setPaneOpen } from "./pane-motion.js";
 import { isImeKeyboardEvent } from "./ime-keyboard.js";
@@ -15,7 +17,7 @@ import { sessionActivityAt } from "../../app/session/session-activity.js";
 import { createActionDetails } from "./action-details.js";
 
 const browser = window as typeof window & {
-  LiveSmithFactories?: { isImeKeyboardEvent?: typeof isImeKeyboardEvent; setPaneOpen?: typeof setPaneOpen; installDisclosureMotion?: typeof installDisclosureMotion; createInlineHelp?: typeof createInlineHelp; createArtifactSummary?: typeof createArtifactSummary; createActionDetails?: typeof createActionDetails; sessionActivityAt?: typeof sessionActivityAt; createSessionSearch?: typeof createSessionSearch; createSessionAttachments?: typeof createSessionAttachments; createActionPreview?: typeof createActionPreview; sessionInspectorTabs?: typeof sessionInspectorTabs; sessionShortcutIds?: typeof sessionShortcutIds; createCreativeBriefEditor?: typeof createCreativeBriefEditor; createAudioConnectionEditor?: typeof createAudioConnectionEditor; createWireValidators?: typeof createWireValidators; createConnectionState?: typeof createConnectionState };
+  LiveSmithFactories?: { hashFileContent?: typeof hashFileContent; createSessionHistory?: typeof createSessionHistory; isImeKeyboardEvent?: typeof isImeKeyboardEvent; setPaneOpen?: typeof setPaneOpen; installDisclosureMotion?: typeof installDisclosureMotion; createInlineHelp?: typeof createInlineHelp; createArtifactSummary?: typeof createArtifactSummary; createActionDetails?: typeof createActionDetails; sessionActivityAt?: typeof sessionActivityAt; createSessionSearch?: typeof createSessionSearch; createSessionAttachments?: typeof createSessionAttachments; createActionPreview?: typeof createActionPreview; sessionInspectorTabs?: typeof sessionInspectorTabs; sessionShortcutIds?: typeof sessionShortcutIds; createCreativeBriefEditor?: typeof createCreativeBriefEditor; createAudioConnectionEditor?: typeof createAudioConnectionEditor; createWireValidators?: typeof createWireValidators; createConnectionState?: typeof createConnectionState };
 };
 browser.LiveSmithFactories ??= {};
 browser.LiveSmithFactories.setPaneOpen = setPaneOpen;
@@ -35,3 +37,7 @@ browser.LiveSmithFactories.createAudioConnectionEditor = createAudioConnectionEd
 
 browser.LiveSmithFactories.sessionInspectorTabs = sessionInspectorTabs;
 browser.LiveSmithFactories.sessionShortcutIds = sessionShortcutIds;
+
+browser.LiveSmithFactories.createSessionHistory = createSessionHistory;
+
+browser.LiveSmithFactories.hashFileContent = hashFileContent;

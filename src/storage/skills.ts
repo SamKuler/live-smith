@@ -1,9 +1,5 @@
-import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { platform } from "node:process";
 import { TextDecoder, types } from "node:util";
 
 import {
@@ -17,18 +13,16 @@ import {
 import { isMissingFileError } from "./errors.js";
 import { createStorageId } from "./id.js";
 import {
-  ensurePrivateDirectoryDurably,
   isStorageCommitOutcomeUnknownError,
-  removeDirectoryDurably,
-  removeFileDurably,
   requireActiveStorageTransaction,
   trackStorageTransactionOperation,
   withStorageTransaction,
-  writeBytesAtomically,
-  writeBytesAtomicallyCreateOnly,
-  writeJsonAtomically,
   type StorageTransactionContext,
 } from "./persistence.js";
+import {
+  listStoredChildren, readStoredBytes, removeStoredEntry,
+  removeStoredTree, storedEntry, storedTreeExists, writeStoredBytes, writeStoredJson,
+} from "./sqlite.js";
 
 export interface InstalledSkill extends SkillSummary {
   sha256: string;
@@ -41,9 +35,6 @@ export const MAX_INSTALLED_SKILLS = 32;
 export const MAX_INSTALLED_SKILL_BYTES = 1024 * 1024;
 
 export type SkillStorageFaultPoint =
-  | "after-catalog-lstat"
-  | "after-definition-lstat"
-  | "after-definition-fstat"
   | "before-pending-catalog"
   | "after-pending-catalog"
   | "before-definition-replace"
@@ -92,11 +83,6 @@ interface MemorySkill {
   metadata: InstalledSkill;
 }
 
-interface DirectoryIdentity {
-  dev: number;
-  ino: number;
-}
-
 type FaultInjector = NonNullable<SkillCatalogTransactionOptions["fault"]>;
 
 const catalogDirectoryName = "live-smith-skills";
@@ -122,7 +108,6 @@ const pendingDeleteKeys = new Set(["kind", "skillId"]);
 const sha256Pattern = /^[a-f0-9]{64}$/;
 const stagingFilePattern = /^\.SKILL\.md\.skill_[A-Za-z0-9_-]+\.next$/;
 const catalogTemporaryPattern = /^\.catalog\.json\.tmp_[A-Za-z0-9_-]+$/;
-const supportsPosixPermissions = platform !== "win32";
 const memorySkills = new Map<string, MemorySkill>();
 
 export class SkillStorageCorruptionError extends Error {
@@ -337,14 +322,14 @@ class SkillCatalog implements SkillCatalogTransaction {
       this.state = memoryCatalogState();
       return;
     }
-    const loaded = await loadDiskCatalog(this.storageDirectory, this.fault);
+    const loaded = await loadStoredCatalog(this.storageDirectory);
     this.state = loaded.state;
     this.catalogExists = loaded.exists;
     while (this.state.pendingMutation !== undefined) {
       await this.recoverPendingMutation();
     }
     if (this.catalogExists) {
-      await validateStableDiskState(this.storageDirectory, this.state, this.fault);
+      await validateStableStoredState(this.storageDirectory, this.state);
     }
   }
 
@@ -377,9 +362,9 @@ class SkillCatalog implements SkillCatalogTransaction {
         parseAndMatchDefinition(stored.bytes, existing);
       } else {
         await verifyDefinition(
+          this.storageDirectory,
           definitionTarget(this.storageDirectory, definition.id),
           existing,
-          this.fault,
         );
       }
       return cloneInstalledSkill(existing);
@@ -430,37 +415,22 @@ class SkillCatalog implements SkillCatalogTransaction {
     };
     let pendingCommitted = false;
     try {
-      if (existing === undefined) {
-        await ensureSkillDirectoryForInstall(skillDirectory);
-      }
-      const rootIdentity = await captureDirectoryIdentity(root);
-      const skillDirectoryIdentity = await captureDirectoryIdentity(skillDirectory);
-      await writeDefinitionBound(
-        stagingTarget,
-        bytes,
-        root,
-        rootIdentity,
-        skillDirectory,
-        skillDirectoryIdentity,
-        true,
-      );
-      await verifyDefinition(stagingTarget, metadata, this.fault);
-      const pendingRootIdentity = await captureDirectoryIdentity(root);
+      await writeStoredBytes(this.storageDirectory, stagingTarget, bytes, { createOnly: true });
+      await verifyDefinition(this.storageDirectory, stagingTarget, metadata);
       await injectFault(this.fault, "before-pending-catalog");
-      await assertDirectoryIdentity(root, pendingRootIdentity);
-      await writeCatalogBound(this.storageDirectory, pendingState, pendingRootIdentity);
+      await writeStoredJson(this.storageDirectory, catalogTarget(this.storageDirectory), pendingState);
       pendingCommitted = true;
       this.state = pendingState;
       await injectFault(this.fault, "after-pending-catalog");
     } catch (error) {
       if (!pendingCommitted && !isStorageCommitOutcomeUnknownError(error)) {
-        await cleanupUncommittedStaging(stagingTarget, skillDirectory, existing === undefined);
+        await removeStoredEntry(this.storageDirectory, stagingTarget);
       }
       throw error;
     }
 
     await this.recoverPendingMutation();
-    await validateStableDiskState(this.storageDirectory, this.state, this.fault);
+    await validateStableStoredState(this.storageDirectory, this.state);
     const installed = this.metadata(definition.id);
     if (installed === undefined) throw new SkillStorageCorruptionError();
     return cloneInstalledSkill(installed);
@@ -482,9 +452,9 @@ class SkillCatalog implements SkillCatalogTransaction {
       return parseAndMatchDefinition(stored.bytes, metadata);
     }
     return (await verifyDefinition(
+      this.storageDirectory,
       definitionTarget(this.storageDirectory, skillId),
       metadata,
-      this.fault,
     )).definition;
   }
 
@@ -504,15 +474,12 @@ class SkillCatalog implements SkillCatalogTransaction {
       ...this.state,
       pendingMutation: { kind: "delete", skillId },
     };
-    const root = catalogRoot(this.storageDirectory);
-    const rootIdentity = await captureDirectoryIdentity(root);
     await injectFault(this.fault, "before-pending-catalog");
-    await assertDirectoryIdentity(root, rootIdentity);
-    await writeCatalogBound(this.storageDirectory, pendingState, rootIdentity);
+    await writeStoredJson(this.storageDirectory, catalogTarget(this.storageDirectory), pendingState);
     this.state = pendingState;
     await injectFault(this.fault, "after-pending-catalog");
     await this.recoverPendingMutation();
-    await validateStableDiskState(this.storageDirectory, this.state, this.fault);
+    await validateStableStoredState(this.storageDirectory, this.state);
   }
 
   private metadata(skillId: string): InstalledSkill | undefined {
@@ -525,10 +492,7 @@ class SkillCatalog implements SkillCatalogTransaction {
 
   private async ensureCatalogExists(): Promise<void> {
     if (this.storageDirectory === undefined || this.catalogExists) return;
-    const root = catalogRoot(this.storageDirectory);
-    await ensureCatalogRootForWrite(root);
-    const rootIdentity = await captureDirectoryIdentity(root);
-    await writeCatalogBound(this.storageDirectory, this.state, rootIdentity);
+    await writeStoredJson(this.storageDirectory, catalogTarget(this.storageDirectory), this.state);
     this.catalogExists = true;
   }
 
@@ -540,18 +504,9 @@ class SkillCatalog implements SkillCatalogTransaction {
     if (pending.kind === "delete") {
       const root = catalogRoot(this.storageDirectory);
       const directory = path.join(root, pending.skillId);
-      if (await pathExists(directory)) {
-        const rootIdentity = await captureDirectoryIdentity(root);
-        const directoryIdentity = await captureDirectoryIdentity(directory);
+      if (await storedTreeExists(this.storageDirectory, directory)) {
         await injectFault(this.fault, "before-definition-delete");
-        await assertDirectoryIdentity(root, rootIdentity);
-        await assertDirectoryIdentity(directory, directoryIdentity);
-        await removeDirectoryBound(
-          directory,
-          root,
-          rootIdentity,
-          directoryIdentity,
-        );
+        await removeStoredTree(this.storageDirectory, directory);
         await injectFault(this.fault, "after-definition-delete");
       }
       const finalState: StoredSkillCatalog = {
@@ -566,14 +521,13 @@ class SkillCatalog implements SkillCatalogTransaction {
       catalogRoot(this.storageDirectory),
       pending.skillId,
     );
-    await ensureExistingPrivateDirectory(skillDirectory);
     const currentTarget = path.join(skillDirectory, definitionFileName);
     const previous = this.metadata(pending.skillId);
     const currentDisposition = await definitionDisposition(
+      this.storageDirectory,
       currentTarget,
       pending.next,
       previous,
-      this.fault,
     );
     if (currentDisposition !== "next") {
       if (pending.kind === "replace" && currentDisposition !== "previous") {
@@ -583,24 +537,11 @@ class SkillCatalog implements SkillCatalogTransaction {
         throw new SkillStorageCorruptionError();
       }
       const stagingTarget = path.join(skillDirectory, pending.stagingFile);
-      const staged = await verifyDefinition(stagingTarget, pending.next, this.fault);
-      const root = catalogRoot(this.storageDirectory);
-      const rootIdentity = await captureDirectoryIdentity(root);
-      const skillDirectoryIdentity = await captureDirectoryIdentity(skillDirectory);
+      const staged = await verifyDefinition(this.storageDirectory, stagingTarget, pending.next);
       await injectFault(this.fault, "before-definition-replace");
-      await assertDirectoryIdentity(root, rootIdentity);
-      await assertDirectoryIdentity(skillDirectory, skillDirectoryIdentity);
-      await writeDefinitionBound(
-        currentTarget,
-        staged.bytes,
-        root,
-        rootIdentity,
-        skillDirectory,
-        skillDirectoryIdentity,
-        false,
-      );
+      await writeStoredBytes(this.storageDirectory, currentTarget, staged.bytes);
       await injectFault(this.fault, "after-definition-replace");
-      await verifyDefinition(currentTarget, pending.next, this.fault);
+      await verifyDefinition(this.storageDirectory, currentTarget, pending.next);
     }
 
     const nextSkills = this.state.skills.filter((entry) => entry.id !== pending.skillId);
@@ -611,246 +552,118 @@ class SkillCatalog implements SkillCatalogTransaction {
       skills: nextSkills,
     };
     await this.commitFinalState(finalState);
-    await removePrivateFileBound(
-      path.join(skillDirectory, pending.stagingFile),
-      catalogRoot(this.storageDirectory),
-      await captureDirectoryIdentity(catalogRoot(this.storageDirectory)),
-      skillDirectory,
-      await captureDirectoryIdentity(skillDirectory),
-    );
+    await removeStoredEntry(this.storageDirectory, path.join(skillDirectory, pending.stagingFile));
   }
 
   private async commitFinalState(finalState: StoredSkillCatalog): Promise<void> {
     if (this.storageDirectory === undefined) throw new SkillStorageCorruptionError();
-    const root = catalogRoot(this.storageDirectory);
-    const rootIdentity = await captureDirectoryIdentity(root);
     await injectFault(this.fault, "before-final-catalog");
-    await assertDirectoryIdentity(root, rootIdentity);
-    await writeCatalogBound(this.storageDirectory, finalState, rootIdentity);
+    await writeStoredJson(this.storageDirectory, catalogTarget(this.storageDirectory), finalState);
     this.state = finalState;
     await injectFault(this.fault, "after-final-catalog");
   }
 }
 
-async function loadDiskCatalog(
-  storageDirectory: string,
-  fault?: FaultInjector,
-): Promise<{ exists: boolean; state: StoredSkillCatalog }> {
+async function loadStoredCatalog(storageDirectory: string): Promise<{ exists: boolean; state: StoredSkillCatalog }> {
   const root = catalogRoot(storageDirectory);
-  try {
-    await ensureExistingPrivateDirectory(root);
-  } catch (error) {
-    if (isMissingFileError(error)) return { exists: false, state: emptyCatalog() };
-    throw asCorruption(error);
-  }
-
-  const target = catalogTarget(storageDirectory);
   let bytes: Uint8Array;
   try {
-    bytes = await readPrivateFile(target, maximumCatalogBytes, undefined, fault, "catalog");
+    bytes = await readBoundedStoredBytes(storageDirectory, catalogTarget(storageDirectory), maximumCatalogBytes);
   } catch (error) {
     if (isMissingFileError(error)) {
-      const entries = await fs.readdir(root, { withFileTypes: true });
-      if (entries.length === 0) return { exists: false, state: emptyCatalog() };
-      if (
-        entries.every((entry) =>
-          entry.isFile() && catalogTemporaryPattern.test(entry.name)
-        )
-      ) {
-        for (const entry of entries) {
-          const staleTarget = path.join(root, entry.name);
-          await statPrivateFile(staleTarget, undefined, fault, "catalog");
-          await removeRootFileBound(
-            staleTarget,
-            root,
-            await captureDirectoryIdentity(root),
-          );
-        }
+      const entries = await listStoredChildren(storageDirectory, root);
+      if (entries.every((entry) => catalogTemporaryPattern.test(entry))) {
+        for (const entry of entries) await removeStoredEntry(storageDirectory, path.join(root, entry));
         return { exists: false, state: emptyCatalog() };
       }
     }
     throw asCorruption(error);
   }
-
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
-    ) as unknown;
-  } catch (error) {
-    throw asCorruption(error);
-  }
+  try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes)); }
+  catch (error) { throw asCorruption(error); }
   const state = decodeCatalog(parsed);
-  await validateDiskStructure(storageDirectory, state, fault);
+  await validateStoredStructure(storageDirectory, state);
   return { exists: true, state };
 }
 
-async function validateStableDiskState(
-  storageDirectory: string,
-  state: StoredSkillCatalog,
-  fault?: FaultInjector,
-): Promise<void> {
+async function validateStableStoredState(storageDirectory: string, state: StoredSkillCatalog): Promise<void> {
   if (state.pendingMutation !== undefined) throw new SkillStorageCorruptionError();
-  await validateDiskStructure(storageDirectory, state, fault);
+  await validateStoredStructure(storageDirectory, state);
 }
 
-async function validateDiskStructure(
-  storageDirectory: string,
-  state: StoredSkillCatalog,
-  fault?: FaultInjector,
-): Promise<void> {
+async function validateStoredStructure(storageDirectory: string, state: StoredSkillCatalog): Promise<void> {
   const root = catalogRoot(storageDirectory);
-  try {
-    await ensureExistingPrivateDirectory(root);
-    const allowedDirectories = new Set(state.skills.map((entry) => entry.id));
-    if (state.pendingMutation !== undefined) {
-      allowedDirectories.add(state.pendingMutation.skillId);
-    }
-    for (const entry of await fs.readdir(root, { withFileTypes: true })) {
-      if (entry.name === catalogFileName) {
-        if (!entry.isFile()) throw new SkillStorageCorruptionError();
-        continue;
-      }
-      if (catalogTemporaryPattern.test(entry.name)) {
-        if (!entry.isFile()) throw new SkillStorageCorruptionError();
-        const target = path.join(root, entry.name);
-        await statPrivateFile(target, undefined, undefined, "catalog");
-        await removeRootFileBound(
-          target,
-          root,
-          await captureDirectoryIdentity(root),
-        );
-        continue;
-      }
-      if (!isSafeSkillId(entry.name) || !entry.isDirectory()) {
-        throw new SkillStorageCorruptionError();
-      }
-      if (!allowedDirectories.has(entry.name)) {
-        await cleanupOrphanStagingDirectory(path.join(root, entry.name));
-      }
-    }
-
-    const pendingId = state.pendingMutation?.skillId;
-    for (const metadata of state.skills) {
-      if (metadata.id === pendingId) continue;
-      await validateStableDefinitionStat(storageDirectory, metadata, fault);
-    }
-  } catch (error) {
-    if (isStorageCommitOutcomeUnknownError(error)) throw error;
-    throw asCorruption(error);
-  }
-}
-
-async function validateStableDefinitionStat(
-  storageDirectory: string,
-  metadata: InstalledSkill,
-  fault?: FaultInjector,
-): Promise<void> {
-  const directory = path.dirname(definitionTarget(storageDirectory, metadata.id));
-  await ensureExistingPrivateDirectory(directory);
-  await validateSkillDirectoryEntries(directory, true);
-  await statPrivateFile(
-    definitionTarget(storageDirectory, metadata.id),
-    metadata.byteLength,
-    fault,
-    "definition",
-  );
-}
-
-async function validateSkillDirectoryEntries(
-  directory: string,
-  cleanupStaging: boolean,
-): Promise<void> {
-  const stagingTargets: string[] = [];
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-    if (entry.name === definitionFileName && entry.isFile()) continue;
-    if (stagingFilePattern.test(entry.name) && entry.isFile()) {
-      stagingTargets.push(path.join(directory, entry.name));
+  const allowed = new Set(state.skills.map((entry) => entry.id));
+  if (state.pendingMutation !== undefined) allowed.add(state.pendingMutation.skillId);
+  for (const child of await listStoredChildren(storageDirectory, root)) {
+    const target = path.join(root, child);
+    if (child === catalogFileName) continue;
+    if (catalogTemporaryPattern.test(child) && await storedEntry(storageDirectory, target)) {
+      await removeStoredEntry(storageDirectory, target);
       continue;
     }
-    throw new SkillStorageCorruptionError();
-  }
-  if (cleanupStaging) {
-    const root = path.dirname(directory);
-    const rootIdentity = await captureDirectoryIdentity(root);
-    const directoryIdentity = await captureDirectoryIdentity(directory);
-    for (const target of stagingTargets) {
-      await removePrivateFileBound(
-        target,
-        root,
-        rootIdentity,
-        directory,
-        directoryIdentity,
-      );
+    if (!isSafeSkillId(child) || await storedEntry(storageDirectory, target)) throw new SkillStorageCorruptionError();
+    if (!allowed.has(child)) {
+      for (const entry of await listStoredChildren(storageDirectory, target)) {
+        if (!stagingFilePattern.test(entry) || !await storedEntry(storageDirectory, path.join(target, entry))) {
+          throw new SkillStorageCorruptionError();
+        }
+      }
+      await removeStoredTree(storageDirectory, target);
     }
   }
-}
-
-async function cleanupOrphanStagingDirectory(directory: string): Promise<void> {
-  await ensureExistingPrivateDirectory(directory);
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  if (entries.some((entry) => !entry.isFile() || !stagingFilePattern.test(entry.name))) {
-    throw new SkillStorageCorruptionError();
+  for (const metadata of state.skills) {
+    if (metadata.id === state.pendingMutation?.skillId) continue;
+    const directory = path.dirname(definitionTarget(storageDirectory, metadata.id));
+    for (const entry of await listStoredChildren(storageDirectory, directory)) {
+      if (entry === definitionFileName) continue;
+      const target = path.join(directory, entry);
+      if (!stagingFilePattern.test(entry) || !await storedEntry(storageDirectory, target)) throw new SkillStorageCorruptionError();
+      await removeStoredEntry(storageDirectory, target);
+    }
+    const definition = await storedEntry(storageDirectory, definitionTarget(storageDirectory, metadata.id));
+    if (!definition || definition.byteLength !== metadata.byteLength) {
+      throw new SkillStorageCorruptionError();
+    }
   }
-  for (const entry of entries) {
-    await statPrivateFile(path.join(directory, entry.name), undefined, undefined, "definition");
-  }
-  const root = path.dirname(directory);
-  await removeDirectoryBound(
-    directory,
-    root,
-    await captureDirectoryIdentity(root),
-    await captureDirectoryIdentity(directory),
-  );
 }
 
 async function definitionDisposition(
+  storageDirectory: string,
   target: string,
   next: InstalledSkill,
   previous: InstalledSkill | undefined,
-  fault?: FaultInjector,
 ): Promise<"missing" | "previous" | "next"> {
   let bytes: Uint8Array;
-  try {
-    bytes = await readPrivateFile(target, MAX_SKILL_FILE_BYTES, undefined, fault, "definition");
-  } catch (error) {
-    if (isMissingFileError(error)) return "missing";
-    throw asCorruption(error);
-  }
+  try { bytes = await readBoundedStoredBytes(storageDirectory, target, MAX_SKILL_FILE_BYTES); }
+  catch (error) { if (isMissingFileError(error)) return "missing"; throw asCorruption(error); }
   const hash = sha256(bytes);
   if (bytes.byteLength === next.byteLength && hash === next.sha256) {
     parseAndMatchDefinition(bytes, next);
     return "next";
   }
-  if (
-    previous !== undefined &&
-    bytes.byteLength === previous.byteLength &&
-    hash === previous.sha256
-  ) {
+  if (previous !== undefined && bytes.byteLength === previous.byteLength && hash === previous.sha256) {
     parseAndMatchDefinition(bytes, previous);
     return "previous";
   }
   throw new SkillStorageCorruptionError();
 }
 
-async function verifyDefinition(
-  target: string,
-  metadata: InstalledSkill,
-  fault?: FaultInjector,
-): Promise<{ bytes: Uint8Array; definition: SkillDefinition }> {
+async function verifyDefinition(storageDirectory: string, target: string, metadata: InstalledSkill): Promise<{ bytes: Uint8Array; definition: SkillDefinition }> {
   try {
-    const bytes = await readPrivateFile(
-      target,
-      MAX_SKILL_FILE_BYTES,
-      metadata.byteLength,
-      fault,
-      "definition",
-    );
-    if (sha256(bytes) !== metadata.sha256) throw new SkillStorageCorruptionError();
+    const bytes = await readBoundedStoredBytes(storageDirectory, target, MAX_SKILL_FILE_BYTES);
+    if (bytes.byteLength !== metadata.byteLength || sha256(bytes) !== metadata.sha256) throw new SkillStorageCorruptionError();
     return { bytes, definition: parseAndMatchDefinition(bytes, metadata) };
-  } catch (error) {
-    throw asCorruption(error);
-  }
+  } catch (error) { throw asCorruption(error); }
+}
+
+async function readBoundedStoredBytes(storageDirectory: string, target: string, maximumBytes: number): Promise<Uint8Array> {
+  const entry = await storedEntry(storageDirectory, target);
+  if (entry && entry.byteLength > maximumBytes) throw new SkillStorageCorruptionError();
+  const bytes = await readStoredBytes(storageDirectory, target);
+  if (bytes.byteLength > maximumBytes) throw new SkillStorageCorruptionError();
+  return bytes;
 }
 
 function parseAndMatchDefinition(
@@ -865,274 +678,6 @@ function parseAndMatchDefinition(
     throw new SkillStorageCorruptionError();
   }
   return definition;
-}
-
-async function ensureCatalogRootForWrite(root: string): Promise<void> {
-  try {
-    await ensureExistingPrivateDirectory(root);
-  } catch (error) {
-    if (!isMissingFileError(error)) throw asCorruption(error);
-    await ensurePrivateDirectoryDurably(root);
-    await ensureExistingPrivateDirectory(root);
-  }
-}
-
-async function ensureSkillDirectoryForInstall(directory: string): Promise<void> {
-  try {
-    await ensureExistingPrivateDirectory(directory);
-    const entries = await fs.readdir(directory, { withFileTypes: true });
-    if (
-      entries.some((entry) => !entry.isFile() || !stagingFilePattern.test(entry.name))
-    ) {
-      throw new SkillStorageCorruptionError();
-    }
-    const root = path.dirname(directory);
-    const rootIdentity = await captureDirectoryIdentity(root);
-    const directoryIdentity = await captureDirectoryIdentity(directory);
-    for (const entry of entries) {
-      await removePrivateFileBound(
-        path.join(directory, entry.name),
-        root,
-        rootIdentity,
-        directory,
-        directoryIdentity,
-      );
-    }
-  } catch (error) {
-    if (!isMissingFileError(error)) throw asCorruption(error);
-    await ensurePrivateDirectoryDurably(directory);
-    await ensureExistingPrivateDirectory(directory);
-  }
-}
-
-async function writeCatalogBound(
-  storageDirectory: string,
-  state: StoredSkillCatalog,
-  rootIdentity: DirectoryIdentity,
-): Promise<void> {
-  const root = catalogRoot(storageDirectory);
-  await assertDirectoryIdentity(root, rootIdentity);
-  await writeJsonAtomically(catalogTarget(storageDirectory), state);
-  await assertDirectoryIdentity(root, rootIdentity);
-}
-
-async function writeDefinitionBound(
-  target: string,
-  bytes: Uint8Array,
-  root: string,
-  rootIdentity: DirectoryIdentity,
-  skillDirectory: string,
-  skillDirectoryIdentity: DirectoryIdentity,
-  createOnly: boolean,
-): Promise<void> {
-  await assertDirectoryIdentity(root, rootIdentity);
-  await assertDirectoryIdentity(skillDirectory, skillDirectoryIdentity);
-  if (createOnly) await writeBytesAtomicallyCreateOnly(target, bytes);
-  else await writeBytesAtomically(target, bytes);
-  await assertDirectoryIdentity(root, rootIdentity);
-  await assertDirectoryIdentity(skillDirectory, skillDirectoryIdentity);
-}
-
-async function removePrivateFileBound(
-  target: string,
-  root: string,
-  rootIdentity: DirectoryIdentity,
-  skillDirectory: string,
-  skillDirectoryIdentity: DirectoryIdentity,
-): Promise<void> {
-  await assertDirectoryIdentity(root, rootIdentity);
-  await assertDirectoryIdentity(skillDirectory, skillDirectoryIdentity);
-  await removeFileDurably(target);
-  await assertDirectoryIdentity(root, rootIdentity);
-  await assertDirectoryIdentity(skillDirectory, skillDirectoryIdentity);
-}
-
-async function removeRootFileBound(
-  target: string,
-  root: string,
-  rootIdentity: DirectoryIdentity,
-): Promise<void> {
-  await assertDirectoryIdentity(root, rootIdentity);
-  await removeFileDurably(target);
-  await assertDirectoryIdentity(root, rootIdentity);
-}
-
-async function removeDirectoryBound(
-  target: string,
-  root: string,
-  rootIdentity: DirectoryIdentity,
-  targetIdentity: DirectoryIdentity,
-): Promise<void> {
-  await assertDirectoryIdentity(root, rootIdentity);
-  await assertDirectoryIdentity(target, targetIdentity);
-  await removeDirectoryDurably(target);
-  await assertDirectoryIdentity(root, rootIdentity);
-  if (await pathExists(target)) throw new SkillStorageCorruptionError();
-}
-
-async function captureDirectoryIdentity(
-  directory: string,
-): Promise<DirectoryIdentity> {
-  await ensureExistingPrivateDirectory(directory);
-  const info = await fs.lstat(directory);
-  if (!info.isDirectory() || info.isSymbolicLink()) {
-    throw new SkillStorageCorruptionError();
-  }
-  return { dev: info.dev, ino: info.ino };
-}
-
-async function assertDirectoryIdentity(
-  directory: string,
-  expected: DirectoryIdentity,
-): Promise<void> {
-  const actual = await fs.lstat(directory);
-  if (
-    !actual.isDirectory() ||
-    actual.isSymbolicLink() ||
-    actual.dev !== expected.dev ||
-    actual.ino !== expected.ino
-  ) {
-    throw new SkillStorageCorruptionError();
-  }
-}
-
-async function ensureExistingPrivateDirectory(directory: string): Promise<void> {
-  const before = await fs.lstat(directory);
-  if (!before.isDirectory() || before.isSymbolicLink()) {
-    throw new SkillStorageCorruptionError();
-  }
-  if (platform === "win32") {
-    const after = await fs.lstat(directory);
-    if (
-      !after.isDirectory() ||
-      after.isSymbolicLink() ||
-      !sameIdentity(before, after)
-    ) {
-      throw new SkillStorageCorruptionError();
-    }
-    return;
-  }
-  const noFollow = requireNoFollowFlag();
-  const handle = await fs.open(
-    directory,
-    fsConstants.O_RDONLY | noFollow | fsConstants.O_DIRECTORY | fsConstants.O_NONBLOCK,
-  );
-  try {
-    if (supportsPosixPermissions) await handle.chmod(0o700);
-    const opened = await handle.stat();
-    if (!opened.isDirectory() || !sameIdentity(before, opened)) {
-      throw new SkillStorageCorruptionError();
-    }
-  } finally {
-    await handle.close();
-  }
-  const after = await fs.lstat(directory);
-  if (!after.isDirectory() || after.isSymbolicLink() || !sameIdentity(before, after)) {
-    throw new SkillStorageCorruptionError();
-  }
-}
-
-async function statPrivateFile(
-  target: string,
-  expectedLength: number | undefined,
-  fault: FaultInjector | undefined,
-  kind: "catalog" | "definition",
-): Promise<void> {
-  const before = await fs.lstat(target);
-  if (!before.isFile() || before.isSymbolicLink()) throw new SkillStorageCorruptionError();
-  await injectFault(fault, kind === "catalog" ? "after-catalog-lstat" : "after-definition-lstat");
-  const handle = await fs.open(
-    target,
-    fsConstants.O_RDONLY | requireNoFollowFlag() | fsConstants.O_NONBLOCK,
-  );
-  try {
-    if (supportsPosixPermissions) await handle.chmod(0o600);
-    const opened = await handle.stat();
-    if (
-      !opened.isFile() ||
-      !sameIdentity(before, opened) ||
-      (expectedLength !== undefined && opened.size !== expectedLength)
-    ) {
-      throw new SkillStorageCorruptionError();
-    }
-  } finally {
-    await handle.close();
-  }
-  const after = await fs.lstat(target);
-  if (!after.isFile() || after.isSymbolicLink() || !sameIdentity(before, after)) {
-    throw new SkillStorageCorruptionError();
-  }
-}
-
-async function readPrivateFile(
-  target: string,
-  maximumBytes: number,
-  expectedLength: number | undefined,
-  fault: FaultInjector | undefined,
-  kind: "catalog" | "definition",
-): Promise<Uint8Array> {
-  const before = await fs.lstat(target);
-  if (!before.isFile() || before.isSymbolicLink()) throw new SkillStorageCorruptionError();
-  await injectFault(fault, kind === "catalog" ? "after-catalog-lstat" : "after-definition-lstat");
-  const handle = await fs.open(
-    target,
-    fsConstants.O_RDONLY | requireNoFollowFlag() | fsConstants.O_NONBLOCK,
-  );
-  try {
-    if (supportsPosixPermissions) await handle.chmod(0o600);
-    const opened = await handle.stat();
-    if (
-      !opened.isFile() ||
-      !sameIdentity(before, opened) ||
-      opened.size > maximumBytes ||
-      (expectedLength !== undefined && opened.size !== expectedLength)
-    ) {
-      throw new SkillStorageCorruptionError();
-    }
-    if (kind === "definition") {
-      await injectFault(fault, "after-definition-fstat");
-    }
-
-    const buffer = Buffer.alloc(maximumBytes + 1);
-    let total = 0;
-    while (total < buffer.byteLength) {
-      const result = await handle.read(
-        buffer,
-        total,
-        buffer.byteLength - total,
-        total,
-      );
-      if (result.bytesRead === 0) break;
-      total += result.bytesRead;
-    }
-    if (
-      total > maximumBytes ||
-      (expectedLength !== undefined && total !== expectedLength)
-    ) {
-      throw new SkillStorageCorruptionError();
-    }
-    const afterRead = await handle.stat();
-    if (
-      !sameIdentity(opened, afterRead) ||
-      afterRead.size !== total ||
-      afterRead.mtimeMs !== opened.mtimeMs ||
-      afterRead.ctimeMs !== opened.ctimeMs
-    ) {
-      throw new SkillStorageCorruptionError();
-    }
-    const finalPath = await fs.lstat(target);
-    if (
-      !finalPath.isFile() ||
-      finalPath.isSymbolicLink() ||
-      !sameIdentity(opened, finalPath) ||
-      finalPath.size !== total
-    ) {
-      throw new SkillStorageCorruptionError();
-    }
-    return Uint8Array.from(buffer.subarray(0, total));
-  } finally {
-    await handle.close();
-  }
 }
 
 function decodeCatalog(value: unknown): StoredSkillCatalog {
@@ -1321,7 +866,7 @@ function compareSkillIds(left: string, right: string): number {
 }
 
 function catalogRoot(storageDirectory: string): string {
-  return path.join(storageDirectory, catalogDirectoryName);
+  return path.resolve(storageDirectory, catalogDirectoryName);
 }
 
 function catalogTarget(storageDirectory: string): string {
@@ -1330,64 +875,6 @@ function catalogTarget(storageDirectory: string): string {
 
 function definitionTarget(storageDirectory: string, skillId: string): string {
   return path.join(catalogRoot(storageDirectory), skillId, definitionFileName);
-}
-
-function requireNoFollowFlag(): number {
-  if (platform === "win32") return 0;
-  if (typeof fsConstants.O_NOFOLLOW !== "number" || fsConstants.O_NOFOLLOW === 0) {
-    throw new SkillStorageCorruptionError();
-  }
-  return fsConstants.O_NOFOLLOW;
-}
-
-function sameIdentity(
-  left: Pick<Awaited<ReturnType<typeof fs.stat>>, "dev" | "ino">,
-  right: Pick<Awaited<ReturnType<typeof fs.stat>>, "dev" | "ino">,
-): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-async function pathExists(target: string): Promise<boolean> {
-  try {
-    await fs.lstat(target);
-    return true;
-  } catch (error) {
-    if (isMissingFileError(error)) return false;
-    throw error;
-  }
-}
-
-async function cleanupUncommittedStaging(
-  stagingTarget: string,
-  skillDirectory: string,
-  removeEmptyDirectory: boolean,
-): Promise<void> {
-  const root = path.dirname(skillDirectory);
-  const rootIdentity = await captureDirectoryIdentity(root);
-  let skillDirectoryIdentity: DirectoryIdentity;
-  try {
-    skillDirectoryIdentity = await captureDirectoryIdentity(skillDirectory);
-  } catch (error) {
-    if (isMissingFileError(error)) return;
-    throw error;
-  }
-  await removePrivateFileBound(
-    stagingTarget,
-    root,
-    rootIdentity,
-    skillDirectory,
-    skillDirectoryIdentity,
-  );
-  if (!removeEmptyDirectory) return;
-  const entries = await fs.readdir(skillDirectory);
-  if (entries.length === 0) {
-    await removeDirectoryBound(
-      skillDirectory,
-      root,
-      rootIdentity,
-      skillDirectoryIdentity,
-    );
-  }
 }
 
 async function injectFault(

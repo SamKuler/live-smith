@@ -3,16 +3,19 @@ import { Buffer } from "node:buffer";
 import test from "node:test";
 import { URL } from "node:url";
 import { inspectAudioAttachment } from "../../../src/attachments/audio.js";
+import { MAX_AUDIO_ATTACHMENT_BYTES, MAX_LOCAL_AUDIO_ATTACHMENT_BYTES } from "../../../src/attachments/contracts.js";
 import { waveBytes } from "../../storage/support/audio-storage-test-helpers.js";
 import { audioCapableState, cloneState, createDialogHarness, pendingAudio, pendingDocument, waitForCondition, type DialogHarness } from "../support/chat-dialog.test-harness.js";
 
 type SelectionCall = { url: URL; init: RequestInit };
-async function setup(options: { lostResponse?: boolean; mp3?: boolean; deferredRead?: boolean } = {}) {
+async function setup(options: { lostResponse?: boolean; mp3?: boolean; deferredRead?: boolean; byteLength?: number; durationSeconds?: number } = {}) {
   const state = audioCapableState(); state.openSettingsOnLoad = false;
-  const attachment = pendingAudio("original-audio", "Reference.wav", options.mp3 ? "audio/mpeg" : "audio/wav", 8044, 1);
+  const attachment = pendingAudio("original-audio", "Reference.wav", options.mp3 ? "audio/mpeg" : "audio/wav", options.byteLength ?? 8044, options.durationSeconds ?? 1);
   assert.ok(attachment.kind === "audio");
   state.pendingAttachments = [attachment];
   const selections: SelectionCall[] = [];
+  const reads: URL[] = [];
+  let byteReads = 0;
   let decodeCount = 0;
   let releaseRead!: () => void;
   let readSignal: AbortSignal | null | undefined;
@@ -30,9 +33,15 @@ async function setup(options: { lostResponse?: boolean; mp3?: boolean; deferredR
   Object.defineProperty(harness.window, "fetch", { configurable: true, value: async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     if (url.pathname.startsWith("/attachments/") && (!init?.method || init.method === "GET")) {
+      reads.push(url);
       readSignal = init?.signal;
       if (options.deferredRead) await heldRead;
-      return new Response(new Uint8Array(waveBytes(1)), { headers: { "Content-Type": options.mp3 ? "audio/mpeg" : "audio/wav" } });
+      const response = options.mp3
+        ? new Response(new Uint8Array(waveBytes(1)), { headers: { "Content-Type": "audio/mpeg" } })
+        : Response.json({ peaks: [0, .25, 1], durationSeconds: attachment.durationSeconds });
+      const readBytes = response.arrayBuffer.bind(response);
+      response.arrayBuffer = async () => { byteReads++; return readBytes(); };
+      return response;
     }
     if (url.pathname.startsWith("/attachments/") && init?.method === "POST") {
       selections.push({ url, init });
@@ -46,7 +55,7 @@ async function setup(options: { lostResponse?: boolean; mp3?: boolean; deferredR
     }
     return fetchOriginal(input, init);
   } });
-  return { harness, selections, attachment, releaseRead, get readSignal() { return readSignal; }, get decodeCount() { return decodeCount; } };
+  return { harness, selections, attachment, releaseRead, reads, get byteReads() { return byteReads; }, get readSignal() { return readSignal; }, get decodeCount() { return decodeCount; } };
 }
 
 async function openEditor(harness: DialogHarness) {
@@ -55,14 +64,24 @@ async function openEditor(harness: DialogHarness) {
 }
 function field(harness: DialogHarness, selector: string, value: string) { harness.input(selector, value); }
 
-test("waveform range, loop audition and excerpt submission replace only the next-request file", async () => {
-  const { harness, selections } = await setup();
+test("a 2 GiB WAV uses its waveform summary for range and loop audition and submits only excerpt coordinates", async () => {
+  const scenario = await setup({ byteLength: MAX_LOCAL_AUDIO_ATTACHMENT_BYTES, durationSeconds: 11_000 });
+  const { harness, reads, selections } = scenario;
   try {
     await openEditor(harness);
     const waveform = harness.document.querySelector(".attachment-waveform path")!;
     assert.ok(waveform.getAttribute("d"));
+    assert.equal(harness.document.querySelector<HTMLInputElement>(".attachment-selection-end")!.value, "11000");
     field(harness, ".attachment-selection-start", ".25"); field(harness, ".attachment-selection-end", ".5");
     const media = harness.document.querySelector<HTMLAudioElement>(".attachment-selection-audio")!;
+    const playback = new URL(media.src);
+    assert.equal(playback.searchParams.has("waveform"), false);
+    assert.equal(playback.searchParams.get("sessionId"), "session-1");
+    assert.equal(playback.searchParams.get("token"), "test-token");
+    const expectedSummary = new URL(playback);
+    expectedSummary.searchParams.set("waveform", "1");
+    assert.deepEqual(reads, [expectedSummary]);
+    assert.equal(scenario.byteReads, 0);
     Object.defineProperty(media, "paused", { configurable: true, value: false });
     media.currentTime = .51; media.dispatchEvent(new harness.window.Event("timeupdate"));
     assert.equal(media.currentTime, .25);
@@ -76,6 +95,7 @@ test("waveform range, loop audition and excerpt submission replace only the next
     assert.equal(selections.length, 1); assert.equal(selections[0]!.url.searchParams.get("mode"), "excerpt");
     assert.equal(selections[0]!.url.searchParams.get("start"), "0.25"); assert.equal(selections[0]!.url.searchParams.get("end"), "0.5");
     assert.equal(selections[0]!.url.searchParams.get("replace"), "true");
+    assert.equal((selections[0]!.init.body as Uint8Array).byteLength, 0);
     assert.deepEqual([...harness.document.querySelectorAll<HTMLElement>("#pendingAttachments [data-attachment-id]")].map((chip) => chip.dataset.attachmentId), ["selected-1"]);
     assert.match(harness.document.querySelector(".attachment-selection-label")!.textContent!, /0\.250–0\.500 s/);
     assert.match(harness.document.querySelector(".attachment-remove")!.getAttribute("aria-label")!, /Undo selection/);
@@ -88,6 +108,9 @@ test("MP3 waveform inspection never uploads; only explicit WAV export submits co
   const scenario = await setup({ mp3: true }); const { harness, selections } = scenario;
   try {
     await openEditor(harness); assert.equal(scenario.decodeCount, 1); assert.equal(selections.length, 0);
+    assert.equal(scenario.byteReads, 1);
+    assert.equal(scenario.reads.length, 1);
+    assert.equal(scenario.reads[0]!.searchParams.has("waveform"), false);
     assert.match(harness.document.querySelector(".attachment-selection-note")!.textContent!, /saved as WAV.*original file is kept/);
     field(harness, ".attachment-selection-start", ".25"); field(harness, ".attachment-selection-end", ".5");
     harness.click(".attachment-use-excerpt"); await harness.settleAttachmentOperation();
@@ -100,15 +123,37 @@ test("MP3 waveform inspection never uploads; only explicit WAV export submits co
   } finally { harness.close(); }
 });
 
+test("an oversized MP3 attachment keeps its playback and whole-file controls without reading bytes for trimming", async () => {
+  const scenario = await setup({ mp3: true, byteLength: MAX_AUDIO_ATTACHMENT_BYTES + 1 });
+  const { harness, reads } = scenario;
+  try {
+    harness.click('#pendingAttachments [data-media-kind="audio"] .attachment-chip-label');
+    await waitForCondition(() => harness.document.querySelector(".attachment-viewer-status")?.textContent?.includes("cannot be trimmed here") === true, "Expected trim admission message");
+    assert.deepEqual(reads, []);
+    assert.equal(scenario.decodeCount, 0);
+    const media = harness.document.querySelector<HTMLAudioElement>(".attachment-selection-audio")!;
+    assert.equal(new URL(media.src).pathname, "/attachments/original-audio");
+    assert.equal(harness.document.querySelector<HTMLButtonElement>(".attachment-audio-editor .attachment-audio-toggle")!.disabled, false);
+    assert.equal(harness.document.querySelector<HTMLButtonElement>(".attachment-use-whole")!.disabled, false);
+    assert.equal(harness.document.querySelector<HTMLButtonElement>(".attachment-use-excerpt")!.disabled, true);
+    assert.deepEqual(harness.errors, []);
+  } finally { harness.close(); }
+});
+
 test("closing an audio selection cancels its read and a late waveform cannot submit anything", async () => {
   const scenario = await setup({ deferredRead: true }); const { harness, selections } = scenario;
   try {
+    const trigger = harness.document.querySelector<HTMLButtonElement>('#pendingAttachments [data-media-kind="audio"] .attachment-chip-label')!;
+    trigger.focus();
     harness.click('#pendingAttachments [data-media-kind="audio"] .attachment-chip-label'); await harness.settle();
     harness.click(".attachment-viewer-close");
+    assert.equal(harness.document.activeElement, trigger);
     assert.equal(scenario.readSignal?.aborted, true);
     scenario.releaseRead(); await harness.settle();
     assert.equal(harness.document.querySelector(".attachment-audio-editor"), null); assert.equal(selections.length, 0);
     assert.match(harness.document.querySelector("#pendingAttachments")!.textContent!, /Reference.wav/);
+    await openEditor(harness);
+    assert.equal(scenario.reads.length, 2, "The late response must not populate the waveform cache");
     assert.deepEqual(harness.errors, []);
   } finally { scenario.releaseRead(); harness.close(); }
 });

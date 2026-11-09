@@ -6,7 +6,7 @@ import { requestReceiptHarness } from "./support/agent-request-receipt-test-help
 
 const prompt = "Preserve this exact request once.";
 
-for (const scenario of ["audio-stop", "commit-stop", "corrupt-audio"] as const) {
+for (const scenario of ["initialization-stop", "commit-stop", "corrupt-audio"] as const) {
   test(`${scenario} retains the durable user receipt through bridge and dialog recovery`, { timeout: 15_000 }, async (t) => {
     const h = await requestReceiptHarness(t, scenario);
     h.ui.input("#prompt", prompt);

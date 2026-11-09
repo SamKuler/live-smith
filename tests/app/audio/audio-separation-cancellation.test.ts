@@ -1,7 +1,7 @@
+import { interceptStoredWrites } from "../../storage/support/sqlite-fault-test-helpers.js";
 import { performance } from "node:perf_hooks";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 
@@ -75,16 +75,9 @@ test("Stop during separation timeout bookkeeping still cancels even when the pro
   h.context.signal = controller.signal;
   let now = performance.now();
   t.mock.method(performance, "now", () => now);
-  const probe = await fs.open(h.storage);
-  const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
-  const writeFile = prototype.writeFile;
-  await probe.close();
   h.adapter.inspect = async () => {
     now += 30 * 60_000;
-    t.mock.method(prototype, "writeFile", async function (this: fs.FileHandle, ...args: Parameters<fs.FileHandle["writeFile"]>) {
-      controller.abort(stopped);
-      return writeFile.apply(this, args);
-    });
+    interceptStoredWrites(t, { beforeWrite: ({ key }) => { if (key.endsWith(".job.json")) controller.abort(stopped); } });
     return { status: "running", progress: 50 };
   };
   h.adapter.cancel = async (taskId, signal) => {

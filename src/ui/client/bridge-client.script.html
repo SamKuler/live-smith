@@ -1,5 +1,6 @@
       window.LiveSmithFactories = window.LiveSmithFactories || {};
       window.LiveSmithFactories.createBridgeClient = function createBridgeClient({
+        hashFileContent,
         bridgeConfig,
         closeComposerAutocomplete,
         confirmAction,
@@ -34,6 +35,8 @@
         wireActionDiffGroupsEqual,
         isWireWebSearch,
         isWireSessionEvent,
+        isWireSessionEventPage,
+        isWireSendReceipt,
         isWireEditScopes,
         isWireSessionModelSelection,
         isWireCommandActivity,
@@ -368,8 +371,8 @@
       }
 
       function removeConsumedPendingAttachments(state) {
-        const consumed = new Set((state.events || []).flatMap((event) =>
-          (event.attachments || []).flatMap((attachment) => [attachment.id, ...(attachment.provenance?.replacedIds || [])])));
+        const consumed = new Set([...(state.sessionAttachments || []), ...(state.events || []).flatMap(event => event.attachments || [])]
+          .flatMap(attachment => [attachment.id, ...(attachment.provenance?.replacedIds || [])]));
         state.pendingAttachments = (state.pendingAttachments || []).filter((attachment) => !consumed.has(attachment.id));
       }
 
@@ -1236,6 +1239,7 @@
           merged.activeSessionId = state.activeSessionId;
           merged.audioJobs = state.audioJobs;
           merged.events = state.events;
+          for (const field of ["eventHistory", "sessionAttachments", "latestBriefProposal", "latestCompactionId"]) merged[field] = state[field];
           merged.mcpApprovals = state.mcpApprovals; merged.mcpOperations = state.mcpOperations;
           merged.pendingAttachments = state.pendingAttachments;
           const contextState = state.activeSessionId !== current.activeSessionId || incomingContextIsCurrent
@@ -1247,6 +1251,7 @@
           merged.activeSessionId = current.activeSessionId;
           merged.audioJobs = current.audioJobs;
           merged.events = current.events;
+          for (const field of ["eventHistory", "sessionAttachments", "latestBriefProposal", "latestCompactionId"]) merged[field] = current[field];
           merged.mcpApprovals = current.mcpApprovals; merged.mcpOperations = current.mcpOperations;
           merged.pendingAttachments = current.pendingAttachments;
           merged.contextSummary = current.contextSummary;
@@ -1287,6 +1292,24 @@
               state.events,
               "id",
             );
+          }
+          if (state.eventHistory && current.eventHistory) {
+            const incomingHistoryIsCurrent = contextCutOrder > 0 ||
+              contextCutOrder === 0 && incomingCurrentRevisionOrder >= 0;
+            const historySource = (state.eventHistory.historyId !== current.eventHistory.historyId
+              ? incomingHistoryIsCurrent
+              : state.eventHistory.latestSequence > current.eventHistory.latestSequence ||
+                state.eventHistory.latestSequence === current.eventHistory.latestSequence && incomingHistoryIsCurrent) ? state : current;
+            for (const field of ["eventHistory", "sessionAttachments", "latestBriefProposal", "latestCompactionId"]) merged[field] = historySource[field];
+            if (state.eventHistory.historyId !== current.eventHistory.historyId) merged.events = historySource.events;
+            else {
+              const sourceIds = new Set(historySource.events.map(event => event.id));
+              const lastShared = current.events.findLastIndex(event => sourceIds.has(event.id));
+              merged.events = historySource === current ? current.events : [
+                ...historySource.events,
+                ...(lastShared < 0 ? [] : current.events.slice(lastShared + 1).filter(event => !sourceIds.has(event.id))),
+              ];
+            }
           }
           merged.pendingAttachments = snapshotAlreadyCovered
             ? current.pendingAttachments
@@ -2301,8 +2324,8 @@
           if (typeof eventId === "string" && queueId === undefined) {
             const event = (getState().events || []).find(
               (entry) => entry.id === eventId && entry.kind === "user",
-            );
-            if (!event) return null;
+            ) || requireView().getTimelineEvent?.(eventId);
+            if (event?.kind !== "user") return null;
             const draft = parseComposerInput(event.content).kind === "text"
               ? event.content
               : `/queue ${event.content}`;
@@ -3244,6 +3267,7 @@
       }
 
       function latestCompactionBoundary(state) {
+        if (state?.latestCompactionId !== undefined) return state.latestCompactionId;
         if (!Array.isArray(state?.events)) return null;
         for (let index = state.events.length - 1; index >= 0; index -= 1) {
           const event = state.events[index];
@@ -3549,8 +3573,12 @@
         recordSessionProjectionCoverage(state, sessionId);
       }
 
-      function applyAuthoritativeSendState(attempt, state) {
+      async function applyAuthoritativeSendState(attempt, state) {
         if (!attempt || !isWireChatBridgeState(state)) return false;
+        const statusBeforeReconciliation = requireView().getStatusPresentation();
+        if (state.eventHistory && !await reconcilePagedSendReceipts(attempt)) return false;
+        if (!attemptIsCurrent(attempt)) return false;
+        const preserveStatus = requireView().getStatusPresentation() !== statusBeforeReconciliation;
         const previousState = getState();
         const previousSettings = previousState.settings;
         // Global settings have their own monotonic revisions; Session ownership
@@ -3608,7 +3636,7 @@
         recordAttemptOwnedActivityRevisions(attempt, state);
         reconcileAttemptProgressFromActivities(getState());
         if (visible || window.LiveSmithI18n.preference !== getState().settings.uiLanguage) {
-          requireView().render({ preserveStatus: !visible });
+          requireView().render({ preserveStatus: !visible || preserveStatus });
         } else {
           renderDefaultFollowUpBehavior();
           renderNetworkProxySettings();
@@ -4188,7 +4216,7 @@
           });
           if (deferSendTerminalWhileAwaitingStop(attempt)) return;
           if (!attemptIsCurrent(attempt)) return;
-          let refreshed = applyAuthoritativeSendState(attempt, result.state);
+          let refreshed = await applyAuthoritativeSendState(attempt, result.state);
           if (!refreshed) refreshed = await refreshState(attempt);
           if (!attemptIsCurrent(attempt)) return;
           if (attempt.awaitingStopTerminal) return;
@@ -4204,10 +4232,7 @@
             );
             return;
           }
-          settleSendAttempt(attempt);
-          if (activeSessionId() === sessionId && !activeSendAttempt()) {
-            showStatus(getState().status || "");
-          }
+          settleSuccessfulSend(attempt);
         } catch (error) {
           const message = error.message || String(error);
           resolveSendOutcome(attempt, {
@@ -4722,6 +4747,63 @@
             steering.attachments.map((attachment) => attachment.id));
       }
 
+      async function readSendReceipt(attempt, prompt, attachments, steerId, signal) {
+        const response = await fetch(bridgeUrl("/send-receipt"), {
+          method: "POST", headers: { "Content-Type": "application/json" }, signal,
+          body: JSON.stringify({ sessionId: attempt.sessionId, sendId: attempt.id, prompt,
+            attachmentIds: attachments.map(attachment => attachment.id), ...(steerId ? { steerId } : {}) }),
+        });
+        const receipt = await response.json();
+        if (!response.ok || !isWireSendReceipt(receipt)) throw invalidBridgeHttpResponse("/send-receipt");
+        if (receipt.status === "accepted" && (receipt.event.content !== prompt ||
+            !sameJsonValue((receipt.event.attachments || []).map(attachment => attachment.id), attachments.map(attachment => attachment.id)) ||
+            (steerId ? receipt.event.steeringAck?.sendId !== attempt.id || receipt.event.steeringAck?.steerId !== steerId : receipt.event.steeringAck !== undefined))) {
+          throw invalidBridgeHttpResponse("/send-receipt");
+        }
+        return receipt;
+      }
+
+      function reconcilePagedSendReceipts(attempt) {
+        if (!attemptIsCurrent(attempt)) return Promise.resolve(false);
+        const steering = attempt.steering;
+        const primary = !attempt.promptEventPersisted && !attempt.restored && Boolean(attempt.payload.prompt);
+        if (!steering && !primary) return Promise.resolve(true);
+        const pending = attempt.receiptReconciliation;
+        if (pending && pending.steering === steering && pending.primary === primary) return pending.promise;
+        pending?.controller.abort();
+        const controller = new AbortController();
+        const receiptRead = { controller, steering, primary, promise: null };
+        const promise = (async () => {
+          try {
+            const [primaryReceipt, steeringReceipt] = await Promise.all([
+              primary ? readSendReceipt(attempt, attempt.payload.prompt, attempt.attachments, undefined, controller.signal) : null,
+              steering ? readSendReceipt(attempt, steering.prompt, steering.attachments, steering.id, controller.signal) : null,
+            ]);
+            if (controller.signal.aborted || !attemptIsCurrent(attempt)) return false;
+            if (primaryReceipt?.status === "conflict" || steeringReceipt?.status === "conflict") throw invalidBridgeHttpResponse("/send-receipt");
+            if (primaryReceipt?.status === "accepted") {
+              reconcilePendingUserMessage(attempt, primaryReceipt.event);
+              attempt.promptReceiptAccepted = true;
+            }
+            if (steering && attempt.steering === steering) {
+              if (steeringReceipt.status === "accepted") acknowledgeSteering(attempt, steering);
+              else { attempt.steering = null; attempt.steerInProgress = false; }
+            }
+            return !attempt.steering;
+          } catch {
+            if (!controller.signal.aborted && attemptIsCurrent(attempt)) {
+              setAttemptStatus(attempt, window.LiveSmithI18n.message("The request outcome could not be confirmed. Retry Stop before continuing."), true);
+            }
+            return false;
+          } finally {
+            if (attempt.receiptReconciliation === receiptRead) attempt.receiptReconciliation = null;
+          }
+        })();
+        receiptRead.promise = promise;
+        attempt.receiptReconciliation = receiptRead;
+        return promise;
+      }
+
       function reconcileSteeringAck(attempt, state) {
         const steering = attempt?.steering;
         if (!steering) return true;
@@ -4730,6 +4812,7 @@
           state.activeSessionId !== attempt.sessionId ||
           !Array.isArray(state.events)
         ) return false;
+        if (state.eventHistory) return false;
         const matches = state.events.filter((event) =>
           event &&
           event.steeringAck &&
@@ -4971,7 +5054,7 @@
                 }
                 let refreshed = false;
                 if (deferredTerminal.state) {
-                  refreshed = applyAuthoritativeSendState(
+                  refreshed = await applyAuthoritativeSendState(
                     attempt,
                     deferredTerminal.state,
                   );
@@ -5062,9 +5145,20 @@
         if (wake) wake();
       }
 
+      function settleSuccessfulSend(attempt) {
+        if (!settleSendAttempt(attempt) || activeSessionId() !== attempt.sessionId ||
+            activeSendAttempt() || !retainedCanceledFollowUpCount) return;
+        const statusWasPresented = presentStatus({
+          ...requireView().getStatusPresentation(),
+          canceledFollowUpCount: retainedCanceledFollowUpCount,
+        });
+        if (statusWasPresented && eventStreamStateRefresh === null) retainedCanceledFollowUpCount = 0;
+      }
+
       function settleSendAttempt(attempt, { promoteQueued = true } = {}) {
         if (!attemptIsCurrent(attempt)) return false;
         cancelSendRecovery(attempt);
+        attempt.receiptReconciliation?.controller.abort();
         resolveSendOutcome(attempt);
         attempt.failureHandled = true;
         // One retired owner per Session rejects late snapshots without retaining
@@ -5324,7 +5418,8 @@
             globalStateRefresh === null &&
             !sessionStateRefreshesBySession.has(attempt.sessionId);
           if (isWireChatBridgeState(authoritativeState)) {
-            applyAuthoritativeSendState(attempt, authoritativeState);
+            await applyAuthoritativeSendState(attempt, authoritativeState);
+            if (!attemptIsCurrent(attempt)) return;
           }
           const failedRecovery = pauseFailedSendForRecovery(attempt);
           if (!settleSendAttempt(attempt, { promoteQueued: false })) return;
@@ -5348,7 +5443,7 @@
           }
           return;
         }
-        let refreshed = applyAuthoritativeSendState(attempt, authoritativeState);
+        let refreshed = await applyAuthoritativeSendState(attempt, authoritativeState);
         if (!refreshed) {
           try {
             refreshed = await refreshState(attempt) === true;
@@ -5358,6 +5453,7 @@
         }
         if (!attemptIsCurrent(attempt)) return;
         if (cancelReconciledUnavailableSession(attempt, message)) return;
+        if (persistence === "unknown" && attempt.promptReceiptAccepted) persistence = "persisted";
         const guidance = persistence === "persisted"
           ? t("The prompt is already in this session; check the timeline before trying again.")
           : t("The send result is unknown; check the timeline before trying again.");
@@ -5595,7 +5691,7 @@
               try {
                 file = await prepareFile(file, controller.signal);
                 if (controller.signal.aborted) break;
-                contentSha256 = await fileContentSha256(file);
+                contentSha256 = await fileContentSha256(file, controller.signal);
                 if (controller.signal.aborted) break;
                 previousIds = new Set(
                   (getState().pendingAttachments || []).map((attachment) => attachment.id),
@@ -5671,21 +5767,8 @@
         });
       }
 
-      async function fileContentSha256(file) {
-        const subtle = globalThis.crypto?.subtle;
-        if (
-          !subtle ||
-          typeof subtle.digest !== "function" ||
-          typeof file?.arrayBuffer !== "function"
-        ) return null;
-        try {
-          const digest = await subtle.digest("SHA-256", await file.arrayBuffer());
-          return [...new Uint8Array(digest)]
-            .map((byte) => byte.toString(16).padStart(2, "0"))
-            .join("");
-        } catch {
-          return null;
-        }
+      async function fileContentSha256(file, signal) {
+        return hashFileContent(file, signal);
       }
 
       function newPendingAttachmentMatches(byteLength, contentSha256, previousIds) {
@@ -6073,7 +6156,7 @@
             return false;
           }
         } else if (causalAttempt) {
-          if (!applyAuthoritativeSendState(causalAttempt, state)) {
+          if (!await applyAuthoritativeSendState(causalAttempt, state)) {
             return false;
           }
         }
@@ -6369,6 +6452,8 @@
         state.events = existingIndex < 0
           ? [...events, event]
           : events.map((item, index) => index === existingIndex ? event : item);
+        if (state.latestCompactionId !== undefined && event.kind === "compaction") state.latestCompactionId = event.id;
+        if (state.latestBriefProposal !== undefined && event.kind === "tool_result" && event.name === "propose_creative_brief") state.latestBriefProposal = event;
         removeConsumedPendingAttachments(state);
         requireView().renderPendingAttachments();
         if (event.kind === "assistant" && existingIndex < 0) {
@@ -6805,7 +6890,7 @@
           if (!Array.isArray(payloads)) return;
           for (const payload of payloads) handleEvent(payload);
         };
-        const handleEvent = (payload) => {
+        const handleEvent = async (payload) => {
           if (!isWireRecord(payload) || typeof payload.type !== "string") return;
           if (payload.type === "send_activity") { adoptSendActivity(payload); return; }
           if (payload.type === "command_activity") { adoptCommandActivity(payload); return; }
@@ -7718,15 +7803,12 @@
               return;
             }
             cancelSendRecovery(attempt);
-            if (!applyAuthoritativeSendState(attempt, payload.state)) return;
+            if (!await applyAuthoritativeSendState(attempt, payload.state) || !attemptIsCurrent(attempt)) return;
             if (cancelReconciledUnavailableSession(
               attempt,
               t("The target Session is no longer available."),
             )) return;
-            settleSendAttempt(attempt);
-            if (activeSessionId() === payload.sessionId && !activeSendAttempt()) {
-              showStatus(getState().status || "");
-            }
+            settleSuccessfulSend(attempt);
             return;
           }
           if (payload.type === "error") {
@@ -7947,6 +8029,15 @@
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || t("Saved artifacts are unavailable."));
+          return result;
+        },
+        readSessionEvents: async (input, signal) => {
+          const response = await fetch(bridgeUrl("/session-events"), {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input), signal,
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || t("Session history is unavailable. Try again."));
+          if (!isWireSessionEventPage(result)) throw invalidBridgeHttpResponse("/session-events");
           return result;
         },
         readSessionSearch: async (input, signal) => {

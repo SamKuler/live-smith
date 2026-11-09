@@ -452,42 +452,88 @@ no directory, settings and Session metadata remain in process memory until the
 host exits. OAuth credentials, installed Plugins, MIDI/audio artifacts, and
 device parameter snapshots require persistent storage.
 
-The private data directory holds saved Profiles, Integration Connections,
-Session metadata and events, attachments, imported Skills, installed Plugins,
-and model metadata. Important locations include:
+持久化数据由 `live-smith.sqlite3` 和 `live-smith-media/` 共同保存。数据库包含
+Profiles、Integration Connections、Session 元数据与事件、模型缓存、凭据、参数
+记录、User Skill、Plugin ZIP/配置及媒体引用。附件、音频和 MIDI 的原件位于独立
+媒体目录。数据库与旧源备份可能包含明文 API key、OAuth token 或 Cookie，整个
+存储目录均按私有数据维护。
 
-| Path | Contents |
+私有存储目录所在的文件系统需要支持硬链接。Windows 可使用本地 NTFS；exFAT 和
+FAT32 不满足当前媒体文件发布要求。此要求针对私有存储目录，导入附件的原文件可以
+位于其他文件系统。文件发布与引用关系见[持久化契约](ARCHITECTURE.md#durable-local-storage)。
+
+| 位置 | 内容与生命周期 |
 | --- | --- |
-| `live-smith-settings.json` | Profiles, Integration Connections, and Direct API, built-in Plugin, and MCP connection keys in plain text |
-| `oauth/credentials.json` | Model provider OAuth credentials |
-| `live-smith-mcp-oauth.json` | MCP OAuth client registrations and tokens |
-| `suno-session-<serviceId>.json` | Suno/Clerk Cookie fields saved separately for each audio connection |
-| `live-smith-audio/<sessionId>/` | Built-in audio jobs and their input/output assets |
-| `live-smith-audio-artifacts/<sessionId>/` | Audio results from external Plugins |
-| `live-smith-midi/<sessionId>/` | MIDI artifacts and retained historical continuation files |
-| `live-smith-device-parameters/<sessionId>/` | Device parameter snapshots, application baselines, progress, and results |
-| `live-smith-plugins/` | Installed archives, catalog, runtime files, configuration, and mutable Plugin data |
+| `live-smith.sqlite3` | 结构化记录、历史事件、内联内容和媒体引用，含长度、摘要和版本 |
+| `live-smith-media/` | 以内容摘要命名的媒体原件，由独立记录共享 |
+| `live-smith.sqlite3-journal` | 可能存在的 SQLite 恢复日志 |
+| `live-smith.sqlite3.v1-backup` | SQLite v1 升级前生成的只读数据库副本 |
+| `live-smith-plugins/data/<pluginId>/<dataGeneration>/` | 新安装的独立可变数据目录。替换保留代次，卸载按代次清理 |
+| `live-smith-plugins/data/<pluginId>/` | 迁移前安装沿用的数据目录 |
+| `live-smith-plugins/runtime-cache/` | 从数据库中的 ZIP 重建的运行缓存 |
+| `live-smith-exports/` | 原生文件拖出副本，生命周期由原生窗口的领取状态控制 |
+| 迁移前的 JSON、媒体、Skill、Plugin `packages/` 与 `runtime/` | 保留的历史原件 |
 
-Preserve complete Session directories when copying media and parameter data.
-Copy `live-smith-plugins/` as a whole and leave its contents under host management.
-Built-in Skills are bundled. Enabled Plugin Skills are read from their immutable
-packages with `<plugin-id>:<skill-id>` identities. Imported User Skills have
-their own private storage.
+数据库逻辑键沿用原来的相对路径，例如 `live-smith-settings.json`、
+`oauth/credentials.json`、`suno-session-<serviceId>.json`、
+`live-smith-midi/<sessionId>/` 和 `live-smith-device-parameters/<sessionId>/`。
+这些键继续支持原有 ID、格式版本和跨记录引用。各域的存储边界见
+[持久化契约](ARCHITECTURE.md#durable-local-storage)。
 
-Suno Cookies belong only in private storage and the local connection form.
-Keep them out of source, fixtures, logs, screenshots, and shared artifacts.
-See the [Cookie connection workflow](MODEL_PROVIDERS.md#sunocom-website-sign-in)
-for import, validation, expiry, and disconnect behavior.
-Legacy `suno-browser/<serviceId>/` directories may contain private browser data;
-the current runtime leaves them untouched. Close any old managed browser window
-before manually cleaning up a known legacy directory. Never delete or migrate
-these directories automatically.
+### 首次打开已有数据
 
-Do not commit, share, cloud-sync, or delete private development data without the
-owner's approval. Preserve it when removing a worktree or changing run locations.
-See [credential storage](MODEL_PROVIDERS.md#credential-storage) for the connection
-boundary and [architecture](ARCHITECTURE.md#configuration-boundaries) for
-persistence ownership.
+打开旧数据前，关闭使用该目录的 Extension Host 与 Plugin 子进程，为完整目录建立
+离线备份。预留能同时容纳旧源、数据库及事务日志、新媒体原件和 SQLite v1 备份的磁盘
+空间。每个存储目录由一个 Extension Host 实例使用。
+
+初始化逐块读取旧普通文件，校验源身份、大小、修改时间和导入前后的文件清单。媒体
+原件进入 `live-smith-media/`，数据库提交结构化记录、媒体引用和迁移完成标记。
+已有 SQLite v1 数据库先生成 `live-smith.sqlite3.v1-backup`，再将内联媒体转为
+文件引用。旧源和已有备份保持原样。迁移失败时数据库事务回滚，排除故障后可重新
+打开。迁移完成后，使用当前数据库与媒体目录读写。
+
+迁移时的 Plugin data 普通文件另存为数据库中的 `preserved` 快照。已有 Plugin
+运行继续访问原 data 目录，该目录可以更新；快照保持迁移时内容。新安装使用独立
+的随机代次目录，替换保持代次，卸载后重装创建新代次。目录清理遇到失败时会重试；
+断电后可能重现的旧目录与新安装保持逻辑隔离。
+Skill 的未完成安装、替换、删除，以及 Plugin 的未完成清理，在导入后的数据库记录上
+恢复。Plugin 运行缓存使用独立的 `runtime-cache/` 路径。
+
+### 备份与恢复
+
+完整备份应在 Extension Host 和 Plugin 子进程关闭后复制整个私有数据目录。
+同时保存 `live-smith.sqlite3`、完整的 `live-smith-media/`、存在的 SQLite 日志、
+Plugin 当前 data 目录、v1 备份及历史原件。异常退出后留存的事务日志属于数据库
+恢复状态。恢复前关闭所有使用者，再将整份备份恢复到单独目录并通过
+`--storage-directory` 选择该目录。
+
+运行期间备份数据库应使用 [SQLite Online Backup API](https://sqlite.org/backup.html)
+或 `VACUUM INTO` 创建一致快照。直接复制正在写入的单个数据库文件可能混合不同
+事务的内容；事务日志与数据库也需要保持匹配。详见
+[SQLite 备份与事务日志说明](https://sqlite.org/howtocorrupt.html#_backup_or_restore_while_a_transaction_is_active)。
+在线数据库快照只包含 SQLite 记录和媒体引用。完整恢复点需要离线保存同一时点的
+数据库、媒体目录和 Plugin data。
+
+旧原件与 v1 备份反映迁移时的状态。需要旧版时，使用独立的迁移前完整备份目录，
+同时保留当前数据的完整备份。当前数据库或媒体损坏时，从同一恢复点的完整备份
+恢复。
+
+### 长会话读取边界
+
+会话事件逐条写入 SQLite。首次打开和后续分页每次读取至多 100 条事件。用户主动
+加载的连续页面保留在当前视图，DOM 随加载量增长。会话附件库读取独立的历史附件
+元数据。会话搜索在保存的用户和助手消息文本中匹配子串，扫描成本仍随候选文本量增长。
+模型上下文和审批恢复从保存的历史独立读取。
+
+内置 Skills 随扩展打包。已启用 Plugin 的 Skills 来自数据库保存的不可变 ZIP，
+使用 `<plugin-id>:<skill-id>` 标识；导入的 User Skills 使用独立数据库键空间。
+Suno Cookie 的导入、验证、过期与断开流程见
+[Cookie connection workflow](MODEL_PROVIDERS.md#sunocom-website-sign-in)。
+历史 `suno-browser/<serviceId>/` 可能包含私有浏览器数据；当前运行时保持其原样，
+它们由所有者在关闭相关旧浏览器后单独维护。
+
+私有开发数据的删除、分享、同步和归档遵循所有者授权。移除 worktree 或更换启动
+位置时保留该目录。凭据归属见[credential storage](MODEL_PROVIDERS.md#credential-storage)。
 
 ### Audio service verification
 

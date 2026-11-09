@@ -6,16 +6,16 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ListResourcesResult, ReadResourceResult } from "@modelcontextprotocol/server";
 import { MAX_ATTACHMENT_UPLOAD_BYTES } from "../../attachments/contracts.js";
-import { listSessionAttachments, readSessionAttachment, saveSessionAttachment, sessionAttachmentRefFromStored, sessionAttachmentExport } from "../../storage/attachments.js";
-import { readSessionAudioArtifact, sessionAudioArtifactExport } from "../../storage/audio-artifacts.js";
+import { listSessionAttachments, listPendingSessionAttachments, stageSessionAttachmentStream, sessionAttachmentRefFromStored, sessionAttachmentExport } from "../../storage/attachments.js";
+import { sessionAudioArtifactExport } from "../../storage/audio-artifacts.js";
 import { readDeviceParameterArtifact } from "../../storage/device-parameter-artifacts.js";
 import { isSafeStorageId } from "../../storage/id.js";
 import type { McpServerClient } from "../../storage/mcp-server-auth.js";
-import { readMidiArtifact, midiArtifactExport } from "../../storage/midi-artifacts.js";
+import { midiArtifactExport } from "../../storage/midi-artifacts.js";
 import type { SessionFileExport } from "../../storage/file-export.js";
-import { appendSessionEvent } from "../../storage/events.js";
+import { appendSessionEvent, loadConsumedAttachmentIds } from "../../storage/events.js";
 import { invalidateSessionState } from "../session/session-state-events.js";
-import { readRawAttachmentBody } from "../chat/chat-bridge-http.js";
+import { openAttachmentBodyStream } from "../chat/chat-bridge-http.js";
 import { attachmentMutationFence } from "../session/session-fences.js";
 import { sessionMutationFenceKey } from "../session/session-mutation-fence.js";
 import { readSessionArtifactCatalog } from "../session/session-artifacts.js";
@@ -41,10 +41,27 @@ export async function readMcpResourceBytes(directory: string, client: McpServerC
   const match = /^livesmith:\/\/sessions\/([^/]+)\/artifacts\/(midi|audio|device-parameters|attachment)\/([^/]+)$/u.exec(uri);
   if (!match || match[1] !== client.sessionId || !isSafeStorageId(match[3])) throw new Error("Resource is unavailable in this Session.");
   const id = match[3];
+  // Inline resources use the same verified export boundary as downloads.
+  if (match[2] === "midi" || match[2] === "audio" || match[2] === "attachment") {
+    const file = match[2] === "midi" ? await midiArtifactExport(directory, client.sessionId, id)
+      : match[2] === "audio" ? await sessionAudioArtifactExport(directory, client.sessionId, id)
+      : await sessionAttachmentExport(directory, client.sessionId, id);
+    if (file.byteLength > 512 * 1024) throw new Error("Resource exceeds the inline response limit.");
+    const stream = await file.open(signal);
+    const parts: Buffer[] = [];
+    let length = 0;
+    try {
+      for await (const part of stream) {
+        const bytes = Buffer.from(part as Uint8Array);
+        length += bytes.length;
+        if (length > file.byteLength || length > 512 * 1024) throw new Error("Resource exceeds the inline response limit.");
+        parts.push(bytes);
+      }
+      if (length !== file.byteLength) throw new Error("Resource content is incomplete.");
+    } finally { stream.destroy(); }
+    return { bytes: Buffer.concat(parts, length), mimeType: file.mediaType, name: file.fileName };
+  }
   switch (match[2]) {
-    case "midi": { const { bytes, artifact } = await readMidiArtifact(directory, client.sessionId, id, signal); return { bytes, mimeType: "audio/midi", name: `${artifact.label}.mid` }; }
-    case "audio": { const { bytes, asset } = await readSessionAudioArtifact(directory, client.sessionId, id, signal); return { bytes, mimeType: asset.mediaType, name: asset.label }; }
-    case "attachment": { const { bytes, attachment } = await readSessionAttachment(directory, client.sessionId, id, { signal }); return { bytes, mimeType: attachment.mediaType, name: attachment.fileName }; }
     default: { const artifact = await readDeviceParameterArtifact(directory, client.sessionId, id);
       const { parameters, ...metadata } = artifact;
       // Runtime handles are private host bindings; exported snapshots keep musical values.
@@ -84,18 +101,24 @@ export async function handleMcpFileRequest(directory: string, client: McpServerC
       const encoded = request.headers["x-live-smith-filename"];
       if (typeof encoded !== "string") throw new Error("Provide X-Live-Smith-Filename.");
       const fileName = decodeURIComponent(encoded);
-      const bytes = await readRawAttachmentBody(request);
-      const saved = await attachmentMutationFence.run(sessionMutationFenceKey(directory, client.sessionId), signal, async () => {
-        await requireMcpSession(directory, client);
-        const attachment = await saveSessionAttachment(directory, client.sessionId, { fileName, bytes, signal }, { preSavePendingAttachmentRefs: [] });
-        await appendSessionEvent(directory, client.sessionId, { kind: "operation", content: "External file uploaded", operation: {
-          id: randomUUID(), actor: { kind: "mcp", clientId: client.id, clientName: client.name }, toolName: "upload_attachment", status: "completed", progress: fileName,
-          result: { content: JSON.stringify({ attachment: sessionAttachmentRefFromStored(attachment), resource: mcpResourceUri(client.sessionId, "attachment", attachment.id) }),
-            failed: false, inputAttachmentIds: [attachment.id] },
-        } });
-        invalidateSessionState(directory, { sessionId: client.sessionId, source: Symbol("mcp-upload") });
-        return attachment;
-      });
+      const body = await openAttachmentBodyStream(request, signal);
+      let saved;
+      let staged: Awaited<ReturnType<typeof stageSessionAttachmentStream>> | undefined;
+      try {
+        staged = await stageSessionAttachmentStream(directory,client.sessionId,{fileName,chunks:body.chunks,signal,
+          ...(body.expectedByteLength === undefined ? {} : {expectedByteLength:body.expectedByteLength})});
+        saved = await attachmentMutationFence.run(sessionMutationFenceKey(directory, client.sessionId), signal, async () => {
+          await requireMcpSession(directory, client);
+          const pending = await listPendingSessionAttachments(directory,client.sessionId,await loadConsumedAttachmentIds(directory,client.sessionId));
+          const attachment = await staged!.publish({preSavePendingAttachmentRefs:pending.map(sessionAttachmentRefFromStored)});
+          await appendSessionEvent(directory, client.sessionId, { kind: "operation", content: "External file uploaded", operation: {
+            id: randomUUID(), actor: { kind: "mcp", clientId: client.id, clientName: client.name }, toolName: "upload_attachment", status: "completed", progress: fileName,
+            result: { content: JSON.stringify({ attachment: sessionAttachmentRefFromStored(attachment), resource: mcpResourceUri(client.sessionId, "attachment", attachment.id) }),
+              failed: false, inputAttachmentIds: [attachment.id] },
+          } });
+          invalidateSessionState(directory, { sessionId: client.sessionId, source: Symbol("mcp-upload") });
+          return attachment;
+      }); } finally { await staged?.dispose(); body.close(); }
       response.writeHead(201, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ attachment: sessionAttachmentRefFromStored(saved), resource: mcpResourceUri(client.sessionId, "attachment", saved.id) }));
     } else {

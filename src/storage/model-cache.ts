@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { decodeDiscoveredModelCatalog } from "../model/catalog.js";
@@ -9,7 +8,7 @@ import {
   type SavedProfile,
 } from "../model/profile.js";
 import { isMissingFileError } from "./errors.js";
-import { writeJsonAtomically } from "./persistence.js";
+import { readStoredText, writeStoredJson } from "./sqlite.js";
 
 interface ModelCacheEntry {
   schemaVersion: 1;
@@ -58,7 +57,7 @@ export async function loadModelCache(
   }
 
   try {
-    const raw = await fs.readFile(cachePath(storageDirectory, expected), "utf8");
+    const raw = await readStoredText(storageDirectory, cachePath(storageDirectory, expected));
     const entry = JSON.parse(raw) as unknown;
     return decodeModelCacheEntry(entry, expected) ?? [];
   } catch (error) {
@@ -89,11 +88,11 @@ export async function saveModelCache(
     return;
   }
 
-  await writeJsonAtomically(cachePath(storageDirectory, fingerprint), entry);
+  await writeStoredJson(storageDirectory, cachePath(storageDirectory, fingerprint), entry);
 }
 
 function cachePath(storageDirectory: string, fingerprint: string): string {
-  return path.join(
+  return path.resolve(
     storageDirectory,
     `live-smith-models-v2-${fingerprint}.json`,
   );
@@ -104,7 +103,7 @@ function legacyCachePath(storageDirectory: string, profileId: string): string {
     .replace(/[^a-zA-Z0-9_-]/g, "_")
     .slice(0, maximumCacheIdSlugLength) || "profile";
   const idHash = createHash("sha256").update(profileId).digest("hex").slice(0, 16);
-  return path.join(storageDirectory, `live-smith-models-${safeId}-${idHash}.json`);
+  return path.resolve(storageDirectory, `live-smith-models-${safeId}-${idHash}.json`);
 }
 
 async function loadLegacyModelCache(
@@ -113,9 +112,9 @@ async function loadLegacyModelCache(
   expectedFingerprint: string,
 ): Promise<DiscoveredModelInfo[]> {
   try {
-    const raw = await fs.readFile(
+    const raw = await readStoredText(
+      storageDirectory,
       legacyCachePath(storageDirectory, profile.id),
-      "utf8",
     );
     const entry = JSON.parse(raw) as unknown;
     return decodeModelCacheEntry(entry, expectedFingerprint) ?? [];

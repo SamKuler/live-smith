@@ -11,12 +11,12 @@ import type { AvailableSkillSummary } from "../../../skills/builtins.js";
 import type { PersistedSessionAttachmentRef, SessionAttachmentRef } from "../../../storage/attachments.js";
 import type { ActionDiffGroup } from "../../action-diff.js";
 import { validateAgentPlan, type AgentPlan } from "../../../agent/actions.js";
-import type { ChatLiveContext, ChatSessionActivity, ChatSessionEvent, ChatSessionSummary } from "../../chat-state.js";
+import type { ChatSendReceipt, ChatEventHistory, ChatSessionEventPage, ChatLiveContext, ChatSessionActivity, ChatSessionEvent, ChatSessionSummary } from "../../chat-state.js";
 import {
   WIRE_MAX_ACTIVE_SKILL_COUNT,
   WIRE_MAX_ATTACHMENT_FILE_NAME_BYTES,
-  WIRE_MAX_AUDIO_ATTACHMENT_BYTES,
-  WIRE_MAX_AUDIO_DURATION_SECONDS,
+  WIRE_MAX_LOCAL_AUDIO_ATTACHMENT_BYTES,
+  WIRE_MAX_LOCAL_AUDIO_DURATION_SECONDS,
   WIRE_MAX_DOCUMENT_ATTACHMENT_BYTES,
   WIRE_MAX_IMAGE_ATTACHMENT_BYTES,
   WIRE_MAX_MIDI_ATTACHMENT_BYTES,
@@ -182,10 +182,10 @@ export function isWireSessionAttachment(value: unknown): value is SessionAttachm
     "channels",
   ]) &&
     attachmentMediaTypeMatchesKind(value.kind, value.mediaType) &&
-    value.byteLength <= WIRE_MAX_AUDIO_ATTACHMENT_BYTES &&
+    value.byteLength <= WIRE_MAX_LOCAL_AUDIO_ATTACHMENT_BYTES &&
     isFiniteNumber(value.durationSeconds) &&
     value.durationSeconds > 0 &&
-    value.durationSeconds <= WIRE_MAX_AUDIO_DURATION_SECONDS &&
+    value.durationSeconds <= WIRE_MAX_LOCAL_AUDIO_DURATION_SECONDS &&
     isInteger(value.sampleRate) &&
     (value.mediaType === "audio/mpeg"
       ? includes([16_000, 22_050, 24_000, 32_000, 44_100, 48_000], value.sampleRate)
@@ -490,4 +490,29 @@ export function isWireLiveContext(context: unknown): context is ChatLiveContext 
     range.coordinate === "arrangement-beats" &&
     isFiniteNumber(range.start) && isFiniteNumber(range.end) &&
     range.start >= 0 && range.end >= range.start;
+}
+
+export function isWireEventHistory(value: unknown): value is ChatEventHistory {
+  return isWireRecord(value) && hasOnlyWireKeys(value, ["historyId", "total", "latestSequence", "nextBefore", "nextAfter"]) &&
+    isWireStorageId(value.historyId) && isSafeInteger(value.total) && value.total >= 0 &&
+    isSafeInteger(value.latestSequence) && value.latestSequence >= value.total &&
+    (value.nextBefore === undefined || isSafeInteger(value.nextBefore) &&
+      value.nextBefore > 1 && value.nextBefore <= value.latestSequence) &&
+    (value.nextAfter === undefined || isSafeInteger(value.nextAfter) &&
+      value.nextAfter >= 1 && value.nextAfter < value.latestSequence);
+}
+
+export function isWireSessionEventPage(value: unknown): value is ChatSessionEventPage {
+  if (!isWireRecord(value) || !hasOnlyWireKeys(value, ["sessionId", "historyId", "total", "latestSequence", "nextBefore", "nextAfter", "events"])) return false;
+  const { sessionId, events, ...history } = value;
+  return isWireStorageId(sessionId) && isWireEventHistory(history) && isWireArray(events) &&
+    events.length <= 100 && events.length <= history.total &&
+    events.every(event => isWireSessionEvent(event, "persisted")) &&
+    new Set(events.map(event => event.id)).size === events.length;
+}
+
+export function isWireSendReceipt(value: unknown): value is ChatSendReceipt {
+  return isWireRecord(value) && (value.status === "accepted"
+    ? hasOnlyWireKeys(value, ["status", "event"]) && isWireSessionEvent(value.event, "persisted") && value.event.kind === "user"
+    : hasOnlyWireKeys(value, ["status"]) && includes(["absent", "conflict"], value.status));
 }

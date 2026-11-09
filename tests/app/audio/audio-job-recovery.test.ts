@@ -1,5 +1,5 @@
+import { interceptStoredWrites } from "../../storage/support/sqlite-fault-test-helpers.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import test from "node:test";
 import { listAudioJobs, updateAudioJob } from "../../../src/storage/audio-jobs.js";
 import { readExpectedAudioAsset } from "../../../src/storage/audio-assets.js";
@@ -56,20 +56,15 @@ test("sound-effect jobs do not inherit the unrelated saved music model override"
 
 test("a directly returned blob survives persistent bookkeeping failure and resumes locally after connection removal", async (t) => {
   const h = await audioRecoveryHarness(t, "elevenlabs");
-  const probe = await fs.open(h.storage);
-  const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
-  const sync = prototype.sync;
-  await probe.close();
   const submit = h.generationAdapter.submit;
   let restore = () => {};
   h.generationAdapter.submit = async (...args) => {
     const result = await submit(...args);
-    const fault = t.mock.method(prototype, "sync", async function (this: fs.FileHandle) {
-      if ((await this.stat()).isDirectory() && (await fs.readdir(`${h.storage}/live-smith-audio/${h.session.id}`))
-        .some((name) => name.endsWith(".audio"))) throw new Error("bookkeeping unavailable after blob commit");
-      return sync.call(this);
-    });
-    restore = () => fault.mock.restore();
+    let committedBlob = false;
+    restore = interceptStoredWrites(t, { afterCommit: writes => {
+      if (writes.some(write => write.key.endsWith(".audio"))) committedBlob = true;
+      if (committedBlob && writes.length) throw new Error("bookkeeping unavailable after blob commit");
+    } });
     return result;
   };
   try { await assert.rejects(h.run()); } finally { restore(); }

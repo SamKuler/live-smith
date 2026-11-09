@@ -1,10 +1,7 @@
 import { Buffer } from "node:buffer";
-import { openVerifiedFileStream, type SessionFileExport } from "./file-export.js";
+import { openVerifiedStoredStream, type SessionFileExport } from "./file-export.js";
 import { createHash } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { platform } from "node:process";
 import { types as utilTypes } from "node:util";
 
 import { persistTransientSessionInTransaction } from "./sessions.js";
@@ -20,7 +17,9 @@ import {
   isSafeAttachmentFileName,
   MAX_ATTACHMENT_FILE_NAME_BYTES,
   MAX_ATTACHMENT_UPLOAD_BYTES,
-  MAX_AUDIO_ATTACHMENT_BYTES,
+  MAX_BUFFERED_ATTACHMENT_BYTES,
+  MAX_LOCAL_AUDIO_ATTACHMENT_BYTES,
+  MAX_LOCAL_AUDIO_DURATION_SECONDS,
   MAX_DOCUMENT_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_DIMENSION,
@@ -28,6 +27,8 @@ import {
 } from "../attachments/contracts.js";
 import {
   inspectAudioAttachment,
+  inspectAudioAttachmentRange,
+  previewWaveformRange,
   isAudioAttachmentCandidate,
   isAudioAttachmentInspection,
   type AudioAttachmentInspection,
@@ -36,16 +37,8 @@ import { classifyDocumentAttachment } from "../attachments/processor.js";
 import { throwIfAborted, yieldToHost } from "../runtime/host.js";
 import { isMissingFileError } from "./errors.js";
 import { createStorageId, isSafeStorageId, requireSafeStorageId } from "./id.js";
-import {
-  ensurePrivateDirectory,
-  ensurePrivateDirectoryDurably,
-  isStorageCommitOutcomeUnknownError,
-  removeDirectoryDurably,
-  removeFileDurably,
-  withStorageTransaction,
-  writeBytesAtomicallyCreateOnly,
-  writeJsonAtomicallyCreateOnly,
-} from "./persistence.js";
+import { isStorageCommitOutcomeUnknownError, withStorageTransaction } from "./persistence.js";
+import { listStoredChildren, storedEntry, openStoredReader, openStoredRangeReader, createStoredFileWriter, copyStoredReference, readStoredText, storedTreeExists, removeStoredEntry, removeStoredTree, writeStoredBytes, writeStoredJson } from "./sqlite.js";
 
 import { isAttachmentProvenance, type AttachmentProvenance } from "../attachments/provenance.js";
 
@@ -105,19 +98,14 @@ interface MemoryAttachment {
   bytes: Uint8Array;
 }
 
-interface AttachmentDirectoryIdentity {
-  dev: number;
-  ino: number;
-}
-
 interface AttachmentDirectoryBinding {
-  root: string;
-  rootIdentity: AttachmentDirectoryIdentity;
+  storageDirectory: string;
   directory: string;
-  directoryIdentity: AttachmentDirectoryIdentity;
 }
 
 export interface AttachmentSaveOptions {
+  /** Upload retries may reuse an identical pending reference before consuming quota. */
+  reuseMatchingPending?: boolean;
   /** Test seam for proving collision handling; production always uses createStorageId. */
   createId?: () => string;
   provenance?: AttachmentProvenance;
@@ -134,14 +122,18 @@ interface AttachmentReadOptions {
   signal?: AbortSignal;
   /** Exact immutable event/current reference expected for this stored attachment. */
   expectedRef?: SessionAttachmentRef;
-  /** Test seam for proving stat rejection happens before blob content is read. */
-  readFile?: (handle: fs.FileHandle) => Promise<Uint8Array>;
+  /** Consumer-specific limit checked before allocating or reading content. */
+  maxBytes?: number;
+  /** Test seam for proving the size bound is checked before blob content is read. */
+  readFile?: (reader: { readFile(): Promise<Uint8Array> }) => Promise<Uint8Array>;
 }
 
 export interface ReadSessionAttachmentResult {
   attachment: SessionAttachmentRef;
   bytes: Uint8Array;
 }
+
+const localAudioLimits = { maxBytes: MAX_LOCAL_AUDIO_ATTACHMENT_BYTES, maxDurationSeconds: MAX_LOCAL_AUDIO_DURATION_SECONDS };
 
 const attachmentsDirectoryName = "live-smith-attachments";
 const memoryAttachments = new Map<string, Map<string, MemoryAttachment>>();
@@ -210,10 +202,10 @@ export async function saveSessionAttachment(
   if (!isUint8Array(input.bytes)) {
     throw new TypeError("Attachment bytes must be binary data.");
   }
-  if (input.bytes.byteLength > MAX_ATTACHMENT_UPLOAD_BYTES) {
+  if (input.bytes.byteLength > MAX_BUFFERED_ATTACHMENT_BYTES) {
     throw new AttachmentProcessingError(
       "archive_limit",
-      `Attachment uploads may not exceed ${MAX_ATTACHMENT_UPLOAD_BYTES / (1024 * 1024)} MiB.`,
+      `Attachment uploads may not exceed ${MAX_BUFFERED_ATTACHMENT_BYTES / (1024 * 1024)} MiB.`,
     );
   }
   const signal = input.signal;
@@ -261,7 +253,7 @@ export async function saveSessionAttachment(
             fileName,
             ...classification,
             ...(provenance ? { provenance } : {}),
-            bytes,
+            byteLength: bytes.byteLength,
             sha256,
             ordinal,
             createdAt: (options.now?.() ?? new Date()).toISOString(),
@@ -280,7 +272,7 @@ export async function saveSessionAttachment(
         sessionId,
       );
       const ordinal = nextAttachmentOrdinal(
-        await readAllStoredMetadataBound(binding, sessionId),
+        await readAllStoredMetadata(binding, sessionId),
       );
       for (let attempt = 0; attempt < 32; attempt += 1) {
         const id = nextAttachmentId(options);
@@ -290,7 +282,7 @@ export async function saveSessionAttachment(
           fileName,
           ...classification,
           ...(provenance ? { provenance } : {}),
-          bytes,
+          byteLength: bytes.byteLength,
           sha256,
           ordinal,
           createdAt: (options.now?.() ?? new Date()).toISOString(),
@@ -323,6 +315,188 @@ export async function saveSessionAttachment(
   }, signal, () => !storageCommitStarted);
 }
 
+export interface StagedSessionAttachment {
+  publish(options: AttachmentSaveOptions): Promise<StoredSessionAttachment>;
+  dispose(): Promise<void>;
+}
+
+/** Receive and validate the original independently of the Session publication fence. */
+export async function stageSessionAttachmentStream(
+  storageDirectory: string | undefined, sessionId: string,
+  input: { fileName: string; chunks: AsyncIterable<Uint8Array>; claimedMediaType?: string; signal?: AbortSignal; expectedByteLength?: number },
+): Promise<StagedSessionAttachment> {
+  requireSafeStorageId(sessionId, "Session ID");
+  if (!storageDirectory) {
+    const parts: Uint8Array[] = []; let length = 0;
+    for await (const chunk of input.chunks) {
+      throwIfAborted(input.signal);
+      if (!isUint8Array(chunk)) throw new TypeError("Attachment bytes must be binary data.");
+      length += chunk.byteLength;
+      if (length > 128 * 1024 * 1024) throw new AttachmentProcessingError("archive_limit", "In-memory attachments may not exceed 128 MiB.");
+      parts.push(new Uint8Array(chunk));
+    }
+    if (input.expectedByteLength !== undefined && input.expectedByteLength !== length) throw new AttachmentProcessingError("invalid_document", "Attachment length does not match its declared length.");
+    const bytes = new Uint8Array(length); let offset = 0;
+    for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
+    return { dispose: async () => {}, publish: options => saveSessionAttachment(storageDirectory, sessionId,
+      { fileName: input.fileName, bytes, ...(input.claimedMediaType === undefined ? {} : { claimedMediaType: input.claimedMediaType }),
+        ...(input.signal === undefined ? {} : { signal: input.signal }) }, options) };
+  }
+  const writer = await createStoredFileWriter(storageDirectory, input.expectedByteLength === undefined ? {} : { expectedByteLength: input.expectedByteLength });
+  const uploadHash = createHash("sha256");
+  try {
+    for await (const chunk of input.chunks) {
+      throwIfAborted(input.signal);
+      if (!isUint8Array(chunk)) throw new TypeError("Attachment bytes must be binary data.");
+      if (writer.byteLength + chunk.byteLength > MAX_ATTACHMENT_UPLOAD_BYTES) throw new AttachmentProcessingError("archive_limit", "Attachment exceeds the local upload limit.");
+      uploadHash.update(chunk);
+      await writer.append(chunk);
+    }
+    throwIfAborted(input.signal);
+    const prefix = await writer.readRange(0, Math.min(writer.byteLength, 64 * 1024));
+    let classification: StoredAttachmentClassification;
+    if (isAudioAttachmentCandidate(prefix)) {
+      classification = { kind: "audio", ...await inspectAudioAttachmentRange({ byteLength: writer.byteLength, readRange: (offset, length) => writer.readRange(offset, length), limits: localAudioLimits, ...(input.signal === undefined ? {} : { signal: input.signal }) }) };
+    } else {
+      if (writer.byteLength > Math.max(MAX_IMAGE_ATTACHMENT_BYTES, MAX_DOCUMENT_ATTACHMENT_BYTES)) throw new AttachmentProcessingError("archive_limit", "Attachment exceeds the local image or document limit.");
+      const bytes = new Uint8Array(writer.byteLength);
+      for (let offset = 0; offset < bytes.length; offset += 64 * 1024) bytes.set(await writer.readRange(offset, Math.min(64 * 1024, bytes.length - offset)), offset);
+      classification = await classifyStoredAttachment({ bytes, fileName: input.fileName, ...(input.claimedMediaType === undefined ? {} : { claimedMediaType: input.claimedMediaType }), ...(input.signal === undefined ? {} : { signal: input.signal }) });
+    }
+    const uploadDigest = uploadHash.digest("hex");
+    const fileName = sanitizedAttachmentFileName(input.fileName, classification.mediaType);
+    return { dispose: () => writer.abort(), publish: async options => {
+      const pending = options.preSavePendingAttachmentRefs.map(item => ({ ...item }));
+      const provenance = options.provenance === undefined ? undefined : { ...options.provenance, replacedIds: [...options.provenance.replacedIds] };
+      if (provenance && !isAttachmentProvenance(provenance, undefined)) throw new AttachmentProcessingError("archive_limit", "The attachment selection history is invalid.");
+      let committed = false;
+      return withAttachmentStorageBoundary(() => withStorageTransaction(storageDirectory, async transaction => {
+        throwIfAborted(input.signal);
+        if (options.reuseMatchingPending) {
+          const matching = pending.find(item => item.byteLength === writer.byteLength && item.sha256 === uploadDigest && item.fileName === fileName);
+          if (matching) {
+            const existing = await readSessionAttachmentMetadata(storageDirectory, sessionId, matching.id);
+            assertExpectedAttachmentRef(existing, matching);
+            return existing;
+          }
+        }
+        assertPendingAttachmentQuota(pending, { kind: classification.kind, byteLength: writer.byteLength });
+        committed = true;
+        await persistTransientSessionInTransaction(transaction, storageDirectory, sessionId);
+        await prepareAttachmentSessionDirectory(storageDirectory, sessionId, true);
+        const binding = await captureAttachmentDirectoryBinding(storageDirectory, sessionId);
+        const ordinal = nextAttachmentOrdinal(await readAllStoredMetadata(binding, sessionId));
+        for (let attempt = 0; attempt < 32; attempt++) {
+          const id = nextAttachmentId(options), target = attachmentBlobPath(binding.directory, id);
+          if (await storedEntry(storageDirectory, target) || await storedEntry(storageDirectory, attachmentMetadataPath(binding.directory, id))) continue;
+          const entry = await writer.publish(target, { createOnly: true });
+          const metadata = attachmentMetadata({ id, sessionId, fileName, ...classification, ...(provenance ? { provenance } : {}), byteLength: entry.byteLength, sha256: entry.sha256, ordinal, createdAt: (options.now?.() ?? new Date()).toISOString() });
+          try { await writeAttachmentJsonCreateOnlyBound(binding, attachmentMetadataPath(binding.directory, id), metadata); }
+          catch (error) { if (!isStorageCommitOutcomeUnknownError(error)) await removeAttachmentFileBound(binding, target); throw error; }
+          return cloneMetadata(metadata);
+        }
+        throw new Error("Could not allocate a unique attachment ID.");
+      }), input.signal, () => !committed);
+    } };
+  } catch (error) { await writer.abort(); throw error; }
+}
+
+/** Receive, validate and publish using an already authorized attachment snapshot. */
+export async function saveSessionAttachmentStream(
+  storageDirectory: string | undefined, sessionId: string,
+  input: Parameters<typeof stageSessionAttachmentStream>[2], options: AttachmentSaveOptions,
+): Promise<StoredSessionAttachment> {
+  const staged = await stageSessionAttachmentStream(storageDirectory,sessionId,input);
+  try { return await staged.publish(options); }
+  finally { await staged.dispose(); }
+}
+
+/** Read an attachment reference without materializing its content. */
+export async function readSessionAttachmentMetadata(storageDirectory: string | undefined, sessionId: string, attachmentId: string): Promise<StoredSessionAttachment> {
+  requireSafeStorageId(sessionId, "Session ID"); requireSafeStorageId(attachmentId, "Attachment ID");
+  if (!storageDirectory) {
+    const item = memoryAttachments.get(sessionId)?.get(attachmentId);
+    if (!item) throw new AttachmentNotFoundError();
+    return cloneMetadata(item.metadata);
+  }
+  return withAttachmentStorageBoundary(async () => {
+    if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) throw new AttachmentNotFoundError();
+    return readStoredMetadata(await captureAttachmentDirectoryBinding(storageDirectory, sessionId), sessionId, attachmentId);
+  });
+}
+
+/** Open a bounded reader tied to this Session and immutable attachment metadata. */
+export async function openSessionAttachmentRange(storageDirectory: string | undefined, sessionId: string, attachmentId: string) {
+  const metadata = await readSessionAttachmentMetadata(storageDirectory, sessionId, attachmentId);
+  if (!storageDirectory) {
+    const item = memoryAttachments.get(sessionId)?.get(attachmentId)!;
+    return { attachment: sessionAttachmentRefFromStored(metadata), async readRange(offset: number, length: number) {
+      if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > 64 * 1024 || offset + length > item.bytes.length) throw new RangeError("Invalid attachment range.");
+      return Buffer.from(item.bytes.subarray(offset, offset + length));
+    }, async close() {} };
+  }
+  const reader = await openStoredRangeReader(storageDirectory, attachmentBlobPath(attachmentSessionDirectory(storageDirectory, sessionId), attachmentId));
+  if (reader.entry.byteLength !== metadata.byteLength || reader.entry.sha256 !== metadata.sha256) { await reader.close(); throw new AttachmentStorageCorruptionError(); }
+  return { attachment: sessionAttachmentRefFromStored(metadata), readRange: reader.readRange, close: reader.close };
+}
+
+/** Generate a bounded, sampled waveform preview for a saved WAV attachment. */
+export async function readSessionAttachmentWaveform(storageDirectory: string | undefined, sessionId: string, attachmentId: string, options: { buckets?: number; signal?: AbortSignal } = {}): Promise<{ peaks: number[]; durationSeconds: number } | undefined> {
+  const reader = await openSessionAttachmentRange(storageDirectory, sessionId, attachmentId);
+  try {
+    if (reader.attachment.kind !== "audio" || reader.attachment.mediaType !== "audio/wav") return undefined;
+    const preview = await previewWaveformRange({ byteLength: reader.attachment.byteLength, readRange: reader.readRange,
+      ...(options.buckets === undefined ? {} : { buckets: options.buckets }), ...(options.signal === undefined ? {} : { signal: options.signal }) });
+    if (preview?.durationSeconds !== reader.attachment.durationSeconds) throw new AttachmentStorageCorruptionError();
+    return preview;
+  } finally { await reader.close(); }
+}
+
+/** Create a new attachment reference to an existing immutable object. */
+export async function reuseSessionAttachment(storageDirectory: string | undefined, sessionId: string, attachmentId: string, options: AttachmentSaveOptions & { signal?: AbortSignal }): Promise<StoredSessionAttachment> {
+  requireSafeStorageId(sessionId, "Session ID"); requireSafeStorageId(attachmentId, "Attachment ID");
+  const source = await readSessionAttachmentMetadata(storageDirectory, sessionId, attachmentId);
+  const provenance = options.provenance === undefined ? undefined : { ...options.provenance, replacedIds: [...options.provenance.replacedIds] };
+  if (provenance && !isAttachmentProvenance(provenance, undefined)) throw new AttachmentProcessingError("archive_limit", "The attachment selection history is invalid.");
+  assertPendingAttachmentQuota(options.preSavePendingAttachmentRefs, source);
+  return withAttachmentStorageBoundary(() => withStorageTransaction(storageDirectory, async transaction => {
+    throwIfAborted(options.signal);
+    await persistTransientSessionInTransaction(transaction, storageDirectory, sessionId);
+    if (!storageDirectory) {
+      const items = memoryAttachments.get(sessionId); const item = items?.get(attachmentId);
+      if (!items || !item) throw new AttachmentNotFoundError();
+      const ordinal = nextAttachmentOrdinal([...items.values()].map(value => value.metadata));
+      for (let attempt = 0; attempt < 32; attempt++) {
+        const id = nextAttachmentId(options); if (items.has(id)) continue;
+        const metadata = { ...source, id, ordinal, createdAt: (options.now?.() ?? new Date()).toISOString(), ...(provenance ? { provenance } : {}) };
+        if (!provenance) delete metadata.provenance;
+        items.set(id, { metadata, bytes: item.bytes }); return cloneMetadata(metadata);
+      }
+    } else {
+      const binding = await captureAttachmentDirectoryBinding(storageDirectory, sessionId);
+      const current = await readStoredMetadata(binding, sessionId, attachmentId);
+      assertExpectedAttachmentRef(current, sessionAttachmentRefFromStored(source));
+      const ordinal = nextAttachmentOrdinal(await readAllStoredMetadata(binding, sessionId));
+      for (let attempt = 0; attempt < 32; attempt++) {
+        const id = nextAttachmentId(options), target = attachmentBlobPath(binding.directory, id);
+        try {
+          const entry = await copyStoredReference(storageDirectory, attachmentBlobPath(binding.directory, attachmentId), target, { createOnly: true });
+          if (entry.sha256 !== source.sha256 || entry.byteLength !== source.byteLength) {
+            await removeAttachmentFileBound(binding, target);
+            throw new AttachmentStorageCorruptionError();
+          }
+        } catch (error) { if (isAlreadyExistsError(error)) continue; throw error; }
+        const metadata = { ...source, id, ordinal, createdAt: (options.now?.() ?? new Date()).toISOString(), ...(provenance ? { provenance } : {}) };
+        if (!provenance) delete metadata.provenance;
+        try { await writeAttachmentJsonCreateOnlyBound(binding, attachmentMetadataPath(binding.directory, id), metadata); }
+        catch (error) { if (!isStorageCommitOutcomeUnknownError(error)) await removeAttachmentFileBound(binding, target); if (isAlreadyExistsError(error)) continue; throw error; }
+        return cloneMetadata(metadata);
+      }
+    }
+    throw new Error("Could not allocate a unique attachment ID.");
+  }), options.signal);
+}
+
 export async function listSessionAttachments(
   storageDirectory: string | undefined,
   sessionId: string,
@@ -341,7 +515,7 @@ export async function listSessionAttachments(
       storageDirectory,
       sessionId,
     );
-    return sortMetadata(await readAllStoredMetadataBound(binding, sessionId));
+    return sortMetadata(await readAllStoredMetadata(binding, sessionId));
   });
 }
 
@@ -375,7 +549,7 @@ export async function listPendingSessionAttachments(
       sessionId,
     );
     return pendingMetadata(
-      await readAllStoredMetadataBound(binding, sessionId, consumedIds),
+      await readAllStoredMetadata(binding, sessionId, consumedIds),
       omittedAttachmentId,
     );
   });
@@ -407,6 +581,7 @@ export async function readSessionAttachment(
     const item = memoryAttachments.get(sessionId)?.get(attachmentId);
     if (!item) throw new AttachmentNotFoundError();
     assertExpectedAttachmentRef(item.metadata, options.expectedRef);
+    if (options.maxBytes !== undefined && item.metadata.byteLength > options.maxBytes) throw new AttachmentProcessingError("archive_limit", "Attachment exceeds the consumer byte limit.");
     await verifyBytes(item.metadata, item.bytes, options.signal);
     return {
       attachment: sessionAttachmentRefFromStored(item.metadata),
@@ -422,15 +597,16 @@ export async function readSessionAttachment(
       storageDirectory,
       sessionId,
     );
-    const metadata = await readStoredMetadataBound(
+    const metadata = await readStoredMetadata(
       binding,
       sessionId,
       attachmentId,
     );
     assertExpectedAttachmentRef(metadata, options.expectedRef);
+    if (options.maxBytes !== undefined && metadata.byteLength > options.maxBytes) throw new AttachmentProcessingError("archive_limit", "Attachment exceeds the consumer byte limit.");
     return {
       attachment: sessionAttachmentRefFromStored(metadata),
-      bytes: await readAndVerifyBlobBound(binding, metadata, options),
+      bytes: await readAndVerifyBlob(binding, metadata, options),
     };
   }, options.signal);
 }
@@ -439,12 +615,11 @@ export async function sessionAttachmentExport(storageDirectory: string, sessionI
   requireSafeStorageId(sessionId, "Session ID"); requireSafeStorageId(attachmentId, "Attachment ID");
   if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) throw new AttachmentNotFoundError();
   const binding = await captureAttachmentDirectoryBinding(storageDirectory, sessionId);
-  const metadata = await readStoredMetadataBound(binding, sessionId, attachmentId);
+  const metadata = await readStoredMetadata(binding, sessionId, attachmentId);
   return { fileName: metadata.fileName, mediaType: metadata.mediaType, byteLength: metadata.byteLength,
-    open: signal => openVerifiedFileStream({ path: attachmentBlobPath(binding.directory, attachmentId), byteLength: metadata.byteLength, sha256: metadata.sha256, signal,
+    open: (signal, range) => openVerifiedStoredStream({ storageDirectory, key: attachmentBlobPath(binding.directory, attachmentId), byteLength: metadata.byteLength, sha256: metadata.sha256, signal, ...(range ? { range } : {}),
       assertCurrent: async () => {
-        await assertAttachmentDirectoryBinding(binding);
-        if (JSON.stringify(await readStoredMetadataBound(binding, sessionId, attachmentId)) !== JSON.stringify(metadata)) throw new AttachmentStorageCorruptionError();
+        if (JSON.stringify(await readStoredMetadata(binding, sessionId, attachmentId)) !== JSON.stringify(metadata)) throw new AttachmentStorageCorruptionError();
       } }),
   };
 }
@@ -475,7 +650,7 @@ export async function deleteSessionAttachment(
         storageDirectory,
         sessionId,
       );
-      await readStoredMetadataBound(binding, sessionId, attachmentId);
+      await readStoredMetadata(binding, sessionId, attachmentId);
       await removeAttachmentFileBound(
         binding,
         attachmentBlobPath(directory, attachmentId),
@@ -500,9 +675,7 @@ export async function deleteSessionAttachments(
         return;
       }
 
-      const directory = attachmentSessionDirectory(storageDirectory, sessionId);
-      if (!await assertAttachmentRootIsSafe(storageDirectory)) return;
-      if (!await assertExistingDirectoryIsSafe(directory)) return;
+      if (!await prepareAttachmentSessionDirectory(storageDirectory, sessionId, false)) return;
       const binding = await captureAttachmentDirectoryBinding(
         storageDirectory,
         sessionId,
@@ -512,33 +685,16 @@ export async function deleteSessionAttachments(
   );
 }
 
-export async function listSessionAttachmentDirectoryIds(
-  storageDirectory: string | undefined,
-): Promise<string[]> {
+export async function listSessionAttachmentDirectoryIds(storageDirectory: string | undefined): Promise<string[]> {
   if (!storageDirectory) return [...memoryAttachments.keys()].sort();
   return withAttachmentStorageBoundary(async () => {
-    const root = path.join(storageDirectory, attachmentsDirectoryName);
-    if (!await assertExistingDirectoryIsSafe(root)) return [];
-    const rootIdentity = await captureAttachmentDirectoryIdentity(root);
-    const entries = await fs.readdir(root, { withFileTypes: true });
-    const ids: string[] = [];
-    for (const entry of entries) {
-      if (entry.isSymbolicLink() || !entry.isDirectory()) {
-        throw new AttachmentStorageCorruptionError();
-      }
-      let decoded: string;
-      try {
-        decoded = decodeURIComponent(entry.name);
-      } catch (cause) {
-        throw new AttachmentStorageCorruptionError(cause);
-      }
-      if (!isSafeStorageId(decoded) || encodeURIComponent(decoded) !== entry.name) {
-        throw new AttachmentStorageCorruptionError();
-      }
-      ids.push(decoded);
-    }
-    await assertAttachmentDirectoryIdentity(root, rootIdentity);
-    return ids.sort();
+    const names = await listStoredChildren(storageDirectory, attachmentsDirectoryName);
+    return names.map(name => {
+      let id: string;
+      try { id = decodeURIComponent(name); } catch (cause) { throw new AttachmentStorageCorruptionError(cause); }
+      if (!isSafeStorageId(id) || encodeURIComponent(id) !== name) throw new AttachmentStorageCorruptionError();
+      return id;
+    }).sort();
   });
 }
 
@@ -607,6 +763,7 @@ async function classifyStoredAttachment(input: {
   if (isAudioAttachmentCandidate(input.bytes)) {
     const inspection = await inspectAudioAttachment({
       bytes: input.bytes,
+      limits: localAudioLimits,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     return { kind: "audio", ...inspection };
@@ -631,121 +788,35 @@ function assertPendingAttachmentQuota(
   }
 }
 
-async function readAllStoredMetadataBound(
-  binding: AttachmentDirectoryBinding,
-  sessionId: string,
-  skippedIds: ReadonlySet<string> = new Set(),
-): Promise<StoredSessionAttachment[]> {
-  return runWithAttachmentDirectoryBinding(
-    binding,
-    () => readAllStoredMetadata(binding.directory, sessionId, skippedIds),
-  );
+async function writeAttachmentBytesCreateOnlyBound(binding: AttachmentDirectoryBinding, target: string, bytes: Uint8Array): Promise<void> {
+  await writeStoredBytes(binding.storageDirectory, target, bytes, { createOnly: true, storage: "file" });
 }
 
-async function readStoredMetadataBound(
-  binding: AttachmentDirectoryBinding,
-  sessionId: string,
-  attachmentId: string,
-): Promise<StoredSessionAttachment> {
-  return runWithAttachmentDirectoryBinding(
-    binding,
-    () => readStoredMetadata(binding.directory, sessionId, attachmentId),
-  );
+async function writeAttachmentJsonCreateOnlyBound(binding: AttachmentDirectoryBinding, target: string, metadata: StoredSessionAttachment): Promise<void> {
+  await writeStoredJson(binding.storageDirectory, target, metadata, { createOnly: true });
 }
 
-async function readAndVerifyBlobBound(
-  binding: AttachmentDirectoryBinding,
-  metadata: StoredSessionAttachment,
-  options: AttachmentReadOptions,
-): Promise<Uint8Array> {
-  return runWithAttachmentDirectoryBinding(
-    binding,
-    () => readAndVerifyBlob(binding.directory, metadata, options),
-  );
+async function removeAttachmentFileBound(binding: AttachmentDirectoryBinding, target: string): Promise<void> {
+  await removeStoredEntry(binding.storageDirectory, target);
 }
 
-async function writeAttachmentBytesCreateOnlyBound(
-  binding: AttachmentDirectoryBinding,
-  target: string,
-  bytes: Uint8Array,
-): Promise<void> {
-  await runWithAttachmentDirectoryBinding(
-    binding,
-    () => writeBytesAtomicallyCreateOnly(target, bytes),
-  );
-}
-
-async function writeAttachmentJsonCreateOnlyBound(
-  binding: AttachmentDirectoryBinding,
-  target: string,
-  metadata: StoredSessionAttachment,
-): Promise<void> {
-  await runWithAttachmentDirectoryBinding(
-    binding,
-    () => writeJsonAtomicallyCreateOnly(target, metadata),
-  );
-}
-
-async function removeAttachmentFileBound(
-  binding: AttachmentDirectoryBinding,
-  target: string,
-): Promise<void> {
-  await runWithAttachmentDirectoryBinding(
-    binding,
-    () => removeFileDurably(target),
-  );
-}
-
-async function removeAttachmentDirectoryBound(
-  binding: AttachmentDirectoryBinding,
-): Promise<void> {
-  await assertAttachmentDirectoryBinding(binding);
-  try {
-    await removeDirectoryDurably(binding.directory);
-  } catch (error) {
-    await assertAttachmentDirectoryIdentity(binding.root, binding.rootIdentity);
-    if (!isStorageCommitOutcomeUnknownError(error)) {
-      await assertAttachmentDirectoryIdentity(
-        binding.directory,
-        binding.directoryIdentity,
-      );
-    }
-    throw error;
-  }
-  await assertAttachmentDirectoryIdentity(binding.root, binding.rootIdentity);
-  if (await assertExistingDirectoryIsSafe(binding.directory)) {
-    throw new AttachmentStorageCorruptionError();
-  }
-}
-
-async function runWithAttachmentDirectoryBinding<T>(
-  binding: AttachmentDirectoryBinding,
-  operation: () => Promise<T>,
-): Promise<T> {
-  await assertAttachmentDirectoryBinding(binding);
-  try {
-    const result = await operation();
-    await assertAttachmentDirectoryBinding(binding);
-    return result;
-  } catch (error) {
-    await assertAttachmentDirectoryBinding(binding);
-    throw error;
-  }
+async function removeAttachmentDirectoryBound(binding: AttachmentDirectoryBinding): Promise<void> {
+  await removeStoredTree(binding.storageDirectory, binding.directory);
 }
 
 async function readAllStoredMetadata(
-  directory: string,
+  binding: AttachmentDirectoryBinding,
   sessionId: string,
   skippedIds: ReadonlySet<string> = new Set(),
 ): Promise<StoredSessionAttachment[]> {
-  const names = await fs.readdir(directory);
+  const names = await listStoredChildren(binding.storageDirectory, binding.directory);
   const metadata: StoredSessionAttachment[] = [];
   const seenOrdinals = new Set<number>();
   for (const name of names.filter((entry) => entry.endsWith(".json")).sort()) {
     const fileId = name.slice(0, -".json".length);
     if (!isSafeStorageId(fileId)) throw new AttachmentStorageCorruptionError();
     if (skippedIds.has(fileId)) continue;
-    const item = await readMetadataFile(path.join(directory, name));
+    const item = await readMetadataFile(binding.storageDirectory, path.join(binding.directory, name));
     if (
       item.id !== fileId ||
       item.sessionId !== sessionId ||
@@ -806,7 +877,7 @@ function attachmentSessionDirectory(
   sessionId: string,
 ): string {
   const safeSessionId = requireSafeStorageId(sessionId, "Session ID");
-  return path.join(
+  return path.resolve(
     storageDirectory,
     attachmentsDirectoryName,
     encodeURIComponent(safeSessionId),
@@ -828,14 +899,14 @@ function attachmentBlobPath(directory: string, attachmentId: string): string {
 }
 
 async function readStoredMetadata(
-  directory: string,
+  binding: AttachmentDirectoryBinding,
   sessionId: string,
   attachmentId: string,
 ): Promise<StoredSessionAttachment> {
-  const target = attachmentMetadataPath(directory, attachmentId);
+  const target = attachmentMetadataPath(binding.directory, attachmentId);
   let metadata: StoredSessionAttachment;
   try {
-    metadata = await readMetadataFile(target);
+    metadata = await readMetadataFile(binding.storageDirectory, target);
   } catch (error) {
     if (isMissingFileError(error)) throw new AttachmentNotFoundError();
     throw error;
@@ -846,72 +917,48 @@ async function readStoredMetadata(
   return metadata;
 }
 
-async function readMetadataFile(target: string): Promise<StoredSessionAttachment> {
-  let handle: fs.FileHandle | undefined;
+async function readMetadataFile(storageDirectory: string, target: string): Promise<StoredSessionAttachment> {
   try {
-    handle = await openRegularPrivateFile(target);
-    const parsed = JSON.parse(await handle.readFile("utf8")) as unknown;
-    if (!isStoredSessionAttachment(parsed)) {
-      throw new AttachmentStorageCorruptionError();
-    }
+    const parsed = JSON.parse(await readStoredText(storageDirectory, target)) as unknown;
+    if (!isStoredSessionAttachment(parsed)) throw new AttachmentStorageCorruptionError();
     return cloneMetadata(parsed);
   } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new AttachmentStorageCorruptionError(error);
-    }
+    if (error instanceof SyntaxError) throw new AttachmentStorageCorruptionError(error);
     throw error;
-  } finally {
-    await handle?.close();
   }
 }
 
 async function readAndVerifyBlob(
-  directory: string,
-  metadata: StoredSessionAttachment,
-  options: AttachmentReadOptions,
+  binding: AttachmentDirectoryBinding, metadata: StoredSessionAttachment, options: AttachmentReadOptions,
 ): Promise<Uint8Array> {
-  let handle: fs.FileHandle | undefined;
   try {
-    const target = attachmentBlobPath(directory, metadata.id);
-    handle = await openRegularPrivateFile(target);
-    await assertBlobHandleMatchesMetadata(handle, metadata);
-    const bytes = options.readFile === undefined
-      ? new Uint8Array(await handle.readFile())
-      : new Uint8Array(await options.readFile(handle));
-    await verifyBytes(metadata, bytes, options.signal);
-    return bytes;
+    const key = attachmentBlobPath(binding.directory, metadata.id);
+    const entry = await storedEntry(binding.storageDirectory, key);
+    if (!entry || entry.byteLength !== metadata.byteLength) throw new AttachmentStorageCorruptionError();
+    const reader = await openStoredReader(binding.storageDirectory, key);
+    try {
+      const maximumBytes = metadata.kind === "image" ? MAX_IMAGE_ATTACHMENT_BYTES
+        : metadata.kind === "audio" ? MAX_LOCAL_AUDIO_ATTACHMENT_BYTES : MAX_DOCUMENT_ATTACHMENT_BYTES;
+      if (reader.entry.byteLength !== metadata.byteLength || reader.entry.byteLength > maximumBytes) throw new AttachmentStorageCorruptionError();
+      const readFile = async () => {
+        const bytes = new Uint8Array(reader.entry.byteLength);
+        for (let offset = 0, index = 0; offset < bytes.length; index++) {
+          throwIfAborted(options.signal);
+          const chunk = reader.readChunk(index);
+          bytes.set(chunk, offset);
+          offset += chunk.length;
+          if (index % 16 === 15) await yieldToHost(options.signal);
+        }
+        return bytes;
+      };
+      const bytes = options.readFile ? new Uint8Array(await options.readFile({ readFile })) : await readFile();
+      await verifyBytes(metadata, bytes, options.signal);
+      reader.readChunk(0);
+      return bytes;
+    } finally { reader.close(); }
   } catch (error) {
-    if (
-      isMissingFileError(error) ||
-      error instanceof AttachmentStorageCorruptionError
-    ) {
-      throw error instanceof AttachmentStorageCorruptionError
-        ? error
-        : new AttachmentStorageCorruptionError(error);
-    }
+    if (isMissingFileError(error)) throw new AttachmentStorageCorruptionError(error);
     throw error;
-  } finally {
-    await handle?.close();
-  }
-}
-
-async function assertBlobHandleMatchesMetadata(
-  handle: fs.FileHandle,
-  metadata: StoredSessionAttachment,
-): Promise<void> {
-  const info = await handle.stat();
-  const maximumBytes = metadata.kind === "image"
-    ? MAX_IMAGE_ATTACHMENT_BYTES
-    : metadata.kind === "audio"
-      ? MAX_AUDIO_ATTACHMENT_BYTES
-      : MAX_DOCUMENT_ATTACHMENT_BYTES;
-  if (
-    !info.isFile() ||
-    !Number.isSafeInteger(info.size) ||
-    info.size !== metadata.byteLength ||
-    info.size > maximumBytes
-  ) {
-    throw new AttachmentStorageCorruptionError();
   }
 }
 
@@ -939,6 +986,7 @@ async function verifyBytes(
     try {
       const inspection = await inspectAudioAttachment({
         bytes,
+        limits: localAudioLimits,
         ...(signal === undefined ? {} : { signal }),
       });
       if (
@@ -1025,7 +1073,7 @@ function isStoredSessionAttachment(value: unknown): value is StoredSessionAttach
       record.kind === "image"
         ? MAX_IMAGE_ATTACHMENT_BYTES
         : record.kind === "audio"
-          ? MAX_AUDIO_ATTACHMENT_BYTES
+          ? MAX_LOCAL_AUDIO_ATTACHMENT_BYTES
           : MAX_DOCUMENT_ATTACHMENT_BYTES
     ) && (
       record.kind !== "audio" ||
@@ -1034,7 +1082,7 @@ function isStoredSessionAttachment(value: unknown): value is StoredSessionAttach
         durationSeconds: record.durationSeconds,
         sampleRate: record.sampleRate,
         channels: record.channels,
-      })
+      }, localAudioLimits)
     );
 }
 
@@ -1268,7 +1316,7 @@ function attachmentMetadata(input: {
   id: string;
   sessionId: string;
   fileName: string;
-  bytes: Uint8Array;
+  byteLength: number;
   sha256: string;
   ordinal: number;
   createdAt: string;
@@ -1277,7 +1325,7 @@ function attachmentMetadata(input: {
     id: input.id,
     sessionId: input.sessionId,
     fileName: input.fileName,
-    byteLength: input.bytes.byteLength,
+    byteLength: input.byteLength,
     sha256: input.sha256,
     createdAt: input.createdAt,
     ordinal: input.ordinal,
@@ -1335,144 +1383,13 @@ function isUint8Array(value: unknown): value is Uint8Array {
   return utilTypes.isUint8Array(value);
 }
 
-async function prepareAttachmentSessionDirectory(
-  storageDirectory: string,
-  sessionId: string,
-  create: boolean,
-): Promise<boolean> {
-  const root = path.join(storageDirectory, attachmentsDirectoryName);
-  const directory = attachmentSessionDirectory(storageDirectory, sessionId);
-  for (const target of [root, directory]) {
-    const exists = await assertExistingDirectoryIsSafe(target);
-    if (!exists) {
-      if (!create) return false;
-      await ensurePrivateDirectoryDurably(target);
-    } else {
-      await ensurePrivateDirectory(target);
-    }
-  }
-  return true;
+async function prepareAttachmentSessionDirectory(storageDirectory: string, sessionId: string, create: boolean): Promise<boolean> {
+  const exists = await storedTreeExists(storageDirectory, attachmentSessionDirectory(storageDirectory, sessionId));
+  return create || exists;
 }
 
-async function assertAttachmentRootIsSafe(
-  storageDirectory: string,
-): Promise<boolean> {
-  return assertExistingDirectoryIsSafe(
-    path.join(storageDirectory, attachmentsDirectoryName),
-  );
-}
-
-async function captureAttachmentDirectoryBinding(
-  storageDirectory: string,
-  sessionId: string,
-): Promise<AttachmentDirectoryBinding> {
-  const root = path.join(storageDirectory, attachmentsDirectoryName);
-  const directory = attachmentSessionDirectory(storageDirectory, sessionId);
-  const binding = {
-    root,
-    rootIdentity: await captureAttachmentDirectoryIdentity(root),
-    directory,
-    directoryIdentity: await captureAttachmentDirectoryIdentity(directory),
-  };
-  await assertAttachmentDirectoryBinding(binding);
-  return binding;
-}
-
-async function captureAttachmentDirectoryIdentity(
-  directory: string,
-): Promise<AttachmentDirectoryIdentity> {
-  try {
-    const info = await fs.lstat(directory);
-    if (!info.isDirectory() || info.isSymbolicLink()) {
-      throw new AttachmentStorageCorruptionError();
-    }
-    return { dev: info.dev, ino: info.ino };
-  } catch (error) {
-    if (error instanceof AttachmentStorageCorruptionError) throw error;
-    throw new AttachmentStorageCorruptionError(error);
-  }
-}
-
-async function assertAttachmentDirectoryBinding(
-  binding: AttachmentDirectoryBinding,
-): Promise<void> {
-  await assertAttachmentDirectoryIdentity(binding.root, binding.rootIdentity);
-  await assertAttachmentDirectoryIdentity(
-    binding.directory,
-    binding.directoryIdentity,
-  );
-}
-
-async function assertAttachmentDirectoryIdentity(
-  directory: string,
-  expected: AttachmentDirectoryIdentity,
-): Promise<void> {
-  try {
-    const actual = await fs.lstat(directory);
-    if (
-      !actual.isDirectory() ||
-      actual.isSymbolicLink() ||
-      actual.dev !== expected.dev ||
-      actual.ino !== expected.ino
-    ) {
-      throw new AttachmentStorageCorruptionError();
-    }
-  } catch (error) {
-    if (error instanceof AttachmentStorageCorruptionError) throw error;
-    throw new AttachmentStorageCorruptionError(error);
-  }
-}
-
-async function assertExistingDirectoryIsSafe(target: string): Promise<boolean> {
-  try {
-    const info = await fs.lstat(target);
-    if (info.isSymbolicLink() || !info.isDirectory()) {
-      throw new AttachmentStorageCorruptionError();
-    }
-    return true;
-  } catch (error) {
-    if (isMissingFileError(error)) return false;
-    throw error;
-  }
-}
-
-async function openRegularPrivateFile(target: string): Promise<fs.FileHandle> {
-  let handle: fs.FileHandle;
-  try {
-    const flags = platform === "win32"
-      ? fsConstants.O_RDONLY
-      : fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
-    handle = await fs.open(target, flags);
-  } catch (error) {
-    if (isSymbolicLinkOpenError(error)) {
-      throw new AttachmentStorageCorruptionError(error);
-    }
-    throw error;
-  }
-  try {
-    const info = await handle.stat();
-    if (!info.isFile()) throw new AttachmentStorageCorruptionError();
-    if (platform !== "win32" && !hasExactPrivateFileMode(info.mode)) {
-      await handle.chmod(0o600);
-      const tightened = await handle.stat();
-      if (!tightened.isFile() || !hasExactPrivateFileMode(tightened.mode)) {
-        throw new AttachmentStorageAccessError();
-      }
-    }
-    return handle;
-  } catch (error) {
-    await handle.close();
-    throw error;
-  }
-}
-
-function hasExactPrivateFileMode(mode: number): boolean {
-  return (mode & 0o7777) === 0o600;
-}
-
-function isSymbolicLinkOpenError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error &&
-    ["ELOOP", "EMLINK"].includes(String((error as { code?: unknown }).code));
+async function captureAttachmentDirectoryBinding(storageDirectory: string, sessionId: string): Promise<AttachmentDirectoryBinding> {
+  return { storageDirectory, directory: attachmentSessionDirectory(storageDirectory, sessionId) };
 }
 
 function cloneMetadata(metadata: StoredSessionAttachment): StoredSessionAttachment {

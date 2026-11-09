@@ -1,3 +1,5 @@
+import { writeStoredBytes, readStoredText } from "../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -50,13 +52,13 @@ async function savedRecords(t: TestContext) {
   ];
   const records = sessions.map((session, index) => ({ ...session, writeBoundary: retiredTargets[index] }));
   const raw = `${JSON.stringify(records, null, 2)}\n`;
-  await fs.writeFile(file, raw);
+  await writeStoredBytes(directory, file, Buffer.from(raw));
   await fs.mkdir(path.join(directory, "live-smith-events"));
   const histories = await Promise.all(sessions.map(async (session) => {
     const events = [{ id: `event-${session.id}`, kind: "user", content: session.title, createdAt: timestamp }];
     const eventFile = path.join(directory, "live-smith-events", `${session.id}.json`);
     const bytes = `${JSON.stringify(events, null, 2)}\n`;
-    await fs.writeFile(eventFile, bytes);
+    await writeStoredBytes(directory, eventFile, Buffer.from(bytes));
     return { events, file: eventFile, bytes };
   }));
   return { directory, file, sessions, records, raw, histories };
@@ -74,25 +76,25 @@ test("saved range, candidate and cleared targets retire on read without changing
   for (const [index, session] of loaded.entries()) {
     const history = h.histories[index]!;
     assert.deepEqual(await loadSessionEvents(h.directory, session.id), history.events);
-    assert.equal(await fs.readFile(history.file, "utf8"), history.bytes);
+    assert.equal(await readStoredText(h.directory, history.file), history.bytes);
   }
   loaded[0]!.scope.label = "Caller changed the clone";
   loaded[0]!.editScopes!.splice(0);
   assert.deepEqual(await listSessions(h.directory), h.sessions);
-  assert.equal(await fs.readFile(h.file, "utf8"), h.raw);
+  assert.equal(await readStoredText(h.directory, h.file), h.raw);
 });
 
 test("an explicit title update saves canonical records and preserves all other metadata and history", async (t) => {
   const h = await savedRecords(t);
   await updateSession(h.directory, h.sessions[0]!.id, { title: "Renamed phrase" });
-  const saved = JSON.parse(await fs.readFile(h.file, "utf8")) as AgentSession[];
+  const saved = JSON.parse(await readStoredText(h.directory, h.file)) as AgentSession[];
   assert.notEqual(saved[0]!.updatedAt, timestamp);
   assert.deepEqual(saved, h.sessions.map((session, index) => index === 0
     ? { ...session, title: "Renamed phrase", updatedAt: saved[0]!.updatedAt }
     : session));
   assert.ok(saved.every((session) => !Object.hasOwn(session, "writeBoundary")));
   for (const history of h.histories) {
-    assert.equal(await fs.readFile(history.file, "utf8"), history.bytes);
+    assert.equal(await readStoredText(h.directory, history.file), history.bytes);
   }
 });
 
@@ -104,13 +106,13 @@ test("retired metadata does not prevent default empty Session reuse or change mi
       createdAt: timestamp, updatedAt: timestamp, writeBoundary,
     };
     const raw = JSON.stringify([record]);
-    await fs.writeFile(h.file, raw);
+    await writeStoredBytes(h.directory, h.file, Buffer.from(raw));
     const [session] = await listSessions(h.directory);
     assert.ok(session);
     assert.equal(isReusableEmptySessionMetadata(session, "activation", scope), true);
     assert.deepEqual(resolveEditScopes(session.editScopes), EDIT_SCOPES);
     assert.equal(Object.hasOwn(session, "writeBoundary"), false);
-    assert.equal(await fs.readFile(h.file, "utf8"), raw);
+    assert.equal(await readStoredText(h.directory, h.file), raw);
   }
 });
 
@@ -123,10 +125,10 @@ test("retired-target compatibility still rejects unknown saved fields and invali
     ...[null, "midi", ["invalidScope"], ["midi", "midi"]].map((editScopes) => ({ editScopes })),
   ]) {
     const raw = JSON.stringify([{ ...h.records[0], ...extra }, ...h.records.slice(1)]);
-    await fs.writeFile(h.file, raw);
+    await writeStoredBytes(h.directory, h.file, Buffer.from(raw));
     await assert.rejects(listSessions(h.directory), SessionStorageCorruptionError);
     await assert.rejects(updateSession(h.directory, h.sessions[0]!.id, { title: "Rejected" }), SessionStorageCorruptionError);
-    assert.equal(await fs.readFile(h.file, "utf8"), raw);
+    assert.equal(await readStoredText(h.directory, h.file), raw);
   }
 });
 
@@ -143,7 +145,7 @@ test("Session updates reject retired targets, unknown fields and invalid Scope w
         ? /Edit scopes must be a list of distinct supported scopes/
         : /Session update is invalid/,
     );
-    assert.equal(await fs.readFile(h.file, "utf8"), h.raw);
+    assert.equal(await readStoredText(h.directory, h.file), h.raw);
   }
 });
 
@@ -155,6 +157,6 @@ test("new Sessions cannot persist obsolete target metadata", async (t) => {
     } as never);
     assert.equal(Object.hasOwn(created, "writeBoundary"), false);
   }
-  const saved = JSON.parse(await fs.readFile(h.file, "utf8")) as AgentSession[];
+  const saved = JSON.parse(await readStoredText(h.directory, h.file)) as AgentSession[];
   assert.ok(saved.every((session) => !Object.hasOwn(session, "writeBoundary")));
 });

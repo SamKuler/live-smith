@@ -1,66 +1,100 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import * as fs from "node:fs/promises";
-import { platform } from "node:process";
 import { Readable, addAbortSignal } from "node:stream";
-import { safeRegularFileOpenFlags } from "../live/safe-file-read.js";
+import { previewWaveformRange } from "../attachments/audio.js";
 import { throwIfAborted } from "../runtime/host.js";
+import { openStoredRangeReader, STORAGE_CHUNK_BYTES } from "./sqlite.js";
 
+export interface FileByteRange { offset: number; length: number }
 export interface SessionFileExport {
   fileName: string;
   mediaType: string;
   byteLength: number;
-  open(signal: AbortSignal): Promise<Readable>;
+  open(signal: AbortSignal, range?: FileByteRange): Promise<Readable>;
 }
 
-/** Immutable stored bytes are tied to their write-time format inspection by SHA-256. */
-export async function openVerifiedFileStream(input: {
-  path: string; byteLength: number; sha256: string; signal: AbortSignal; assertCurrent(): Promise<void>;
+export function audioArtifactFileName(artifact: { id: string; label: string; mediaType: string }): string {
+  const label = Buffer.from(artifact.label, "utf8").toString("utf8").normalize("NFC")
+    .replace(/[\\/:*?"<>|\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim();
+  const name = [...label].slice(0, 20).join("") || "Audio";
+  return `${name}-${artifact.id}.${artifact.mediaType === "audio/wav" ? "wav" : "mp3"}`;
+}
+
+/** Exported content stays bound to its immutable metadata and storage revision. */
+export async function openVerifiedStoredStream(input: {
+  storageDirectory: string; key: string; byteLength: number; sha256: string;
+  signal: AbortSignal; range?: FileByteRange; assertCurrent(): Promise<void>;
 }): Promise<Readable> {
   throwIfAborted(input.signal);
   await input.assertCurrent();
-  const before = await fs.lstat(input.path, { bigint: true });
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.size !== BigInt(input.byteLength)) throw new Error("Stored file is unavailable or changed.");
-  const handle = await fs.open(input.path, safeRegularFileOpenFlags(constants));
+  const reader = await openStoredRangeReader(input.storageDirectory, input.key);
   let handedOff = false;
   try {
-    const opened = await handle.stat({ bigint: true });
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size || opened.nlink !== 1n) throw new Error("Stored file changed while opening.");
-    if (platform !== "win32" && (opened.mode & 0o7777n) !== 0o600n) await handle.chmod(0o600);
-    const assertStable = async () => {
-      throwIfAborted(input.signal);
-      const current = await handle.stat({ bigint: true });
-      if (current.size !== before.size || current.mtimeNs !== before.mtimeNs || current.nlink !== 1n) throw new Error("Stored file changed while reading.");
-      await input.assertCurrent();
-    };
-    async function* chunks() {
-      for (let offset = 0; offset < input.byteLength;) {
+    if (reader.entry.byteLength !== input.byteLength || reader.entry.sha256 !== input.sha256) {
+      throw new Error("Stored file integrity check failed.");
+    }
+    const range = input.range ?? { offset: 0, length: input.byteLength };
+    if (!Number.isSafeInteger(range.offset) || !Number.isSafeInteger(range.length) || range.offset < 0 ||
+        range.length < 0 || range.offset + range.length > input.byteLength) throw new Error("Stored file range is invalid.");
+    async function* chunks(offset: number, length: number) {
+      for (let remaining = length; remaining > 0;) {
         throwIfAborted(input.signal);
-        const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, input.byteLength - offset));
-        const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset);
-        if (bytesRead === 0) throw new Error("Stored file ended before its recorded length.");
-        offset += bytesRead; yield chunk.subarray(0, bytesRead);
+        const chunk = await reader.readRange(offset, Math.min(STORAGE_CHUNK_BYTES, remaining));
+        if (!chunk.length) throw new Error("Stored file ended before its recorded length.");
+        offset += chunk.length;
+        remaining -= chunk.length;
+        yield chunk;
       }
     }
-    const verified = createHash("sha256");
-    for await (const chunk of chunks()) verified.update(chunk);
-    if (verified.digest("hex") !== input.sha256) throw new Error("Stored file integrity check failed.");
+    const assertStable = async () => {
+      throwIfAborted(input.signal);
+      await input.assertCurrent();
+      await reader.readRange(0, 0);
+    };
+    // Standalone exports validate before creating the visible copy. HTTP range
+    // consumers read only the requested bytes and retain identity checks.
+    if (input.range === undefined) {
+      const verified = createHash("sha256");
+      for await (const chunk of chunks(0, input.byteLength)) verified.update(chunk);
+      if (verified.digest("hex") !== input.sha256) throw new Error("Stored file integrity check failed.");
+    }
     await assertStable();
+    const complete = range.offset === 0 && range.length === input.byteLength;
     const stream = Readable.from((async function* () {
-      const hash = createHash("sha256");
+      const hash = complete ? createHash("sha256") : undefined;
       let last: Buffer | undefined;
       try {
-        for await (const chunk of chunks()) { hash.update(chunk); if (last) yield last; last = chunk; }
+        for await (const chunk of chunks(range.offset, range.length)) {
+          hash?.update(chunk);
+          if (last) yield last;
+          last = chunk;
+        }
         await assertStable();
-        if (hash.digest("hex") !== input.sha256) throw new Error("Stored file changed during export.");
+        if (hash && hash.digest("hex") !== input.sha256) throw new Error("Stored file changed during export.");
         if (last) yield last;
-      } finally { await handle.close(); }
-    })(), { highWaterMark: 64 * 1024, objectMode: false });
-    // Also release a lease destroyed before the async iterator is first pulled.
-    stream.once("close", () => { void handle.close().catch(() => {}); });
+      } finally { await reader.close(); }
+    })(), { highWaterMark: STORAGE_CHUNK_BYTES, objectMode: false });
+    stream.once("close", () => { void reader.close().catch(() => {}); });
     addAbortSignal(input.signal, stream);
     handedOff = true;
     return stream;
-  } finally { if (!handedOff) await handle.close(); }
+  } finally { if (!handedOff) await reader.close(); }
+}
+
+/** Sample a preview from bounded ranges while retaining the saved owner/version. */
+export async function readStoredWaveform(input: {
+  storageDirectory: string; key: string; byteLength: number; sha256: string;
+  signal?: AbortSignal; assertCurrent(): Promise<void>;
+}): Promise<{ peaks: number[]; durationSeconds: number } | undefined> {
+  throwIfAborted(input.signal);
+  await input.assertCurrent();
+  const reader = await openStoredRangeReader(input.storageDirectory, input.key);
+  try {
+    if (reader.entry.byteLength !== input.byteLength || reader.entry.sha256 !== input.sha256) throw new Error("Stored file integrity check failed.");
+    const result = await previewWaveformRange({ byteLength: input.byteLength, readRange: reader.readRange,
+      ...(input.signal ? { signal: input.signal } : {}) });
+    await input.assertCurrent();
+    await reader.readRange(0, 0);
+    return result;
+  } finally { await reader.close(); }
 }

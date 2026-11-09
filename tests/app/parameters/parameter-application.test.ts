@@ -1,3 +1,4 @@
+import { readStoredText, removeStoredEntry } from "../../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -141,7 +142,7 @@ test("capture and preview are read-only; one approved bulk apply and guarded res
 
 test("current Live comparison uses the complete saved version even when its parent file is missing", async (t) => {
   const h = await setup(t);
-  await fs.unlink(`${h.directory}/live-smith-device-parameters/${h.session.id}/${h.capture.id}.json`);
+  await removeStoredEntry(h.directory, `live-smith-device-parameters/${h.session.id}/${h.capture.id}.json`);
   const preview = await readParameterArtifactPreview({ ...h.input, artifactId: h.candidate.id });
   assert.equal(preview.artifact!.id, h.candidate.id);
   assert.equal(preview.current!.parameters.length, h.candidate.parameters.length);
@@ -339,14 +340,14 @@ test("an adopted sound can be restored after reconnect through a new receipt whi
   const chosen = await h.receipt();
   await runParameterApplication({ ...h.dependencies, kind: "keep_device_parameters", applicationId: chosen.id });
   const resultPath = `${h.directory}/live-smith-device-parameters/${h.session.id}/applications/${chosen.id}/result.json`;
-  const originalDecision = await fs.readFile(resultPath, "utf8");
+  const originalDecision = await readStoredText(h.directory, resultPath);
   assert.equal((await readParameterArtifactPreview({ ...h.input, artifactId: b.id })).restoreError, undefined);
   assert.equal(await runParameterApplication({ ...h.dependencies, kind: "restore_device_parameters", applicationId: chosen.id }), "restored");
   const restored = await h.receipt();
   assert.notEqual(restored.id, chosen.id); assert.equal(restored.previousApplicationId, chosen.id);
   assert.equal(restored.baselineArtifactId, chosen.baselineArtifactId); assert.equal(restored.status, "restored");
   assert.deepEqual(h.parameters.map((p) => p.state.value), [0.25, 0.25, 0.25]);
-  assert.equal(await fs.readFile(resultPath, "utf8"), originalDecision);
+  assert.equal(await readStoredText(h.directory, resultPath), originalDecision);
   await assert.rejects(runParameterApplication({ ...h.dependencies, kind: "restore_device_parameters", applicationId: chosen.id }), /no longer pending/);
 });
 

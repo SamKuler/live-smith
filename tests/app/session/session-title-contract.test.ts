@@ -1,3 +1,5 @@
+import { writeStoredBytes, readStoredText } from "../../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -80,18 +82,18 @@ test("legacy oversized persisted titles stay readable and repair on the next wri
     createdAt: "2026-08-01T00:00:00.000Z",
     updatedAt: "2026-08-01T00:00:00.000Z",
   };
-  await fs.writeFile(target, JSON.stringify([record]));
+  await writeStoredBytes(directory, target, Buffer.from(JSON.stringify([record])));
 
   const [loaded] = await listSessions(directory);
   assert.equal(loaded?.title, "😀".repeat(MAX_SESSION_TITLE_CODE_POINTS));
   assert.equal(
-    (JSON.parse(await fs.readFile(target, "utf8")) as typeof record[])[0]?.title,
+    (JSON.parse(await readStoredText(directory, target)) as typeof record[])[0]?.title,
     legacyTitle,
   );
 
   await updateSession(directory, record.id, { approvalMode: "manual" });
   assert.equal(
-    (JSON.parse(await fs.readFile(target, "utf8")) as typeof record[])[0]?.title,
+    (JSON.parse(await readStoredText(directory, target)) as typeof record[])[0]?.title,
     "😀".repeat(MAX_SESSION_TITLE_CODE_POINTS),
   );
 });

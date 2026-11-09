@@ -6,6 +6,7 @@ import { strToU8, zipSync } from "fflate/browser";
 import { resolveSkillContext } from "../../src/app/context/skill-context.js";
 import { installPlugin, readPluginConfig, savePluginConfigInTransaction, setPluginEnabled, deletePlugin,
   readInstalledPluginPackagesInTransaction } from "../../src/storage/plugins.js";
+import { storedTreeExists } from "../../src/storage/sqlite.js";
 import { withStorageTransaction } from "../../src/storage/persistence.js";
 import { openPluginArchive } from "../../src/plugins/archive.js";
 import { installedPluginViews } from "../../src/plugins/view.js";
@@ -88,8 +89,11 @@ test("configuration survives reopening and package replacement, binds revisions,
   assert.equal((await readPluginConfig(directory, plugin.id)).values.bars, 8);
   await assert.rejects(save("1"), /Plugin changed/);
   await save("1", replacement.sha256);
+  const packageDirectory = path.join(directory, "live-smith-plugins", "packages", plugin.id);
+  assert.equal(await storedTreeExists(directory, packageDirectory), true);
   await deletePlugin(directory, plugin.id);
-  await assert.rejects(fs.access(path.join(directory, "live-smith-plugins", "packages", plugin.id)), /ENOENT/);
+  assert.equal(await storedTreeExists(directory, packageDirectory), false);
+  await assert.rejects(readPluginConfig(directory, plugin.id), /not installed/);
 });
 
 test("upgrading a formerly sensitive field to ordinary text does not reveal its saved value", () => {

@@ -1,3 +1,5 @@
+import { readStoredText, writeStoredBytes, STORAGE_DATABASE_NAME } from "../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -25,15 +27,15 @@ test("briefs are additive, private, Session scoped, bounded, and count as retain
   assert.equal(sessions.find((entry) => entry.id === other.id)?.creativeBrief, undefined);
   assert.equal(isReusableEmptySessionMetadata(updated, "set", input.scope), false);
   const file = path.join(directory, "live-smith-sessions.json");
-  const data = JSON.parse(await fs.readFile(file, "utf8"));
+  const data = JSON.parse(await readStoredText(directory, file));
   assert.equal(data.length, 1);
   assert.equal(data[0].creativeBrief, brief);
-  if (process.platform !== "win32") assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+  if (process.platform !== "win32") assert.equal((await fs.stat(path.join(directory, STORAGE_DATABASE_NAME))).mode & 0o777, 0o600);
   await assert.rejects(updateSession(directory, first.id, { creativeBrief: brief + "a" }));
   assert.equal((await listSessions(directory)).find((entry) => entry.id === first.id)?.creativeBrief, brief);
   await updateSession(directory, first.id, { creativeBrief: "" });
   assert.equal((await listSessions(directory)).find((entry) => entry.id === first.id)?.creativeBrief, "");
   data[0].creativeBrief = 42;
-  await fs.writeFile(file, JSON.stringify(data));
+  await writeStoredBytes(directory, file, Buffer.from(JSON.stringify(data)));
   await assert.rejects(listSessions(directory), SessionStorageCorruptionError);
 });

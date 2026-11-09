@@ -1,6 +1,6 @@
+import { readStoredText, writeStoredJson } from "./sqlite.js";
 import { isInterfaceMode, type InterfaceMode } from "../model/interface-mode.js";
 import { normalizeMcpServerConfig, normalizeMcpServerSettings, type McpServerConfig } from "../model/mcp-server.js";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -46,9 +46,7 @@ import {
 import { isSessionTabs, type SessionShortcutId } from "../model/session-tabs.js";
 import { isMissingFileError } from "./errors.js";
 import {
-  ensurePrivateFile,
   withStorageTransaction,
-  writeJsonAtomically,
   StorageCommitOutcomeUnknownError,
 } from "./persistence.js";
 import { decodeAgentSettings } from "./settings-migrations.js";
@@ -68,7 +66,7 @@ const oauthCredentialPreparationByStorage = new Map<string, Promise<void>>();
 export class AgentSettingsCorruptionError extends Error {
   constructor(cause: unknown) {
     super(
-      "Saved Live Smith settings are invalid. No changes were written; repair or remove live-smith-settings.json and try again.",
+      "Saved Live Smith settings are invalid. Repair the settings record in private storage before changing settings.",
       { cause },
     );
     this.name = "AgentSettingsCorruptionError";
@@ -257,10 +255,9 @@ async function loadAgentSettingsUnlocked(
 ): Promise<AgentSettings> {
   if (!storageDirectory) return cloneAgentSettings(memorySettings);
 
-  const target = path.join(storageDirectory, settingsFileName);
+  const target = path.resolve(storageDirectory, settingsFileName);
   try {
-    await ensurePrivateFile(target);
-    const raw = await fs.readFile(target, "utf8");
+    const raw = await readStoredText(storageDirectory, target);
     return decodeAgentSettings(JSON.parse(raw) as unknown);
   } catch (error) {
     if (isMissingFileError(error)) return freshEmptyAgentSettings();
@@ -480,7 +477,7 @@ export async function saveGlobalSettings(
       try {
         return await persistSettings(storageDirectory, { ...settings, integrationConnections });
       } catch (error) {
-        // The credential may already be gone even when the settings rename failed.
+        // The credential may already be gone even when the settings commit failed.
         // Preserve the compound command's partial outcome for authoritative readback.
         if (clearedMcp) throw new StorageCommitOutcomeUnknownError(
           new Error("MCP sign-in was cleared before connection settings could be confirmed."));
@@ -558,8 +555,8 @@ async function persistSettings(
     return cloneAgentSettings(normalized);
   }
 
-  const target = path.join(storageDirectory, settingsFileName);
-  await writeJsonAtomically(target, normalized);
+  const target = path.resolve(storageDirectory, settingsFileName);
+  await writeStoredJson(storageDirectory, target, normalized);
   return normalized;
 }
 

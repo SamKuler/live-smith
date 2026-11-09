@@ -1,3 +1,4 @@
+import { interceptStoredWrites } from "../../storage/support/sqlite-fault-test-helpers.js";
 import { openBridgeEvents, readEvent } from "../chat/support/bridge-events.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
@@ -7,6 +8,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { connect } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import { env, execPath } from "node:process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -602,9 +604,7 @@ test("a held Session state build never acquires the dialog's different active Se
   }
 });
 
-test("pending attachment cleanup cannot re-enter a held Session lease", {
-  skip: os.platform() === "win32",
-}, async () => {
+test("pending attachment cleanup cannot re-enter a held Session lease", async (t) => {
   if (env.LIVE_SMITH_PENDING_CLEANUP_FIXTURE !== "1") {
     const testFile = fileURLToPath(import.meta.url);
     const result = await runIsolatedProcess(
@@ -664,8 +664,9 @@ test("pending attachment cleanup cannot re-enter a held Session lease", {
           },
           { preSavePendingAttachmentRefs: [] },
         );
-        const attachmentRoot = path.join(directory, "live-smith-attachments");
-        await fs.chmod(attachmentRoot, 0o500);
+        const restore = interceptStoredWrites(t, { beforeDelete(key) {
+          if (key === `live-smith-attachments/${sessionId}`) throw new Error("Attachment cleanup unavailable");
+        } });
         try {
           const deletion = await fetch(endpoint("/command"), {
             method: "POST",
@@ -674,7 +675,7 @@ test("pending attachment cleanup cannot re-enter a held Session lease", {
           });
           assert.equal(deletion.status, 500);
         } finally {
-          await fs.chmod(attachmentRoot, 0o700);
+          restore();
         }
 
         const send = await fetch(endpoint("/send"), {
@@ -840,18 +841,10 @@ test("stopping a same-Session send before or while it waits never persists its p
 });
 
 test("attachment upload revalidates its Session after the body-read race window", async () => {
-  const bodyReadStarted = deferred<void>();
   const fixture = await openCrossBridgeFixture({
     directoryPrefix: "live-smith-cross-bridge-upload-race-",
     firstDependencies: {},
-    secondDependencies: {
-      attachmentBodyReadOptions: {
-        allocateBuffer: (byteLength) => {
-          bodyReadStarted.resolve();
-          return NodeBuffer.allocUnsafe(byteLength);
-        },
-      },
-    },
+    secondDependencies: {},
   });
   const uploadBytes = sizedAttachmentPng(24);
   const uploadUrl = new URL(
@@ -877,19 +870,33 @@ test("attachment upload revalidates its Session after the body-read race window"
       "",
       "",
     ].join("\r\n"));
-    await resolvesWithin(bodyReadStarted.promise, "attachment body reader");
+    const firstChunkLength = Math.floor(uploadBytes.byteLength / 2);
+    socket.write(NodeBuffer.from(uploadBytes.subarray(0,firstChunkLength)));
+    let observing = true;
+    try {
+      await resolvesWithin((async () => {
+        const mediaDirectory = path.join(fixture.directory,"live-smith-media");
+        while (observing) {
+          const names = await fs.readdir(mediaDirectory).catch(() => [] as string[]);
+          for (const name of names.filter(name => name.startsWith(".staging-"))) {
+            if ((await fs.stat(path.join(mediaDirectory,name))).size === firstChunkLength) return;
+          }
+          await delay(10);
+        }
+      })(),"partially staged attachment body");
+    } finally { observing = false; }
 
-    const deletion = await fetch(fixture.first.endpoint("/command"), {
+    const deletion = await resolvesWithin(fetch(fixture.first.endpoint("/command"), {
       method: "POST",
       headers: bridgeJsonHeaders(),
       body: JSON.stringify({
         kind: "delete_session",
         sessionId: fixture.sessionId,
       }),
-    });
+    }),"Session deletion during a partial upload");
     assert.equal(deletion.status, 200);
 
-    socket.write(NodeBuffer.from(uploadBytes));
+    socket.write(NodeBuffer.from(uploadBytes.subarray(firstChunkLength)));
     await new Promise<void>((resolve, reject) => {
       socket.once("end", resolve);
       socket.once("error", reject);
@@ -1033,7 +1040,7 @@ test("a definite Session metadata deletion failure preserves event history", asy
   assert.ok(deletedSessionId);
 });
 
-test("an event-log cleanup failure leaves the logically deleted Session reconcilable", async () => {
+test("an event-log cleanup failure leaves the logically deleted Session reconcilable", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-delete-retry-"));
   let deletedSessionId = "";
   const context = {
@@ -1047,12 +1054,10 @@ test("an event-log cleanup failure leaves the logically deleted Session reconcil
           `${chatUrl.origin}${pathname}?token=${token}`;
         const initialState = await (await fetch(endpoint("/state"))).json() as ChatDialogState;
         deletedSessionId = initialState.activeSessionId;
-        const eventPath = path.join(
-          directory,
-          "live-smith-events",
-          `${deletedSessionId}.json`,
-        );
-        await fs.mkdir(eventPath, { recursive: true });
+        await appendSessionEvent(directory, deletedSessionId, { kind: "user", content: "Retained until cleanup" });
+        const restore = interceptStoredWrites(t, { beforeDelete(key) {
+          if (key === `live-smith-events/${deletedSessionId}.json`) throw new Error("Event cleanup unavailable");
+        } });
 
         const failed = await fetch(endpoint("/command"), {
           method: "POST",
@@ -1066,7 +1071,8 @@ test("an event-log cleanup failure leaves the logically deleted Session reconcil
           !(await listSessions(directory)).some((session) => session.id === deletedSessionId),
         );
 
-        await fs.rmdir(eventPath);
+        assert.equal((await loadSessionEvents(directory, deletedSessionId)).length, 1);
+        restore();
         const reconciled = await fetch(endpoint("/state"));
         assert.equal(reconciled.status, 200);
         assert.ok(
@@ -1136,12 +1142,10 @@ test("session deletion removes attachments only after events and metadata", asyn
   assert.ok(deletedSessionId);
 });
 
-test("session deletion attachment cleanup failure is unknown and retried from state", {
-  skip: process.platform === "win32",
-}, async () => {
+test("session deletion attachment cleanup failure is unknown and retried from state", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-delete-orphan-"));
   let deletedSessionId = "";
-  let attachmentRoot = "";
+  let restore: (() => void) | undefined;
   const context = {
     application: { song: { handle: { id: 1n } } },
     environment: { storageDirectory: directory },
@@ -1161,8 +1165,9 @@ test("session deletion attachment cleanup failure is unknown and retried from st
             0, 0, 0, 1, 0, 0, 0, 1,
           ]),
         }, { preSavePendingAttachmentRefs: [] });
-        attachmentRoot = path.join(directory, "live-smith-attachments");
-        await fs.chmod(attachmentRoot, 0o500);
+        restore = interceptStoredWrites(t, { beforeDelete(key) {
+          if (key === `live-smith-attachments/${deletedSessionId}`) throw new Error("Attachment cleanup unavailable");
+        } });
 
         const response = await fetch(endpoint("/command"), {
           method: "POST",
@@ -1183,7 +1188,7 @@ test("session deletion attachment cleanup failure is unknown and retried from st
           (session) => session.id === deletedSessionId,
         ));
 
-        await fs.chmod(attachmentRoot, 0o700);
+        restore();
         const reconciledResponse = await fetch(endpoint("/state"));
         assert.equal(reconciledResponse.status, 200);
         const reconciled = await reconciledResponse.json() as ChatDialogState;
@@ -1206,7 +1211,7 @@ test("session deletion attachment cleanup failure is unknown and retried from st
       scope: { kind: "track", identity: "track-1", label: "Lead" },
     }, { renderHtml: () => "<html></html>" });
   } finally {
-    if (attachmentRoot) await fs.chmod(attachmentRoot, 0o700).catch(() => undefined);
+    restore?.();
   }
   assert.ok(deletedSessionId);
 });

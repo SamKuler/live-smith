@@ -1,5 +1,5 @@
+import { readStoredText, writeStoredJson } from "./sqlite.js";
 import { isCreativeBrief, requireCreativeBrief } from "../agent/creative-brief.js";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import {
@@ -20,10 +20,8 @@ import {
   type StorageScopeKey,
 } from "./scope.js";
 import {
-  ensurePrivateFile,
   requireActiveStorageTransaction,
   withStorageTransaction,
-  writeJsonAtomically,
   type StorageTransactionContext,
 } from "./persistence.js";
 import type { ConversationScope } from "../model/contracts.js";
@@ -81,7 +79,7 @@ type SessionUpdate = Partial<
 export class SessionStorageCorruptionError extends Error {
   constructor(cause?: unknown) {
     super(
-      "Saved Live Smith sessions are invalid. No session changes were written; repair or remove live-smith-sessions.json and try again.",
+      "Saved Live Smith sessions are invalid. Repair the Session record in private storage before changing Sessions.",
       { cause },
     );
     this.name = "SessionStorageCorruptionError";
@@ -176,8 +174,7 @@ async function loadSavedSessions(
 ): Promise<AgentSession[]> {
   const target = sessionsPath(storageDirectory);
   try {
-    await ensurePrivateFile(target);
-    const raw = await fs.readFile(target, "utf8");
+    const raw = await readStoredText(storageDirectory, target);
     const parsed = JSON.parse(raw) as unknown;
     if (
       !Array.isArray(parsed) ||
@@ -347,7 +344,7 @@ async function saveSessions(
     session.id === persistSessionId || !draftIds.has(session.id)
   );
   if (storageDirectory === undefined) memorySessions = saved.map(cloneSession);
-  else await writeJsonAtomically(sessionsPath(storageDirectory), saved);
+  else await writeStoredJson(storageDirectory, sessionsPath(storageDirectory), saved);
   if (persistSessionId !== undefined) removeTransientSession(key, persistSessionId);
 }
 
@@ -366,7 +363,7 @@ async function transientSessionScopeKey(
 }
 
 function sessionsPath(storageDirectory: string): string {
-  return path.join(storageDirectory, sessionsFileName);
+  return path.resolve(storageDirectory, sessionsFileName);
 }
 
 function isAgentSession(value: unknown): value is AgentSession {

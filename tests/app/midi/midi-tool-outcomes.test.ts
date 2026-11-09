@@ -1,6 +1,6 @@
+import { interceptStoredWrites } from "../../storage/support/sqlite-fault-test-helpers.js";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 import { runAgentLoop } from "../../../src/agent/loop.js";
 import { createMidiArtifactAuthoringToolset } from "../../../src/app/midi/midi-artifact-tools.js";
@@ -20,17 +20,14 @@ for (const stopped of [false, true]) {
       scope: { kind: "track", identity: "10", label: "Bass" } });
     const controller = createHostAbortController();
     const { signal } = controller;
-    const unlink = fs.unlink;
     let injected = false;
-    fs.unlink = async target => {
-      await unlink(target);
-      if (!injected && String(target).includes(".midi.json.tmp_")) {
+    const restore = interceptStoredWrites(t, { afterCommit: writes => {
+      if (!injected && writes.some(write => write.key.endsWith(".midi.json"))) {
         injected = true;
         if (stopped) controller.abort();
-        throw Object.assign(new Error("Metadata cleanup outcome unknown"), { code: "EIO" });
+        throw Object.assign(new Error("Metadata commit outcome unknown"), { code: "EIO" });
       }
-    };
-    syncBuiltinESMExports();
+    } });
     try {
       const onEvent = async (event: Parameters<typeof appendSessionEvent>[2]) => {
         await appendSessionEvent(directory, session.id, event);
@@ -53,6 +50,6 @@ for (const stopped of [false, true]) {
       assert.equal((await listMidiArtifacts(directory, session.id)).length, 1);
       const results = (await loadSessionEvents(directory, session.id)).filter(event => event.kind === "tool_result");
       assert.deepEqual(results.map(event => event.outcome), ["unknown"]);
-    } finally { fs.unlink = unlink; syncBuiltinESMExports(); }
+    } finally { restore(); }
   });
 }

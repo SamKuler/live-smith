@@ -7,7 +7,7 @@ import type {
   ManagedSampleSources,
 } from "../../live/sample-source.js";
 import { throwIfAborted } from "../../runtime/host.js";
-import { readExpectedSessionAudioArtifact, type SessionAudioArtifact } from "../../storage/audio-artifacts.js";
+import { openExpectedSessionAudioArtifact, type SessionAudioArtifact } from "../../storage/audio-artifacts.js";
 import { createManagedSampleImport } from "./request-audio-sources.js";
 
 export async function addAudioAssetSampleSources(
@@ -43,8 +43,8 @@ export async function addAudioAssetSampleSources(
       ...input,
       mediaType: expected.mediaType,
       failureMessage: "Live Smith could not import the audio asset into the Live project.",
-      async readBytes() {
-        return readExpectedSessionAudioArtifact(
+      async openStream() {
+        return openExpectedSessionAudioArtifact(
           input.storageDirectory, input.sessionId, expected, input.signal,
         );
       },

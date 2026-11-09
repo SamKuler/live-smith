@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { MAX_LOCAL_AUDIO_ATTACHMENT_BYTES, MAX_DOCUMENT_ATTACHMENT_BYTES, MAX_IMAGE_ATTACHMENT_BYTES } from "../../../src/attachments/contracts.js";
 import { chatDialogStateForWire } from "../../../src/ui/chat-state.js";
 
 import {
@@ -198,23 +199,14 @@ test("audio count and per-kind pending limits are enforced before upload", async
   }
 });
 
-test("audio local preflight accepts 128 MiB and 256 MiB mixed totals exactly", async () => {
+test("audio local preflight accepts 2 GiB and rejects larger originals", async () => {
   const perFileHarness = await createDialogHarness();
   try {
-    perFileHarness.dispatchDrop([
-      audioFile(
-        perFileHarness.window,
-        "exact.wav",
-        "audio/wav",
-        128 * 1024 * 1024,
-      ),
-      audioFile(
-        perFileHarness.window,
-        "over.mp3",
-        "audio/mpeg",
-        128 * 1024 * 1024 + 1,
-      ),
-    ]);
+    const exact = audioFile(perFileHarness.window, "exact.wav", "audio/wav");
+    const oversized = audioFile(perFileHarness.window, "over.mp3", "audio/mpeg");
+    Object.defineProperty(exact, "size", { value: MAX_LOCAL_AUDIO_ATTACHMENT_BYTES });
+    Object.defineProperty(oversized, "size", { value: MAX_LOCAL_AUDIO_ATTACHMENT_BYTES + 1 });
+    perFileHarness.dispatchDrop([exact, oversized]);
     await perFileHarness.settleAttachmentOperation();
     assert.deepEqual(
       perFileHarness.calls
@@ -224,33 +216,29 @@ test("audio local preflight accepts 128 MiB and 256 MiB mixed totals exactly", a
     );
     assert.match(
       perFileHarness.document.querySelector("#status")?.textContent ?? "",
-      /over\.mp3.*larger than 128 MiB/i,
+      /over\.mp3.*larger than 2 GiB/i,
     );
   } finally {
     perFileHarness.close();
   }
+});
 
+test("two 2 GiB audio originals can share the composer with a full-size image and document", async () => {
   const exactState = imageCapableState();
   exactState.pendingAttachments = [
-    pendingAudio("audio-1", "reference.wav", "audio/wav", 128 * 1024 * 1024),
-    pendingAudio("audio-2", "second.wav", "audio/wav", 123 * 1024 * 1024),
+    pendingAudio("audio-1", "reference.wav", "audio/wav", MAX_LOCAL_AUDIO_ATTACHMENT_BYTES),
+    pendingAudio("audio-2", "second.wav", "audio/wav", MAX_LOCAL_AUDIO_ATTACHMENT_BYTES),
+    pendingDocument("document-1", "score.pdf", "application/pdf", MAX_DOCUMENT_ATTACHMENT_BYTES),
   ];
   const exactHarness = await createDialogHarness(exactState);
   try {
-    exactHarness.dispatchDrop([
-      documentFile(exactHarness.window, "exact-total.pdf", "application/pdf", 5 * 1024 * 1024),
-      documentFile(exactHarness.window, "over-total.pdf", "application/pdf", 1),
-    ]);
+    exactHarness.dispatchDrop([imageFile(exactHarness.window, "cover.png", "image/png", MAX_IMAGE_ATTACHMENT_BYTES)]);
     await exactHarness.settleAttachmentOperation();
     assert.deepEqual(
       exactHarness.calls
         .filter((call) => call.path === "/attachments")
         .map((call) => new URL(call.url).searchParams.get("fileName")),
-      ["exact-total.pdf"],
-    );
-    assert.match(
-      exactHarness.document.querySelector("#status")?.textContent ?? "",
-      /over-total\.pdf.*exceed 256 MiB/i,
+      ["cover.png"],
     );
   } finally {
     exactHarness.close();
@@ -984,39 +972,47 @@ test("a committed attachment upload with truncated JSON reconciles as an unknown
   }
 });
 
-for (const [condition, options] of [
-  ["Web Crypto is unavailable", { webCryptoAvailable: false }],
-  ["Web Crypto digest fails", { webCryptoDigestFails: true }],
-] as const) {
-  test(`a network-interrupted committed upload stays uncertain when ${condition}`, async () => {
-    const harness = await createDialogHarness(
-      imageCapableState(),
-      { baseUrl: "http://bridge.test", token: "test-token" },
-      options,
-    );
-    try {
-      harness.rejectNextAttachmentAfterCommit("connection lost");
-      harness.dispatchPaste([
-        imageFile(harness.window, "network-unknown.png", "image/png"),
-      ]);
-      await harness.settleAttachmentOperation();
+test("a network-interrupted upload reconciles its original File without Web Crypto or a whole-file hash read", async () => {
+  const harness = await createDialogHarness(audioCapableState(), undefined, { webCryptoAvailable: false });
+  try {
+    const file = audioFile(harness.window, "network-unknown.wav", "audio/wav", 9 * 1024 * 1024);
+    const originalRead = file.arrayBuffer.bind(file);
+    const originalSlice = file.slice.bind(file);
+    const originalFetch = harness.window.fetch;
+    const hashSliceSizes: number[] = [];
+    let postStarted = false;
+    Object.defineProperty(file, "slice", { value: (...args: Parameters<File["slice"]>) => {
+      const slice = originalSlice(...args);
+      hashSliceSizes.push(slice.size);
+      return slice;
+    } });
+    Object.defineProperty(file, "arrayBuffer", { value: () => {
+      assert.equal(postStarted, true, "Only the server fixture may read the whole file");
+      return originalRead();
+    } });
+    Object.defineProperty(harness.window, "fetch", { configurable: true, value: (input: string, init?: RequestInit) => {
+      if (new URL(String(input)).pathname === "/attachments" && init?.method === "POST") {
+        assert.equal(init.body, file);
+        postStarted = true;
+      }
+      return originalFetch(input, init);
+    } });
+    harness.rejectNextAttachmentAfterCommit("connection lost");
+    harness.dispatchDrop([file]);
+    await harness.settleAttachmentOperation();
 
-      assert.match(
-        harness.document.querySelector("#pendingAttachments")?.textContent ?? "",
-        /network-unknown\.png/,
-      );
-      const status = harness.document.querySelector("#status")?.textContent ?? "";
-      assert.match(status, /unconfirmed.*verify/i);
-      assert.doesNotMatch(
-        status,
-        /confirmed attached|re-select|retry/i,
-      );
-      assert.deepEqual(harness.errors, []);
-    } finally {
-      harness.close();
-    }
-  });
-}
+    assert.ok(hashSliceSizes.length > 1);
+    assert.ok(hashSliceSizes.every(size => size > 0 && size <= 256 * 1024));
+    assert.equal(hashSliceSizes.reduce((total, size) => total + size, 0), file.size);
+    assert.match(harness.document.querySelector("#pendingAttachments")?.textContent ?? "", /network-unknown\.wav/);
+    const status = harness.document.querySelector("#status")?.textContent ?? "";
+    assert.match(status, /confirmed attached.*do not upload/i);
+    assert.doesNotMatch(status, /unconfirmed|re-select|retry/i);
+    assert.deepEqual(harness.errors, []);
+  } finally {
+    harness.close();
+  }
+});
 
 test("a typed unknown attachment outcome applies its authoritative state", async () => {
   const harness = await createDialogHarness(imageCapableState());
@@ -1100,19 +1096,26 @@ test("same-name same-size unknown upload is not confirmed when content hashes di
   }
 });
 
-test("unknown upload stays unconfirmed when Web Crypto is unavailable", async () => {
-  const harness = await createDialogHarness(
-    imageCapableState(),
-    { baseUrl: "http://bridge.test", token: "test-token" },
-    { webCryptoAvailable: false },
-  );
+test("an interrupted upload stays unconfirmed if the browser cannot read its hash input", async () => {
+  const harness = await createDialogHarness(imageCapableState());
   try {
+    const file = imageFile(harness.window, "failed-hash.png", "image/png");
+    let failedReads = 0;
+    const originalSlice = file.slice.bind(file);
+    Object.defineProperty(file, "slice", { value: (...args: Parameters<File["slice"]>) => {
+      const slice = originalSlice(...args);
+      Object.defineProperty(slice, "arrayBuffer", { value: async () => {
+        failedReads++;
+        throw new Error("File range is unavailable");
+      } });
+      return slice;
+    } });
     harness.failNextAttachmentUnknown("upload commit could not be confirmed");
-    harness.dispatchPaste([
-      imageFile(harness.window, "no-web-crypto.png", "image/png"),
-    ]);
+    harness.dispatchPaste([file]);
     await harness.settleAttachmentOperation();
 
+    assert.equal(failedReads, 1);
+    assert.match(harness.document.querySelector("#pendingAttachments")?.textContent ?? "", /failed-hash\.png/);
     const status = harness.document.querySelector("#status")?.textContent ?? "";
     assert.match(status, /unconfirmed.*verify/i);
     assert.doesNotMatch(status, /confirmed attached|do not upload those files/i);

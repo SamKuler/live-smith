@@ -1,6 +1,7 @@
+import { interceptStoredWrites } from "../../storage/support/sqlite-fault-test-helpers.js";
+import { writeStoredTestFile } from "../../storage/support/stored-media-test-helpers.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import test from "node:test";
 import * as processing from "../../../src/app/audio/audio-processing.js";
 import { retrieveMusic } from "../../../src/app/audio/audio-generation.js";
@@ -124,7 +125,7 @@ test("local selected output corruption fails before any provider request even on
   const job = await retrieveMusic(h.context, connection.id, clipIds.slice(0, 1));
   const saved = await processing.downloadAudioOutput(h.context, job.id, clipIds[0]!);
   const asset = saved.outputAssets[0]!;
-  await fs.writeFile(`${h.directory}/live-smith-audio/${h.session.id}/${asset.id}.audio`, waveBytes(2));
+  await writeStoredTestFile(h.directory, `${h.directory}/live-smith-audio/${h.session.id}/${asset.id}.audio`, waveBytes(2));
   const before = { ...h.calls, downloads: [...h.calls.downloads] };
   await assert.rejects(processing.downloadAudioOutput(h.context, job.id, clipIds[0]!));
   assert.deepEqual(h.calls, before);
@@ -148,17 +149,13 @@ test("legacy completed local files without remoteOutputs reuse offline before ac
 test("a selected blob committed before a storage failure remains recoverable offline without another download", async (t) => {
   const h = await retrievalHarness(t);
   const job = await retrieveMusic(h.context, connection.id, clipIds);
-  const probe = await fs.open(h.directory);
-  const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
-  const sync = prototype.sync;
-  await probe.close();
-  const fault = t.mock.method(prototype, "sync", async function (this: fs.FileHandle) {
-    if ((await this.stat()).isDirectory() && (await fs.readdir(`${h.directory}/live-smith-audio/${h.session.id}`))
-      .some((name) => name.endsWith(".audio"))) throw new Error("bookkeeping unavailable after blob commit");
-    return sync.call(this);
-  });
+  let committedBlob = false;
+  const restore = interceptStoredWrites(t, { afterCommit: writes => {
+    if (writes.some(write => write.key.endsWith(".audio"))) committedBlob = true;
+    if (committedBlob && writes.length) throw new Error("bookkeeping unavailable after blob commit");
+  } });
   try { await assert.rejects(processing.downloadAudioOutput(h.context, job.id, clipIds[0]!)); }
-  finally { fault.mock.restore(); }
+  finally { restore(); }
   await h.sessions.clear(connection.id);
   const before = { ...h.calls, downloads: [...h.calls.downloads] };
   const recovered = await processing.downloadAudioOutput(h.context, job.id, clipIds[0]!);

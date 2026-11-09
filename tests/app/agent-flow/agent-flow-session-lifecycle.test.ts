@@ -1,3 +1,5 @@
+import { readStoredText, writeStoredBytes, storedEntry } from "../../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -126,9 +128,7 @@ test("New Session reuses a pristine Session but not one with history", async (t)
   });
 
   assert.equal((await listSessions(directory)).length, 4);
-  const saved = JSON.parse(await fs.readFile(
-    path.join(directory, "live-smith-sessions.json"), "utf8",
-  )) as AgentSession[];
+  const saved = JSON.parse(await readStoredText(directory, path.join(directory, "live-smith-sessions.json"))) as AgentSession[];
   assert.equal(saved.length, 3, "the unused New Session remains transient");
 });
 
@@ -176,7 +176,7 @@ test("opening, reopening, and deleting an untouched Session do not save empty hi
   await open(context);
   deleteActive = true;
   await open({ ...context });
-  await assert.rejects(fs.stat(path.join(directory, "live-smith-sessions.json")), { code: "ENOENT" });
+  assert.equal(await storedEntry(directory, "live-smith-sessions.json"), undefined);
 });
 
 test("opening different tracks keeps their empty Session summaries separate from content", async (t) => {
@@ -204,7 +204,7 @@ test("opening different tracks keeps their empty Session summaries separate from
       scope: { kind: "track", identity: `track-${trackNumber}`, label: `Track ${trackNumber}` },
     }, { renderHtml: () => "<html></html>" });
   }
-  await assert.rejects(fs.stat(path.join(directory, "live-smith-sessions.json")), { code: "ENOENT" });
+  assert.equal(await storedEntry(directory, "live-smith-sessions.json"), undefined);
 });
 
 test("Session content summaries ignore timestamps and permission settings without deleting data", async (t) => {
@@ -228,16 +228,14 @@ test("Session content summaries ignore timestamps and permission settings withou
     provider: "suno", serviceId: "suno-fixture", operation: "generate_music", connectionFingerprint: "a".repeat(64), stems: [],
   });
   const unreadable = await createSession(directory, input);
-  await fs.writeFile(
-    path.join(directory, "live-smith-events", `${unreadable.id}.json`), "invalid JSON",
-  );
+  await writeStoredBytes(directory, path.join(directory, "live-smith-events", `${unreadable.id}.json`), Buffer.from("invalid JSON"));
   const modified = await createSession(directory, input);
   const sessionFile = path.join(directory, "live-smith-sessions.json");
   const metadata = await listSessions(directory);
   const modifiedRecord = metadata.find((session) => session.id === modified.id)!;
   modifiedRecord.updatedAt = new Date(Date.parse(modifiedRecord.createdAt) + 1).toISOString();
-  await fs.writeFile(sessionFile, JSON.stringify(metadata));
-  const before = await fs.readFile(sessionFile, "utf8");
+  await writeStoredBytes(directory, sessionFile, Buffer.from(JSON.stringify(metadata)));
+  const before = await readStoredText(directory, sessionFile);
   const context = {
     application: { song: { handle: { id: 1n } } },
     environment: { storageDirectory: directory },
@@ -260,7 +258,7 @@ test("Session content summaries ignore timestamps and permission settings withou
   }, {
     renderHtml: () => "<html></html>",
   });
-  assert.equal(await fs.readFile(sessionFile, "utf8"), before);
+  assert.equal(await readStoredText(directory, sessionFile), before);
 });
 
 test("Continue and archive lifecycle never persist the unused fallback Session", async (t) => {
@@ -292,9 +290,7 @@ test("Continue and archive lifecycle never persist the unused fallback Session",
           method: "POST", headers: commandHeaders(), body: JSON.stringify({ kind, sessionId }),
         });
         assert.equal(response.status, 200);
-        const saved = JSON.parse(await fs.readFile(
-          path.join(directory, "live-smith-sessions.json"), "utf8",
-        )) as AgentSession[];
+        const saved = JSON.parse(await readStoredText(directory, path.join(directory, "live-smith-sessions.json"))) as AgentSession[];
         assert.deepEqual(saved.map((session) => session.id), [previous.id]);
         return response.json() as Promise<ChatDialogState>;
       };

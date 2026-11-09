@@ -1,3 +1,4 @@
+import { removeStoredEntry, writeStoredBytes } from "../../../src/storage/sqlite.js";
 import { createSessionArtifactToolset } from "../../../src/app/session/session-artifact-tools.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -206,7 +207,7 @@ test("an unavailable saved MIDI artifact is reported without blocking the Sessio
     pluginId: "audio-to-midi", serverId: "local", toolName: "transcribe",
     label: "Lost blob", bytes, signal: createHostAbortController().signal,
   });
-  await fs.rm(`${directory}/live-smith-midi/${session.id}/${saved.id}.mid`);
+  await removeStoredEntry(directory, `live-smith-midi/${session.id}/${saved.id}.mid`);
 
   const request = await createRequestPluginTools({
     storageDirectory: directory,
@@ -288,7 +289,7 @@ test("approved artifact tools receive exact staged audio and return only saved M
     channel: 1, durationBeats: 1, noteCount: 1 }]);
   assert.deepEqual(JSON.parse(listed.content)[0].timing, { tempoEventCount: 0, timeSignatureEventCount: 0 });
   assert.equal(request.midiArtifacts().length, 1);
-  await fs.writeFile(`${h.storage}/live-smith-midi/${h.session.id}/${parsed.artifacts[0].artifactRef}.mid`, new Uint8Array(35));
+  await writeStoredBytes(h.storage, `live-smith-midi/${h.session.id}/${parsed.artifacts[0].artifactRef}.mid`, new Uint8Array(35));
   const corrupt = await reader.callTool({ id: "list-corrupt", name: "list_session_artifacts", arguments: "{}" });
   assert.equal(JSON.parse(corrupt.content).unavailableCount, 1);
   assert.deepEqual(JSON.parse(corrupt.content).artifacts.filter((artifact: { kind: string }) => artifact.kind === "midi"), []);

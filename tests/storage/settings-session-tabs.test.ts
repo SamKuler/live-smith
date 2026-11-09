@@ -1,6 +1,8 @@
+import { writeStoredBytes, readStoredText } from "../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCommandInput } from "../../src/app/chat/chat-bridge-http.js";
@@ -57,15 +59,15 @@ test("Session tab saves migrate without read writes and advance only their indep
   const { sessionTabs, sessionTabsRevision, ...historical } = freshEmptyAgentSettings();
   const file = join(directory, "live-smith-settings.json");
   const bytes = JSON.stringify(historical);
-  await writeFile(file, bytes);
+  await writeStoredBytes(directory, file, Buffer.from(bytes));
   await loadAgentSettings(directory);
-  assert.equal(await readFile(file, "utf8"), bytes);
+  assert.equal(await readStoredText(directory, file), bytes);
   for (const input of [
     {}, ...invalidSelections.map((sessionTabs) => ({ sessionTabs })),
     { sessionTabs: [], showContextUsage: false },
     { sessionTabs: [], sessionTabsRevision: "5" },
   ]) await assert.rejects(saveGlobalSettings(directory, input as never));
-  assert.equal(await readFile(file, "utf8"), bytes);
+  assert.equal(await readStoredText(directory, file), bytes);
   const writes = await Promise.all([
     saveGlobalSettings(directory, { sessionTabs: ["tools", "context"] }),
     saveGlobalSettings(directory, { showContextUsage: false }),
@@ -85,7 +87,7 @@ test("Session tab saves migrate without read writes and advance only their indep
   assert.equal(saved.customInstructionsRevision, "0");
   assert.equal(saved.approvalMode, "manual");
   assert.deepEqual(saved.profiles, []);
-  await writeFile(file, JSON.stringify({ ...saved, sessionTabsRevision: "99999999999999999999" }));
+  await writeStoredBytes(directory, file, Buffer.from(JSON.stringify({ ...saved, sessionTabsRevision: "99999999999999999999" })));
   assert.equal((await saveGlobalSettings(directory, { sessionTabs: ["skills"] })).sessionTabsRevision,
     "100000000000000000000");
 });

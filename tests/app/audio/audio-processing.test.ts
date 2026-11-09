@@ -1,3 +1,4 @@
+import { interceptStoredWrites } from "../../storage/support/sqlite-fault-test-helpers.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -163,7 +164,7 @@ test("provider-confirmed separation failure is terminal and Resume does not poll
 test("Stop cancels an accepted in-memory ticket even when persisting the receipt and failure both fail", async (t) => {
   const h = await harness(t);
   h.adapter.submit = async () => {
-    await fs.rename(`${h.directory}/live-smith-audio/${h.session.id}`, `${h.directory}/offline-audio`);
+    interceptStoredWrites(t, { beforeWrite: ({ key }) => { if (key.endsWith(".job.json")) throw new Error("job storage unavailable"); } });
     h.controller.abort(new Error("stopped"));
     return "accepted-ticket";
   };
@@ -178,7 +179,7 @@ test("Stop cancels an accepted in-memory ticket even when persisting the receipt
 test("Stop still cancels a persisted remote ticket when interruption bookkeeping fails", async (t) => {
   const h = await harness(t);
   h.adapter.inspect = async () => {
-    await fs.rename(`${h.directory}/live-smith-audio/${h.session.id}`, `${h.directory}/offline-audio`);
+    interceptStoredWrites(t, { beforeWrite: ({ key }) => { if (key.endsWith(".job.json")) throw new Error("job storage unavailable"); } });
     h.controller.abort(new Error("stopped"));
     throw new Error("read interrupted");
   };

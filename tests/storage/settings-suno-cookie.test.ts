@@ -1,3 +1,4 @@
+import { StatementSync } from "node:sqlite";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -58,10 +59,11 @@ for (const retainsCookie of [true, false]) {
   test(`failed settings persistence reports partial cleanup only when a Cookie was removed: ${retainsCookie}`, async (t) => {
     const h = await fixture(t);
     if (!retainsCookie) await h.store.clear(account.id);
-    const handle = await fs.open(h.directory);
-    const prototype = Object.getPrototypeOf(handle) as fs.FileHandle;
-    await handle.close();
-    t.mock.method(prototype, "writeFile", async () => { throw new Error("Injected settings write failure"); });
+    const run = StatementSync.prototype.run;
+    t.mock.method(StatementSync.prototype, "run", function (this: StatementSync, ...args: Parameters<StatementSync["run"]>) {
+      if ((args[0] as unknown) === "live-smith-settings.json") throw new Error("Injected settings write failure");
+      return run.apply(this, args);
+    });
     await assert.rejects(saveGlobalSettings(h.directory, { integrationConnections: {
       action: "remove", expectedRevision: "1", connectionId: account.id,
     } }), (error: unknown) => {

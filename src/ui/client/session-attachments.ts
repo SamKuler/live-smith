@@ -3,7 +3,7 @@ import type { ChatBridgeState } from "../chat-state.js";
 import { createLocaleBindings } from "./locale-bindings.js";
 
 interface Dependencies {
-  getState(): Pick<ChatBridgeState, "activeSessionId" | "events" | "pendingAttachments">;
+  getState(): Pick<ChatBridgeState, "activeSessionId" | "events" | "pendingAttachments" | "sessionAttachments">;
   attachmentViewer: {
     open(sessionId: string, attachment: PersistedSessionAttachmentRef): Promise<void>;
     reuse(sessionId: string, attachment: PersistedSessionAttachmentRef): Promise<void>;
@@ -89,8 +89,8 @@ export function createSessionAttachments({ getState, attachmentViewer, isReuseBl
       list.replaceChildren();
     }
     if (snapshot?.activeSessionId !== sessionId || snapshot.events !== state.events ||
-        snapshot.pendingAttachments !== state.pendingAttachments) {
-      snapshot = { activeSessionId: sessionId, events: state.events, pendingAttachments: state.pendingAttachments };
+        snapshot.pendingAttachments !== state.pendingAttachments || snapshot.sessionAttachments !== state.sessionAttachments) {
+      snapshot = { activeSessionId: sessionId, events: state.events, ...(state.sessionAttachments === undefined ? {} : { sessionAttachments: state.sessionAttachments }), pendingAttachments: state.pendingAttachments };
       entries = new Map();
       const add = (attachment: PersistedSessionAttachmentRef, pending: boolean) => {
         const key = attachmentKey(attachment);
@@ -98,6 +98,7 @@ export function createSessionAttachments({ getState, attachmentViewer, isReuseBl
       };
       if (sessionId) {
         for (const attachment of state.pendingAttachments) add(attachment, true);
+        for (const attachment of [...(state.sessionAttachments ?? [])].reverse()) add(attachment, false);
         for (let index = state.events.length - 1; index >= 0; index--) {
           for (const attachment of state.events[index]?.attachments ?? []) add(attachment, false);
         }

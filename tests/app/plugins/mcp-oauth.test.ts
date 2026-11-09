@@ -1,3 +1,4 @@
+import { STORAGE_DATABASE_NAME } from "../../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { createServer } from "node:http";
@@ -42,7 +43,7 @@ test("SDK OAuth DCR uses PKCE/state/issuer; MCP tools refresh once, reuse regist
   assert.equal(stored.tokens.issuer, `${server.origin}/issuer`);
   assert.equal(server.registrations.length, 1);
   assert.equal(server.registrations[0]?.token_endpoint_auth_method, "none");
-  assert.equal((await fs.stat(`${path}/live-smith-mcp-oauth.json`)).mode & 0o777, 0o600);
+  assert.equal((await fs.stat(`${path}/${STORAGE_DATABASE_NAME}`)).mode & 0o777, 0o600);
   const beforeView = server.requests.length;
   assert.equal((await mcpOAuthStates(path))[0]?.status, "signed-in");
   assert.equal(server.requests.length, beforeView);

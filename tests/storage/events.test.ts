@@ -1,3 +1,5 @@
+import { withStorageDatabase, writeStoredBytes, readStoredText } from "../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
@@ -6,7 +8,7 @@ import * as path from "node:path";
 import test from "node:test";
 
 import {
-  MAX_AUDIO_ATTACHMENT_BYTES,
+  MAX_LOCAL_AUDIO_ATTACHMENT_BYTES,
   MAX_IMAGE_ATTACHMENT_BYTES,
   MAX_PENDING_AUDIO_ATTACHMENT_BYTES,
   MAX_PENDING_AUDIO_ATTACHMENT_COUNT,
@@ -85,12 +87,6 @@ test("steering receipts make identical user-event appends idempotent", async () 
     content,
     steeringReceipt: inputReceipt,
   });
-  const target = path.join(
-    dir,
-    "live-smith-events",
-    `${encodeURIComponent(sessionId)}.json`,
-  );
-  const bytesAfterFirstAppend = await fs.readFile(target);
   inputReceipt.id = "mutated-input";
   first.steeringReceipt!.id = "mutated-return";
 
@@ -103,7 +99,6 @@ test("steering receipts make identical user-event appends idempotent", async () 
   assert.equal(retried.id, first.id);
   assert.equal(retried.createdAt, first.createdAt);
   assert.deepEqual(retried.steeringReceipt, expectedReceipt);
-  assert.deepEqual(await fs.readFile(target), bytesAfterFirstAppend);
   assert.deepEqual(await loadSessionEvents(dir, sessionId), [{
     id: first.id,
     createdAt: first.createdAt,
@@ -131,9 +126,6 @@ test("a steering receipt cannot be reused for different user guidance", async ()
       firstContent,
     ),
   });
-  const target = path.join(dir, "live-smith-events", `${sessionId}.json`);
-  const original = await fs.readFile(target);
-
   await assert.rejects(
     appendSessionEvent(dir, sessionId, {
       kind: "user",
@@ -149,7 +141,6 @@ test("a steering receipt cannot be reused for different user guidance", async ()
       error.sendId === receiptIdentity.sendId &&
       error.id === receiptIdentity.id,
   );
-  assert.deepEqual(await fs.readFile(target), original);
   assert.equal((await loadSessionEvents(dir, sessionId)).length, 1);
 });
 
@@ -285,7 +276,7 @@ test("event attachment limits reject duplicate, oversized, and malformed refs", 
   );
   for (const malformedAudio of [
     { ...audioRef, durationSeconds: undefined },
-    { ...audioRef, durationSeconds: 900.001 },
+    { ...audioRef, durationSeconds: Number.POSITIVE_INFINITY },
     { ...audioRef, sampleRate: 0 },
     { ...audioRef, channels: 0 },
     { ...audioRef, mediaType: "audio/mpeg", channels: 3 },
@@ -361,7 +352,7 @@ test("event loading precisely preserves legacy attachment refs under the old sch
     content: "Legacy attachments",
     attachments: legacyRefs,
   }];
-  await fs.writeFile(target, JSON.stringify(persisted));
+  await writeStoredBytes(dir, target, Buffer.from(JSON.stringify(persisted)));
 
   assert.deepEqual(await loadSessionEvents(dir, "legacy-event"), persisted);
   await appendSessionEvent(dir, "legacy-event", {
@@ -490,8 +481,6 @@ test("mixed image and document event refs enforce shared and per-kind quotas", a
 
 test("audio event refs enforce single, subtotal, count, and mixed raw quotas", async () => {
   const sessionId = `memory-event-audio-${Date.now()}`;
-  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_BYTES, 256 * 1024 * 1024);
-  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_COUNT, 2);
   const exactAudio = [0, 1].map((index) => ({
     ...audioRef,
     id: `attachment-audio-exact-${index}`,
@@ -511,7 +500,7 @@ test("audio event refs enforce single, subtotal, count, and mixed raw quotas", a
     appendSessionEvent(undefined, `${sessionId}-count-over`, {
       kind: "user",
       content: "three audio refs",
-      attachments: [0, 1, 2].map((index) => ({
+      attachments: Array.from({ length: MAX_PENDING_AUDIO_ATTACHMENT_COUNT + 1 }, (_, index) => ({
         ...audioRef,
         id: `attachment-audio-over-${index}`,
         byteLength: 1,
@@ -526,7 +515,7 @@ test("audio event refs enforce single, subtotal, count, and mixed raw quotas", a
       attachments: [{
         ...audioRef,
         id: "attachment-audio-single-over",
-        byteLength: MAX_AUDIO_ATTACHMENT_BYTES + 1,
+        byteLength: MAX_LOCAL_AUDIO_ATTACHMENT_BYTES + 1,
       }],
     }),
     /invalid/i,
@@ -555,11 +544,12 @@ test("document event refs survive reload and malformed kind-media pairs are corr
     [documentRef],
   );
 
-  const target = path.join(dir, "live-smith-events", "session-document-event.json");
-  const parsed = JSON.parse(await fs.readFile(target, "utf8")) as Array<Record<string, unknown>>;
-  const attachments = parsed[0]?.attachments as Array<Record<string, unknown>>;
-  attachments[0]!.kind = "image";
-  await fs.writeFile(target, JSON.stringify(parsed));
+  await withStorageDatabase(dir, db => {
+    const row = db.prepare("SELECT seq,payload FROM session_event_records WHERE session_id=?").get("session-document-event")!;
+    const event = JSON.parse(String(row.payload)) as { attachments: Array<{kind: string}> };
+    event.attachments[0]!.kind = "image";
+    db.prepare("UPDATE session_event_records SET payload=? WHERE seq=?").run(JSON.stringify(event), Number(row.seq));
+  });
   await assert.rejects(
     loadSessionEvents(dir, "session-document-event"),
     (error: unknown) => error instanceof SessionEventsCorruptionError,
@@ -792,7 +782,7 @@ test("malformed recovery ledgers are rejected as event-log corruption", async ()
   const eventsDirectory = path.join(dir, "live-smith-events");
   await fs.mkdir(eventsDirectory);
   const target = path.join(eventsDirectory, "bad-recovery.json");
-  await fs.writeFile(target, JSON.stringify([{
+  await writeStoredBytes(dir, target, Buffer.from(JSON.stringify([{
     id: "event-bad-recovery",
     createdAt: new Date().toISOString(),
     kind: "apply_result",
@@ -801,7 +791,7 @@ test("malformed recovery ledgers are rejected as event-log corruption", async ()
       active: true,
       completedActionDigests: ['insert_device:{"apiKey":"secret"}'],
     },
-  }]));
+  }])));
 
   await assert.rejects(
     loadSessionEvents(dir, "bad-recovery"),
@@ -842,7 +832,7 @@ test("corrupt event storage blocks reads and appends without changing bytes", as
   await fs.mkdir(eventsDirectory);
   const target = path.join(eventsDirectory, "corrupt-session.json");
   const original = "{invalid";
-  await fs.writeFile(target, original);
+  await writeStoredBytes(dir, target, Buffer.from(original));
 
   await assert.rejects(
     loadSessionEvents(dir, "corrupt-session"),
@@ -855,14 +845,14 @@ test("corrupt event storage blocks reads and appends without changing bytes", as
     }),
     (error: unknown) => error instanceof SessionEventsCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 });
 
 test("unsafe session IDs cannot escape the event directory", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-events-"));
   const settingsPath = path.join(dir, "live-smith-settings.json");
   const original = "settings sentinel";
-  await fs.writeFile(settingsPath, original);
+  await writeStoredBytes(dir, settingsPath, Buffer.from(original));
 
   await assert.rejects(
     appendSessionEvent(dir, "../live-smith-settings", {
@@ -875,7 +865,7 @@ test("unsafe session IDs cannot escape the event directory", async () => {
     deleteSessionEvents(dir, "../live-smith-settings"),
     /Session ID is invalid/,
   );
-  assert.equal(await fs.readFile(settingsPath, "utf8"), original);
+  assert.equal(await readStoredText(dir, settingsPath), original);
 });
 
 test("one invalid persisted event blocks append instead of dropping the item", async () => {
@@ -889,7 +879,7 @@ test("one invalid persisted event blocks append instead of dropping the item", a
     kind: "user",
     content: "Recoverable",
   }, { id: "event-invalid" }]);
-  await fs.writeFile(target, original);
+  await writeStoredBytes(dir, target, Buffer.from(original));
 
   await assert.rejects(
     appendSessionEvent(dir, "partial-session", {
@@ -898,7 +888,7 @@ test("one invalid persisted event blocks append instead of dropping the item", a
     }),
     (error: unknown) => error instanceof SessionEventsCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 });
 
 test("duplicate persisted event IDs block reads and appends without changing bytes", async () => {
@@ -920,7 +910,7 @@ test("duplicate persisted event IDs block reads and appends without changing byt
       content: "Second",
     },
   ]);
-  await fs.writeFile(target, original);
+  await writeStoredBytes(dir, target, Buffer.from(original));
 
   await assert.rejects(
     loadSessionEvents(dir, "duplicate-session"),
@@ -933,7 +923,7 @@ test("duplicate persisted event IDs block reads and appends without changing byt
     }),
     (error: unknown) => error instanceof SessionEventsCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 });
 
 test("duplicate persisted steering receipt identities are event-log corruption", async () => {
@@ -967,7 +957,7 @@ test("duplicate persisted steering receipt identities are event-log corruption",
       ),
     },
   ]);
-  await fs.writeFile(target, original);
+  await writeStoredBytes(dir, target, Buffer.from(original));
 
   await assert.rejects(
     loadSessionEvents(dir, "duplicate-steering-receipts"),
@@ -980,7 +970,7 @@ test("duplicate persisted steering receipt identities are event-log corruption",
     }),
     (error: unknown) => error instanceof SessionEventsCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 });
 
 test("persisted steering receipts reject malformed shape and content hashes", async () => {
@@ -997,13 +987,13 @@ test("persisted steering receipts reject malformed shape and content hashes", as
   ];
 
   for (const invalidReceipt of invalidReceipts) {
-    await fs.writeFile(target, JSON.stringify([{
+    await writeStoredBytes(dir, target, Buffer.from(JSON.stringify([{
       id: "event-invalid-steering-receipt",
       createdAt: "2026-08-15T00:00:00.000Z",
       kind: "user",
       content,
       steeringReceipt: invalidReceipt,
-    }]));
+    }])));
     await assert.rejects(
       loadSessionEvents(dir, "invalid-steering-receipt"),
       (error: unknown) => error instanceof SessionEventsCorruptionError,
@@ -1032,7 +1022,7 @@ test("duplicate persisted attachment IDs across events are corruption", async ()
       attachments: [imageRef],
     },
   ]);
-  await fs.writeFile(target, original);
+  await writeStoredBytes(dir, target, Buffer.from(original));
 
   await assert.rejects(
     loadSessionEvents(dir, "duplicate-attachments"),
@@ -1045,7 +1035,7 @@ test("duplicate persisted attachment IDs across events are corruption", async ()
     }),
     (error: unknown) => error instanceof SessionEventsCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 });
 
 test("session event storage keeps an in-memory fallback when storage directory is missing", async () => {
@@ -1204,7 +1194,7 @@ test("persisted Web Search events reject transient searching status", async () =
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-searching-event-"));
   const eventsDirectory = path.join(dir, "live-smith-events");
   await fs.mkdir(eventsDirectory);
-  await fs.writeFile(path.join(eventsDirectory, "searching-session.json"), JSON.stringify([{
+  await writeStoredBytes(dir, path.join(eventsDirectory, "searching-session.json"), Buffer.from(JSON.stringify([{
     id: "event-searching",
     createdAt: "2026-08-11T00:00:00.000Z",
     kind: "web_search",
@@ -1216,7 +1206,7 @@ test("persisted Web Search events reject transient searching status", async () =
       queries: ["Ableton Live release"],
       sources: [],
     },
-  }]));
+  }])));
 
   await assert.rejects(
     loadSessionEvents(dir, "searching-session"),

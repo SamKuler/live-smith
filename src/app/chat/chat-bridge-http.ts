@@ -18,7 +18,7 @@ import {
   resolveEditScopes,
   type EditScope,
 } from "../../agent/edit-scopes.js";
-import { MAX_ATTACHMENT_UPLOAD_BYTES, MAX_DOCUMENT_ATTACHMENT_BYTES, MAX_PENDING_ATTACHMENT_COUNT } from "../../attachments/contracts.js";
+import { MAX_BUFFERED_ATTACHMENT_BYTES, MAX_ATTACHMENT_UPLOAD_BYTES, MAX_DOCUMENT_ATTACHMENT_BYTES, MAX_PENDING_ATTACHMENT_COUNT } from "../../attachments/contracts.js";
 import {
   isSafeSkillId,
   isSafeSkillReferenceId,
@@ -63,7 +63,7 @@ const defaultSkillBodyReadTimeoutMs = 15_000;
 const initialUnknownSkillBodyCapacity = 8 * 1024;
 const mimeTypePattern =
   /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
-const correlationIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+export const correlationIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 let activeAttachmentBodyReads = 0;
 let activeSkillBodyReads = 0;
 
@@ -545,6 +545,62 @@ export async function readJsonBody<T>(
   }
 }
 
+export interface AttachmentBodyStream {
+  chunks: AsyncIterable<Uint8Array>;
+  expectedByteLength?: number;
+  close(): void;
+}
+
+/** Bounded upload bytes flow directly to their consumer; no full-body buffer. */
+export function openAttachmentBodyStream(request: IncomingMessage, signal: AbortSignal, options: RawAttachmentBodyReadOptions = {}): AttachmentBodyStream {
+  assertAttachmentContentType(request);
+  const declaredLength = boundedContentLength(request, "Attachment", MAX_ATTACHMENT_UPLOAD_BYTES);
+  if (declaredLength === 0) throw new ChatBridgeRequestValidationError("Attachment body must not be empty.");
+  const release = acquireAttachmentBodyReadPermit();
+  let closed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let interrupt: ((error: Error) => void) | undefined;
+  const abort = () => interrupt?.(new ChatBridgeRequestValidationError("Attachment upload was cancelled."));
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    if (timer) clearTimeout(timer);
+    signal.removeEventListener("abort", abort);
+    release();
+    if (!request.readableEnded && !request.destroyed) request.resume();
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  const chunks = (async function* () {
+    let received = 0;
+    const iterator = request.iterator({ destroyOnReturn: false });
+    try {
+      if (signal.aborted) throw new ChatBridgeRequestValidationError("Attachment upload was cancelled.");
+      while (true) {
+        if (signal.aborted) throw new ChatBridgeRequestValidationError("Attachment upload was cancelled.");
+        const next = await new Promise<IteratorResult<unknown>>((resolve, reject) => {
+          interrupt = reject;
+          timer = setTimeout(() => reject(new ChatBridgeRequestTimeoutError("Attachment upload timed out before the complete body was received.")), options.timeoutMs ?? defaultAttachmentBodyReadTimeoutMs);
+          iterator.next().then(resolve, reject);
+        }).finally(() => {
+          if (timer) clearTimeout(timer);
+          timer = undefined;
+          interrupt = undefined;
+        });
+        if (next.done) break;
+        if (signal.aborted) throw new ChatBridgeRequestValidationError("Attachment upload was cancelled.");
+        const bytes = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value as Uint8Array);
+        received += bytes.byteLength;
+        if (received > MAX_ATTACHMENT_UPLOAD_BYTES) throw new ChatBridgePayloadTooLargeError("Attachment exceeds the local file size limit.");
+        if (declaredLength !== undefined && received > declaredLength) throw new ChatBridgeRequestValidationError("Attachment Content-Length does not match the received body.");
+        yield bytes;
+      }
+      if (!received) throw new ChatBridgeRequestValidationError("Attachment body must not be empty.");
+      if (declaredLength !== undefined && received !== declaredLength) throw new ChatBridgeRequestValidationError("Attachment Content-Length does not match the received body.");
+    } finally { close(); void iterator.return?.().catch(() => {}); }
+  })();
+  return { chunks, ...(declaredLength === undefined ? {} : { expectedByteLength: declaredLength }), close };
+}
+
 export function readRawAttachmentBody(
   request: IncomingMessage,
   options: RawAttachmentBodyReadOptions = {},
@@ -556,7 +612,7 @@ export function readRawAttachmentBody(
     declaredLength = boundedContentLength(
       request,
       "Attachment",
-      MAX_ATTACHMENT_UPLOAD_BYTES,
+      MAX_BUFFERED_ATTACHMENT_BYTES,
     );
     if (declaredLength === 0 && !allowEmpty) {
       throw new ChatBridgeRequestValidationError("Attachment body must not be empty.");
@@ -567,7 +623,7 @@ export function readRawAttachmentBody(
   }
 
   return readBoundedRawBody(request, declaredLength, {
-    maximumBytes: MAX_ATTACHMENT_UPLOAD_BYTES,
+    maximumBytes: MAX_BUFFERED_ATTACHMENT_BYTES,
     allowEmpty,
     initialCapacity: initialUnknownAttachmentBodyCapacity,
     timeoutMs: options.timeoutMs ?? defaultAttachmentBodyReadTimeoutMs,
@@ -575,7 +631,7 @@ export function readRawAttachmentBody(
     acquirePermit: acquireAttachmentBodyReadPermit,
     emptyMessage: "Attachment body must not be empty.",
     tooLargeMessage:
-      `Attachment uploads may not exceed ${MAX_ATTACHMENT_UPLOAD_BYTES} bytes.`,
+      `Attachment uploads may not exceed ${MAX_BUFFERED_ATTACHMENT_BYTES} bytes.`,
     mismatchMessage: "Attachment Content-Length does not match the received body.",
     timeoutMessage: "Attachment upload timed out before the complete body was received.",
     incompleteMessage: "Attachment upload ended before the complete body was received.",

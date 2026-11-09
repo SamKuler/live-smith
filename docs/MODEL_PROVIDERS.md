@@ -124,10 +124,10 @@ credential readiness; model availability and usage allowance depend on the accou
 
 #### Credential ownership
 
-OAuth credentials live only in private Ableton storage at
-`<storageDirectory>/oauth/credentials.json`. The file is schema-validated,
-atomically replaced, and mode `0600` on POSIX; its directory is mode `0700`.
-It stores discriminated credentials in exact Profile-ID/provider slots:
+OAuth 凭据保存在私有 SQLite 数据库的 `oauth/credentials.json` 逻辑记录中，
+经过 schema 校验后原子提交。数据库权限与迁移原件的维护遵循
+[凭据存储](#credential-storage)和[持久化契约](ARCHITECTURE.md#durable-local-storage)。
+记录按精确的 Profile ID/provider 二元组保存各提供商字段：
 
 - OpenAI: access token, refresh token, expiry, and ChatGPT account ID.
 - Anthropic: access token, refresh token, and expiry.
@@ -584,6 +584,11 @@ normalized to PNG before upload. Audio stays in its original WAV/MP3 format;
 other formats require an explicit export before attachment. Image conversion
 depends on codecs in the local WebView, independently of provider capability
 evidence.
+
+Inline model input admits at most two audio parts of up to 15 minutes each
+within the shared 128 MiB binary request budget. Remote provider limits can be
+lower. See [local attachment limits](USER_GUIDE.md#supported-formats-and-limits)
+for saving, playback, and reuse.
 
 Modern Office and OpenDocument use bundled parser workers without an installed
 helper runtime. Formula caches are read without evaluation; missing cached
@@ -1178,11 +1183,9 @@ not audio bytes. With a verified audio-input Profile, the model may call
 analyze, compare, or transcribe that audio.
 
 Audio processing files are limited to 128 MiB and 15 minutes each, with a 1 GiB
-total and 40 processing jobs per Session. Composer audio attachments use the
-same per-file size and duration bounds. Inline model input allows at most two
-audio parts within a shared 128 MiB binary request budget; remote provider
-limits may be lower. Original WAV/MP3 bytes reach the selected protocol adapter,
-which owns their wire encoding. LALAL.AI keeps WAV sources lossless
+total and 40 processing jobs per Session. See [input mapping](#input-mapping)
+for the separate inline model budget. Original WAV/MP3 bytes reach the selected
+protocol adapter, which owns their wire encoding. LALAL.AI keeps WAV sources lossless
 and requests MP3 output for MP3 sources so a valid long compressed input is not
 expanded past the per-file result limit. Media transfer has a ten-minute deadline;
 API metadata calls retain a two-minute deadline. Results are inspected as WAV or MP3,
@@ -1246,13 +1249,15 @@ target. Inspect timing and Warp behavior in Live when importing stems.
 
 ## Credential storage
 
-`live-smith-settings.json` contains Direct API keys because a Direct API Profile
-owns its complete connection. It also contains private built-in Plugin Connection
-secrets under exact Connection and Plugin identities. `oauth/credentials.json`
-contains OAuth tokens in Profile-ID/provider tuple slots because subscription
-Profiles deliberately do not contain them. Suno.com session material remains in
-its separate private per-Connection record. These files must not be committed,
-logged, copied into fixtures, or shown in screenshots.
+当前凭据保存在私有 SQLite 数据库中。逻辑记录 `live-smith-settings.json` 保存
+Direct API Profile 的完整连接，以及按 Connection/Plugin 身份隔离的内置 Plugin
+连接凭据。`oauth/credentials.json` 记录按 Profile ID/provider 二元组保存模型
+OAuth token；Suno.com 会话材料使用独立的 Connection 记录。
+
+首次迁移保留旧凭据原件，后续修改和删除作用于数据库记录。数据库与历史原件均按
+私有凭据维护，源代码、日志、fixture、截图和共享产物只使用合成测试数据。
+备份与旧版恢复的边界见[开发数据指南](DEVELOPMENT.md#development-data)，
+数据库提交与迁移契约见[架构说明](ARCHITECTURE.md#durable-local-storage)。
 
 Provider failures are redacted with both the active Direct API secret set and
 the send-scoped OAuth credential. Errors retain useful provider/protocol/status

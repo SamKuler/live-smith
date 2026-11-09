@@ -1,3 +1,5 @@
+import { readStoredText, removeStoredEntry } from "../../../src/storage/sqlite.js";
+import { writeStoredTestFile } from "../../storage/support/stored-media-test-helpers.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -194,17 +196,17 @@ test("MIDI diff rejects missing parent, cross-Session access, unavailable files,
   });
   await assert.rejects(h.read(second.id, createHostAbortController().signal, other.id), /does not exist|invalid/);
   const metadataPath = path.join(h.directory, "live-smith-midi", h.session.id, `${second.id}.midi.json`);
-  const metadata = JSON.parse(await fs.readFile(metadataPath, "utf8"));
+  const metadata = JSON.parse(await readStoredText(h.directory, metadataPath));
   const foreign = await saveMidiArtifact(h.directory, other.id, {
     connectionId: "generator", serverId: "midi", toolName: "generate_midi", label: "Other",
     bytes: writeStandardMidi({ tracks: [track("Piano")], durationBeats: 4 }), signal: createHostAbortController().signal,
   });
-  await fs.writeFile(metadataPath, JSON.stringify({ ...metadata, version: { ...metadata.version, derivedFromId: foreign.id } }));
+  await writeStoredTestFile(h.directory, metadataPath, JSON.stringify({ ...metadata, version: { ...metadata.version, derivedFromId: foreign.id } }));
   await assert.rejects(h.read(second.id), /source MIDI version is unavailable in this Session/);
-  await fs.writeFile(metadataPath, JSON.stringify({ ...metadata, version: { ...metadata.version, groupId: second.id } }));
+  await writeStoredTestFile(h.directory, metadataPath, JSON.stringify({ ...metadata, version: { ...metadata.version, groupId: second.id } }));
   await assert.rejects(h.read(second.id), /same work/);
-  await fs.writeFile(metadataPath, JSON.stringify(metadata));
-  await fs.unlink(path.join(h.directory, "live-smith-midi", h.session.id, `${first.id}.mid`));
+  await writeStoredTestFile(h.directory, metadataPath, JSON.stringify(metadata));
+  await removeStoredEntry(h.directory, path.join(h.directory, "live-smith-midi", h.session.id, `${first.id}.mid`));
   await assert.rejects(h.read(second.id), /source MIDI version is unavailable/);
 });
 

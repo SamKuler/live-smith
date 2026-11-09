@@ -14,8 +14,8 @@
     "build:dev": "tsc --noEmit && tsx build.ts",
     "start": "npm run build:dev && extensions-cli run --storage-directory .live-smith-data",
     "test": "npm run test:core && npm run test:ui",
-    "test:core": "tsx --test \"tests/agent/**/*.test.ts\" \"tests/app/**/*.test.ts\" \"tests/attachments/**/*.test.ts\" \"tests/audio-services/**/*.test.ts\" \"tests/live/**/*.test.ts\" \"tests/model/**/*.test.ts\" \"tests/plugins/**/*.test.ts\" \"tests/release/**/*.test.ts\" \"tests/runtime/**/*.test.ts\" \"tests/skills/**/*.test.ts\" \"tests/storage/**/*.test.ts\"",
-    "test:ui": "tsx --test \"tests/ui/**/*.test.ts\"",
+    "test:core": "tsx --test --test-concurrency=4 \"tests/agent/**/*.test.ts\" \"tests/app/**/*.test.ts\" \"tests/attachments/**/*.test.ts\" \"tests/audio-services/**/*.test.ts\" \"tests/live/**/*.test.ts\" \"tests/model/**/*.test.ts\" \"tests/plugins/**/*.test.ts\" \"tests/release/**/*.test.ts\" \"tests/runtime/**/*.test.ts\" \"tests/skills/**/*.test.ts\" \"tests/storage/**/*.test.ts\"",
+    "test:ui": "tsx --test --test-concurrency=4 \"tests/ui/**/*.test.ts\"",
     "verify:client": "tsx scripts/check-dialog-client-syntax.ts",
     "verify:plugins": "tsx scripts/check-plugin-fixtures.ts",
     "verify": "npm test && npm run build:dev && npm run build && npm run verify:client && npm run verify:plugins && npm audit --json",
@@ -44,7 +44,8 @@
     "socks-proxy-agent": "10.1.0",
     "undici": "7.30.1",
     "ws": "8.21.3",
-    "xlsx": "file:vendor/xlsx-0.20.3.tgz"
+    "xlsx": "file:vendor/xlsx-0.20.3.tgz",
+    "@noble/hashes": "2.4.0"
   },
   "devDependencies": {
     "@ableton-extensions/cli": "file:extensions-sdk-1/ableton-extensions-cli-1.0.0-beta.1.tgz",

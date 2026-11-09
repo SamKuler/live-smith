@@ -1,3 +1,4 @@
+import { writeStoredTestFile } from "../../../storage/support/stored-media-test-helpers.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as fs from "node:fs/promises";
@@ -101,7 +102,7 @@ test("one corrupt Suno credential cannot block healthy connections or ordinary c
     id: "healthy", name: "Healthy music", provider: "elevenlabs", enabled: true,
     apiKey: "fixture-healthy-key",
   });
-  await fs.writeFile(`${h.directory}/suno-session-${connection.id}.json`, "{}", { mode: 0o600 });
+  await writeStoredTestFile(h.directory, `${h.directory}/suno-session-${connection.id}.json`, "{}", { mode: 0o600 });
   const admitted = await captureIntegrationConnections(h.directory);
   assert.deepEqual(admitted.map((entry) => entry.id), ["healthy"]);
   await assert.rejects(resolveIntegrationConnection(h.directory, connection.id, "generate_music"), /Private Suno session storage/);

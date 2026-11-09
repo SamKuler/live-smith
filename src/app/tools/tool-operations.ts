@@ -3,7 +3,7 @@ import type { AgentLoopTraceEvent } from "../../agent/tool-execution.js";
 import { toolOperationFinished, type ExternalToolActor, type ToolOperationOutput, type ToolOperationSnapshot } from "../../agent/tool-operation.js";
 import { cloneJsonValue } from "../../model/json-clone.js";
 import { createHostAbortController, throwIfAborted, waitForPromiseWithSignal } from "../../runtime/host.js";
-import { appendSessionEvent, loadSessionEvents } from "../../storage/events.js";
+import { appendSessionEvent, loadSessionOperationSnapshots, loadSessionOperationSnapshot } from "../../storage/events.js";
 import type { ChatBridgeConfirmationRequest } from "../chat/chat-bridge.js";
 import { invalidateSessionState } from "../session/session-state-events.js";
 import { appendAgentLoopTraceEvent } from "./tool-events.js";
@@ -92,9 +92,8 @@ export class ToolOperations {
 
   async list(sessionId: string): Promise<ToolOperationSnapshot[]> {
     const snapshots = new Map<string, ToolOperationSnapshot>();
-    for (const event of await loadSessionEvents(this.storageDirectory, sessionId)) {
-      if (event.operation) snapshots.set(event.operation.id, event.operation);
-    }
+    const activeIds = [...this.active.values()].filter(operation => operation.sessionId === sessionId).map(operation => operation.snapshot.id);
+    for (const snapshot of await loadSessionOperationSnapshots(this.storageDirectory, sessionId, 20, activeIds)) snapshots.set(snapshot.id, snapshot);
     for (const operation of this.active.values()) if (operation.sessionId === sessionId) snapshots.set(operation.snapshot.id, operation.snapshot);
     return [...snapshots.values()].reverse().slice(0, 20).map(snapshot => {
       const copy = cloneJsonValue(snapshot);
@@ -105,8 +104,7 @@ export class ToolOperations {
   async read(sessionId: string, id: string): Promise<ToolOperationSnapshot> {
     const active = this.active.get(id);
     if (active?.sessionId === sessionId) return cloneJsonValue(active.snapshot);
-    const events = await loadSessionEvents(this.storageDirectory, sessionId);
-    const snapshot = events.findLast(event => event.operation?.id === id)?.operation;
+    const snapshot = await loadSessionOperationSnapshot(this.storageDirectory, sessionId, id);
     if (!snapshot) throw new Error("Operation is unavailable in this Session.");
     const copy = cloneJsonValue(snapshot);
     if (!toolOperationFinished(copy.status)) interruptSnapshot(copy);

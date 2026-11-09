@@ -9,6 +9,7 @@ import { LEGACY_AUDIO_SERVICE_ID, type AudioAsset } from "../../../src/audio-ser
 import { createHostAbortController } from "../../../src/runtime/host.js";
 import { saveAudioAsset } from "../../../src/storage/audio-assets.js";
 import { createAudioJob, updateAudioJob } from "../../../src/storage/audio-jobs.js";
+import { writeStoredJson } from "../../../src/storage/sqlite.js";
 import { createSession } from "../../../src/storage/sessions.js";
 
 export const fingerprint = createHash("sha256").update("audio-storage-test-connection").digest("hex");
@@ -81,5 +82,5 @@ export function mp3Bytes(): Uint8Array {
 }
 
 export async function overwriteJson(target: string, value: unknown): Promise<void> {
-  await fs.writeFile(target, JSON.stringify(value));
+  await writeStoredJson(path.dirname(path.dirname(path.dirname(target))), target, value);
 }

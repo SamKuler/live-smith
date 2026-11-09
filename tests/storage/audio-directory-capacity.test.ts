@@ -1,5 +1,5 @@
+import { writeStoredTestFile, seedEmptyStoredTestEntries } from "./support/stored-media-test-helpers.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
@@ -37,7 +37,7 @@ test("completed Suno stem history stays available beyond 1024 files", async (t) 
     // every manifest and asset through the ordinary job storage boundary.
     for (const asset of outputAssets) {
       await overwriteJson(path.join(h.directory, `${asset.id}.asset.json`), asset);
-      await fs.writeFile(path.join(h.directory, `${asset.id}.audio`), bytes, { mode: 0o600 });
+      await writeStoredTestFile(h.storage, path.join(h.directory, `${asset.id}.audio`), bytes, { mode: 0o600 });
     }
     await updateAudioJob(h.storage, h.session.id, job.id, {
       remoteTaskId: expectedOutputs[0]!.key, expectedOutputs,
@@ -59,11 +59,14 @@ test("completed Suno stem history stays available beyond 1024 files", async (t) 
 
 test("an excessive audio directory remains unavailable before metadata is admitted", async (t) => {
   const h = await audioStorageHarness(t);
-  for (let offset = 0; offset < 5000; offset += 100) {
-    await Promise.all(Array.from({ length: 100 }, (_, index) =>
-      fs.writeFile(path.join(h.directory, `.audiojob_interrupted.tmp_${offset + index}`), "")
-    ));
-  }
+  seedEmptyStoredTestEntries(h.storage, Array.from({ length: 5000 }, (_, index) =>
+    path.join(h.directory, `.audiojob_interrupted.tmp_${index}`)));
   await assert.rejects(listAudioJobs(h.storage, h.session.id), AudioStorageError);
   await assert.rejects(readAudioSessionState(h.storage, h.session.id), AudioStorageError);
+});
+
+test("audio storage rejects nested records outside its flat Session layout", async t => {
+  const h = await audioStorageHarness(t);
+  await writeStoredTestFile(h.storage, path.join(h.directory, "nested", "unexpected.json"), "{}");
+  await assert.rejects(listAudioJobs(h.storage, h.session.id), AudioStorageError);
 });

@@ -1,3 +1,5 @@
+import { writeStoredBytes, readStoredText } from "../../../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -143,7 +145,7 @@ test("cancelled verification cannot commit or replace prior evidence and abort r
 test("corrupt private files produce a credential-free unavailable view without blocking other accounts", async (t) => {
   const h = await harness(t);
   await h.manager.importSession(connection.id, token, h.signal);
-  await fs.writeFile(`${h.directory}/suno-session-${connection.id}.json`, token);
+  await writeStoredBytes(h.directory, `${h.directory}/suno-session-${connection.id}.json`, Buffer.from(token));
   assert.deepEqual(await h.manager.views([connection, { ...connection, id: "missing" }]), [
     { serviceId: connection.id, status: "unavailable" }, { serviceId: "missing", status: "signed_out" },
   ]);
@@ -223,7 +225,7 @@ for (const status of ["expired", "unavailable"] as const) {
     const unrelated = await harness(t);
     await h.manager.importSession(connection.id, token, h.signal);
     await unrelated.manager.importSession(connection.id, token, unrelated.signal);
-    const before = await fs.readFile(`${h.directory}/suno-session-${connection.id}.json`, "utf8");
+    const before = await readStoredText(h.directory, `${h.directory}/suno-session-${connection.id}.json`);
     const peer = new SunoSessionManager(`${h.directory}/.`, h.verify);
     h.fail(status === "expired" ? new SunoSessionExpiredError() : new Error(token));
     await assert.rejects(peer.refresh(connection.id, h.signal));
@@ -231,7 +233,7 @@ for (const status of ["expired", "unavailable"] as const) {
       assert.deepEqual(await manager.views([connection]), [{ serviceId: connection.id, status }]);
     }
     assert.equal((await unrelated.manager.views([connection]))[0]?.status, "signed_in");
-    assert.equal(await fs.readFile(`${h.directory}/suno-session-${connection.id}.json`, "utf8"), before);
+    assert.equal(await readStoredText(h.directory, `${h.directory}/suno-session-${connection.id}.json`), before);
     assert.equal(h.calls.length, 2, "views do not perform another verification");
     h.fail(undefined);
     await h.manager.refresh(connection.id, h.signal);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { URL } from "node:url";
 
 import { AgentPartialCompletionError } from "../../../src/agent/loop.js";
 import { normalizeCodexSearchOutput } from "../../../src/model/oauth/codex-search-output.js";
@@ -2236,8 +2237,23 @@ test("an SSE send error restores once before the matching HTTP error arrives", a
   }
 });
 
-test("an SSE done settles its send before a late HTTP failure or command error", async () => {
-  const harness = await createDialogHarness();
+for (const paged of [false, true]) test(`an SSE done settles its send before a late HTTP failure or command error${paged ? " while reading a persisted receipt" : ""}`, async () => {
+  const state = stateFixture();
+  if (paged) state.eventHistory = { historyId: "history-terminal", total: 0, latestSequence: 0 };
+  const harness = await createDialogHarness(state);
+  const originalFetch = harness.window.fetch;
+  let receiptRequested = false;
+  let releaseReceipt = () => {};
+  const heldReceipt = new Promise<void>(resolve => { releaseReceipt = resolve; });
+  Object.defineProperty(harness.window, "fetch", { configurable: true, value: async (input: string, init?: RequestInit) => {
+    if (new URL(String(input)).pathname !== "/send-receipt") return originalFetch(input, init);
+    const body = JSON.parse(String(init?.body));
+    receiptRequested = true;
+    await heldReceipt;
+    return { ok: true, json: async () => ({ status: "accepted", event: {
+      id: "persisted-original-prompt", kind: "user", content: body.prompt, createdAt: "2026-11-01T00:00:00Z",
+    } }) };
+  } });
   try {
     harness.input("#prompt", "Completed through SSE");
     harness.holdNextSend();
@@ -2247,13 +2263,22 @@ test("an SSE done settles its send before a late HTTP failure or command error",
     const sendId = harness.sendIds[0];
     assert.ok(sendId);
 
+    const completed = cloneState(state);
+    if (paged) {
+      completed.eventHistory = { historyId: "history-terminal", total: 101, latestSequence: 101, nextBefore: 2 };
+      completed.events = Array.from({ length: 100 }, (_, index) => ({
+        id: `terminal-detail-${index}`, kind: "assistant", content: `Detail ${index}`, createdAt: "2026-11-01T00:00:00Z",
+      }));
+    }
     harness.emitServerEvent({
       type: "done",
       sendId,
       sessionId: "session-1",
-      state: cloneState(stateFixture()),
+      state: completed,
     });
+    if (paged) await waitForCondition(() => receiptRequested, "Expected an independent receipt read");
     harness.emitServerEvent({ type: "error", message: "Command failed separately." });
+    releaseReceipt();
     await harness.settle();
 
     assert.equal(harness.document.querySelector("#status")?.textContent, "Command failed separately.");
@@ -2271,6 +2296,7 @@ test("an SSE done settles its send before a late HTTP failure or command error",
     );
     assert.deepEqual(harness.errors, []);
   } finally {
+    releaseReceipt();
     harness.close();
   }
 });

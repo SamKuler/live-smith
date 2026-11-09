@@ -262,6 +262,7 @@
         });
         try {
           bridgeClient = factories.createBridgeClient({
+          hashFileContent: factories.hashFileContent,
             isPluginParameterPanel: factories.isPluginParameterPanel,
             isPluginConfigView: factories.isPluginConfigView,
             bridgeConfig,
@@ -481,6 +482,7 @@
           isMessageEditLocked: bridgeClient.isDraftEditLocked,
           hasSessionLocalWork: (sessionId) => bridgeClient.hasSessionLocalWork(sessionId) || creativeBriefEditor.hasDraft(sessionId),
           readSessionSearch: bridgeClient.readSessionSearch,
+          readSessionEvents: bridgeClient.readSessionEvents,
           isCommandInProgress: bridgeClient.isCommandInProgress,
           isSessionNavigationBlocked: bridgeClient.isSessionNavigationBlocked,
           isConfirmationLocked: bridgeClient.isConfirmationLocked,
@@ -1876,9 +1878,11 @@
         }
 
         bridgeClient.connectView({
+          getStatusPresentation: () => statusUnderlay,
           focusComposer: returnToChat,
           announceAssistantMessage: sessionTimeline.announceAssistantMessage,
           invalidateSessionSearch: sessionTimeline.invalidateSessionSearch,
+          getTimelineEvent: sessionTimeline.getTimelineEvent,
           invalidateParameterArtifacts,
           clearGlobalSettingsFieldError:
             profileEditor.clearGlobalSettingsFieldError,

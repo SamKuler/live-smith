@@ -107,7 +107,7 @@ export async function createRequestAudioTools(input: {
 
   const snapshot = async (source: AudioProcessingSource): Promise<AudioProcessingSnapshot> => {
     if (source.kind === "session_audio_attachment") {
-      const { attachment, bytes } = await readSessionAttachment(input.storageDirectory, input.sessionId, source.attachmentId, { signal: input.signal });
+      const { attachment, bytes } = await readSessionAttachment(input.storageDirectory, input.sessionId, source.attachmentId, { signal: input.signal, maxBytes: MAX_AUDIO_ASSET_BYTES });
       if (attachment.kind !== "audio") throw new Error("The Session attachment is not audio.");
       return { bytes, label: attachment.fileName, origin: { kind: "attachment" } };
     }
@@ -116,7 +116,7 @@ export async function createRequestAudioTools(input: {
       const ref = input.attachmentRefs[source.audioIndex];
       if (!ref) throw new Error("Audio attachment is unavailable in this request.");
       const bytes = await readSessionAttachmentBytes(input.storageDirectory, input.sessionId, ref.id, {
-        expectedRef: ref, signal: input.signal,
+        expectedRef: ref, signal: input.signal, maxBytes: MAX_AUDIO_ASSET_BYTES,
       });
       return { bytes, label: "Audio attachment", origin: { kind: "attachment" } };
     }

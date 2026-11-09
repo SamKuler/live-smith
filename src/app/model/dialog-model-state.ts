@@ -108,7 +108,7 @@ export function createDialogModelState(options: DialogModelStateOptions) {
   const oauthScopesUsed = new Map<string, OAuthProfileScope>();
   const pendingProfileOAuthLifecycleReconciliation =
     pendingProfileOAuthLifecycleForStorage(storageDirectory);
-  void prepareOAuthCredentialStoreForSavedProfiles(storageDirectory).catch(
+  const credentialPreparation = prepareOAuthCredentialStoreForSavedProfiles(storageDirectory).catch(
     () => undefined,
   );
   const modelBackendManager = createDialogModelBackends(storageDirectory, dependencies);
@@ -1126,6 +1126,7 @@ export function createDialogModelState(options: DialogModelStateOptions) {
       }
       backendCleanupError ??= error;
     }
+    await credentialPreparation;
     if (backendCleanupError !== undefined) throw backendCleanupError;
   }
   return {

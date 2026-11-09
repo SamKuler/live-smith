@@ -1,9 +1,6 @@
 import { Buffer, isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { platform } from "node:process";
 import { isDeepStrictEqual } from "node:util";
 
 import {
@@ -17,18 +14,12 @@ import { isArtifactRef, isArtifactVersion } from "../agent/artifact-contracts.js
 import { isAudioServiceModelId } from "../audio-services/model-id.js";
 import { isUiMessage } from "../i18n/ui-message.js";
 import { isAudioAttachmentInspection } from "../attachments/audio.js";
-import { copyAudioFileSafely } from "../live/audio-attachment-source.js";
-import { safeRegularFileOpenFlags } from "../live/safe-file-read.js";
 import { cloneJsonValue } from "../model/json-clone.js";
 import { builtInAudioToolIdentity } from "../plugins/builtins/index.js";
-import { createHostAbortController, throwIfAborted, waitForPromiseWithSignal } from "../runtime/host.js";
-import { isMissingFileError } from "./errors.js";
+import { throwIfAborted, yieldToHost } from "../runtime/host.js";
 import { createStorageId, isSafeStorageId, requireSafeStorageId } from "./id.js";
-import {
-  ensurePrivateDirectoryDurably, withStorageTransaction,
-  writeJsonAtomically, writeJsonAtomicallyCreateOnly,
-  type StorageTransactionContext,
-} from "./persistence.js";
+import { withStorageTransaction, type StorageTransactionContext } from "./persistence.js";
+import { listStoredEntries, openStoredRangeReader, storedEntry, storedTreeExists, writeStoredJson, STORAGE_CHUNK_BYTES } from "./sqlite.js";
 import { listSessions, persistTransientSessionInTransaction } from "./sessions.js";
 
 export const MAX_AUDIO_JOB_METADATA_BYTES = 32 * 1024;
@@ -37,8 +28,8 @@ export const audioAssetInspectionLimits = {
   maxBytes: MAX_AUDIO_ASSET_BYTES,
   maxDurationSeconds: MAX_AUDIO_ASSET_DURATION_SECONDS,
 };
-// Each job has one record and paired metadata/blob files for a source and its
-// outputs. Allow one temporary atomic-write copy per committed file.
+// Each job has one record and paired metadata/blob entries for its source and
+// outputs. Historical temporary entries remain included in the directory bound.
 const MAX_AUDIO_DIRECTORY_ENTRIES =
   MAX_AUDIO_SESSION_JOBS * (1 + (1 + MAX_AUDIO_JOB_OUTPUTS) * 2) * 2;
 const uploadStages: readonly SunoUploadReceipt["stage"][] = [
@@ -111,9 +102,7 @@ export async function createAudioJob(
       outputAssets: [],
     };
     assertAudioJsonSize(job, MAX_AUDIO_JOB_METADATA_BYTES);
-    await assertAudioDirectory(directory!);
-    await writeJsonAtomicallyCreateOnly(path.join(directory!.directory, `${job.id}.job.json`), job);
-    await assertAudioDirectory(directory!);
+    await writeStoredJson(storageDirectory, path.join(directory!.directory, `${job.id}.job.json`), job, { createOnly: true });
     return job;
   });
 }
@@ -184,9 +173,7 @@ export async function updateAudioJob(
     assertAudioJsonSize(job, MAX_AUDIO_JOB_METADATA_BYTES);
     const directory = (await bindAudioDirectory(storageDirectory, sessionId))!;
     await verifyJobAssets(directory, job);
-    await assertAudioDirectory(directory);
-    await writeJsonAtomically(path.join(directory.directory, `${jobId}.job.json`), job);
-    await assertAudioDirectory(directory);
+    await writeStoredJson(storageDirectory, path.join(directory.directory, `${jobId}.job.json`), job);
     return job;
   });
 }
@@ -425,7 +412,7 @@ function validDate(value: unknown): value is string {
     Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 }
 
-// Shared private-file and metadata boundary consumed by audio-assets.ts.
+// Shared stored-content and metadata boundary consumed by audio-assets.ts.
 export function requireAudioStorage(storageDirectory: string | undefined, sessionId: string): asserts storageDirectory is string {
   if (typeof storageDirectory !== "string" || !storageDirectory.trim()) {
     throw new AudioStorageError("Audio tools require persistent storage, which is unavailable.");
@@ -501,108 +488,61 @@ export async function readAudioAssetRecord(
 }
 
 export interface AudioDirectoryBinding {
+  storageDirectory: string;
   directory: string;
-  identities: { path: string; dev: number; ino: number }[];
 }
 
 export async function bindAudioDirectory(
   storageDirectory: string, sessionId: string, create = false,
 ): Promise<AudioDirectoryBinding | undefined> {
   requireAudioStorage(storageDirectory, sessionId);
-  const root = path.join(storageDirectory, "live-smith-audio");
-  const directory = path.join(root, sessionId);
-  const identities: AudioDirectoryBinding["identities"] = [];
-  for (const target of [root, directory]) {
-    let info;
-    try { info = await fs.lstat(target); } catch (error) {
-      if (!isMissingFileError(error)) throw new AudioStorageError();
-      if (!create) return undefined;
-      await ensurePrivateDirectoryDurably(target);
-      info = await fs.lstat(target);
-    }
-    if (info.isSymbolicLink() || !info.isDirectory()) throw new AudioStorageError();
-    if (platform !== "win32") await fs.chmod(target, 0o700);
-    identities.push({ path: target, dev: info.dev, ino: info.ino });
-  }
-  const binding = { directory, identities };
-  await assertAudioDirectory(binding);
-  return binding;
-}
-
-export async function assertAudioDirectory(binding: AudioDirectoryBinding): Promise<void> {
-  for (const expected of binding.identities) {
-    let actual;
-    try { actual = await fs.lstat(expected.path); } catch { throw new AudioStorageError(); }
-    if (!actual.isDirectory() || actual.isSymbolicLink() ||
-      actual.dev !== expected.dev || actual.ino !== expected.ino) throw new AudioStorageError();
-  }
+  const directory = path.resolve(storageDirectory, "live-smith-audio", sessionId);
+  if (!create && !await storedTreeExists(storageDirectory, directory)) return undefined;
+  return { storageDirectory, directory };
 }
 
 export async function audioDirectoryEntries(binding: AudioDirectoryBinding): Promise<string[]> {
-  await assertAudioDirectory(binding);
-  const names: string[] = [];
-  const directory = await fs.opendir(binding.directory);
-  for await (const entry of directory) {
-    if (names.length >= MAX_AUDIO_DIRECTORY_ENTRIES || !entry.isFile() || entry.isSymbolicLink()) throw new AudioStorageError();
-    names.push(entry.name);
-  }
-  await assertAudioDirectory(binding);
+  const entries = await listStoredEntries(binding.storageDirectory, binding.directory);
+  const prefix = path.relative(path.resolve(binding.storageDirectory), binding.directory).split(path.sep).join("/") + "/";
+  const names = entries.map(entry => entry.key.slice(prefix.length));
+  if (names.length > MAX_AUDIO_DIRECTORY_ENTRIES || names.some(name => !name || name.includes("/"))) throw new AudioStorageError();
   return names;
 }
 
 export async function readAudioJson(binding: AudioDirectoryBinding, name: string, maxBytes: number): Promise<unknown> {
-  await assertAudioDirectory(binding);
-  const target = path.join(binding.directory, name);
-  try { await fs.lstat(target); } catch (error) {
-    if (isMissingFileError(error)) return undefined;
-    throw new AudioStorageError();
-  }
+  if (!await storedEntry(binding.storageDirectory, path.join(binding.directory, name))) return undefined;
   const bytes = await readBoundedAudioFile(binding, name, maxBytes);
   if (!isUtf8(bytes)) throw new AudioStorageError();
   try { return JSON.parse(Buffer.from(bytes).toString("utf8")) as unknown; }
   catch { throw new AudioStorageError(); }
 }
 
-// File permission changes update ctime, even when the mode is unchanged. Keep
-// normalization and the complete snapshot read in one turn per inode, including
-// reads through path aliases. Only pending turns retain an entry, never bytes.
-const pendingAudioReads = new Map<string, Promise<void>>();
-
 export async function readBoundedAudioFile(
   binding: AudioDirectoryBinding, name: string, maxBytes: number, signal?: AbortSignal,
 ): Promise<Uint8Array> {
   try {
     throwIfAborted(signal);
-    await assertAudioDirectory(binding);
-    const target = path.join(binding.directory, name);
-    const before = await fs.lstat(target, { bigint: true });
-    if (!before.isFile() || before.isSymbolicLink()) throw new AudioStorageError();
-    const identity = `${before.dev}:${before.ino}`;
-    const previous = pendingAudioReads.get(identity) ?? Promise.resolve();
-    const read = previous.then(async () => {
-      throwIfAborted(signal);
-      await assertAudioDirectory(binding);
-      // Tighten the opened regular file, never a path that could now be a link.
-      if (platform !== "win32") {
-        const handle = await fs.open(target, safeRegularFileOpenFlags(constants));
-        try {
-          const opened = await handle.stat({ bigint: true });
-          if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) throw new AudioStorageError();
-          if ((opened.mode & 0o7777n) !== 0o600n) await handle.chmod(0o600);
-        } finally { await handle.close(); }
+    const reader = await openStoredRangeReader(binding.storageDirectory, path.join(binding.directory, name));
+    try {
+      if (reader.entry.byteLength < 1 || reader.entry.byteLength > maxBytes) throw new AudioStorageError();
+      const bytes = new Uint8Array(reader.entry.byteLength);
+      const hash = createHash("sha256");
+      for (let offset = 0; offset < bytes.length;) {
+        throwIfAborted(signal);
+        const chunk = await reader.readRange(offset, Math.min(STORAGE_CHUNK_BYTES, bytes.length - offset));
+        throwIfAborted(signal);
+        bytes.set(chunk, offset);
+        hash.update(chunk);
+        offset += chunk.length;
+        if (offset % (16 * STORAGE_CHUNK_BYTES) === 0) await yieldToHost(signal);
       }
-      const bytes = await copyAudioFileSafely(
-        target, signal ?? createHostAbortController().signal, maxBytes,
-      );
-      await assertAudioDirectory(binding);
+      throwIfAborted(signal);
+      // A final version check also covers mutation during the last yielded turn.
+      await reader.readRange(bytes.length, 0);
+      throwIfAborted(signal);
+      if (hash.digest("hex") !== reader.entry.sha256) throw new AudioStorageError();
       return bytes;
-    });
-    const complete = read.then(() => undefined, () => undefined);
-    pendingAudioReads.set(identity, complete);
-    void complete.then(() => {
-      if (pendingAudioReads.get(identity) === complete) pendingAudioReads.delete(identity);
-    });
-    return await waitForPromiseWithSignal(read, signal);
+    } finally { await reader.close(); }
   } catch {
     throwIfAborted(signal);
     throw new AudioStorageError();

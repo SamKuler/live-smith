@@ -89,7 +89,7 @@ async function ownUpload(context: AudioProcessingContext, initial: AudioJob, set
   const record = async (next: SunoUploadReceipt, patch: Parameters<typeof updateAudioJob>[3] = {}) => {
     const update = { upload: next, ...patch };
     try {
-      // Retry only this immutable local receipt, including an uncertain fsync.
+      // Retry only this immutable local receipt, including an uncertain storage commit.
       // A provider operation is never part of either commit attempt.
       try { job = await updateAudioJob(context.storageDirectory, context.sessionId, job.id, update); }
       catch { job = await updateAudioJob(context.storageDirectory, context.sessionId, job.id, update); }

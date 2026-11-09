@@ -1,3 +1,4 @@
+import { readStoredBytes, writeStoredBytes } from "../../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -100,9 +101,9 @@ test("asset byte tampering after binding is rejected before a project import", a
   const asset = await h.save();
   await addAudioAssetSampleSources(h.input, h.sources, [asset]);
   const blobPath = path.join(h.directory, "live-smith-audio", h.session.id, `${asset.id}.audio`);
-  const bytes = await fs.readFile(blobPath);
+  const bytes = await readStoredBytes(h.directory, blobPath);
   bytes[bytes.length - 1] = 127;
-  await fs.writeFile(blobPath, bytes);
+  await writeStoredBytes(h.directory, blobPath, bytes);
   await assert.rejects(prepareRequestAudioSampleSources(sourceBindings(...h.sources.values()), h.controller.signal));
   assert.equal(h.staged.length, 0);
 });

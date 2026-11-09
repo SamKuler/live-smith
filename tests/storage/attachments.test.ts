@@ -1,6 +1,7 @@
+import { writeStoredTestFile, setStoredTestLength } from "./support/stored-media-test-helpers.js";
+import { readStoredText, readStoredBytes, removeStoredEntry, listStoredChildren } from "../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -23,7 +24,6 @@ import { createHostAbortController } from "../../src/runtime/host.js";
 import {
   AttachmentPendingQuotaError,
   AttachmentNotFoundError,
-  AttachmentStorageAccessError,
   AttachmentStorageCorruptionError,
   AttachmentTooLargeError,
   deleteSessionAttachment,
@@ -135,117 +135,6 @@ function pendingAudioRef(id: string, byteLength: number) {
   };
 }
 
-async function permissionTestAttachment(t: test.TestContext, sessionId: string) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-permissions-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const stored = await saveSessionAttachment(directory, sessionId, {
-    fileName: "metadata.png",
-    bytes: pngBytes,
-  }, noPendingAttachmentRefs);
-  return {
-    directory,
-    metadataPath: path.join(
-      directory,
-      "live-smith-attachments",
-      sessionId,
-      `${stored.id}.json`,
-    ),
-  };
-}
-
-async function mockFileHandleChmod(
-  t: test.TestContext,
-  target: string,
-  implementation: (mode: number) => Promise<void>,
-): Promise<void> {
-  const handle = await fs.open(target, "r");
-  const prototype = Object.getPrototypeOf(handle) as {
-    chmod: (mode: number) => Promise<void>;
-  };
-  await handle.close();
-  t.mock.method(prototype, "chmod", implementation);
-}
-
-test("pending metadata at 0600 reads without FileHandle chmod", {
-  skip: process.platform === "win32",
-}, async (t) => {
-  const sessionId = "session-private-metadata";
-  const fixture = await permissionTestAttachment(t, sessionId);
-  await fs.chmod(fixture.metadataPath, 0o600);
-  await mockFileHandleChmod(t, fixture.metadataPath, async () => {
-    throw new Error("chmod unavailable");
-  });
-
-  assert.equal(
-    (await listPendingSessionAttachments(fixture.directory, sessionId, [])).length,
-    1,
-  );
-});
-
-test("pending metadata tightens permissive permissions before reading", {
-  skip: process.platform === "win32",
-}, async (t) => {
-  const sessionId = "session-permissive-metadata";
-  const fixture = await permissionTestAttachment(t, sessionId);
-  await fs.chmod(fixture.metadataPath, 0o644);
-
-  assert.equal(
-    (await listPendingSessionAttachments(fixture.directory, sessionId, [])).length,
-    1,
-  );
-  assert.equal((await fs.stat(fixture.metadataPath)).mode & 0o777, 0o600);
-});
-
-test("pending metadata fails closed when permissive permissions cannot tighten", {
-  skip: process.platform === "win32",
-}, async (t) => {
-  const sessionId = "session-permissive-chmod-failure";
-  const fixture = await permissionTestAttachment(t, sessionId);
-  await fs.chmod(fixture.metadataPath, 0o644);
-  await mockFileHandleChmod(t, fixture.metadataPath, async () => {
-    throw new Error("chmod unavailable");
-  });
-
-  await assert.rejects(
-    listPendingSessionAttachments(fixture.directory, sessionId, []),
-    (error: unknown) => error instanceof AttachmentStorageAccessError,
-  );
-});
-
-test("pending metadata rejects a chmod that reports success without tightening", {
-  skip: process.platform === "win32",
-}, async (t) => {
-  const sessionId = "session-permissive-chmod-noop";
-  const fixture = await permissionTestAttachment(t, sessionId);
-  await fs.chmod(fixture.metadataPath, 0o644);
-  await mockFileHandleChmod(t, fixture.metadataPath, async () => undefined);
-
-  await assert.rejects(
-    listPendingSessionAttachments(fixture.directory, sessionId, []),
-    (error: unknown) => error instanceof AttachmentStorageAccessError,
-  );
-  assert.equal((await fs.stat(fixture.metadataPath)).mode & 0o7777, 0o644);
-});
-
-test("pending metadata removes special permission bits", {
-  skip: process.platform === "win32",
-}, async (t) => {
-  const sessionId = "session-special-metadata-mode";
-  const fixture = await permissionTestAttachment(t, sessionId);
-  let tested = 0;
-  for (const mode of [0o1600, 0o2600, 0o4600]) {
-    await fs.chmod(fixture.metadataPath, mode);
-    if (((await fs.stat(fixture.metadataPath)).mode & 0o7777) !== mode) continue;
-    tested += 1;
-    assert.equal(
-      (await listPendingSessionAttachments(fixture.directory, sessionId, [])).length,
-      1,
-    );
-    assert.equal((await fs.stat(fixture.metadataPath)).mode & 0o7777, 0o600);
-  }
-  if (tested === 0) t.skip("The filesystem does not preserve special permission bits.");
-});
-
 test("session attachment uses the intrinsic Uint8Array brand across realms", async () => {
   const sessionId = `memory-cross-realm-${Date.now()}`;
   const foreignBytes = vm.runInNewContext(
@@ -327,22 +216,7 @@ test("session attachment stores private image bytes and immutable metadata", asy
     pngBytes,
   );
 
-  const sessionDirectory = path.join(
-    directory,
-    "live-smith-attachments",
-    "session-001",
-  );
-  if (process.platform !== "win32") {
-    assert.equal((await fs.stat(sessionDirectory)).mode & 0o777, 0o700);
-    assert.equal(
-      (await fs.stat(path.join(sessionDirectory, `${stored.id}.bin`))).mode & 0o777,
-      0o600,
-    );
-    assert.equal(
-      (await fs.stat(path.join(sessionDirectory, `${stored.id}.json`))).mode & 0o777,
-      0o600,
-    );
-  }
+
 });
 
 test("attachment image signature detects JPEG and WebP without trusting names", async () => {
@@ -437,17 +311,17 @@ test("audio metadata corruption and inspection mismatches fail closed on reload"
     sessionId,
     `${stored.id}.json`,
   );
-  const metadata = JSON.parse(await fs.readFile(metadataPath, "utf8")) as
+  const metadata = JSON.parse(await readStoredText(directory, metadataPath)) as
     Record<string, unknown>;
   metadata.durationSeconds = 2;
-  await fs.writeFile(metadataPath, JSON.stringify(metadata));
+  await writeStoredTestFile(directory, metadataPath, JSON.stringify(metadata));
   await assert.rejects(
     readSessionAttachmentBytes(directory, sessionId, stored.id),
     (error: unknown) => error instanceof AttachmentStorageCorruptionError,
   );
 
   delete metadata.durationSeconds;
-  await fs.writeFile(metadataPath, JSON.stringify(metadata));
+  await writeStoredTestFile(directory, metadataPath, JSON.stringify(metadata));
   await assert.rejects(
     listSessionAttachments(directory, sessionId),
     (error: unknown) => error instanceof AttachmentStorageCorruptionError,
@@ -578,23 +452,19 @@ test("attachment save rejects a non-byte proxy before copying caller bytes", asy
 test("pending attachment quotas are validated atomically from the pre-save snapshot", async () => {
   const exactSession = `memory-pending-exact-${Date.now()}`;
   const existingAudio = [
-    pendingAudioRef("attachment-pending-one", MAX_AUDIO_ATTACHMENT_BYTES),
-    pendingAudioRef("attachment-pending-two", MAX_PENDING_ATTACHMENT_BYTES - MAX_AUDIO_ATTACHMENT_BYTES - 15 * 1024 * 1024),
+    pendingAudioRef("attachment-pending-one", 2 * 1024 * 1024 * 1024),
+    pendingAudioRef("attachment-pending-two", 2 * 1024 * 1024 * 1024),
   ];
   const exactDocument = await saveSessionAttachment(undefined, exactSession, {
     fileName: "exact.pdf",
     bytes: pdfBytesAtSize(15 * 1024 * 1024),
   }, { preSavePendingAttachmentRefs: existingAudio });
-  assert.equal(
-    existingAudio.reduce((total, ref) => total + ref.byteLength, 0) +
-      exactDocument.byteLength,
-    MAX_PENDING_ATTACHMENT_BYTES,
-  );
+  assert.equal(exactDocument.byteLength, 15 * 1024 * 1024);
 
   await assert.rejects(
     saveSessionAttachment(undefined, `memory-pending-over-${Date.now()}`, {
-      fileName: "over.pdf",
-      bytes: pdfBytesAtSize(15 * 1024 * 1024 + 1),
+      fileName: "over.wav",
+      bytes: waveBytes(),
     }, { preSavePendingAttachmentRefs: existingAudio }),
     (error: unknown) => error instanceof AttachmentPendingQuotaError,
   );
@@ -640,7 +510,7 @@ test("pending attachment quotas are validated atomically from the pre-save snaps
   ownedPending[0]!.byteLength = MAX_PENDING_ATTACHMENT_BYTES;
   assert.equal((await ownedPendingSave).kind, "document");
 
-  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_BYTES, 256 * 1024 * 1024);
+  assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_BYTES, 4 * 1024 * 1024 * 1024);
   assert.equal(MAX_PENDING_AUDIO_ATTACHMENT_COUNT, 2);
   const exactAudio = await saveSessionAttachment(
     undefined,
@@ -719,11 +589,11 @@ test("legacy metadata without ordinals remains readable and sorts before new upl
     sessionId,
     `${legacy.id}.json`,
   );
-  const legacyMetadata = JSON.parse(await fs.readFile(metadataPath, "utf8")) as
+  const legacyMetadata = JSON.parse(await readStoredText(directory, metadataPath)) as
     Record<string, unknown>;
   delete legacyMetadata.ordinal;
   legacyMetadata.fileName = `e\u0301-${"界".repeat(70)}\u202E.png`;
-  await fs.writeFile(metadataPath, JSON.stringify(legacyMetadata));
+  await writeStoredTestFile(directory, metadataPath, JSON.stringify(legacyMetadata));
 
   const current = await saveSessionAttachment(directory, sessionId, {
     fileName: "current.png",
@@ -756,10 +626,10 @@ test("ordinal metadata rejects filenames that only the legacy schema permits", a
     sessionId,
     `${stored.id}.json`,
   );
-  const metadata = JSON.parse(await fs.readFile(metadataPath, "utf8")) as
+  const metadata = JSON.parse(await readStoredText(directory, metadataPath)) as
     Record<string, unknown>;
   metadata.fileName = "e\u0301.png";
-  await fs.writeFile(metadataPath, JSON.stringify(metadata));
+  await writeStoredTestFile(directory, metadataPath, JSON.stringify(metadata));
 
   await assert.rejects(
     listSessionAttachments(directory, sessionId),
@@ -827,7 +697,7 @@ test("document reads reject metadata media-type forgery and blob corruption", as
   );
   const metadataPath = path.join(sessionDirectory, `${stored.id}.json`);
   const forged = { ...stored, mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
-  await fs.writeFile(metadataPath, JSON.stringify(forged));
+  await writeStoredTestFile(directory, metadataPath, JSON.stringify(forged));
   await assert.rejects(
     readSessionAttachmentBytes(directory, "session-document-corrupt", stored.id),
     (error: unknown) => error instanceof AttachmentStorageCorruptionError,
@@ -851,7 +721,7 @@ test("pending attachment listing skips safely named consumed corruption but fail
     sessionId,
     `${consumed.id}.json`,
   );
-  await fs.writeFile(metadataPath, "{corrupt consumed metadata");
+  await writeStoredTestFile(directory, metadataPath, "{corrupt consumed metadata");
 
   assert.deepEqual(
     await listPendingSessionAttachments(directory, sessionId, [consumed.id]),
@@ -917,10 +787,7 @@ test("one verified attachment read ignores unrelated damaged files and reads its
     fileName: "sibling.png",
     bytes: jpegBytes,
   }, noPendingAttachmentRefs);
-  await fs.writeFile(
-    path.join(directory, "live-smith-attachments", sessionId, `${sibling.id}.json`),
-    "{broken metadata",
-  );
+  await writeStoredTestFile(directory, path.join(directory, "live-smith-attachments", sessionId, `${sibling.id}.json`), "{broken metadata");
   let reads = 0;
   const result = await readSessionAttachment(directory, sessionId, stored.id, {
     expectedRef: sessionAttachmentRefFromStored(stored),
@@ -954,17 +821,14 @@ test("verified attachment metadata remains bound to its exact Session", async (t
     fileName: "bound.png",
     bytes: pngBytes,
   }, noPendingAttachmentRefs);
-  await fs.writeFile(
-    path.join(directory, "live-smith-attachments", sessionId, `${stored.id}.json`),
-    JSON.stringify({ ...stored, sessionId: "other-session" }),
-  );
+  await writeStoredTestFile(directory, path.join(directory, "live-smith-attachments", sessionId, `${stored.id}.json`), JSON.stringify({ ...stored, sessionId: "other-session" }));
   await assert.rejects(
     readSessionAttachment(directory, sessionId, stored.id),
     AttachmentStorageCorruptionError,
   );
 });
 
-test("blob size corruption is rejected from handle stat before reading content", async () => {
+test("blob size corruption is rejected from the stored entry before reading content", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-blob-stat-"));
   const sessionId = "session-blob-stat";
   const stored = await saveSessionAttachment(directory, sessionId, {
@@ -977,7 +841,7 @@ test("blob size corruption is rejected from handle stat before reading content",
     sessionId,
     `${stored.id}.bin`,
   );
-  await fs.truncate(blobPath, MAX_DOCUMENT_ATTACHMENT_BYTES + 1);
+  await setStoredTestLength(directory, blobPath, MAX_DOCUMENT_ATTACHMENT_BYTES + 1);
   let readCalled = false;
 
   await assert.rejects(
@@ -1040,7 +904,7 @@ test("session attachment missing blobs and tampering are corruption", async () =
     "session-corrupt",
     `${stored.id}.bin`,
   );
-  await fs.writeFile(blob, new Uint8Array([0x89, 0x50]));
+  await writeStoredTestFile(directory, blob, new Uint8Array([0x89, 0x50]));
 
   await assert.rejects(
     readSessionAttachmentBytes(directory, "session-corrupt", stored.id),
@@ -1064,32 +928,6 @@ test("attachment image headers require bounded non-zero dimensions", async () =>
   );
 });
 
-test("attachment reads reject symbolic-link blobs without following them", {
-  skip: process.platform === "win32",
-}, async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-symlink-"));
-  const stored = await saveSessionAttachment(directory, "session-symlink", {
-    fileName: "image.png",
-    bytes: pngBytes,
-  }, noPendingAttachmentRefs);
-  const external = path.join(directory, "external.bin");
-  await fs.writeFile(external, pngBytes);
-  const blob = path.join(
-    directory,
-    "live-smith-attachments",
-    "session-symlink",
-    `${stored.id}.bin`,
-  );
-  await fs.unlink(blob);
-  await fs.symlink(external, blob);
-
-  await assert.rejects(
-    readSessionAttachmentBytes(directory, "session-symlink", stored.id),
-    (error: unknown) => error instanceof AttachmentStorageCorruptionError,
-  );
-  assert.deepEqual(await fs.readFile(external), Buffer.from(pngBytes));
-});
-
 test("corrupt and duplicate attachment metadata block reads", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-attachment-"));
   const stored = await saveSessionAttachment(directory, "session-metadata", {
@@ -1102,7 +940,7 @@ test("corrupt and duplicate attachment metadata block reads", async () => {
     "session-metadata",
   );
   const duplicateTarget = path.join(sessionDirectory, "attachment-duplicate.json");
-  await fs.writeFile(duplicateTarget, JSON.stringify(stored));
+  await writeStoredTestFile(directory, duplicateTarget, JSON.stringify(stored));
 
   await assert.rejects(
     listSessionAttachments(directory, "session-metadata"),
@@ -1148,7 +986,7 @@ test("attachment ID collisions and orphan blobs are never overwritten", async ()
   );
   const orphanPath = path.join(sessionDirectory, "attachment-orphan.bin");
   const orphanBytes = new Uint8Array([7, 7, 7]);
-  await fs.writeFile(orphanPath, orphanBytes);
+  await writeStoredTestFile(directory, orphanPath, orphanBytes);
   const candidates = [
     "attachment-collision",
     "attachment-orphan",
@@ -1169,124 +1007,7 @@ test("attachment ID collisions and orphan blobs are never overwritten", async ()
     await readSessionAttachmentBytes(directory, "session-collision", first.id),
     pngBytes,
   );
-  assert.deepEqual(await fs.readFile(orphanPath), Buffer.from(orphanBytes));
-});
-
-test("attachment writes reject a replaced Session directory before creating files", {
-  skip: process.platform === "win32",
-}, async () => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-attachment-parent-"),
-  );
-  const external = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-attachment-external-"),
-  );
-  const sessionId = "session-parent-identity";
-  await saveSessionAttachment(directory, sessionId, {
-    fileName: "first.png",
-    bytes: pngBytes,
-  }, noPendingAttachmentRefs);
-  const sessionDirectory = path.join(
-    directory,
-    "live-smith-attachments",
-    sessionId,
-  );
-  const displacedDirectory = path.join(
-    directory,
-    "displaced-session-attachments",
-  );
-  let replaced = false;
-
-  await assert.rejects(
-    saveSessionAttachment(directory, sessionId, {
-      fileName: "second.jpg",
-      bytes: jpegBytes,
-    }, {
-      createId: () => "attachment-second",
-      now: () => {
-        fsSync.renameSync(sessionDirectory, displacedDirectory);
-        fsSync.symlinkSync(external, sessionDirectory, "dir");
-        replaced = true;
-        return new Date("2026-08-10T00:00:00.000Z");
-      },
-      preSavePendingAttachmentRefs: [],
-    }),
-    (error: unknown) => error instanceof AttachmentStorageCorruptionError,
-  );
-  assert.equal(replaced, true);
-  assert.deepEqual(await fs.readdir(external), []);
-});
-
-test("attachment writes reject a replaced attachment root", {
-  skip: process.platform === "win32",
-}, async () => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-attachment-root-parent-"),
-  );
-  const external = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-attachment-root-external-"),
-  );
-  const sessionId = "session-root-identity";
-  await saveSessionAttachment(directory, sessionId, {
-    fileName: "first.png",
-    bytes: pngBytes,
-  }, noPendingAttachmentRefs);
-  const root = path.join(directory, "live-smith-attachments");
-  const displacedRoot = path.join(directory, "displaced-attachment-root");
-
-  await assert.rejects(
-    saveSessionAttachment(directory, sessionId, {
-      fileName: "second.jpg",
-      bytes: jpegBytes,
-    }, {
-      createId: () => "attachment-second",
-      now: () => {
-        fsSync.renameSync(root, displacedRoot);
-        fsSync.symlinkSync(external, root, "dir");
-        return new Date("2026-08-10T00:00:00.000Z");
-      },
-      preSavePendingAttachmentRefs: [],
-    }),
-    (error: unknown) => error instanceof AttachmentStorageCorruptionError,
-  );
-  assert.deepEqual(await fs.readdir(external), []);
-});
-
-test("attachment reads reject a replaced Session directory after handle access", {
-  skip: process.platform === "win32",
-}, async () => {
-  const directory = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-attachment-read-parent-"),
-  );
-  const external = await fs.mkdtemp(
-    path.join(os.tmpdir(), "live-smith-attachment-read-external-"),
-  );
-  const sessionId = "session-read-identity";
-  const stored = await saveSessionAttachment(directory, sessionId, {
-    fileName: "first.png",
-    bytes: pngBytes,
-  }, noPendingAttachmentRefs);
-  const sessionDirectory = path.join(
-    directory,
-    "live-smith-attachments",
-    sessionId,
-  );
-  const displacedDirectory = path.join(
-    directory,
-    "displaced-read-session-attachments",
-  );
-
-  await assert.rejects(
-    readSessionAttachmentBytes(directory, sessionId, stored.id, {
-      readFile: async (handle) => {
-        fsSync.renameSync(sessionDirectory, displacedDirectory);
-        fsSync.symlinkSync(external, sessionDirectory, "dir");
-        return handle.readFile();
-      },
-    }),
-    (error: unknown) => error instanceof AttachmentStorageCorruptionError,
-  );
-  assert.deepEqual(await fs.readdir(external), []);
+  assert.deepEqual(await readStoredBytes(directory, orphanPath), Buffer.from(orphanBytes));
 });
 
 test("attachment deletion is retryable after blob-first partial cleanup", async () => {
@@ -1300,9 +1021,9 @@ test("attachment deletion is retryable after blob-first partial cleanup", async 
     "live-smith-attachments",
     "session-delete-retry",
   );
-  await fs.unlink(path.join(sessionDirectory, `${stored.id}.bin`));
+  await removeStoredEntry(directory, path.join(sessionDirectory, `${stored.id}.bin`));
 
   await deleteSessionAttachment(directory, "session-delete-retry", stored.id);
 
-  assert.deepEqual(await fs.readdir(sessionDirectory), []);
+  assert.deepEqual(await listStoredChildren(directory, sessionDirectory), []);
 });

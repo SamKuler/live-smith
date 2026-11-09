@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { openVerifiedFileStream, type SessionFileExport } from "./file-export.js";
-import * as fs from "node:fs/promises";
+import { audioArtifactFileName, readStoredWaveform, openVerifiedStoredStream, type SessionFileExport } from "./file-export.js";
 import * as path from "node:path";
 import { isDeepStrictEqual, types } from "node:util";
 
@@ -14,14 +13,11 @@ import { listPluginAudioArtifactRecords } from "./audio-artifacts.js";
 import { storedSessionAudioBytes } from "./audio-storage-budget.js";
 import { cloneJsonValue } from "../model/json-clone.js";
 import { throwIfAborted } from "../runtime/host.js";
-import { isMissingFileError } from "./errors.js";
 import { isSafeStorageId, requireSafeStorageId } from "./id.js";
+import { withStorageTransaction } from "./persistence.js";
+import { listStoredChildren, storedEntry, removeStoredTree, writeStoredBytes, writeStoredJson } from "./sqlite.js";
 import {
-  removeDirectoryDurably, withStorageTransaction,
-  writeBytesAtomicallyCreateOnly, writeJsonAtomicallyCreateOnly,
-} from "./persistence.js";
-import {
-  AudioStorageError, MAX_AUDIO_ASSET_METADATA_BYTES, assertAudioDirectory,
+  AudioStorageError, MAX_AUDIO_ASSET_METADATA_BYTES,
   assertAudioJsonSize, audioAssetId, audioAssetInspectionLimits,
   audioDirectoryEntries, audioJobOwnsAssetRole, audioRecordHasOnly, bindAudioDirectory, isAudioAsset,
   listAudioJobs, loadAudioJob, readAudioAssetRecord, readBoundedAudioFile,
@@ -91,14 +87,11 @@ export async function saveAudioAsset(
       throw new AudioStorageError("This Session has reached its 1 GiB audio storage limit.");
     }
     throwIfAborted(signal);
-    await assertAudioDirectory(directory);
     // Commit the immutable recovery receipt first. A crash after the blob commit
     // can then recover without a provider response or another paid request.
     // A receipt without its complete blob is never listed as an available asset.
-    if (!existing) await writeJsonAtomicallyCreateOnly(path.join(directory.directory, `${asset.id}.asset.json`), asset);
-    await assertAudioDirectory(directory);
-    if (!blobExists) await writeBytesAtomicallyCreateOnly(path.join(directory.directory, `${asset.id}.audio`), bytes);
-    await assertAudioDirectory(directory);
+    if (!existing) await writeStoredJson(storageDirectory, path.join(directory.directory, `${asset.id}.asset.json`), asset, { createOnly: true });
+    if (!blobExists) await writeStoredBytes(storageDirectory, path.join(directory.directory, `${asset.id}.audio`), bytes, { createOnly: true, storage: "file" });
     return asset;
   });
 }
@@ -106,7 +99,7 @@ export async function saveAudioAsset(
 /**
  * Called while the app owns the complete same-Session send/command fence. The
  * checked budget therefore cannot be consumed by another supported Session
- * operation before this request saves its results. File writes recheck quota.
+ * operation before this request saves its results. Asset writes recheck quota.
  */
 export async function assertAudioOutputCapacity(
   storageDirectory: string | undefined, sessionId: string, outputCount: number,
@@ -161,14 +154,23 @@ export async function audioAssetExport(storageDirectory: string, sessionId: stri
   await requireAudioSession(storageDirectory, sessionId);
   const directory = await bindAudioDirectory(storageDirectory, sessionId);
   if (!directory || !isDeepStrictEqual(await readAudioAssetRecord(directory, sessionId, expected.id), expected)) throw new AudioStorageError();
-  return { fileName: expected.label, mediaType: expected.mediaType, byteLength: expected.byteLength,
-    open: signal => openVerifiedFileStream({ path: path.join(directory.directory, `${expected.id}.audio`), byteLength: expected.byteLength, sha256: expected.sha256, signal,
+  return { fileName: audioArtifactFileName(expected), mediaType: expected.mediaType, byteLength: expected.byteLength,
+    open: (signal, range) => openVerifiedStoredStream({ storageDirectory, ...(range ? { range } : {}), key: path.join(directory.directory, `${expected.id}.audio`), byteLength: expected.byteLength, sha256: expected.sha256, signal,
       assertCurrent: async () => {
-        await assertAudioDirectory(directory);
         if (!audioJobOwnsAssetRole(await loadAudioJob(storageDirectory, sessionId, expected.jobId), expected.role) ||
           !isDeepStrictEqual(await readAudioAssetRecord(directory, sessionId, expected.id), expected)) throw new AudioStorageError();
       } }),
   };
+}
+
+export async function audioAssetWaveform(storageDirectory: string, sessionId: string, expected: AudioAsset, signal?: AbortSignal) {
+  const file = await audioAssetExport(storageDirectory, sessionId, expected);
+  if (file.mediaType !== "audio/wav") return undefined;
+  return readStoredWaveform({ storageDirectory,
+    key: path.resolve(storageDirectory, "live-smith-audio", sessionId, `${expected.id}.audio`),
+    byteLength: expected.byteLength, sha256: expected.sha256, ...(signal ? { signal } : {}),
+    assertCurrent: async () => { await audioAssetExport(storageDirectory, sessionId, expected); },
+  });
 }
 
 export async function listAudioAssets(
@@ -216,11 +218,9 @@ async function listAssetsForJobs(
 }
 
 async function hasAudioBlob(directory: AudioDirectoryBinding, asset: AudioAsset): Promise<boolean> {
-  let info;
-  try { info = await fs.lstat(path.join(directory.directory, `${asset.id}.audio`)); }
-  catch (error) { if (isMissingFileError(error)) return false; throw new AudioStorageError(); }
-  if (!info.isFile() || info.isSymbolicLink() || info.size !== asset.byteLength) throw new AudioStorageError();
-  await assertAudioDirectory(directory);
+  const info = await storedEntry(directory.storageDirectory, path.join(directory.directory, `${asset.id}.audio`));
+  if (!info) return false;
+  if (info.byteLength !== asset.byteLength) throw new AudioStorageError();
   return true;
 }
 
@@ -231,30 +231,16 @@ export async function deleteSessionAudio(storageDirectory: string | undefined, s
   await withStorageTransaction(storageDirectory, async () => {
     const directory = await bindAudioDirectory(storageDirectory, sessionId);
     if (!directory) return;
-    await assertAudioDirectory(directory);
-    await removeDirectoryDurably(directory.directory);
+    await removeStoredTree(storageDirectory, directory.directory);
   });
 }
 
 export async function listSessionAudioDirectoryIds(storageDirectory: string | undefined): Promise<string[]> {
   if (storageDirectory === undefined) return [];
   requireAudioStorage(storageDirectory, "startup");
-  const root = path.join(storageDirectory, "live-smith-audio");
-  let before;
-  try { before = await fs.lstat(root); } catch (error) {
-    if (isMissingFileError(error)) return [];
-    throw new AudioStorageError();
-  }
-  if (!before.isDirectory() || before.isSymbolicLink()) throw new AudioStorageError();
-  const ids: string[] = [];
-  const directory = await fs.opendir(root);
-  for await (const entry of directory) {
-    if (!entry.isDirectory() || entry.isSymbolicLink() || !isSafeStorageId(entry.name)) throw new AudioStorageError();
-    ids.push(entry.name);
-  }
-  const after = await fs.lstat(root);
-  if (!after.isDirectory() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) throw new AudioStorageError();
-  return ids.sort();
+  const ids = await listStoredChildren(storageDirectory, "live-smith-audio");
+  if (ids.some(id => !isSafeStorageId(id))) throw new AudioStorageError();
+  return ids;
 }
 
 async function readVerifiedBytes(directory: AudioDirectoryBinding, asset: AudioAsset, signal?: AbortSignal): Promise<Uint8Array> {
@@ -294,14 +280,12 @@ async function storedAudioBytes(directory: AudioDirectoryBinding): Promise<numbe
     if (isTemporary
       ? !isSafeStorageId(temporaryId) || temporaryId.length <= 4
       : !isSafeStorageId(name.slice(0, -6))) throw new AudioStorageError();
-    const info = await fs.lstat(path.join(directory.directory, name));
+    const info = await storedEntry(directory.storageDirectory, path.join(directory.directory, name));
     // A crash after opening the atomic temporary file can leave it empty.
     // Committed blobs must still contain audio, including metadata-less blobs.
-    if (!info.isFile() || info.isSymbolicLink() ||
-      info.size < (isTemporary ? 0 : 1) || info.size > MAX_AUDIO_ASSET_BYTES) throw new AudioStorageError();
-    bytes += info.size;
+    if (!info || info.byteLength < (isTemporary ? 0 : 1) || info.byteLength > MAX_AUDIO_ASSET_BYTES) throw new AudioStorageError();
+    bytes += info.byteLength;
   }
-  await assertAudioDirectory(directory);
   return bytes;
 }
 

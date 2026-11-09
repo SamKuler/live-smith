@@ -1,12 +1,16 @@
+import { join } from "node:path";
+import { attachmentMutationFence } from "../../../src/app/session/session-fences.js";
+import { sessionMutationFenceKey } from "../../../src/app/session/session-mutation-fence.js";
+import { interceptStoredWrites } from "../../storage/support/sqlite-fault-test-helpers.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { mkdtemp, rm, open, type FileHandle } from "node:fs/promises";
-import { fstatSync } from "node:fs";
-import { createServer } from "node:net";
+import { mkdtemp, rm, readdir, stat } from "node:fs/promises";
+import { createServer, connect } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { URL } from "node:url";
 import test from "node:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { readMcpResourceBytes } from "../../../src/app/mcp/resources.js";
 import { createMcpService } from "../../../src/app/mcp/service.js";
 import { LiveMutationQueue } from "../../../src/app/live-mutation-queue.js";
 import { saveGlobalSettings } from "../../../src/storage/settings.js";
@@ -24,7 +28,7 @@ import { waitForPromiseWithSignal } from "../../../src/runtime/host.js";
 import { invalidateGlobalState, invalidateSessionState, subscribeSessionStateInvalidations } from "../../../src/app/session/session-state-events.js";
 import { sessionNativeTools } from "../../../src/app/tools/tool-runtime.js";
 import { readDeviceParameterArtifact } from "../../../src/storage/device-parameter-artifacts.js";
-import { bindAudioDirectory, updateAudioJob } from "../../../src/storage/audio-jobs.js";
+import { updateAudioJob } from "../../../src/storage/audio-jobs.js";
 import { isStorageCommitOutcomeUnknownError } from "../../../src/storage/persistence.js";
 import { createSessionAudioJob } from "../../../src/app/audio/audio-job-runtime.js";
 import { saveAudioAsset } from "../../../src/storage/audio-assets.js";
@@ -117,6 +121,7 @@ test("MCP upload, resource download and Session audio locators preserve file iso
   const descriptor = (await h.client.readResource({ uri: uploaded.resource })).contents[0]!;
   assert("text" in descriptor);
   assert.equal(JSON.parse(descriptor.text).byteLength, uploadedBytes.byteLength);
+  await assert.rejects(readMcpResourceBytes(h.directory, h.grant.client, uploaded.resource, createHostAbortController().signal), /inline response limit/);
   const sources = new Map();
   await addSessionAudioSampleSources({ context: h.context, storageDirectory: h.directory, sessionId: h.grant.client.sessionId, signal: createHostAbortController().signal }, sources, [uploaded.attachment.id]);
   const source = resolveSampleSource(h.context, { kind: "session_audio_attachment", attachmentId: uploaded.attachment.id }, {}, sources);
@@ -371,21 +376,13 @@ test("first saved audio job adds recovery tools; subsequent jobs and updates kee
 test("an uncertain first audio-job commit still invalidates the cached recovery tools", async t => {
   const h = await setup(t);
   assert(!(await h.client.listTools()).tools.some(tool => tool.name === "list_audio_jobs"));
-  const directory = (await bindAudioDirectory(h.directory, h.grant.client.sessionId, true))!;
-  const probe = await open(directory.directory, "r");
-  const identity = await probe.stat();
-  const prototype = Object.getPrototypeOf(probe) as FileHandle;
-  const sync = prototype.sync;
-  await probe.close();
   let failed = false;
-  t.mock.method(prototype, "sync", async function (this: FileHandle) {
-    const current = fstatSync(this.fd);
-    if (!failed && current.dev === identity.dev && current.ino === identity.ino) {
+  interceptStoredWrites(t, { afterCommit: writes => {
+    if (!failed && writes.some(write => write.key.endsWith(".job.json"))) {
       failed = true;
-      throw new Error("Injected audio directory durability failure");
+      throw new Error("Injected audio job commit acknowledgement failure");
     }
-    return sync.call(this);
-  });
+  } });
   await assert.rejects(createSessionAudioJob(h.directory, h.grant.client.sessionId, generationJobCases[0]!.input), isStorageCommitOutcomeUnknownError);
   assert(failed);
   assert((await h.client.listTools()).tools.some(tool => tool.name === "list_audio_jobs"));
@@ -400,4 +397,43 @@ test("cached catalogs still require an active bound Session", async t => {
   assert.deepEqual(await h.client.listTools(), initial);
   await deleteSession(h.directory, h.grant.client.sessionId);
   await assert.rejects(h.client.listTools());
+});
+
+
+test("MCP partial uploads release the Session fence and revalidate ownership before publication", async t => {
+  const h = await setup(t);
+  const url = new URL(h.grant.url);
+  const bytes = waveBytes(); const partialLength = Math.floor(bytes.byteLength/2);
+  const socket = connect(Number(url.port),url.hostname);
+  const chunks: Buffer[] = [];
+  socket.on("data",chunk => chunks.push(chunk));
+  const closed = new Promise<void>((resolve,reject) => {socket.once("end",resolve);socket.once("error",reject);});
+  try {
+    await new Promise<void>((resolve,reject) => {socket.once("connect",resolve);socket.once("error",reject);});
+    socket.write(["POST /attachments HTTP/1.1",`Host: ${url.host}`,`Authorization: Bearer ${h.grant.token}`,
+      "Content-Type: application/octet-stream","X-Live-Smith-Filename: partial.wav",`Content-Length: ${bytes.byteLength}`,
+      "Connection: close","",""].join("\r\n"));
+    socket.write(bytes.subarray(0,partialLength));
+    const mediaDirectory = join(h.directory,"live-smith-media");
+    let observed = false;
+    for(let attempt=0;attempt<200;attempt++) {
+      const names = await readdir(mediaDirectory).catch(() => [] as string[]);
+      for(const name of names.filter(name => name.startsWith(".staging-"))) {
+        if ((await stat(join(mediaDirectory,name))).size === partialLength) observed = true;
+      }
+      if(observed) break;
+      await delay(10);
+    }
+    assert.ok(observed,"The partial body must reach staging before Session deletion.");
+    const controller = createHostAbortController();
+    const deletion = attachmentMutationFence.run(sessionMutationFenceKey(h.directory,h.grant.client.sessionId),controller.signal,
+      () => deleteSession(h.directory,h.grant.client.sessionId));
+    const timer = setTimeout(() => controller.abort(),2000);
+    try { await deletion; } finally { clearTimeout(timer); }
+    socket.write(bytes.subarray(partialLength));
+    await closed;
+    assert.match(Buffer.concat(chunks).toString("utf8").split("\r\n",1)[0]!,/^HTTP\/1\.1 400 /);
+    assert.deepEqual((await readdir(mediaDirectory)).filter(name => name.startsWith(".staging-")),[]);
+    assert.deepEqual(await listPendingSessionAttachments(h.directory,h.grant.client.sessionId,[]),[]);
+  } finally {socket.destroy();}
 });

@@ -1,3 +1,5 @@
+import { writeStoredBytes, readStoredText } from "../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -151,17 +153,14 @@ test("loadAgentSettings starts empty and rejects every legacy or invalid setting
     },
   ];
   for (const legacy of legacyShapes) {
-    await fs.writeFile(
-      path.join(directory, "live-smith-settings.json"),
-      JSON.stringify(legacy),
-    );
+    await writeStoredBytes(directory, path.join(directory, "live-smith-settings.json"), Buffer.from(JSON.stringify(legacy)));
     await assert.rejects(
       loadAgentSettings(directory),
       (error: unknown) => error instanceof AgentSettingsCorruptionError,
     );
   }
 
-  await fs.writeFile(path.join(directory, "live-smith-settings.json"), "{invalid");
+  await writeStoredBytes(directory, path.join(directory, "live-smith-settings.json"), Buffer.from("{invalid"));
   await assert.rejects(
     loadAgentSettings(directory),
     (error: unknown) => error instanceof AgentSettingsCorruptionError,
@@ -204,7 +203,7 @@ test("schema version 1 auto approval migrates to the equivalent approval mode", 
       profiles: [completeProfile],
       autoApprove,
     }, null, 2);
-    await fs.writeFile(settingsPath, original);
+    await writeStoredBytes(directory, settingsPath, Buffer.from(original));
     const loaded = await loadAgentSettings(directory);
     assert.equal(loaded.schemaVersion, 10);
     assert.equal(loaded.approvalMode, approvalMode);
@@ -231,7 +230,7 @@ test("schema version 1 auto approval migrates to the equivalent approval mode", 
         advanced: completeProfile.advanced,
       }],
     }]);
-    assert.equal(await fs.readFile(settingsPath, "utf8"), original);
+    assert.equal(await readStoredText(directory, settingsPath), original);
   }
 });
 
@@ -244,7 +243,7 @@ test("schema version 2 settings migrate to queued follow-ups without rewriting o
     profiles: [legacyProfile(profile())],
     approvalMode: "everything",
   }, null, 2);
-  await fs.writeFile(settingsPath, original);
+  await writeStoredBytes(directory, settingsPath, Buffer.from(original));
 
   const loaded = await loadAgentSettings(directory);
   assert.equal(loaded.schemaVersion, 10);
@@ -257,7 +256,7 @@ test("schema version 2 settings migrate to queued follow-ups without rewriting o
   assert.equal(loaded.approvalMode, "everything");
   assert.equal(loaded.activeProfileId, "profile-1");
   assert.equal(loaded.profiles[0]?.connection.kind, "direct-api");
-  assert.equal(await fs.readFile(settingsPath, "utf8"), original);
+  assert.equal(await readStoredText(directory, settingsPath), original);
 
   const saved = await saveGlobalSettings(directory, {
     defaultFollowUpBehavior: "steer",
@@ -271,7 +270,7 @@ test("schema version 2 settings migrate to queued follow-ups without rewriting o
   assert.equal(saved.activeProfileId, "profile-1");
   assert.equal(saved.profiles.length, 1);
   assert.deepEqual(
-    JSON.parse(await fs.readFile(settingsPath, "utf8")),
+    JSON.parse(await readStoredText(directory, settingsPath)),
     saved,
   );
 });
@@ -464,7 +463,7 @@ test("both historical schema-v3 shapes migrate losslessly without rewriting on r
     );
     const settingsPath = path.join(directory, "live-smith-settings.json");
     const original = JSON.stringify(migrationCase.source, null, 2);
-    await fs.writeFile(settingsPath, original);
+    await writeStoredBytes(directory, settingsPath, Buffer.from(original));
 
     const loaded = await loadAgentSettings(directory);
     assert.equal(loaded.schemaVersion, 10);
@@ -483,7 +482,7 @@ test("both historical schema-v3 shapes migrate losslessly without rewriting on r
         baseUrl: "https://example.test/v1",
       },
     }]);
-    assert.equal(await fs.readFile(settingsPath, "utf8"), original);
+    assert.equal(await readStoredText(directory, settingsPath), original);
   }
 });
 
@@ -895,17 +894,17 @@ test("the next authorized settings write omits a legacy subscription output limi
     defaultFollowUpBehaviorRevision: "0",
   } as const;
   const original = JSON.stringify(stored, null, 2);
-  await fs.writeFile(target, original);
+  await writeStoredBytes(directory, target, Buffer.from(original));
 
   assert.equal(
     (await loadAgentSettings(directory)).profiles[0]?.models[0]?.parameters
       .maxOutputTokens,
     undefined,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(directory, target), original);
 
   await saveGlobalSettings(directory, { defaultFollowUpBehavior: "steer" });
-  const persisted = JSON.parse(await fs.readFile(target, "utf8")) as {
+  const persisted = JSON.parse(await readStoredText(directory, target)) as {
     profiles: Array<{
       models: Array<{ parameters: Record<string, unknown> }>;
     }>;
@@ -930,13 +929,13 @@ test("settings mutations preserve the original bytes when one stored Profile is 
     ],
     autoApprove: false,
   }, null, 2);
-  await fs.writeFile(settingsPath, original);
+  await writeStoredBytes(directory, settingsPath, Buffer.from(original));
 
   await assert.rejects(
     saveGlobalSettings(directory, { defaultFollowUpBehavior: "steer" }),
     (error: unknown) => error instanceof AgentSettingsCorruptionError,
   );
-  assert.equal(await fs.readFile(settingsPath, "utf8"), original);
+  assert.equal(await readStoredText(directory, settingsPath), original);
   assert.match(original, /"apiKey": "secret"/);
 });
 
@@ -971,7 +970,7 @@ test("saveSavedProfile normalizes, persists, and activates the complete profile"
     180_000,
   );
   const persisted = JSON.parse(
-    await fs.readFile(path.join(directory, "live-smith-settings.json"), "utf8"),
+    await readStoredText(directory, path.join(directory, "live-smith-settings.json")),
   ) as Record<string, unknown>;
   assert.deepEqual(Object.keys(persisted).sort(), [
     "activeProfileId",
@@ -1252,7 +1251,7 @@ test("per-field global settings revisions increment beyond Number.MAX_SAFE_INTEG
     path.join(os.tmpdir(), "live-smith-settings-large-revision-"),
   );
   const settingsPath = path.join(directory, "live-smith-settings.json");
-  await fs.writeFile(settingsPath, JSON.stringify({
+  await writeStoredBytes(directory, settingsPath, Buffer.from(JSON.stringify({
     schemaVersion: 7,
     activeProfileId: null,
     profiles: [],
@@ -1261,7 +1260,7 @@ test("per-field global settings revisions increment beyond Number.MAX_SAFE_INTEG
     defaultFollowUpBehaviorRevision: "9007199254740991",
     showContextUsage: true,
     contextUsageVisibilityRevision: "9007199254740991",
-  }));
+  })));
 
   const first = await saveGlobalSettings(directory, {
     showContextUsage: false,

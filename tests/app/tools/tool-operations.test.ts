@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import test from "node:test";
 import { ToolOperations } from "../../../src/app/tools/tool-operations.js";
 import { createSession } from "../../../src/storage/sessions.js";
-import { loadSessionEvents } from "../../../src/storage/events.js";
+import { appendSessionEvent, loadSessionEvents } from "../../../src/storage/events.js";
+import { withStorageDatabase } from "../../../src/storage/sqlite.js";
 import { withStorageTransaction } from "../../../src/storage/persistence.js";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { uiMessage } from "../../../src/i18n/ui-message.js";
@@ -93,4 +94,32 @@ test("operation progress retains translation descriptors and MCP projects plain 
   const finished = await new ToolOperations(h.storageDirectory).read(h.session.id, operation.id);
   assert.deepEqual(finished.progress, uiMessage("Completed"));
   assert.equal(finished.result!.content, "Original tool result");
+});
+
+
+test("operation recovery reads only indexed operation records and keeps first-appearance ordering", async t => {
+  const h = await fixture(t);
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  const active = await h.operations.start(h.session.id, h.actor, "active", async () => { await gate; return { content: "done", failed: false }; });
+  try {
+    for (let i = 0; i < 25; i++) await appendSessionEvent(h.storageDirectory, h.session.id, { kind: "operation", content: "started", operation: {
+      id: `operation-${i}`, actor: h.actor, toolName: "inspect", status: "running", progress: uiMessage("Starting tool") } });
+    await appendSessionEvent(h.storageDirectory, h.session.id, { kind: "operation", content: "done", operation: {
+      id: "operation-0", actor: h.actor, toolName: "inspect", status: "completed", progress: uiMessage("Completed"), result: { content: "older result", failed: false } } });
+    for (let i = 0; i < 120; i++) await appendSessionEvent(h.storageDirectory, h.session.id, { kind: "user", content: `message ${i}` });
+    const plan = await withStorageDatabase(h.storageDirectory, db => {
+      const detail = db.prepare("EXPLAIN QUERY PLAN SELECT MAX(seq) FROM session_event_records WHERE session_id=? AND kind='operation' AND json_extract(payload,'$.operation.id')=?").all(h.session.id, "operation-0");
+      const listPlan = db.prepare("EXPLAIN QUERY PLAN SELECT json_extract(payload,'$.operation.id'), MIN(seq), MAX(seq) FROM session_event_records WHERE session_id=? AND kind='operation' GROUP BY json_extract(payload,'$.operation.id')").all(h.session.id);
+      db.prepare("UPDATE session_event_records SET payload='not JSON' WHERE session_id=? AND kind='user'").run(h.session.id);
+      return [detail, listPlan].map(rows => rows.map(row => String(row.detail)).join(" "));
+    });
+    assert.match(plan[0]!, /session_event_operation_order/);
+    assert.match(plan[1]!, /session_event_operation_order/);
+    const list = await h.operations.list(h.session.id);
+    assert.deepEqual(list.map(item => item.id), Array.from({ length: 20 }, (_, i) => `operation-${24 - i}`));
+    assert.equal(list[0]!.status, "interrupted");
+    const recovered = await new ToolOperations(h.storageDirectory).read(h.session.id, "operation-0");
+    assert.equal(recovered.status, "completed"); assert.equal(recovered.result?.content, "older result");
+    assert.equal((await h.operations.read(h.session.id, active.id)).status, "running");
+  } finally { release(); await h.operations.wait(active.id); }
 });

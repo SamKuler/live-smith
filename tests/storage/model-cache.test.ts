@@ -1,3 +1,5 @@
+import { readStoredText, writeStoredBytes, listStoredChildren } from "../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
@@ -99,12 +101,12 @@ test("model cache is connection-fingerprint scoped without exposing identity", a
     profile({ id: active.id, apiKey: "changed" }),
   ), []);
 
-  const files = await fs.readdir(directory);
+  const files = await listStoredChildren(directory);
   assert.equal(files.some((file) => file.includes("secret-key")), false);
   assert.equal(files.some((file) => file.includes("profile_unsafe")), false);
   assert.match(files[0]!, /^live-smith-models-v2-[a-f0-9]{64}\.json$/);
   const persisted = JSON.parse(
-    await fs.readFile(path.join(directory, files[0]!), "utf8"),
+    await readStoredText(directory, path.join(directory, files[0]!)),
   ) as Record<string, unknown>;
   assert.equal(persisted.schemaVersion, 1);
 });
@@ -117,7 +119,7 @@ test("model cache bounds its filename even for a defensively invalid long Profil
   await saveModelCache(directory, active, models);
   assert.deepEqual(await loadModelCache(directory, active), models);
 
-  const files = await fs.readdir(directory);
+  const files = await listStoredChildren(directory);
   assert.equal(files.length, 1);
   assert.ok(files[0]!.length < 128);
 });
@@ -126,7 +128,7 @@ test("model cache rejects pre-raw-format entries even when the fingerprint match
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-models-"));
   const active = profile({ id: "legacy-cache" });
   await saveModelCache(directory, active, []);
-  const [file] = await fs.readdir(directory);
+  const [file] = await listStoredChildren(directory);
   assert.ok(file);
   const staleEffectiveModels = [{
     id: "model-a",
@@ -144,13 +146,10 @@ test("model cache rejects pre-raw-format entries even when the fingerprint match
       },
     },
   }];
-  await fs.writeFile(
-    path.join(directory, file),
-    JSON.stringify({
+  await writeStoredBytes(directory, path.join(directory, file), Buffer.from(JSON.stringify({
       fingerprint: connectionFingerprint(active),
       models: staleEffectiveModels,
-    }),
-  );
+    })));
 
   assert.deepEqual(await loadModelCache(directory, active), []);
 });
@@ -159,7 +158,7 @@ test("model cache rejects every structurally invalid derived cache shape", async
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-models-"));
   const active = profile({ id: "corrupt-cache" });
   await saveModelCache(directory, active, []);
-  const [file] = await fs.readdir(directory);
+  const [file] = await listStoredChildren(directory);
   assert.ok(file);
   const fingerprint = connectionFingerprint(active);
   const validModel = {
@@ -260,7 +259,7 @@ test("model cache rejects every structurally invalid derived cache shape", async
   ];
 
   for (const entry of invalidEntries) {
-    await fs.writeFile(path.join(directory, file), JSON.stringify(entry));
+    await writeStoredBytes(directory, path.join(directory, file), Buffer.from(JSON.stringify(entry)));
     assert.deepEqual(await loadModelCache(directory, active), []);
   }
 });
@@ -318,7 +317,7 @@ test("different connections of one Profile keep independent persistent caches", 
 
   assert.deepEqual(await loadModelCache(directory, connectionA), modelsA);
   assert.deepEqual(await loadModelCache(directory, connectionB), modelsB);
-  assert.equal((await fs.readdir(directory)).length, 2);
+  assert.equal((await listStoredChildren(directory)).length, 2);
 
   await saveModelCache(directory, connectionA, []);
   assert.deepEqual(await loadModelCache(directory, connectionA), []);
@@ -361,11 +360,11 @@ test("model cache reads an exact legacy slot only while its v2 slot is absent", 
     directory,
     `live-smith-models-${active.id}-${idHash}.json`,
   );
-  await fs.writeFile(legacyPath, JSON.stringify({
+  await writeStoredBytes(directory, legacyPath, Buffer.from(JSON.stringify({
     schemaVersion: 1,
     fingerprint: connectionFingerprint(active),
     models: legacyModels,
-  }));
+  })));
 
   assert.deepEqual(await loadModelCache(directory, active), legacyModels);
   assert.deepEqual(
@@ -375,11 +374,11 @@ test("model cache reads an exact legacy slot only while its v2 slot is absent", 
 
   await saveModelCache(directory, active, []);
   assert.deepEqual(await loadModelCache(directory, active), []);
-  const v2File = (await fs.readdir(directory)).find((file) =>
+  const v2File = (await listStoredChildren(directory)).find((file) =>
     file.startsWith("live-smith-models-v2-")
   );
   assert.ok(v2File);
-  await fs.writeFile(path.join(directory, v2File), "{");
+  await writeStoredBytes(directory, path.join(directory, v2File), Buffer.from("{"));
   assert.deepEqual(
     await loadModelCache(directory, active),
     [],

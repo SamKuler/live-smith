@@ -24,7 +24,7 @@ interface Dependencies {
   useInChat(text: string): Promise<void>;
   resultActions: PluginResultActions;
   audioUrl(sessionId: string, id: string): string;
-  createAudioPlayer(sessionId: string, descriptor: { fileName: string; durationSeconds: number; mediaType: string; sampleRate: number; channels: number }, sourceUrl: string): { element: HTMLElement; media: HTMLAudioElement; suspend(): void; resume(): void; refreshLocale(): void; dispose(): void };
+  createAudioPlayer(sessionId: string, descriptor: NonNullable<SessionArtifact["audio"]> & { fileName: string }, sourceUrl: string): { element: HTMLElement; media: HTMLAudioElement; suspend(): void; resume(): void; refreshLocale(): void; dispose(): void };
 }
 
 function createArtifactLibraryView(deps: Dependencies) {
@@ -275,7 +275,7 @@ function createArtifactLibraryView(deps: Dependencies) {
       let midiPreview: HTMLElement | undefined;
       if (artifact.audio) {
         card.append(element("h3", "artifact-preview-heading", () => t("Audio preview")), element("p", "field-hint", `${artifact.audio.durationSeconds.toFixed(1)} s · ${artifact.audio.mediaType === "audio/wav" ? "WAV" : "MP3"}`));
-        player = deps.createAudioPlayer(sessionId!, { fileName: artifact.label, durationSeconds: artifact.audio.durationSeconds, mediaType: artifact.audio.mediaType, sampleRate: artifact.audio.sampleRate, channels: artifact.audio.channels }, deps.audioUrl(sessionId!, artifact.ref.id));
+        player = deps.createAudioPlayer(sessionId!, { ...artifact.audio, fileName: artifact.label }, deps.audioUrl(sessionId!, artifact.ref.id));
         card.append(player.element);
         const importAudio = button("Prepare import", () => {
           if (!current()) return;

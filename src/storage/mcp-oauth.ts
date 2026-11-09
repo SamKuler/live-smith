@@ -1,12 +1,12 @@
+import { readStoredText, storedEntry, writeStoredJson } from "./sqlite.js";
 import { Buffer } from "node:buffer";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { specTypeSchemas, type StoredOAuthClientInformation, type StoredOAuthTokens } from "@modelcontextprotocol/client";
 import { cloneJsonValue } from "../model/json-clone.js";
 import { McpOAuthError } from "../plugins/mcp/oauth-contract.js";
 import { isSafeStorageId } from "./id.js";
 import { isMissingFileError } from "./errors.js";
-import { ensurePrivateFile, requireActiveStorageTransaction, writeJsonAtomically, type StorageTransactionContext } from "./persistence.js";
+import { requireActiveStorageTransaction, type StorageTransactionContext } from "./persistence.js";
 
 export interface McpOAuthCredential {
   connectionId: string;
@@ -23,11 +23,10 @@ const fileName = "live-smith-mcp-oauth.json";
 const invalid = () => new McpOAuthError("MCP sign-in storage is invalid. No credentials were changed.");
 
 async function readStore(directory: string): Promise<McpOAuthCredential[]> {
-  const file = path.join(directory, fileName);
+  const file = path.resolve(directory, fileName);
   try {
-    await ensurePrivateFile(file);
-    if ((await fs.stat(file)).size > maximumBytes) throw invalid();
-    const value: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+    if (((await storedEntry(directory, file))?.byteLength ?? 0) > maximumBytes) throw invalid();
+    const value: unknown = JSON.parse(await readStoredText(directory, file));
     if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
     const record = value as Record<string, unknown>;
     if (record.version !== 1 || Object.keys(record).length !== 2 || !Array.isArray(record.credentials) || record.credentials.length > 20) throw invalid();
@@ -76,7 +75,7 @@ export async function saveMcpOAuthCredentialInTransaction(
   if ((current?.generation ?? null) !== expectedGeneration) throw new McpOAuthError("This MCP sign-in changed. Sign in again from its current connection settings.");
   const updated = [...credentials.filter((entry) => entry.connectionId !== credential.connectionId), cloneJsonValue(credential)];
   if (updated.length > 20 || Buffer.byteLength(JSON.stringify({ version: 1, credentials: updated }), "utf8") > maximumBytes) throw invalid();
-  await writeJsonAtomically(path.join(directory, fileName), { version: 1, credentials: updated });
+  await writeStoredJson(directory, path.resolve(directory, fileName), { version: 1, credentials: updated });
 }
 
 export async function deleteMcpOAuthCredentialsInTransaction(
@@ -89,6 +88,6 @@ export async function deleteMcpOAuthCredentialsInTransaction(
   const retained = credentials.filter((entry) => "connectionId" in target ? entry.connectionId !== target.connectionId
     : entry.pluginId !== target.pluginId || target.serverId !== undefined && entry.serverId !== target.serverId);
   if (retained.length === credentials.length) return false;
-  await writeJsonAtomically(path.join(directory, fileName), { version: 1, credentials: retained });
+  await writeStoredJson(directory, path.resolve(directory, fileName), { version: 1, credentials: retained });
   return true;
 }

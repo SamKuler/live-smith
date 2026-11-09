@@ -66,6 +66,11 @@ import {
 import {
   appendSessionEvent,
   loadSessionEvents,
+  loadSessionContextEvents,
+  loadSessionRecoveryEvents,
+  loadSessionCandidateContextEvents,
+  loadConsumedAttachmentIds,
+  sessionEventConsumedAttachmentIds,
   SessionSteeringReceiptConflictError,
   sessionSteeringContentSha256,
   type SessionEvent,
@@ -160,11 +165,9 @@ export async function handleAgentRequest(
   const scopeAuthority = createToolScope({ storageDirectory, projectKey, session, signal: callbacks.signal });
   const { readEditScopes, currentEditScopes } = scopeAuthority;
   const prepareRequest = async () => {
-    const priorEvents = await loadSessionEvents(
-      storageDirectory,
-      session.id,
-    );
-    const parentCandidate = pendingArtifactParentFromEvents(priorEvents);
+    const priorEvents = await loadSessionContextEvents(storageDirectory,session.id);
+    const recoveryEvents = await loadSessionRecoveryEvents(storageDirectory,session.id);
+    const parentCandidate = pendingArtifactParentFromEvents(await loadSessionCandidateContextEvents(storageDirectory,session.id));
     if (parentCandidate) await assertSessionArtifact({ storageDirectory, sessionId: session.id, projectKey,
       artifact: parentCandidate, signal: callbacks.signal });
     const skillContext = callbacks.skillContextSnapshot ??
@@ -174,7 +177,7 @@ export async function handleAgentRequest(
         prompt,
       });
     const attachmentRefs = await resolvePendingAttachmentRefs(
-      storageDirectory, session.id, priorEvents, callbacks.attachmentIds,
+      storageDirectory, session.id, callbacks.attachmentIds,
     );
     const resolvedAttachments = await resolveCurrentAttachmentParts({
       storageDirectory: storageDirectory,
@@ -210,6 +213,7 @@ export async function handleAgentRequest(
         {
           kind: "user",
           content: prompt,
+          ...(callbacks.sendId ? {sendReceipt:{sendId:callbacks.sendId}} : {}),
           ...(parentCandidate ? { parentCandidate } : {}),
           ...(attachmentRefs.length ? { attachments: attachmentRefs } : {}),
         },
@@ -233,11 +237,10 @@ export async function handleAgentRequest(
       attachmentQuota,
       documentTextCharacters,
       history,
-      initialRecoveryState: activeRecoveryLedgerFromEvents(priorEvents),
-      recoveryContext: [recoveryContextFromEvents(priorEvents), artifactSourceInstructions(parentCandidate)].filter(Boolean).join("\n\n"),
+      initialRecoveryState: activeRecoveryLedgerFromEvents(recoveryEvents),
+      recoveryContext: [recoveryContextFromEvents(recoveryEvents), artifactSourceInstructions(parentCandidate)].filter(Boolean).join("\n\n"),
       skillContext,
       userEvent,
-      priorEventIds: priorEvents.map((event) => event.id),
     };
   };
   const prepared = await (callbacks.withAttachmentMutation
@@ -311,10 +314,7 @@ export async function handleAgentRequest(
         ...requestAttachmentQuota,
         { kind: "audio", byteLength: 1 },
       ]);
-    const knownEventIds = new Set([
-      ...prepared.priorEventIds,
-      prepared.userEvent.id,
-    ]);
+    const knownEventIds = new Set([prepared.userEvent.id]);
     const observedWebSearchIds = new Set<string>();
     const persistedWebSearches = new Map<string, Promise<SessionEvent>>();
     const observeWebSearchId = (webSearch: ModelHostedWebSearch): boolean => {
@@ -350,6 +350,7 @@ export async function handleAgentRequest(
         session.id,
         { kind: "web_search", content, webSearch },
         knownEventIds,
+        prepared.userEvent.id,
         appendTraceEvent,
         loadEventsForSearchReconciliation,
       );
@@ -495,9 +496,8 @@ export async function handleAgentRequest(
                 if (!callbacks.steeringSendId) {
                   throw new Error("The active send is missing its steering correlation ID.");
                 }
-                const events = await loadSessionEvents(storageDirectory, session.id);
                 const refs = await resolvePendingAttachmentRefs(
-                  storageDirectory, session.id, events, entry.attachmentIds ?? [],
+                  storageDirectory, session.id, entry.attachmentIds ?? [],
                 );
                 const modelRefs = refs.filter((ref) => !audioProcessingOnly || ref.kind !== "audio");
                 if (modelRefs.length && !attachmentRequestQuotaIsWithinLimits([
@@ -883,6 +883,7 @@ interface AgentRequestCallbacks {
   customInstructionsSnapshot?: string;
   steering?: SteeringChannel;
   steeringSendId?: string;
+  sendId?: string;
   onDelta(delta: string): Promise<void> | void;
   onReasoningUpdate?(
     update: ModelReasoningStreamUpdate,
@@ -913,21 +914,16 @@ export type AgentModelTurnRequester = (
 ) => ReturnType<typeof requestModelTurn>;
 
 export function consumedAttachmentIds(events: readonly SessionEvent[]): string[] {
-  return [...new Set(events.flatMap((event) =>
-    [...(event.attachments?.flatMap((attachment) => [attachment.id, ...(attachment.provenance?.replacedIds ?? [])]) ?? []),
-      ...(event.operation?.result?.audioAttachmentId ? [event.operation.result.audioAttachmentId] : []),
-      ...(event.operation?.result?.inputAttachmentIds ?? [])]
-  ))];
+  return [...new Set(events.flatMap(sessionEventConsumedAttachmentIds))];
 }
 
 async function resolvePendingAttachmentRefs(
   storageDirectory: string | undefined,
   sessionId: string,
-  events: readonly SessionEvent[],
   attachmentIds: readonly string[] | undefined,
 ): Promise<SessionAttachmentRef[]> {
   const pending = await listPendingSessionAttachments(
-    storageDirectory, sessionId, consumedAttachmentIds(events),
+    storageDirectory, sessionId, await loadConsumedAttachmentIds(storageDirectory,sessionId),
   );
   if (attachmentIds === undefined) return pending.map(sessionAttachmentRefFromStored);
   const pendingById = new Map(pending.map((attachment) => [attachment.id, attachment]));
@@ -948,6 +944,7 @@ async function appendTerminalWebSearchEvent(
     webSearch: ModelHostedWebSearch;
   },
   knownEventIds: ReadonlySet<string>,
+  requestEventId: string,
   appendEvent: typeof appendSessionEvent,
   loadEvents: typeof loadSessionEvents,
 ): Promise<SessionEvent> {
@@ -959,7 +956,9 @@ async function appendTerminalWebSearchEvent(
       if (!isStorageCommitOutcomeUnknownError(error)) throw error;
 
       const authoritativeEvents = await loadEvents(storageDirectory, sessionId);
-      const committed = authoritativeEvents.find((event) =>
+      const requestIndex = authoritativeEvents.findIndex(event => event.id === requestEventId);
+      if (requestIndex < 0) throw error;
+      const committed = authoritativeEvents.slice(requestIndex + 1).find((event) =>
         !knownEventIds.has(event.id) &&
         event.kind === "web_search" &&
         event.content === input.content &&

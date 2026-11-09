@@ -20,6 +20,7 @@
         resolveConfirm,
         runCommand,
         readSessionSearch,
+        readSessionEvents,
         showStatus,
         revealTimeline,
         onInspectorTabChange,
@@ -69,6 +70,64 @@
         onFilterChange: () => { clearSessionSelection(); closeSessionMenus(); },
         onResultsChange: () => renderSessions(),
       });
+
+      const history = window.LiveSmithFactories.createSessionHistory({ getState, readPage: readSessionEvents });
+      const historyControls = document.createElement("div");
+      historyControls.className = "timeline-history-controls";
+      const olderButton = document.createElement("button");
+      const newerButton = document.createElement("button");
+      const latestButton = document.createElement("button");
+      for (const button of [olderButton, newerButton, latestButton]) {
+        button.type = "button"; button.className = "secondary";
+        historyControls.append(button);
+      }
+      olderButton.dataset.historyAction = "older";
+      newerButton.dataset.historyAction = "newer";
+      latestButton.dataset.historyAction = "latest";
+      olderButton.addEventListener("click", () => { void loadHistoryPage(); });
+      newerButton.addEventListener("click", () => { void loadHistoryPage(undefined, true); });
+      latestButton.addEventListener("click", () => {
+        history.latest(); renderTimeline(); cancelPendingTimelinePosition();
+        const timeline = document.getElementById("timeline");
+        timeline.scrollTop = timeline.scrollHeight;
+        timeline.tabIndex = -1; timeline.focus({ preventScroll: true });
+      });
+      async function loadHistoryPage(anchorEventId, newer = false) {
+        const timeline = document.getElementById("timeline");
+        const scrollTop = timeline.scrollTop;
+        const scrollHeight = timeline.scrollHeight;
+        const sessionId = getState().activeSessionId;
+        const firstVisible = [...timeline.querySelectorAll("[data-event-id]")]
+          .find(node => node.getBoundingClientRect().bottom >= timeline.getBoundingClientRect().top);
+        const visibleTop = firstVisible?.getBoundingClientRect().top;
+        const focused = document.activeElement;
+        try {
+          const loading = history.load(anchorEventId, newer, () => !anchorEventId ||
+            sessionSearch.getMatch(sessionId)?.eventId === anchorEventId &&
+            document.activeElement !== document.getElementById("sessionSearch"));
+          renderTimeline();
+          const loaded = await loading;
+          if (!loaded || sessionId !== getState().activeSessionId) return false;
+          renderTimeline(); cancelPendingTimelinePosition();
+          if (!anchorEventId) {
+            timeline.scrollTop = firstVisible?.isConnected
+              ? scrollTop + firstVisible.getBoundingClientRect().top - visibleTop
+              : scrollTop + timeline.scrollHeight - scrollHeight;
+            if (focused === olderButton && olderButton.hidden || focused === newerButton && newerButton.hidden) {
+              const target = firstVisible?.isConnected ? firstVisible : timeline.querySelector("[data-event-id]");
+              if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); }
+            } else if (focused?.isConnected && document.activeElement === document.body) focused.focus({ preventScroll: true });
+          }
+          return true;
+        } catch (error) {
+          if (sessionId === getState().activeSessionId && error?.name !== "AbortError") {
+            showStatus(message("Session history is unavailable. Try again."));
+          }
+          return false;
+        } finally {
+          if (sessionId === getState().activeSessionId) renderTimeline();
+        }
+      }
 
       function retainActiveSessionForWindow() {
         activeSessionIdsThisWindow.add(getState().activeSessionId);
@@ -1079,12 +1138,18 @@
         });
       }
 
-      function focusSessionSearchMatch(sessionId, eventId) {
+      async function focusSessionSearchMatch(sessionId, eventId) {
         if (!eventId || sessionId !== getState().activeSessionId ||
           sessionSearch.getMatch(sessionId)?.eventId !== eventId ||
           document.activeElement === document.getElementById("sessionSearch")) return false;
-        const item = [...document.querySelectorAll("#timeline [data-event-id]")]
+        let item = [...document.querySelectorAll("#timeline [data-event-id]")]
           .find((node) => node.dataset.eventId === eventId);
+        if (!item && getState().eventHistory) {
+          if (!await loadHistoryPage(eventId)) return false;
+          if (sessionId !== getState().activeSessionId || sessionSearch.getMatch(sessionId)?.eventId !== eventId ||
+            document.activeElement === document.getElementById("sessionSearch")) return false;
+          item = [...document.querySelectorAll("#timeline [data-event-id]")].find(node => node.dataset.eventId === eventId);
+        }
         if (!item) return false;
         revealTimeline?.();
         cancelPendingTimelinePosition();
@@ -1281,9 +1346,9 @@
                 return;
               }
               selectionPromise = selectCurrentSession();
-              selectionPromise.then((selected) => {
+              selectionPromise.then(async (selected) => {
                 if (!selected || document.activeElement === document.getElementById("sessionSearch")) return;
-                if (!focusSessionSearchMatch(session.id, matchedEventId) && event.detail === 0) {
+                if (!await focusSessionSearchMatch(session.id, matchedEventId) && event.detail === 0) {
                   focusSessionRow(session.id);
                 }
               });
@@ -1732,6 +1797,7 @@
       }
 
       function renderAssistantDraft() {
+        if (history.sync().anchored) return;
         if (renderedAssistantDraftLocale !== window.LiveSmithI18n.locale) {
           renderTimeline();
           return;
@@ -2024,18 +2090,22 @@
         attachmentViewer.sync();
         const state = getState();
         sessionSearch.syncState(state);
+        let historyView = history.sync();
+        if (historyView.anchored && (getPendingConfirmation() || state.mcpApprovals?.length)) historyView = history.latest();
+        const displayedEvents = historyView.events;
         syncMessageActions();
-        const assistantDraft = getAssistantDraft();
-        const reasoningDraft = getReasoningDraft?.() ?? null;
-        const queuedFollowUps = getQueuedFollowUps?.() || [];
-        const webSearchUpdates = getWebSearchUpdates?.() || [];
+        const assistantDraft = historyView.anchored ? "" : getAssistantDraft();
+        const reasoningDraft = historyView.anchored ? null : getReasoningDraft?.() ?? null;
+        const queuedFollowUps = historyView.anchored ? [] : getQueuedFollowUps?.() || [];
+        const webSearchUpdates = historyView.anchored ? [] : getWebSearchUpdates?.() || [];
         const pendingConfirmation = getPendingConfirmation();
         if (pendingConfirmation && focusedConfirmationId !== pendingConfirmation.id) revealTimeline?.();
-        const pendingUserMessage = getPendingUserMessage?.() || null;
+        const pendingUserMessage = historyView.anchored ? null : getPendingUserMessage?.() || null;
         const renderKey = JSON.stringify({
           locale: window.LiveSmithI18n.locale,
           sessionId: state.activeSessionId,
-          events: state.events || [],
+          events: displayedEvents,
+          history: [historyView.nextBefore, historyView.nextAfter, historyView.anchored, historyView.loading],
           queuedFollowUps,
           webSearchUpdates,
           pendingConfirmation,
@@ -2052,11 +2122,12 @@
         const timeline = document.getElementById("timeline");
         const sameSession = renderedTimelineSessionId === state.activeSessionId;
         if (!sameSession) { operationReviews.clear(); activityItems.clear(); }
-        const operationIds = new Set((state.events || []).flatMap((event) => event.applyOperation ? [event.applyOperation.id] : []));
+        const operationIds = new Set(displayedEvents.flatMap((event) => event.applyOperation ? [event.applyOperation.id] : []));
         if (pendingConfirmation?.operationId) operationIds.add(pendingConfirmation.operationId);
+        for (const approval of state.mcpApprovals || []) if (approval.request.operationId) operationIds.add(approval.request.operationId);
         for (const id of operationReviews.keys()) if (!operationIds.has(id)) operationReviews.delete(id);
-        artifactPreviews.sync(state.activeSessionId, (state.events || []).flatMap((event) => event.artifacts || []),
-          (state.events || []).filter(event => event.kind === "tool_result" && event.name === "present_device_parameter_candidates").map(event => event.id));
+        artifactPreviews.sync(state.activeSessionId, displayedEvents.flatMap((event) => event.artifacts || []),
+          displayedEvents.filter(event => event.kind === "tool_result" && event.name === "present_device_parameter_candidates").map(event => event.id));
         if (pendingReasoningSummaryFocus?.sessionId !== state.activeSessionId) {
           pendingReasoningSummaryFocus = null;
         }
@@ -2069,6 +2140,14 @@
             .map((item) => [item.dataset.messageKey, item])
           : []);
         const desiredNodes = [];
+        olderButton.textContent = t("Load earlier messages");
+        newerButton.textContent = t("Load newer messages");
+        latestButton.textContent = t("Return to latest");
+        olderButton.hidden = historyView.nextBefore === undefined;
+        newerButton.hidden = historyView.nextAfter === undefined;
+        latestButton.hidden = !historyView.anchored;
+        olderButton.disabled = newerButton.disabled = historyView.loading;
+        if (historyView.nextBefore !== undefined || historyView.anchored) desiredNodes.push(historyControls);
         const focusBeforeRender = document.activeElement;
         const existingReasoningDetails = existingMessages.get("reasoning-streaming");
         const existingReasoningBody = existingReasoningDetails?.querySelector(".timeline-content");
@@ -2138,9 +2217,9 @@
         const nearBottom =
           timeline.scrollTop + timeline.clientHeight >= timeline.scrollHeight - 48;
         const operationViews = new Map((state.mcpOperations || []).map(operation => [operation.id, operation]));
-        const latestOperationEvents = new Map((state.events || []).filter(event => event.operation).map(event => [event.operation.id, event.id]));
+        const latestOperationEvents = new Map(displayedEvents.filter(event => event.operation).map(event => [event.operation.id, event.id]));
         const externalApprovals = (state.mcpApprovals || []).map(entry => ({ ...entry.request, id: `mcp:${entry.operationId}`, externalOperationId: entry.operationId, clientName: entry.actor.clientName }));
-        const events = (state.events || []).filter((event) =>
+        const events = displayedEvents.filter((event) =>
           (event.kind !== "operation" || latestOperationEvents.get(event.operation.id) === event.id) && event.kind !== "candidate" && (event.kind !== "reasoning" || event.content.trim().length > 0)
         );
 
@@ -2305,6 +2384,16 @@
             confirmation = item.querySelector("[data-pending-confirmation]");
             desiredNodes.push(item);
           } else { confirmation = buildConfirmCard(pendingConfirmation); desiredNodes.push(confirmation); }
+        }
+        for (const approval of externalApprovals.filter(entry => entry.kind === "apply")) {
+          if (approval.operationId && visibleActivityIds.has(approval.operationId)) continue;
+          if (approval.operationId) {
+            const step = { id: approval.operationId, operationId: approval.operationId, events: [] };
+            visibleActivityIds.add(step.id);
+            const item = buildTimelineActivityStep(step, approval);
+            item.open = true; item.setAttribute("data-confirmation-block", "");
+            desiredNodes.push(item);
+          } else desiredNodes.push(buildConfirmCard(approval));
         }
         for (const id of activityItems.keys()) if (!visibleActivityIds.has(id)) activityItems.delete(id);
         reconcileChildNodes(timeline, desiredNodes);
@@ -3425,6 +3514,7 @@
       }
 
       return {
+        getTimelineEvent: eventId => history.sync().events.find(event => event.id === eventId),
         announceAssistantMessage,
         invalidateSessionSearch: sessionSearch.invalidate,
         humanizeToolName,

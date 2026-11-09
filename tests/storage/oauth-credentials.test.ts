@@ -1,3 +1,5 @@
+import { writeStoredBytes, readStoredText, STORAGE_DATABASE_NAME } from "../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -60,9 +62,7 @@ test("legacy Gemini CLI Google credentials are not reused for Antigravity", asyn
     projectId: "legacy-project",
     accountLabel: "listener@example.com",
   };
-  await fs.writeFile(
-    path.join(oauthDirectory, "credentials.json"),
-    JSON.stringify({
+  await writeStoredBytes(directory, path.join(oauthDirectory, "credentials.json"), Buffer.from(JSON.stringify({
       schemaVersion: 2,
       credentials: {
         "google-profile": { google: legacyGoogle },
@@ -74,8 +74,7 @@ test("legacy Gemini CLI Google credentials are not reused for Antigravity", asyn
         openai: credentials[0],
         anthropic: credentials[1],
       },
-    }),
-  );
+    })));
 
   assert.equal(
     await loadOAuthCredential(directory, "google-profile", "google"),
@@ -86,7 +85,7 @@ test("legacy Gemini CLI Google credentials are not reused for Antigravity", asyn
     credentials[0],
   );
   const migrated = JSON.parse(
-    await fs.readFile(path.join(oauthDirectory, "credentials.json"), "utf8"),
+    await readStoredText(directory, path.join(oauthDirectory, "credentials.json")),
   ) as {
     schemaVersion: number;
     credentials: Record<string, Record<string, OAuthCredential>>;
@@ -120,9 +119,8 @@ test("OAuth credentials are private, Profile-scoped, and replace atomically", as
     );
   }
 
-  const target = path.join(directory, "oauth", "credentials.json");
   if (process.platform !== "win32") {
-    assert.equal((await fs.stat(target)).mode & 0o777, 0o600);
+    assert.equal((await fs.stat(path.join(directory, STORAGE_DATABASE_NAME))).mode & 0o777, 0o600);
   }
 
   await saveOAuthCredential(directory, "openai-profile", {
@@ -215,13 +213,10 @@ test("legacy provider credentials migrate only to a deterministic saved Profile"
   const directory = await temporaryDirectory(t);
   const oauthDirectory = path.join(directory, "oauth");
   await fs.mkdir(oauthDirectory, { recursive: true });
-  await fs.writeFile(
-    path.join(oauthDirectory, "credentials.json"),
-    JSON.stringify({
+  await writeStoredBytes(directory, path.join(oauthDirectory, "credentials.json"), Buffer.from(JSON.stringify({
       schemaVersion: 1,
       credentials: { openai: credentials[0] },
-    }),
-  );
+    })));
 
   assert.equal(
     await loadOAuthCredential(directory, "new-draft", "openai"),
@@ -247,7 +242,7 @@ test("legacy provider credentials migrate only to a deterministic saved Profile"
   );
 
   const persisted = JSON.parse(
-    await fs.readFile(path.join(oauthDirectory, "credentials.json"), "utf8"),
+    await readStoredText(directory, path.join(oauthDirectory, "credentials.json")),
   ) as {
     schemaVersion: number;
     credentials: Record<string, Record<string, OAuthCredential>>;
@@ -264,13 +259,10 @@ test("legacy credentials without an existing saved owner cannot reach a future P
   const directory = await temporaryDirectory(t);
   const oauthDirectory = path.join(directory, "oauth");
   await fs.mkdir(oauthDirectory, { recursive: true });
-  await fs.writeFile(
-    path.join(oauthDirectory, "credentials.json"),
-    JSON.stringify({
+  await writeStoredBytes(directory, path.join(oauthDirectory, "credentials.json"), Buffer.from(JSON.stringify({
       schemaVersion: 1,
       credentials: { openai: credentials[0] },
-    }),
-  );
+    })));
 
   await withStorageTransaction(directory, (transaction) =>
     prepareOAuthCredentialStoreInTransaction(
@@ -313,9 +305,7 @@ test("OAuth credential reads reject malformed or unknown persisted fields", asyn
   const directory = await temporaryDirectory(t);
   const oauthDirectory = path.join(directory, "oauth");
   await fs.mkdir(oauthDirectory, { recursive: true });
-  await fs.writeFile(
-    path.join(oauthDirectory, "credentials.json"),
-    JSON.stringify({
+  await writeStoredBytes(directory, path.join(oauthDirectory, "credentials.json"), Buffer.from(JSON.stringify({
       schemaVersion: 1,
       credentials: {
         openai: {
@@ -323,8 +313,7 @@ test("OAuth credential reads reject malformed or unknown persisted fields", asyn
           leakedField: "unexpected",
         },
       },
-    }),
-  );
+    })));
 
   await assert.rejects(
     loadOAuthCredential(directory, "profile-a", "openai"),

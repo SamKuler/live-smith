@@ -63,7 +63,7 @@ export function createCreativeBriefEditor(deps: Dependencies) {
           : dirty ? t("Unsaved changes") : saved ? t("Saved for this Session") : "");
     const previousProposal = proposal?.creativeBrief;
     proposal = undefined;
-    const event = state.events.findLast((entry) => entry.kind === "tool_result" && entry.name === "propose_creative_brief");
+    const event = state.latestBriefProposal !== undefined ? state.latestBriefProposal : state.events.findLast((entry) => entry.kind === "tool_result" && entry.name === "propose_creative_brief");
     if (event) {
       try {
         const value: unknown = JSON.parse(event.content);

@@ -1,3 +1,5 @@
+import { writeStoredBytes, readStoredText, STORAGE_DATABASE_NAME } from "../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -59,7 +61,7 @@ test("standalone MCP persists named stdio and HTTP connections without an instal
   assert.deepEqual(saved.integrationConnections!.connections, [localConnection(), remote]);
   assert.deepEqual((await loadAgentSettings(h.directory)).integrationConnections, saved.integrationConnections);
   assert.equal((await fs.readdir(h.directory)).includes("plugins"), false);
-  if (platform !== "win32") assert.equal((await fs.stat(h.file)).mode & 0o777, 0o600);
+  if (platform !== "win32") assert.equal((await fs.stat(join(h.directory, STORAGE_DATABASE_NAME))).mode & 0o777, 0o600);
 
   const view = integrationConnectionsView(saved.integrationConnections);
   assert.deepEqual(view.connections.map((entry) => entry.configuredSecrets), [["TOKEN", "WORKSPACE"], ["Authorization", "X-Account"]]);
@@ -190,13 +192,13 @@ test("schema v9 Plugin records migrate on read without rewriting or widening the
   const source = { ...historical, schemaVersion: 9,
     integrationConnections: { connections, revision: "9007199254740999", lastChangeTouchesAudio: true } };
   const original = JSON.stringify(source, null, 2);
-  await fs.writeFile(h.file, original, { mode: 0o600 });
+  await writeStoredBytes(h.directory, h.file, Buffer.from(original));
   const loaded = await loadAgentSettings(h.directory);
   assert.equal(loaded.schemaVersion, 10);
   assert.deepEqual(loaded.integrationConnections, source.integrationConnections);
-  assert.equal(await fs.readFile(h.file, "utf8"), original);
+  assert.equal(await readStoredText(h.directory, h.file), original);
   await saveGlobalSettings(h.directory, { showContextUsage: false });
-  const persisted = JSON.parse(await fs.readFile(h.file, "utf8"));
+  const persisted = JSON.parse(await readStoredText(h.directory, h.file));
   assert.equal(persisted.schemaVersion, 10);
   assert.deepEqual(persisted.integrationConnections, source.integrationConnections);
   assert.throws(() => decodeAgentSettings({ ...source,

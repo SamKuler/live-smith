@@ -513,6 +513,10 @@ button.session-row[aria-pressed="true"]:not(:disabled):hover {
   }
 }
 
+.timeline-history-controls {
+  @apply flex flex-wrap gap-2;
+}
+
 .timeline-item {
   @apply grid max-w-full gap-[6px];
   margin-bottom: 14px;

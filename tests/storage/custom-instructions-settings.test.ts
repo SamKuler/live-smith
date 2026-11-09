@@ -1,5 +1,7 @@
+import { writeStoredBytes, readStoredText } from "../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -54,9 +56,9 @@ test("Custom Instructions save as one global setting and preserve unrelated sett
     const { customInstructions, customInstructionsRevision, ...historical } = freshEmptyAgentSettings();
     const file = join(directory, "live-smith-settings.json");
     const bytes = JSON.stringify(historical);
-    await writeFile(file, bytes);
+    await writeStoredBytes(directory, file, Buffer.from(bytes));
     await loadAgentSettings(directory);
-    assert.equal(await readFile(file, "utf8"), bytes);
+    assert.equal(await readStoredText(directory, file), bytes);
 
     const saved = await saveGlobalSettings(directory, {
       customInstructions: "  Write complete arrangements.  ",

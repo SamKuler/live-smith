@@ -1,6 +1,6 @@
+import { setStoredTestLength } from "../../storage/support/stored-media-test-helpers.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import test from "node:test";
 import { MAX_AUDIO_ASSET_BYTES } from "../../../src/audio-services/contracts.js";
 import { createAudioJob, listAudioJobs } from "../../../src/storage/audio-jobs.js";
@@ -70,8 +70,7 @@ test("preview retrieval works at full local capacity and selected download check
   const job = await retrieveMusic(h.context, connection.id, clipIds);
   const directory = `${h.directory}/live-smith-audio/${h.session.id}`;
   for (let index = 0; index < 8; index++) {
-    const file = await fs.open(`${directory}/quota-${index}.audio`, "wx");
-    try { await file.truncate(MAX_AUDIO_ASSET_BYTES); } finally { await file.close(); }
+    await setStoredTestLength(h.directory, `${directory}/quota-${index}.audio`, MAX_AUDIO_ASSET_BYTES);
   }
   assert.equal((await retrieveMusic(h.context, connection.id, clipIds.slice(0, 1))).status, "ready");
   assert.equal((await listAudioJobs(h.directory, h.session.id)).length, 2);

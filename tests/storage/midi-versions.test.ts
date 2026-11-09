@@ -1,3 +1,5 @@
+import { writeStoredTestFile } from "./support/stored-media-test-helpers.js";
+import { removeStoredEntry, readStoredText } from "../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -38,7 +40,7 @@ test('MIDI versions keep immutable bytes, monotonic numbers and the chosen paren
 
 test('unavailable version blobs retain their number and another Session cannot become a version source', async(t) => {
   const h = await setup(t); const first = await h.save(); const second = await h.save(first.id, 64);
-  await fs.unlink(path.join(h.directory, 'live-smith-midi', h.session.id, `${second.id}.mid`));
+  await removeStoredEntry(h.directory, path.join(h.directory, 'live-smith-midi', h.session.id, `${second.id}.mid`));
   const third = await h.save(first.id, 67);
   assert.equal(third.version!.number, 3);
   assert.equal((await inspectMidiArtifacts(h.directory, h.session.id)).unavailableCount, 1);
@@ -51,10 +53,10 @@ test('unavailable version blobs retain their number and another Session cannot b
 test('legacy MIDI metadata starts at v1 without rewriting it when a new version is saved', async(t) => {
   const h = await setup(t); const first = await h.save();
   const metadataPath = path.join(h.directory, 'live-smith-midi', h.session.id, `${first.id}.midi.json`);
-  const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8')); delete metadata.version;
-  const legacy = JSON.stringify(metadata); await fs.writeFile(metadataPath, legacy);
+  const metadata = JSON.parse(await readStoredText(h.directory, metadataPath)); delete metadata.version;
+  const legacy = JSON.stringify(metadata); await writeStoredTestFile(h.directory, metadataPath, legacy);
   const old = (await readMidiArtifact(h.directory, h.session.id, first.id)).artifact;
   assert.deepEqual(midiArtifactVersion(old), { groupId: first.id, number: 1 });
   assert.equal((await h.save(first.id)).version!.number, 2);
-  assert.equal(await fs.readFile(metadataPath, 'utf8'), legacy);
+  assert.equal(await readStoredText(h.directory, metadataPath), legacy);
 });

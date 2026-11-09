@@ -1,10 +1,10 @@
+import { readStoredText, storedEntry, writeStoredJson } from "./sqlite.js";
 import { Buffer } from "node:buffer";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isSafeStorageId } from "./id.js";
 import { isMissingFileError } from "./errors.js";
-import { ensurePrivateFile, withStorageTransaction, writeJsonAtomically } from "./persistence.js";
+import { withStorageTransaction } from "./persistence.js";
 
 export interface McpServerClient {
   id: string;
@@ -17,17 +17,16 @@ export interface McpServerClient {
 interface StoredClient extends McpServerClient { digest: string }
 const fileName = "live-smith-mcp-server-clients.json";
 const maxClients = 64;
-const invalid = () => new Error("MCP server client storage is invalid. Repair the private client file before changing access.");
+const invalid = () => new Error("MCP server client storage is invalid. Repair the private client record before changing access.");
 const text = (value: unknown, maximum: number): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= maximum && !/[\u0000-\u001f\u007f]/u.test(value);
 const digest = (token: string) => createHash("sha256").update(token).digest("hex");
 const view = ({ digest: _digest, ...client }: StoredClient): McpServerClient => client;
 
 async function readClients(directory: string): Promise<StoredClient[]> {
-  const file = path.join(directory, fileName);
+  const file = path.resolve(directory, fileName);
   try {
-    await ensurePrivateFile(file);
-    if ((await fs.stat(file)).size > 256 * 1024) throw invalid();
-    const store: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+    if (((await storedEntry(directory, file))?.byteLength ?? 0) > 256 * 1024) throw invalid();
+    const store: unknown = JSON.parse(await readStoredText(directory, file));
     if (!store || typeof store !== "object" || Array.isArray(store)) throw invalid();
     const record = store as Record<string, unknown>;
     if (record.version !== 1 || Object.keys(record).length !== 2 || !Array.isArray(record.clients) || record.clients.length > maxClients) throw invalid();
@@ -61,7 +60,7 @@ export async function createMcpServerClient(directory: string, input: Pick<McpSe
     const token = `${id}.${randomBytes(32).toString("base64url")}`;
     const client: StoredClient = { id, name: input.name.trim(), projectKey: input.projectKey, sessionId: input.sessionId,
       generation: randomUUID(), createdAt: new Date().toISOString(), digest: digest(token) };
-    await writeJsonAtomically(path.join(directory, fileName), { version: 1, clients: [...clients, client] });
+    await writeStoredJson(directory, path.resolve(directory, fileName), { version: 1, clients: [...clients, client] });
     return { client: view(client), token };
   });
 }
@@ -87,7 +86,7 @@ export async function rotateMcpServerClient(directory: string, id: string, gener
     const token = `${id}.${randomBytes(32).toString("base64url")}`;
     client.digest = digest(token);
     client.generation = randomUUID();
-    await writeJsonAtomically(path.join(directory, fileName), { version: 1, clients });
+    await writeStoredJson(directory, path.resolve(directory, fileName), { version: 1, clients });
     return { client: view(client), token };
   });
 }
@@ -97,6 +96,6 @@ export async function revokeMcpServerClient(directory: string, id: string, gener
     const clients = await readClients(directory);
     const client = clients.find((entry) => entry.id === id);
     if (!client || client.generation !== generation) throw new Error("This MCP client changed. Refresh its access settings.");
-    await writeJsonAtomically(path.join(directory, fileName), { version: 1, clients: clients.filter((entry) => entry.id !== id) });
+    await writeStoredJson(directory, path.resolve(directory, fileName), { version: 1, clients: clients.filter((entry) => entry.id !== id) });
   });
 }

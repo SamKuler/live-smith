@@ -1,3 +1,5 @@
+import { writeStoredBytes, readStoredText } from "../../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -65,7 +67,7 @@ for (const outcome of ["committed", "unknown-readable", "unknown-unreadable"] as
             assert.deepEqual(invalidations, [sessionId]);
             assert.deepEqual(changes, []);
             assert.deepEqual(notifications, ["unavailable"]);
-            await fs.writeFile(sessionsFile, restoreContents!);
+            await writeStoredBytes(directory, sessionsFile, Buffer.from(restoreContents!));
           } else {
             assert.equal(changes.length, 1);
             assert.equal(changes[0]?.sessionId, sessionId);
@@ -98,14 +100,14 @@ for (const outcome of ["committed", "unknown-readable", "unknown-unreadable"] as
           const updated = await updateSessionInTransaction(...args);
           if (outcome === "committed" || !Object.hasOwn(args[3], "editScopes")) return updated;
           if (outcome === "unknown-unreadable") {
-            restoreContents = await fs.readFile(sessionsFile, "utf8");
-            await fs.writeFile(sessionsFile, "invalid session storage");
+            restoreContents = await readStoredText(directory, sessionsFile);
+            await writeStoredBytes(directory, sessionsFile, Buffer.from("invalid session storage"));
           }
           throw new StorageCommitOutcomeUnknownError(new Error("Injected scope durability uncertainty"));
         },
       });
     } finally {
-      if (restoreContents !== undefined) await fs.writeFile(sessionsFile, restoreContents);
+      if (restoreContents !== undefined) await writeStoredBytes(directory, sessionsFile, Buffer.from(restoreContents));
     }
   });
 }

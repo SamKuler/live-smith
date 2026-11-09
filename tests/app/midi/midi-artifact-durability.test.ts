@@ -30,7 +30,7 @@ for (const kind of ["artifact", "legacy buffer"] as const) {
   test(`a Session with only a MIDI ${kind} survives startup orphan reconciliation`, async (t) => {
     const directory = await fs.mkdtemp("/private/tmp/live-smith-transient-midi-");
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
-    const session = await createSession(directory, {
+    const session = await createSession(kind === "legacy buffer" ? undefined : directory, {
       title: "", projectKey: "set", scope: { kind: "track", identity: "10", label: "Bass" },
     }, { transient: kind === "artifact" });
     const artifactDirectory = path.join(directory, "live-smith-midi", session.id);
@@ -48,6 +48,7 @@ for (const kind of ["artifact", "legacy buffer"] as const) {
         bytes: midiBytes({ tracks: [noteTrack()] }),
       });
     } else {
+      await fs.writeFile(path.join(directory, "live-smith-sessions.json"), JSON.stringify([session]));
       await fs.mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
       await fs.writeFile(legacyFile, legacyData, { mode: 0o600 });
     }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
-import { fstatSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import * as os from "node:os";
 import * as path from "node:path";
 import test, { type TestContext } from "node:test";
@@ -154,19 +154,14 @@ for (const permission of ["server", "input", "output"] as const) {
 
 test("an admitted revocation closes its connections even when the catalog commit outcome is unknown", async (t) => {
   const h = await runningReplacement(t, "server");
-  const handle = await fs.open(path.join(h.directory, "live-smith-plugins"), "r");
-  const identity = await handle.stat();
-  const prototype = Object.getPrototypeOf(handle) as fs.FileHandle;
-  const sync = prototype.sync;
-  await handle.close();
+  const exec = DatabaseSync.prototype.exec;
   let injected = false;
-  t.mock.method(prototype, "sync", async function (this: fs.FileHandle) {
-    const current = fstatSync(this.fd);
-    if (!injected && current.dev === identity.dev && current.ino === identity.ino) {
+  t.mock.method(DatabaseSync.prototype, "exec", function (this: DatabaseSync, sql: string) {
+    exec.call(this, sql);
+    if (!injected && sql === "COMMIT") {
       injected = true;
-      throw new Error("Injected catalog durability failure.");
+      throw new Error("Injected catalog commit acknowledgement failure.");
     }
-    return sync.call(this);
   });
   await assert.rejects(h.lifecycle.change(h.revoke, h.signal), StorageCommitOutcomeUnknownError);
   assert.equal(injected, true);

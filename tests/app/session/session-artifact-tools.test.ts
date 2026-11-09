@@ -1,5 +1,5 @@
+import { writeStoredBytes } from "../../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
@@ -49,7 +49,7 @@ test("listing audio reads metadata and leaves byte integrity validation at the c
   const h = await audioStorageHarness(t);
   const saved = await savePluginAudioArtifact(h.storage, h.session.id, { pluginId: "renderer", serverId: "local", toolName: "render",
     label: "Saved audio", format: "wav", bytes: waveBytes(), signal: h.signal });
-  await fs.writeFile(path.join(h.storage, "live-smith-audio-artifacts", h.session.id, `${saved.id}.audio`), new Uint8Array(saved.byteLength));
+  await writeStoredBytes(h.storage, path.join(h.storage, "live-smith-audio-artifacts", h.session.id, `${saved.id}.audio`), new Uint8Array(saved.byteLength));
   const listed = await createSessionArtifactToolset({ storageDirectory: h.storage, sessionId: h.session.id, signal: h.signal })
     .callTool({ id: "list", name: "list_session_artifacts", arguments: "{}" });
   assert.equal(listed.failed, undefined);

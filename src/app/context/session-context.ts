@@ -6,7 +6,7 @@ import type { LiveConversationContext, LiveInteractionContext } from "../../live
 import { throwIfAborted } from "../../runtime/host.js";
 import { listSessionAttachments } from "../../storage/attachments.js";
 import { listAudioJobs } from "../../storage/audio-jobs.js";
-import { loadSessionEvents, type SessionEvent } from "../../storage/events.js";
+import { loadSessionEventSummaries, type SessionEvent } from "../../storage/events.js";
 import { hasSessionMidiContent } from "../../storage/midi-artifacts.js";
 import { createStorageId } from "../../storage/id.js";
 import {
@@ -25,7 +25,6 @@ import {
   sessionIsClaimedByAnotherOwner,
 } from "../session/session-claims.js";
 import type { ChatSessionSummary } from "../../ui/chat-state.js";
-import { lastSessionMessageAt } from "../session/session-activity.js";
 
 type Api = ExtensionContext<"1.0.0">;
 const maxRecoveryEvents = 12;
@@ -221,14 +220,16 @@ export async function sessionSummaries(
   storageDirectory: string | undefined,
   sessions: AgentSession[],
 ): Promise<ChatSessionSummary[]> {
+  const summaries = await loadSessionEventSummaries(storageDirectory, sessions.map(session => session.id));
   return Promise.all(sessions.map(async (session) => {
     let hasContent = session.title.trim().length > 0 || (session.creativeBrief ?? "").trim().length > 0;
     let lastMessageAt: string | undefined;
     try {
-      const events = await loadSessionEvents(storageDirectory, session.id);
-      lastMessageAt = lastSessionMessageAt(events);
+      const summary = summaries.get(session.id);
+      if (!summary || summary instanceof Error) throw summary ?? new Error("Session summary is unavailable.");
+      lastMessageAt = summary.lastMessageAt;
       if (!hasContent) {
-        hasContent = events.length > 0 ||
+        hasContent = summary.hasEvents ||
           (await listSessionAttachments(storageDirectory, session.id)).length > 0 ||
           storageDirectory !== undefined && (await listAudioJobs(storageDirectory, session.id)).length > 0;
         if (!hasContent) {

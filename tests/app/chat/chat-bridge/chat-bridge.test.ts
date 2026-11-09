@@ -1,8 +1,8 @@
 import { openBridgeEvents, readEvent, readEventsThrough, type BridgeEvents } from "../support/bridge-events.js";
-import { MAX_ATTACHMENT_UPLOAD_BYTES } from "../../../../src/attachments/contracts.js";
+import { MAX_BUFFERED_ATTACHMENT_BYTES } from "../../../../src/attachments/contracts.js";
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
-import { IncomingMessage } from "node:http";
+import { IncomingMessage, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { PassThrough } from "node:stream";
 import test from "node:test";
@@ -3040,11 +3040,14 @@ test("attachment routes reject malformed, duplicate, oversized, and empty inputs
     ];
     assert.deepEqual(responses.map((response) => response.status), [400, 400, 400, 400, 400, 400, 400]);
 
-    const tooLarge = await upload(
-      "sessionId=session-1&fileName=large.png",
-      new Uint8Array(MAX_ATTACHMENT_UPLOAD_BYTES + 1),
-    );
-    assert.equal(tooLarge.status, 413);
+    const oversizedUrl = `${chatUrl.origin}/attachments?token=${token}&sessionId=session-1&fileName=large.png`;
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const req = httpRequest(oversizedUrl, { method: "POST", headers: { "Content-Type": "application/octet-stream", "Content-Length": String(MAX_BUFFERED_ATTACHMENT_BYTES + 1) } }, response => {
+        response.resume(); response.once("end", () => { resolve(response.statusCode); req.destroy(); });
+      });
+      req.once("error", reject); req.write(NodeBuffer.from([0]));
+    });
+    assert.equal(status, 413);
     assert.equal(handlerCalls, 0);
   } finally {
     await bridge.close();
@@ -3359,14 +3362,14 @@ test("raw attachment reader allocates declared lengths exactly and validates the
     headers: { "content-type": "application/octet-stream" },
   });
   const overflowRead = readRawAttachmentBody(overflow as never);
-  overflow.end(new Uint8Array(MAX_ATTACHMENT_UPLOAD_BYTES + 1));
+  overflow.end(new Uint8Array(MAX_BUFFERED_ATTACHMENT_BYTES + 1));
   await assert.rejects(
     overflowRead,
     (error: unknown) => {
       assert.ok(error instanceof ChatBridgePayloadTooLargeError);
       assert.equal(
         error.message,
-        `Attachment uploads may not exceed ${MAX_ATTACHMENT_UPLOAD_BYTES} bytes.`,
+        `Attachment uploads may not exceed ${MAX_BUFFERED_ATTACHMENT_BYTES} bytes.`,
       );
       assert.equal("cause" in error, false);
       return true;
@@ -3409,7 +3412,7 @@ test("unknown-length attachment bodies grow from a small bounded buffer", async 
   const bytes = await read;
   assert.equal(bytes.byteLength, 70 * 1024 + 1);
   assert.deepEqual(allocations, [64 * 1024, 128 * 1024]);
-  assert.equal(allocations.includes(MAX_ATTACHMENT_UPLOAD_BYTES), false);
+  assert.equal(allocations.includes(MAX_BUFFERED_ATTACHMENT_BYTES), false);
 });
 
 test("raw attachment reads enforce a process-wide cap and release permits", async () => {
@@ -3513,15 +3516,15 @@ test("raw attachment reader accepts exactly 128 MiB and rejects one byte over", 
     headers: { "content-type": "application/octet-stream" },
   });
   const exactRead = readRawAttachmentBody(exact as never);
-  exact.end(new Uint8Array(MAX_ATTACHMENT_UPLOAD_BYTES));
+  exact.end(new Uint8Array(MAX_BUFFERED_ATTACHMENT_BYTES));
   const exactBytes = await exactRead;
-  assert.equal(exactBytes.byteLength, MAX_ATTACHMENT_UPLOAD_BYTES);
+  assert.equal(exactBytes.byteLength, MAX_BUFFERED_ATTACHMENT_BYTES);
   assert.equal(NodeBuffer.isBuffer(exactBytes), true);
 
   const over = Object.assign(new PassThrough(), {
     headers: {
       "content-type": "application/octet-stream",
-      "content-length": String(MAX_ATTACHMENT_UPLOAD_BYTES + 1),
+      "content-length": String(MAX_BUFFERED_ATTACHMENT_BYTES + 1),
     },
   });
   assert.throws(

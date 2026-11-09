@@ -22,7 +22,7 @@ Artifact、音频和 Plugin Toolset，原业务模块继续拥有 Schema 和实�
 显式恢复决定。查询、取消和资源请求直接访问各自所有者，工具目录发现按需执行。
 
 `resources.ts` 将 Session 资源映射到原有存储。小文件使用现有格式读取器；大型
-文件通过 `storage/file-export.ts` 固定文件句柄、分块校验摘要并流式输出。
+文件通过 `storage/file-export.ts` 绑定数据库记录版本、分块校验摘要并流式输出。
 附件上传以操作输入保存归属，音频试听结果以操作输出保存归属。
 
 `session-fences.ts` 提供各入口共用的 Session、附件与连接配置互斥实例。
@@ -351,7 +351,11 @@ src/
       Current-schema validation plus registered adjacent-version migrations
       for historical settings files.
     persistence.ts
-      Serialized local transactions plus private, atomic JSON replacement.
+      按存储目录串行协调异步业务操作，跟踪事务内操作和提交结果未知状态。
+    sqlite.ts
+      管理 SQLite 记录、内联内容分块、媒体引用、版本绑定读取和旧数据迁移。
+    media-files.ts
+      管理私有媒体暂存、分块读写、按摘要复用与孤立对象清理。
     model-cache.ts
       Connection-fingerprint-slotted raw Direct API model-metadata cache;
       unsaved Draft discovery cannot evict another connection's slot, and an
@@ -832,21 +836,27 @@ links, special files, excessive entry counts, and expanded-size overflow.
 | MCP | `mcp.json` | declared file, `.mcp.json`, or compatible inline form | declared file, `.mcp.json`, or compatible inline form | Bounded stdio or Streamable HTTP tools |
 | Commands, agents, hooks, output styles, apps, LSP and marketplace data | extension or package metadata | compatibility metadata | compatibility metadata | Reported in install review and kept inert |
 
-Installation stores the exact ZIP by digest in a private per-Plugin directory,
-creates a catalog record, and leaves the Plugin disabled with no MCP or artifact
-approval. Replacement is explicit, preserves the separate mutable Plugin data
-directory, disables the new package, and clears prior approvals. Runtime files
-are materialized from the verified immutable archive into a digest-specific
-directory; any mismatch is repaired from the archive rather than trusted.
-Catalog entries retain bounded cleanup intent for replaced archives and removed
-Plugins. Cleanup is idempotent and retried when the catalog is opened; a Plugin
-ID cannot be reinstalled while its prior private data awaits deletion within
-the process-wide storage transaction. Concurrent Extension Host processes
-sharing one storage directory are not serialized by this queue. The
-product command requires a Plugin to be disabled before removal and clears its
-namespaced Session Skill selections before deleting the package.
-Catalog schema 2 reads historical schema-1 records without rewriting them until
-the next mutation; older builds do not read schema-2 catalogs.
+`storage/plugins.ts` 将原始 ZIP 按摘要存入数据库，并保存安装目录、配置和授权记录。
+安装后的 Plugin 默认关闭，MCP 与 Artifact 权限等待显式授权。目录 schema 3
+为每次全新安装保存独立的 `dataGeneration`，数据目录为
+`live-smith-plugins/data/<pluginId>/<dataGeneration>/`。历史 schema 1/2 的安装
+使用 `null` 代次，继续访问原 `live-smith-plugins/data/<pluginId>/`。显式替换
+保留安装代次和对应真实目录，关闭新版本并清空旧授权。代次由存储层持有，公开
+Plugin DTO 保持产品元数据与授权字段。
+运行文件由已验证的 ZIP 重建到 `live-smith-plugins/runtime-cache/<pluginId>/<sha256>/`；
+缓存内容发生变化时从原始 ZIP 重建。迁移前的 `runtime/` 和 `packages/` 原件保持冻结。
+
+数据库目录记录保存替换、删除对应的 `pendingCleanup`，删除记录同时绑定目标安装
+代次。清理删除数据库中的旧 ZIP、配置和运行缓存，并在卸载时清理该代次的真实
+data 目录；打开目录时重试未完成清理。旧 data 清理完成后，该 Plugin ID 才能
+重新安装，并获得新的随机代次。文件系统清理与 SQLite 提交分别执行，持久化清理
+意图负责中断后的重试。断电后物理目录可能重现；新的安装只绑定自己的代次，从而
+保持与旧数据的逻辑隔离。迁移时保存的 data 快照标记为 `preserved`，保留在数据库中，
+业务读取、列举和清理均使用活动记录。
+
+应用层删除要求 Plugin 处于关闭状态，并先清理 Session 中带命名空间的 Skill 选择。
+目录 schema 3 继续读取历史 schema 1/2；兼容字段的写回发生在数据库中的下一次修改。
+存储范围、进程串行边界与旧版恢复规则见[持久化契约](#durable-local-storage)。
 
 ### MCP tools and authority
 
@@ -1084,10 +1094,9 @@ supplies one host-owned temporary destination, accepts only a regular contained
 file, validates its declared MIDI or WAV/MP3 format, and stores an immutable
 Session artifact. The output grant covers both audio and MIDI; it grants no Live
 mutation authority.
-The MIDI bytes are durably written before their metadata commit. Listing under
-the storage transaction admits only structurally complete pairs. Unpaired files
-remain private and count toward the storage limit; missing blobs retain their
-metadata and are reported as unavailable while healthy artifacts remain usable.
+MIDI 原件发布到媒体目录，数据库分别提交内容引用和业务元数据。存储事务内的可用
+性判断保留两者的配对关系。未配对内容仍计入存储配额。缺失内容的元数据保留为不可
+用记录，其他完整产物继续可用。
 An unavailable artifact cannot be imported, and ordinary Session sends continue
 with a warning. Import verifies the bytes and parsed MIDI against the saved
 metadata; malformed or substituted files fail validation.
@@ -1262,16 +1271,13 @@ creates a successor with its own progress and restore baseline, preserving the
 completed decision. Legacy receipts retain their original before values and can
 acquire an Artifact baseline when continuing into a new candidate or restoration.
 
-`storage/device-parameter-artifacts.ts` stores create-only snapshot JSON under
-`live-smith-device-parameters/<sessionId>/`. Snapshot bounds are 4,096 parameters,
-4 MiB per snapshot, 64 snapshots and 64 MiB per Session. Application baselines are
-immutable; separate small progress files are flushed before individual SDK
-writes and after verified readback. Terminal results retain Keep/Restore decisions.
-Storage reserves space for progress, a restore baseline and the final result
-before writing to Live, with a 64 MiB application-history budget and 256 records
-per Session. Newly created private directories are durably linked before their
-contents are published. Session deletion and startup orphan reconciliation cover
-both snapshots and application data.
+`storage/device-parameter-artifacts.ts` 在数据库的
+`live-smith-device-parameters/<sessionId>/` 键空间保存 create-only 快照 JSON。
+每份快照最多 4,096 个参数、4 MiB；每个 Session 最多 64 份、合计 64 MiB。
+应用基线保持不可变；独立的小型进度记录在每次 SDK 写入前、验证回读后分别提交。
+终态记录保存 Keep/Restore 决定。写入 Live 前，为进度、恢复基线和最终结果预留
+空间；每个 Session 的应用历史上限为 64 MiB、256 条。Session 删除和启动时的
+孤立记录协调同时覆盖快照与应用记录。
 
 An application result remains separate from immutable Artifact content.
 Unknown writes and full-device conflicts remain explicit and prevent automatic
@@ -1485,12 +1491,10 @@ in the validated plan. Unfinished proposals project an unknown outcome. Legacy
 imports without exact source identity remain unassociated. The read projection
 never establishes observed current Live state or grants write authority.
 
-The artifact audio player reuses the attachment player's authenticated source,
-transport controls and waveform decoders. Its read/decode lifecycle belongs to the
-selected work: suspension cancels decoding and pauses playback; disposal releases
-media sources. The Session projection retains validated source sample rate and
-channel count for the decoder's pre-allocation PCM budget and exact-source
-checks. The interface displays duration and media type.
+The artifact audio player shares the attachment viewer's transport controls and
+waveform workflow. Suspension cancels the preview read and pauses playback.
+Disposal releases the media source. The Session projection supplies validated
+byte length, duration, sample rate and channel count for MP3 decode admission.
 
 ## Skill boundary
 
@@ -1529,17 +1533,13 @@ HTTPS, and mailto destinations.
 
 ### Storage and activation
 
-`storage/skills.ts` derives every path from a validated Skill ID and uses the
-same global per-storage transaction queue as Sessions. Install/replace/delete
-uses a recoverable pending mutation plus private staging, durable atomic writes,
-directory identity checks before and after mutation, and strict catalog
-validation. The cleanup boundary includes initial directory creation and staging
-before a pending mutation is recorded. Startup removes empty or staging-only
-unreferenced owned directories, while rejecting links and foreign contents.
-Stable catalog listing reads summaries and safe file metadata only;
-only selected definitions are opened, bounded, hash-checked, and parsed. Catalog
-capabilities are scoped to an active opaque storage transaction, and detached
-operations are drained before the transaction releases.
+`storage/skills.ts` 从已验证的 Skill ID 派生数据库键，并使用与 Session 相同的
+进程内存储队列。安装、替换、删除保留 `pendingMutation` 与 staging 记录，分步
+提交正文及最终目录状态；重新打开时继续完成已记录的变更。迁移导入的历史 pending
+变更同样在数据库副本中恢复，旧 catalog、正文及 staging 原件保持冻结。
+未被目录引用的内部 staging 与临时目录记录由恢复流程清理，其他未知内容使目录
+校验失败。稳定目录列举只读取摘要与记录长度，选中的正文才执行完整字节上限、
+SHA-256 和格式校验。目录能力绑定到活动存储事务；事务退出前等待已登记操作完成。
 Enabled Plugin Skill definitions are instead read and hash-verified from the
 immutable archive under the same storage transaction that snapshots availability.
 Disabling a Plugin removes those Skills from new request admission. Product-level
@@ -1624,12 +1624,12 @@ formats are listed in [Attachments](USER_GUIDE.md#attachments).
 Attachment admission reuses an identical pending file by name, byte length and
 content hash inside the Session attachment mutation fence. Consumed attachments
 do not participate in this deduplication.
-Pending Session state allows 4 attachments and 256 MiB of raw bytes. Audio is
-limited to 2 files, 128 MiB and 15 minutes each. Each image is limited to 5 MiB,
-with a 16 MiB subtotal; documents retain their 20 MiB per-file and subtotal limits.
-Inline model requests have a separate 128 MiB binary budget, 4-file count and
-2-audio count. Audio used only by processing tools does not consume this inline
-budget. These are host resource budgets, not claims about remote provider limits.
+Pending Session state allows four files and at most two local WAV/MP3 originals.
+Persistent storage admits audio originals up to 2 GiB each. Images have a 5 MiB
+per-file limit and 16 MiB subtotal. Documents have a 20 MiB per-file limit and
+subtotal. Inline model requests have a separate 128 MiB binary budget, four-file
+count, two-audio count and 15-minute per-audio limit. Audio processing tools apply
+their own [processing limits](MODEL_PROVIDERS.md#stem-separation).
 Audio model input carries original bytes; protocol adapters perform Base64 encoding
 only where their wire format requires it. Remote size rejection is reported without
 transcoding, truncating or replacing the saved source. A request-size rejection
@@ -1648,15 +1648,12 @@ and Send admission refer to the converted file. A failed conversion leaves the
 remaining batch files eligible for admission. Audio formats requiring conversion
 produce an explicit WAV/MP3 export instruction.
 
-Attachment blobs and JSON integrity metadata live under a private
-Session-specific directory. Creation is create-only with collision retry;
-reads reject symlinks, verify regular-file metadata, byte length, SHA-256,
-detected media type, and bounded image dimensions or document structure.
-Directory creation, deletion, and orphan cleanup use durable parent
-synchronization and explicit unknown commit outcomes. Startup orphan sweeping
-occurs before bridge commands are accepted, never from an ordinary state
-snapshot that could race Session creation. POSIX directories are tightened to
-`0700` and files to `0600`.
+持久化上传将浏览器的 File 直接发送至桥接端点，并用有界分块计算 SHA-256 以协调
+响应中断后的结果。服务端流式暂存原件，通过有界范围读取检查 WAV/MP3。图像和文档
+在各自大小限制内读取完整内容以校验格式。附件在数据库中保存按 Session 隔离的
+元数据与媒体引用。创建采用 create-only 语义并在 ID 冲突后重试，提交确认失败进入
+结果未知处理。启动清理在接受桥接命令前完成。媒体发布与回收规则见
+[持久化契约](#durable-local-storage)。
 
 ### Local inspection
 
@@ -1769,26 +1766,32 @@ audio formats require explicit conversion before ingestion.
 
 ### Attachment viewing
 
-Attachment viewing reads one exact Session-owned reference and verifies its
-stored bytes before returning them or opening a local copy. Authenticated
-attachment GET/HEAD routes are independent of model-send admission. Image bytes
-serve previews; audio supports byte-range requests for the inline player.
-Read cancellation follows the dialog and HTTP connection lifecycle.
+Authenticated attachment and saved-audio routes bind each read to an exact
+Session-owned reference. GET can stream the full file or one byte range. HEAD
+returns metadata. Range reads check file identity, length, and record revision.
+Complete streams also check SHA-256. Opening a local copy verifies the complete
+source before dispatch. Read cancellation follows the dialog and HTTP connection
+lifecycle.
 
 The shared browser attachment viewer owns inline image/audio elements, compact
 play/pause and seek controls, and the image dialog. Session changes, removed
 elements and dialog close release media resources; ordinary streaming updates
 preserve mounted playback controls.
-The audio selection dialog reduces WAV samples directly from the verified byte
-buffer into bounded waveform peaks; it does not expand the entire WAV to float
-samples. Server-side WAV extraction copies sample-aligned PCM/float data and its
-format chunk into a new WAV. MP3 waveform inspection uses the browser AudioContext
-at the source sample rate with a 128 MiB decoded-sample budget and a 30-second
-decode deadline. Only the explicit WAV-export action quantizes the selected
-samples to 16-bit PCM, preserving sample rate and channel count. Closing the
-dialog aborts reads and discards late decoder results.
+WAV preview requests use the authenticated media URL with `waveform=1`. The
+server reads bounded ranges and returns duration and sampled peaks. These peaks
+guide navigation and can miss short transients. Playback uses the original URL.
+For WAV excerpts, the browser sends start and end times. The host verifies the
+original by streaming its digest, then copies sample-aligned PCM or float data
+and its format chunk into a bounded WAV. MP3 waveform and excerpt admission
+requires both the source and its estimated decoded PCM to fit the 128 MiB budget
+before the browser reads bytes. The browser AudioContext uses the source sample
+rate, a 30-second deadline, and a second size check on the decoded result. Explicit
+MP3 excerpt export writes 16-bit PCM at the original sample rate and channel
+count. Playback and whole-file reuse are available when decode admission fails.
+Closing the dialog aborts reads and discards late results.
 
-Saved copies and excerpts use fresh attachment IDs. Their immutable provenance
+Saved copies and excerpts use fresh attachment IDs. Whole-file copies share the
+same immutable media content. Their provenance
 records the source ID, optional range, and replaced draft IDs, bounded to 16 KiB
 per reference. The pending projection excludes replaced draft IDs; consuming a
 reference also excludes those IDs from subsequent pending projections without
@@ -2148,20 +2151,14 @@ ordinary status reads and downloads retain their cancellation checks.
 
 #### Asset storage and Live import
 
-`storage/audio-jobs.ts` and `storage/audio-assets.ts` own bounded, private,
-Session-scoped metadata and create-only audio files. An input snapshot and each
-output are immutable and integrity-checked. The asset metadata receipt commits
-before its audio blob; a metadata-only receipt is not listed as an available
-result. A deterministic job/role asset ID allows a complete blob committed before
-its job-record update to be recovered and hash-verified without redownloading or
-creating another copy. Permission normalization and the complete bounded file
-read are coordinated by inode, so parallel readers cannot invalidate each
-other's ctime snapshots. Only pending reads retain coordination entries.
-Callers that need both jobs and recoverable assets reuse one verified metadata
-snapshot; there is no persistent asset cache. Per-file and per-Session limits are
-independent of chat attachment limits. Remote readiness does not imply local
-completion; local completion requires the required outputs to be stored, while
-individual saved results remain usable.
+`storage/audio-jobs.ts` 和 `storage/audio-assets.ts` 拥有按 Session 隔离的有界
+元数据与 create-only 音频引用，保存在 SQLite。音频原件位于媒体目录。输入快照与
+每个输出保持不可变，使用时验证完整性。资产元数据回执先于音频引用提交，具备完整
+内容的回执才可作为可用结果。确定性的 job/role 资产 ID 允许恢复已经提交、尚未写入 job 记录的内容，
+并重新验证摘要后复用。读取器绑定数据库记录 revision，更新或删除使旧读取器
+失效。需要任务与可恢复资产的调用方复用同一份已验证元数据快照。单份资产与
+Session 配额独立于聊天附件配额。远端就绪与本地完成分别记录；所需输出保存完整后
+任务才进入本地完成状态，已保存的单个结果可先行使用。
 `audio-services/audio-output.ts` maps neutral output roles to musical descriptors.
 Provider adapters translate their protocol roles at their boundary. Historical
 provider-prefixed role keys are handled by `audio-output-compatibility.ts` and keep
@@ -2172,10 +2169,10 @@ compatible complete-output categories across the work; stems and source snapshot
 retain component provenance independently.
 
 `storage/audio-artifacts.ts` stores standalone Plugin WAV/MP3 outputs with Plugin
-ownership and provenance. `readSessionAudioArtifact` resolves either a Plugin
-record or a committed provider-job output; playback, export, attachment, Plugin
-inputs and managed SampleSources share that admission boundary. Both stores
-consume one Session audio byte budget under the storage transaction. Session
+ownership and provenance. Session audio resolves either a Plugin record or a
+committed provider-job output. Playback and export use the streamed file
+interface. Plugin inputs and processing tools can read complete bounded assets.
+Both stores consume one Session audio byte budget under the storage transaction. Session
 deletion and orphan cleanup include both stores. Newly produced Plugin audio is
 registered before the tool returns, making it available to the admitted audio
 input and SampleSource capabilities in the same request. Audio tools are admitted
@@ -2187,8 +2184,8 @@ the state observed at that turn and are not rewritten on later recovery.
 `audio-asset-sources.ts` populates the send-scoped managed SampleSource registry
 from saved results belonging to the current Session. `audio_asset` references
 carry only an opaque asset reference. Preparation verifies the exact expected
-asset, stages owned bytes and imports them through the shared lazy sample-import
-helper. The existing preflight, complete-plan Scope check, approval policy,
+asset and streams it to a private file for the shared lazy sample-import helper.
+The existing preflight, complete-plan Scope check, approval policy,
 mutation queue and post-import revalidation remain in force. Processing tools
 never create or modify Live objects themselves. Timing metadata records the
 input snapshot and is not a promise of sample-accurate separation alignment.
@@ -2350,26 +2347,74 @@ settings, and do not change the approval mode.
 
 ### Durable local storage
 
-Settings, sessions, and event logs serialize their read-modify-write operations
-per storage directory. JSON replacement uses a unique private temporary file,
-file sync, atomic rename, and parent-directory sync where the host supports it.
-This prevents concurrent operations in one extension process from losing each
-other's updates and prevents readers from observing partial JSON. If the rename
-succeeds but the parent-directory sync fails, persistence reports an explicit
-unknown commit outcome instead of claiming that the replacement did not happen.
-Invalid settings, sessions, or event logs are reported as corruption and block
-mutations rather than being treated as empty, so a later write cannot overwrite
-recoverable Profiles, credentials, or history. Persisted storage IDs are
-validated before use as filename components, and duplicate session, event, or
-cross-event attachment IDs are rejected as corruption rather than sharing or
-collapsing history. On POSIX hosts, read paths as well as writes tighten storage
-directories to `0700` and private JSON/blob files to `0600`. Storage failures
-cross the attachment HTTP boundary only as fixed typed diagnostics; absolute
-paths and credential-bearing causes are never returned to the WebView.
-Session deletion commits metadata removal before cleaning its event log and
-associated files. Uncertain deletion or cleanup enters the Session lifecycle's
-pending-cleanup path. Cleanup retries recheck that the Session is absent; startup
-reconciliation also removes orphaned Session data.
+`storage/sqlite.ts` 使用 Node 内置 `node:sqlite` 管理存储根目录中的
+`live-smith.sqlite3`。Profiles、Session、事件、模型缓存、OAuth/MCP/Suno 凭据、
+参数记录、User Skill 和 Plugin 配置保存在数据库中。有界的 Plugin ZIP 继续保存在
+数据库的内联分块中。附件、MIDI 和音频的业务元数据及引用也由数据库管理，原始字节
+保存在私有 `live-smith-media/` 目录。旧受管理路径如 `live-smith-midi/<id>/…` 用作
+逻辑键。各业务模块拥有格式版本、配额和归属校验。
+
+数据库使用通用记录表与专用事件表：
+
+| 表 | 职责 |
+| --- | --- |
+| `storage_state` | 存储格式迁移状态、导入统计和通用记录 revision |
+| `entries`、`chunks` | 按逻辑路径保存记录；`entries` 保存长度、摘要、revision 和媒体对象引用，`chunks` 保存内联 JSON、文本及 Plugin ZIP |
+| `session_event_logs`、`session_event_records` | 会话历史摘要和逐条事件，支持按 Session 与序号分页 |
+| `session_event_attachments`、`session_event_consumed_attachments`、`session_event_send_receipts` | 历史附件元数据、已消费附件标识和发送回执索引 |
+
+记录保存字节长度、SHA-256 和递增 revision。内联内容以 64 KiB 分块，记录与全部
+分块在一个 SQLite 事务内提交。媒体原件以有界分块写入私有暂存区，校验长度与摘要后
+按内容摘要发布，再提交逻辑引用。同一内容可由多个独立记录引用。删除或替换引用后，
+媒体文件在无引用时回收。启动时清理废弃暂存和未引用对象。create-only 冲突保留已有
+记录。媒体读取绑定文件身份和记录 revision，更新、删除和同键重建使旧读取器失效。
+完整读取校验摘要，局部预览读取所需范围。
+
+媒体发布先关闭暂存文件的写入句柄，再在同一目录建立正式文件名的硬链接并移除暂存名。
+正式文件以 SHA-256 命名，原始文件名和媒体类型由业务元数据保存。这个发布步骤要求
+存储目录所在文件系统支持硬链接；多个业务引用通过数据库共同指向同一个正式文件。
+
+`storage/events.ts` 在 SQLite 中为每个 Session 事件保存一行，以 Session 和递增序号
+定位页边界。追加只写入新事件及相关索引。Steer 回执和已消费附件的唯一性在追加事务内
+检查。旧事件日志按原有顺序一次性导入，历史序号独立于时间戳。审批与恢复查询跨越完整
+已保存历史，按各自所需事件类型读取。
+
+`storage/persistence.ts` 的异步事务只负责同一进程内、同一存储目录的业务串行协调，
+并等待事务内登记的操作完成。常规记录更新使用短同步 SQLite 事务；网络请求与 Live
+SDK 操作保持各自生命周期。跨记录工作流继续使用已有提交顺序、pending 恢复记录和
+业务补偿。SQLite 的写入锁负责数据库一致性，业务读改写顺序由进程内队列负责，
+同一数据目录应由一个 Extension Host 实例使用。
+
+SQLite 使用 `journal_mode=DELETE`、`synchronous=EXTRA`，macOS 同时启用
+`fullfsync`。这些同步设置适用于数据库事务。媒体依赖文件系统写入和发布语义，突然
+断电可能造成已引用的媒体缺失或损坏，读取时会按不可用内容处理。POSIX 存储目录
+权限为 `0700`，数据库和媒体原件为 `0600`。数据库提交确认失败报告
+`StorageCommitOutcomeUnknownError`，调用方通过已保存状态协调结果。数据库格式
+未知、损坏及普通 I/O 故障会向上报告；领域记录校验失败同样阻止后续覆盖写入。
+
+首次访问逐块导入受管理的旧文件，校验源身份、大小、修改时间、文件清单和数据库完整性。
+媒体原件进入媒体目录，其余记录进入数据库。导入的数据库记录与完成标记在同一个事务
+提交。已有 SQLite v1 数据库在转换前保留 `live-smith.sqlite3.v1-backup`，迁移把内联
+媒体分块转为文件引用，并在同一个数据库事务提交引用和 schema 版本。导入和升级失败
+时回滚数据库事务，保留旧源及已有备份，排除故障后重新尝试。历史 JSON 格式升级、Skill
+pending 恢复和 Plugin 清理在导入后的数据库记录上执行。后续业务读写使用当前数据库和
+媒体目录，旧受管理原件保持原样。
+
+Plugin data 继续作为可变真实目录供子进程使用。历史安装沿用
+`live-smith-plugins/data/<pluginId>/`；全新安装绑定该路径下的独立随机代次目录，
+替换沿用当前代次，卸载后重装获得新代次。首次迁移将当时的普通文件另存为
+`preserved` 记录；该快照保留迁移时内容，排除在业务列举、覆盖和删除范围之外。
+Plugin 的后续运行可修改当前 data 目录，显式卸载按目录记录中的代次清理；断电后
+重现的旧目录保持与新安装隔离。`runtime-cache/` 是从数据库 ZIP 重建的缓存，
+旧 `runtime/` 保留。
+原生拖出副本与 Plugin 调用临时文件仍由各自文件生命周期管理。
+
+Session 删除先提交元数据移除，再清理数据库中的事件与关联记录。提交结果未知或
+清理失败进入已有的 pending-cleanup 流程；重试前确认 Session 已删除，启动协调
+继续处理孤立记录。面向 WebView 的错误保持固定类型和脱敏信息。
+
+备份、恢复、首次迁移前的停机要求与旧版兼容边界由
+[开发数据指南](DEVELOPMENT.md#development-data)说明。
 
 ### Settings schema compatibility
 
@@ -2803,9 +2848,9 @@ and Archived, including range selection.
 Unreadable histories are counted, and deleted Session IDs are removed before
 delivery. Results use the same activity time as Session timestamps, including
 historical messages without rewriting their Session metadata. A name match
-remains available when its history cannot be read. Search keeps no persistent
-index and does not inspect model settings,
-credentials, binary attachments or Live state. The browser owns query, pagination
+remains available when its history cannot be read. Search uses Session summaries
+and matches literal substrings against the stored user and assistant text projection.
+The browser owns query, pagination
 and cancellation, validates each response against its query receipt, and retains
 the existing list's navigation and mutation boundaries.
 The client combines message timestamps from events and authoritative snapshots
@@ -2856,7 +2901,8 @@ Extension Host processes. Different Sessions may observe and plan in parallel;
 the Live mutation queue serializes their writes. Session Approval changes have
 their own intent fence and remain available during a send as described below.
 
-Model context uses the complete uncompacted user/assistant history plus
+Model context is independent of the visible history window. It uses the complete
+uncompacted user/assistant history plus
 provider-neutral text records of Tool calls, Tool results, and Apply results, or
 the latest persisted compaction checkpoint followed by that same newer tail.
 Historical activity is labelled untrusted and potentially stale, never restores
@@ -3193,7 +3239,16 @@ the replay guard uses constant space. Queue entries have a separate logical
 correlation ID, so a delayed terminal from a failed attempt cannot match its
 retry.
 
-### Message actions
+### Conversation history and message actions
+
+The active Session snapshot includes the latest 100 persisted events at most.
+`/session-events` loads up to 100 events in insertion order before or after a
+cursor, or around an exact event ID for search navigation. Pages are scoped to
+the Session and its history identity. The client discards stale responses after
+a view change, merges contiguous pages and deduplicates by event ID. Paging keeps
+message focus and scroll position. Saved attachment metadata, the latest brief
+proposal and the compaction marker have separate projections. Active approvals
+remain actionable independently of the visible history page.
 
 Copy writes the original message text through the browser clipboard API, with
 a temporary document-selection fallback for embedded webviews. It does not copy
@@ -3617,10 +3672,12 @@ confirmation again. The durable receipt remains authoritative after the send
 leaves memory, so a terminal same-ID retry can return success only for the exact
 original send, prompt, and attachment selection. If a storage commit and the receipt read are both
 uncertain, `/steer` returns a prompt-free
-`steeringOutcome: "unknown"`; the client retains the same ID. Every terminal
-send state also carries the Session events for that send, and the client
-reconciles a pending steering receipt before clearing or safely retaining its
-draft. Send-owned Session activity carries the exact send ID; reconnect settles
+`steeringOutcome: "unknown"`; the client retains the same ID. The authenticated
+`/send-receipt` lookup verifies the exact prompt and ordered attachments against
+persisted Send or Steer receipts across all pages. A matching receipt confirms
+the message, and a confirmed absence permits retry. A conflict or unresolved read
+keeps the pending identity. Send-owned Session activity carries the exact send ID.
+Reconnect settles
 a local attempt from `completed` state only when that ID matches, so an older
 completed activity cannot terminate a newly submitted request. Until that
 reconciliation, only the byte-identical guidance may retry

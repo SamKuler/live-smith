@@ -1,3 +1,5 @@
+import { readStoredText, readStoredBytes, writeStoredBytes } from "../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -35,9 +37,7 @@ const emptySessionInput = {
 };
 
 async function readPersistedSessions(directory: string): Promise<AgentSession[]> {
-  return JSON.parse(await fs.readFile(
-    path.join(directory, "live-smith-sessions.json"), "utf8",
-  )) as AgentSession[];
+  return JSON.parse(await readStoredText(directory, path.join(directory, "live-smith-sessions.json"))) as AgentSession[];
 }
 
 test("createSession stores title, projectKey, scope, and timestamps", async () => {
@@ -59,7 +59,7 @@ test("createSession stores title, projectKey, scope, and timestamps", async () =
   assert.equal(typeof session.updatedAt, "string");
 });
 
-test("transient Sessions remain visible and storage-scoped without creating a Session file", async (t) => {
+test("transient Sessions remain visible and storage-scoped without persisting a Session record", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const firstDir = path.join(dir, "first");
@@ -74,7 +74,7 @@ test("transient Sessions remain visible and storage-scoped without creating a Se
   });
   for (const directory of [firstDir, secondDir]) {
     await assert.rejects(
-      fs.readFile(path.join(directory, "live-smith-sessions.json")),
+      readStoredBytes(directory, path.join(directory, "live-smith-sessions.json")),
       { code: "ENOENT" },
     );
   }
@@ -83,7 +83,7 @@ test("transient Sessions remain visible and storage-scoped without creating a Se
   assert.deepEqual(await listSessions(firstDir), []);
   assert.deepEqual(await listSessions(secondDir), [second]);
   await assert.rejects(
-    fs.readFile(path.join(firstDir, "live-smith-sessions.json")),
+    readStoredBytes(firstDir, path.join(firstDir, "live-smith-sessions.json")),
     { code: "ENOENT" },
   );
   await deleteSession(secondDir, second.id);
@@ -214,7 +214,7 @@ test("rejected mutations leave a transient Session unsaved", async (t) => {
   );
   assert.deepEqual(await listSessions(dir), [session]);
   await assert.rejects(
-    fs.readFile(path.join(dir, "live-smith-sessions.json")),
+    readStoredBytes(dir, path.join(dir, "live-smith-sessions.json")),
     { code: "ENOENT" },
   );
   await deleteSession(dir, session.id);
@@ -225,9 +225,7 @@ test("a durable Session supersedes its transient reservation and cannot resurrec
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const session = await createSession(dir, emptySessionInput, { transient: true });
   const committed = { ...session, title: "Committed by an uncertain write", approvalMode: "low-risk" };
-  await fs.writeFile(
-    path.join(dir, "live-smith-sessions.json"), JSON.stringify([committed]),
-  );
+  await writeStoredBytes(dir, path.join(dir, "live-smith-sessions.json"), Buffer.from(JSON.stringify([committed])));
 
   assert.deepEqual(await listSessions(dir), [committed]);
   await withStorageTransaction(dir, async (transaction) => {
@@ -270,7 +268,7 @@ test("deleteSession removes its approval mode with the Session record", async ()
   assert.deepEqual(await listSessions(dir), [replacement]);
   assert.equal(replacement.approvalMode, undefined);
   const persisted = JSON.parse(
-    await fs.readFile(path.join(dir, "live-smith-sessions.json"), "utf8"),
+    await readStoredText(dir, path.join(dir, "live-smith-sessions.json")),
   ) as Array<{ id: string; approvalMode?: string }>;
   assert.deepEqual(persisted.map(({ id }) => id), [replacement.id]);
   assert.equal(Object.hasOwn(persisted[0]!, "approvalMode"), false);
@@ -466,9 +464,7 @@ test("edit scopes persist independently and survive Session lifecycle changes", 
   await updateSession(dir, session.id, { editScopes: [] });
   const [readOnly] = await listSessions(dir);
   assert.deepEqual(readOnly, { ...session, editScopes: [], updatedAt: readOnly?.updatedAt });
-  assert.deepEqual(JSON.parse(await fs.readFile(
-    path.join(dir, "live-smith-sessions.json"), "utf8",
-  ))[0].editScopes, []);
+  assert.deepEqual(JSON.parse(await readStoredText(dir, path.join(dir, "live-smith-sessions.json")))[0].editScopes, []);
 
   await updateSession(dir, session.id, { editScopes: ["devices", "audio"] });
   const restored = await restoreSession(dir, session.id, {
@@ -493,7 +489,7 @@ test("edit scopes reject malformed create, update, and persisted values without 
     editScopes: [...EDIT_SCOPES],
   });
   const target = path.join(dir, "live-smith-sessions.json");
-  const original = await fs.readFile(target, "utf8");
+  const original = await readStoredText(dir, target);
   for (const editScopes of [undefined, null, false, "midi", ["unknown"], ["midi", "midi"], [0]]) {
     await assert.rejects(
       createSession(dir, { ...session, editScopes } as never),
@@ -503,17 +499,17 @@ test("edit scopes reject malformed create, update, and persisted values without 
       updateSession(dir, session.id, { editScopes } as never),
       /Edit scopes/i,
     );
-    assert.equal(await fs.readFile(target, "utf8"), original);
+    assert.equal(await readStoredText(dir, target), original);
     if (editScopes === undefined) continue;
     const corrupt = JSON.stringify([{ ...session, editScopes }]);
-    await fs.writeFile(target, corrupt);
+    await writeStoredBytes(dir, target, Buffer.from(corrupt));
     await assert.rejects(listSessions(dir), SessionStorageCorruptionError);
     await assert.rejects(
       updateSession(dir, session.id, { title: "Do not overwrite corruption" }),
       SessionStorageCorruptionError,
     );
-    assert.equal(await fs.readFile(target, "utf8"), corrupt);
-    await fs.writeFile(target, original);
+    assert.equal(await readStoredText(dir, target), corrupt);
+    await writeStoredBytes(dir, target, Buffer.from(original));
   }
 });
 
@@ -526,14 +522,14 @@ test("legacy scope metadata stays absent and valid persisted scopes normalize on
     scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
   });
   const target = path.join(dir, "live-smith-sessions.json");
-  const original = await fs.readFile(target, "utf8");
+  const original = await readStoredText(dir, target);
   assert.equal(Object.hasOwn((await listSessions(dir))[0]!, "editScopes"), false);
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 
   const unordered = JSON.stringify([{ ...legacy, editScopes: ["mixer", "midi"] }]);
-  await fs.writeFile(target, unordered);
+  await writeStoredBytes(dir, target, Buffer.from(unordered));
   assert.deepEqual((await listSessions(dir))[0]?.editScopes, ["midi", "mixer"]);
-  assert.equal(await fs.readFile(target, "utf8"), unordered);
+  assert.equal(await readStoredText(dir, target), unordered);
 });
 
 test("memory edit scopes are copied on create, update, listing, and restore", async (t) => {
@@ -670,13 +666,13 @@ test("invalid persisted modelSelection makes Session storage corrupt without rew
     createdAt: now,
     updatedAt: now,
   }]);
-  await fs.writeFile(target, original);
+  await writeStoredBytes(dir, target, Buffer.from(original));
 
   await assert.rejects(
     listSessions(dir),
     (error: unknown) => error instanceof SessionStorageCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 });
 
 test("approvalMode validation rejects invalid created, updated, and persisted values", async () => {
@@ -698,22 +694,22 @@ test("approvalMode validation rejects invalid created, updated, and persisted va
     approvalMode: "manual",
   });
   const target = path.join(dir, "live-smith-sessions.json");
-  const before = await fs.readFile(target, "utf8");
+  const before = await readStoredText(dir, target);
   await assert.rejects(
     updateSession(dir, session.id, { approvalMode: false } as never),
     /Approval mode is invalid/i,
   );
-  assert.equal(await fs.readFile(target, "utf8"), before);
+  assert.equal(await readStoredText(dir, target), before);
 
   const persisted = JSON.parse(before) as Array<Record<string, unknown>>;
   persisted[0]!.approvalMode = "unsafe";
   const invalid = JSON.stringify(persisted);
-  await fs.writeFile(target, invalid);
+  await writeStoredBytes(dir, target, Buffer.from(invalid));
   await assert.rejects(
     listSessions(dir),
     (error: unknown) => error instanceof SessionStorageCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), invalid);
+  assert.equal(await readStoredText(dir, target), invalid);
 });
 
 test("legacy Sessions without approvalMode load without being rewritten", async () => {
@@ -727,11 +723,11 @@ test("legacy Sessions without approvalMode load without being rewritten", async 
     createdAt: "2026-08-01T00:00:00.000Z",
     updatedAt: "2026-08-01T00:00:00.000Z",
   }]);
-  await fs.writeFile(target, legacy);
+  await writeStoredBytes(dir, target, Buffer.from(legacy));
 
   const [session] = await listSessions(dir);
   assert.equal(session?.approvalMode, undefined);
-  assert.equal(await fs.readFile(target, "utf8"), legacy);
+  assert.equal(await readStoredText(dir, target), legacy);
 });
 
 test("activeSkillIds validation rejects unsafe, duplicate, oversized, and non-array updates", async () => {
@@ -742,7 +738,7 @@ test("activeSkillIds validation rejects unsafe, duplicate, oversized, and non-ar
     scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
     activeSkillIds: ["mixing-review"],
   });
-  const before = await fs.readFile(path.join(dir, "live-smith-sessions.json"), "utf8");
+  const before = await readStoredText(dir, path.join(dir, "live-smith-sessions.json"));
 
   const invalidValues: unknown[] = [
     ["../escape"],
@@ -757,7 +753,7 @@ test("activeSkillIds validation rejects unsafe, duplicate, oversized, and non-ar
       /Skill activation is invalid/i,
     );
     assert.equal(
-      await fs.readFile(path.join(dir, "live-smith-sessions.json"), "utf8"),
+      await readStoredText(dir, path.join(dir, "live-smith-sessions.json")),
       before,
     );
   }
@@ -782,7 +778,7 @@ test("activeSkillIds validation applies to Session creation", async () => {
       /Skill activation is invalid/i,
     );
     await assert.rejects(
-      fs.readFile(path.join(dir, "live-smith-sessions.json")),
+      readStoredBytes(dir, path.join(dir, "live-smith-sessions.json")),
       (error: unknown) =>
         typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT",
     );
@@ -801,7 +797,7 @@ test("old Sessions load unchanged and restored Sessions preserve activeSkillIds"
     createdAt: now,
     updatedAt: now,
   };
-  await fs.writeFile(target, JSON.stringify([legacy]));
+  await writeStoredBytes(dir, target, Buffer.from(JSON.stringify([legacy])));
 
   assert.deepEqual(await listSessions(dir), [legacy]);
   await updateSession(dir, legacy.id, {
@@ -837,13 +833,13 @@ test("invalid persisted activeSkillIds make Session storage corrupt without rewr
       createdAt: now,
       updatedAt: now,
     }]);
-    await fs.writeFile(target, original);
+    await writeStoredBytes(dir, target, Buffer.from(original));
 
     await assert.rejects(
       listSessions(dir),
       (error: unknown) => error instanceof SessionStorageCorruptionError,
     );
-    assert.equal(await fs.readFile(target, "utf8"), original);
+    assert.equal(await readStoredText(dir, target), original);
   }
 });
 
@@ -864,7 +860,7 @@ test("Session storage rejects unknown fields instead of projecting them into cha
     { ...base, skillBody: "PRIVATE SKILL BODY" },
     { ...base, scope: { ...base.scope, privateData: "PRIVATE SKILL BODY" } },
   ]) {
-    await fs.writeFile(target, JSON.stringify([value]));
+    await writeStoredBytes(dir, target, Buffer.from(JSON.stringify([value])));
     await assert.rejects(
       listSessions(dir),
       (error: unknown) => error instanceof SessionStorageCorruptionError,
@@ -954,7 +950,7 @@ test("updateSession rejects unknown Sessions and fields without writing", async 
     scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
   });
   const target = path.join(dir, "live-smith-sessions.json");
-  const before = await fs.readFile(target, "utf8");
+  const before = await readStoredText(dir, target);
 
   await assert.rejects(
     updateSession(dir, "session-missing", { activeSkillIds: [] }),
@@ -964,7 +960,7 @@ test("updateSession rejects unknown Sessions and fields without writing", async 
     updateSession(dir, session.id, { projectKey: "other-set" } as never),
     /Session update is invalid/i,
   );
-  assert.equal(await fs.readFile(target, "utf8"), before);
+  assert.equal(await readStoredText(dir, target), before);
 });
 
 test("restoreSession rejects missing and already-current Sessions", async () => {
@@ -995,7 +991,7 @@ test("corrupt session storage blocks reads and mutations without changing bytes"
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
   const target = path.join(dir, "live-smith-sessions.json");
   const original = "{invalid";
-  await fs.writeFile(target, original);
+  await writeStoredBytes(dir, target, Buffer.from(original));
 
   await assert.rejects(
     listSessions(dir),
@@ -1009,19 +1005,19 @@ test("corrupt session storage blocks reads and mutations without changing bytes"
     }),
     (error: unknown) => error instanceof SessionStorageCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 });
 
 test("a persisted unsafe session ID makes the session file invalid", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-sessions-"));
-  await fs.writeFile(path.join(dir, "live-smith-sessions.json"), JSON.stringify([{
+  await writeStoredBytes(dir, path.join(dir, "live-smith-sessions.json"), Buffer.from(JSON.stringify([{
     id: "../live-smith-settings",
     title: "Unsafe",
     projectKey: "set-001",
     scope: { kind: "selection", identity: "selection-1", label: "Live Set" },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-  }]));
+  }])));
 
   await assert.rejects(
     listSessions(dir),
@@ -1040,13 +1036,13 @@ test("one invalid persisted session blocks mutation instead of dropping the item
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }, { id: "session-invalid" }]);
-  await fs.writeFile(target, original);
+  await writeStoredBytes(dir, target, Buffer.from(original));
 
   await assert.rejects(
     deleteSession(dir, "session-valid"),
     (error: unknown) => error instanceof SessionStorageCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 });
 
 test("a malformed persisted origin scope is rejected without rewriting storage", async () => {
@@ -1061,13 +1057,13 @@ test("a malformed persisted origin scope is rejected without rewriting storage",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }]);
-  await fs.writeFile(target, original);
+  await writeStoredBytes(dir, target, Buffer.from(original));
 
   await assert.rejects(
     listSessions(dir),
     (error: unknown) => error instanceof SessionStorageCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 });
 
 test("a malformed persisted archive timestamp is rejected without rewriting storage", async () => {
@@ -1082,13 +1078,13 @@ test("a malformed persisted archive timestamp is rejected without rewriting stor
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   }]);
-  await fs.writeFile(target, original);
+  await writeStoredBytes(dir, target, Buffer.from(original));
 
   await assert.rejects(
     listSessions(dir),
     (error: unknown) => error instanceof SessionStorageCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 });
 
 test("duplicate persisted session IDs block reads and mutations without changing bytes", async () => {
@@ -1113,7 +1109,7 @@ test("duplicate persisted session IDs block reads and mutations without changing
       updatedAt: now,
     },
   ]);
-  await fs.writeFile(target, original);
+  await writeStoredBytes(dir, target, Buffer.from(original));
 
   await assert.rejects(
     listSessions(dir),
@@ -1127,7 +1123,7 @@ test("duplicate persisted session IDs block reads and mutations without changing
     }),
     (error: unknown) => error instanceof SessionStorageCorruptionError,
   );
-  assert.equal(await fs.readFile(target, "utf8"), original);
+  assert.equal(await readStoredText(dir, target), original);
 });
 
 test("sessionScopeKey uses stable identity instead of display label", () => {

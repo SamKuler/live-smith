@@ -1,7 +1,6 @@
 import { uiMessage, UiMessageError } from "../i18n/ui-message.js";
 import { Buffer } from "node:buffer";
-import { constants } from "node:fs";
-import * as fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import * as path from "node:path";
 import { allocateArtifactVersion, isArtifactLabel } from "../agent/artifact-contracts.js";
 import { isDeviceParameterApplication, isDeviceParameterArtifact, isDeviceParameterSnapshot, MAX_DEVICE_PARAMETERS,
@@ -10,7 +9,8 @@ import { cloneJsonValue } from "../model/json-clone.js";
 import { throwIfAborted } from "../runtime/host.js";
 import { isMissingFileError } from "./errors.js";
 import { createStorageId, isSafeStorageId, requireSafeStorageId } from "./id.js";
-import { ensurePrivateDirectoryDurably, removeDirectoryDurably, withStorageTransaction, writeJsonAtomically, writeJsonAtomicallyCreateOnly } from "./persistence.js";
+import { withStorageTransaction } from "./persistence.js";
+import { listStoredChildren, openStoredReader, removeStoredTree, writeStoredJson } from "./sqlite.js";
 import { listSessions, persistTransientSessionInTransaction } from "./sessions.js";
 
 const rootName = "live-smith-device-parameters";
@@ -19,38 +19,25 @@ export const MAX_PARAMETER_SESSION_BYTES = 64 * 1024 * 1024;
 export const MAX_PARAMETER_ARTIFACTS = 64;
 const maxApplications = 256;
 
-async function sessionDirectory(storageDirectory: string, sessionId: string, create = false): Promise<string> {
+async function sessionDirectory(storageDirectory: string, sessionId: string): Promise<string> {
   if (!path.isAbsolute(storageDirectory)) throw new UiMessageError(uiMessage("Parameter artifact storage is unavailable."));
   requireSafeStorageId(sessionId, "Session ID");
-  const root = path.join(storageDirectory, rootName);
-  const directory = path.join(root, sessionId);
-  for (const target of [storageDirectory, root, directory]) {
-    try {
-      const stat = await fs.lstat(target);
-      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new UiMessageError(uiMessage("Parameter artifact directory is invalid."));
-    } catch (error) { if (!isMissingFileError(error)) throw error; if (!create) return directory; await ensurePrivateDirectoryDurably(target); }
-  }
-  return directory;
+  return path.join(storageDirectory, rootName, sessionId);
 }
 
-async function readJson(file: string, maximum: number): Promise<unknown> {
-  const before = await fs.lstat(file);
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > maximum) throw new UiMessageError(uiMessage("Parameter artifact file is invalid or too large."));
-  const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+async function readJson(storageDirectory: string, file: string, maximum: number): Promise<unknown> {
+  const reader = await openStoredReader(storageDirectory, file);
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino || stat.nlink > 1 || stat.size > maximum) throw new UiMessageError(uiMessage("Parameter artifact file is invalid or changed while opening."));
-    const bytes = Buffer.alloc(stat.size + 1);
-    let bytesRead = 0;
-    while (bytesRead < bytes.length) {
-      const chunk = await handle.read(bytes, bytesRead, bytes.length - bytesRead, bytesRead);
-      if (!chunk.bytesRead) break;
-      bytesRead += chunk.bytesRead;
+    if (reader.entry.byteLength > maximum) throw new UiMessageError(uiMessage("Parameter artifact file is invalid or too large."));
+    const bytes = Buffer.alloc(reader.entry.byteLength);
+    const hash = createHash("sha256");
+    for (let offset = 0, index = 0; offset < bytes.length; index++) {
+      const chunk = reader.readChunk(index); bytes.set(chunk, offset); hash.update(chunk); offset += chunk.length;
     }
-    if (bytesRead !== stat.size) throw new UiMessageError(uiMessage("Parameter artifact file changed while reading."));
-    try { return JSON.parse(bytes.subarray(0, bytesRead).toString("utf8")); }
+    if (hash.digest("hex") !== reader.entry.sha256) throw new UiMessageError(uiMessage("Saved device parameter data is invalid."));
+    try { return JSON.parse(bytes.toString("utf8")); }
     catch { throw new UiMessageError(uiMessage("Saved device parameter data is invalid.")); }
-  } finally { await handle.close(); }
+  } finally { reader.close(); }
 }
 
 async function requireSession(storageDirectory: string, sessionId: string): Promise<void> {
@@ -59,12 +46,11 @@ async function requireSession(storageDirectory: string, sessionId: string): Prom
   }
 }
 
-async function readArtifacts(directory: string, sessionId: string): Promise<DeviceParameterArtifact[]> {
-  let entries: string[];
-  try { entries = await fs.readdir(directory); } catch (error) { if (isMissingFileError(error)) return []; throw error; }
+async function readArtifacts(storageDirectory: string, directory: string, sessionId: string): Promise<DeviceParameterArtifact[]> {
+  const entries = await listStoredChildren(storageDirectory, directory);
   const result: DeviceParameterArtifact[] = [];
   for (const name of entries.filter((name) => name.startsWith("parameters_") && name.endsWith(".json")).sort()) {
-    const value = await readJson(path.join(directory, name), MAX_PARAMETER_ARTIFACT_BYTES);
+    const value = await readJson(storageDirectory, path.join(directory, name), MAX_PARAMETER_ARTIFACT_BYTES);
     if (!isDeviceParameterArtifact(value) || value.sessionId !== sessionId || `${value.id}.json` !== name) {
       throw new UiMessageError(uiMessage("Saved device parameter data is invalid. No versions were changed."));
     }
@@ -77,7 +63,7 @@ export async function listDeviceParameterArtifacts(storageDirectory: string | un
   if (!storageDirectory) return [];
   return withStorageTransaction(storageDirectory, async () => {
     await requireSession(storageDirectory, sessionId);
-    return readArtifacts(await sessionDirectory(storageDirectory, sessionId), sessionId);
+    return readArtifacts(storageDirectory, await sessionDirectory(storageDirectory, sessionId), sessionId);
   });
 }
 
@@ -87,7 +73,7 @@ export async function readDeviceParameterArtifact(storageDirectory: string | und
   await requireSession(storageDirectory, sessionId);
   try {
     const directory = await sessionDirectory(storageDirectory, sessionId);
-    const artifact = await readJson(path.join(directory, `${artifactId}.json`), MAX_PARAMETER_ARTIFACT_BYTES);
+    const artifact = await readJson(storageDirectory, path.join(directory, `${artifactId}.json`), MAX_PARAMETER_ARTIFACT_BYTES);
     if (!isDeviceParameterArtifact(artifact) || artifact.id !== artifactId || artifact.sessionId !== sessionId) throw new UiMessageError(uiMessage("Invalid parameter artifact."));
     return artifact;
   } catch { throw new UiMessageError(uiMessage("That saved device parameter artifact is unavailable or invalid. Choose an existing version from this Session.")); }
@@ -103,8 +89,8 @@ export async function saveDeviceParameterArtifact(storageDirectory: string, sess
     throwIfAborted(input.signal);
     await requireSession(storageDirectory, sessionId);
     await persistTransientSessionInTransaction(transaction, storageDirectory, sessionId);
-    const directory = await sessionDirectory(storageDirectory, sessionId, true);
-    const records = await readArtifacts(directory, sessionId);
+    const directory = await sessionDirectory(storageDirectory, sessionId);
+    const records = await readArtifacts(storageDirectory, directory, sessionId);
     const base = input.revisionOf ? records.find((entry) => entry.id === input.revisionOf) : undefined;
     if (input.revisionOf && (!base || !sameParameterLayout(base.parameters, snapshot.parameters) ||
         JSON.stringify(base.target) !== JSON.stringify(snapshot.target))) throw new UiMessageError(uiMessage("Choose a source snapshot of the same device and parameter layout."));
@@ -117,7 +103,7 @@ export async function saveDeviceParameterArtifact(storageDirectory: string, sess
       throw new UiMessageError(uiMessage("This Session has reached its device parameter storage limit."));
     }
     throwIfAborted(input.signal);
-    await writeJsonAtomicallyCreateOnly(path.join(directory, `${id}.json`), artifact);
+    await writeStoredJson(storageDirectory, path.join(directory, `${id}.json`), artifact, { createOnly: true });
     return cloneJsonValue(artifact);
   });
 }
@@ -126,9 +112,9 @@ export async function listDeviceParameterApplications(storageDirectory: string |
   if (!storageDirectory) return [];
   const directory = await sessionDirectory(storageDirectory, sessionId);
   const root = path.join(directory, "applications");
-  const ids = await applicationIds(root);
+  const ids = await applicationIds(storageDirectory, root);
   const result: DeviceParameterApplication[] = [];
-  for (const id of ids) result.push(await readApplication(path.join(root, id), sessionId, id));
+  for (const id of ids) result.push(await readApplication(storageDirectory, path.join(root, id), sessionId, id));
   return result.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 }
 
@@ -144,46 +130,38 @@ function isEntryProgress(value: unknown): value is EntryProgress {
 }
 const entryProgress = (entry: ApplicationEntry): EntryProgress => ({ index: entry.parameter.index, state: entry.state, ...(entry.after === undefined ? {} : { after: entry.after }) });
 
-async function assertDirectory(directory: string): Promise<void> {
-  const stat = await fs.lstat(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new UiMessageError(uiMessage("Parameter application directory is invalid."));
-}
-async function applicationIds(root: string): Promise<string[]> {
-  try {
-    await assertDirectory(root);
-    const ids = (await fs.readdir(root, { withFileTypes: true })).filter((entry) => entry.name.endsWith(".json") && isSafeStorageId(entry.name.slice(0, -5))).map((entry) => entry.name.slice(0, -5));
-    if (ids.length > maxApplications) throw new UiMessageError(uiMessage("Parameter application history exceeds its limit."));
-    return ids.sort();
-  } catch (error) { if (isMissingFileError(error)) return []; throw error; }
+async function applicationIds(storageDirectory: string, root: string): Promise<string[]> {
+  const ids = (await listStoredChildren(storageDirectory, root))
+    .filter(name => name.endsWith(".json") && isSafeStorageId(name.slice(0, -5))).map(name => name.slice(0, -5));
+  if (ids.length > maxApplications) throw new UiMessageError(uiMessage("Parameter application history exceeds its limit."));
+  return ids.sort();
 }
 
-async function readBaseline(directory: string, sessionId: string, id: string): Promise<{ application: DeviceParameterApplication; reservedBytes: number }> {
-  await assertDirectory(directory);
-  const value = await readJson(path.join(path.dirname(directory), `${id}.json`), MAX_PARAMETER_SESSION_BYTES) as { application?: unknown; reservedBytes?: unknown };
+async function readBaseline(storageDirectory: string, directory: string, sessionId: string, id: string): Promise<{ application: DeviceParameterApplication; reservedBytes: number }> {
+  const value = await readJson(storageDirectory, path.join(path.dirname(directory), `${id}.json`), MAX_PARAMETER_SESSION_BYTES) as { application?: unknown; reservedBytes?: unknown };
   if (!value || !isDeviceParameterApplication(value.application) || value.application.sessionId !== sessionId || value.application.id !== id ||
       typeof value.reservedBytes !== "number" || value.reservedBytes !== applicationReservation(value.application)) throw new UiMessageError(uiMessage("Parameter application baseline is invalid."));
   return { application: value.application, reservedBytes: value.reservedBytes };
 }
 
-async function readApplication(directory: string, sessionId: string, id: string): Promise<DeviceParameterApplication> {
-  await assertDirectory(directory);
+async function readApplication(storageDirectory: string, directory: string, sessionId: string, id: string): Promise<DeviceParameterApplication> {
   try {
-    const completed = await readJson(path.join(directory, "result.json"), MAX_PARAMETER_SESSION_BYTES);
+    const completed = await readJson(storageDirectory, path.join(directory, "result.json"), MAX_PARAMETER_SESSION_BYTES);
     if (!isDeviceParameterApplication(completed) || completed.sessionId !== sessionId || completed.id !== id || !["kept", "restored"].includes(completed.status)) throw new UiMessageError(uiMessage("Parameter application result is invalid."));
     return completed;
   } catch (error) { if (!isMissingFileError(error)) throw error; }
-  const { application } = await readBaseline(directory, sessionId, id);
+  const { application } = await readBaseline(storageDirectory, directory, sessionId, id);
   try {
-    const state = await readJson(path.join(directory, "state.json"), MAX_PARAMETER_SESSION_BYTES) as Pick<DeviceParameterApplication, "status" | "restorationBaseline">;
+    const state = await readJson(storageDirectory, path.join(directory, "state.json"), MAX_PARAMETER_SESSION_BYTES) as Pick<DeviceParameterApplication, "status" | "restorationBaseline">;
     if (!state || Object.keys(state).some((key) => !["status", "restorationBaseline"].includes(key))) throw new UiMessageError(uiMessage("Parameter application state is invalid."));
     application.status = state.status;
     if (state.restorationBaseline !== undefined) application.restorationBaseline = state.restorationBaseline;
   } catch (error) { if (!isMissingFileError(error)) throw error; }
   const entries = new Map(application.entries.map((entry) => [entry.parameter.index, entry]));
-  const files = (await fs.readdir(directory)).filter((name) => /^parameter-\d+\.json$/u.test(name));
+  const files = (await listStoredChildren(storageDirectory, directory)).filter((name) => /^parameter-\d+\.json$/u.test(name));
   for (let offset = 0; offset < files.length; offset += 16) {
     const progress = await Promise.all(files.slice(offset, offset + 16).map(async (name) => {
-      const value = await readJson(path.join(directory, name), 512);
+      const value = await readJson(storageDirectory, path.join(directory, name), 512);
       if (!isEntryProgress(value) || name !== `parameter-${value.index}.json`) throw new UiMessageError(uiMessage("Parameter application progress is invalid."));
       return value;
     }));
@@ -216,22 +194,20 @@ export async function saveDeviceParameterApplication(storageDirectory: string, a
   await withStorageTransaction(storageDirectory, async (transaction) => {
     await requireSession(storageDirectory, saved.sessionId);
     await persistTransientSessionInTransaction(transaction, storageDirectory, saved.sessionId);
-    const root = path.join(await sessionDirectory(storageDirectory, saved.sessionId, true), "applications");
-    try { await assertDirectory(root); } catch (error) { if (!isMissingFileError(error)) throw error; await ensurePrivateDirectoryDurably(root); }
+    const root = path.join(await sessionDirectory(storageDirectory, saved.sessionId), "applications");
     const directory = path.join(root, saved.id);
-    const ids = await applicationIds(root);
+    const ids = await applicationIds(storageDirectory, root);
     if (!ids.includes(saved.id)) {
       const reservedBytes = applicationReservation(saved);
       let reserved = reservedBytes;
-      for (const id of ids) reserved += (await readBaseline(path.join(root, id), saved.sessionId, id)).reservedBytes;
+      for (const id of ids) reserved += (await readBaseline(storageDirectory, path.join(root, id), saved.sessionId, id)).reservedBytes;
       if (ids.length >= maxApplications || reserved > MAX_PARAMETER_SESSION_BYTES) throw new UiMessageError(uiMessage("This Session has reached its parameter application history limit."));
-      try { await assertDirectory(directory); } catch (error) { if (!isMissingFileError(error)) throw error; await ensurePrivateDirectoryDurably(directory); }
-      await writeJsonAtomicallyCreateOnly(path.join(root, `${saved.id}.json`), { application: saved, reservedBytes });
+      await writeStoredJson(storageDirectory, path.join(root, `${saved.id}.json`), { application: saved, reservedBytes }, { createOnly: true });
       return;
     }
-    const baseline = await readBaseline(directory, saved.sessionId, saved.id);
+    const baseline = await readBaseline(storageDirectory, directory, saved.sessionId, saved.id);
     if (applicationIdentity(baseline.application) !== applicationIdentity(saved)) throw new UiMessageError(uiMessage("A parameter application baseline cannot be changed."));
-    const previous = await readApplication(directory, saved.sessionId, saved.id);
+    const previous = await readApplication(storageDirectory, directory, saved.sessionId, saved.id);
     if (previous.status === "kept" || previous.status === "restored") {
       if (JSON.stringify(previous) !== JSON.stringify(saved)) throw new UiMessageError(uiMessage("A completed parameter application cannot be changed."));
       return;
@@ -239,12 +215,12 @@ export async function saveDeviceParameterApplication(storageDirectory: string, a
     const previousEntries = new Map(previous.entries.map((entry) => [entry.parameter.index, entry]));
     for (const entry of saved.entries) {
       const before = previousEntries.get(entry.parameter.index)!;
-      if (JSON.stringify(entryProgress(entry)) !== JSON.stringify(entryProgress(before))) await writeJsonAtomically(path.join(directory, `parameter-${entry.parameter.index}.json`), entryProgress(entry));
+      if (JSON.stringify(entryProgress(entry)) !== JSON.stringify(entryProgress(before))) await writeStoredJson(storageDirectory, path.join(directory, `parameter-${entry.parameter.index}.json`), entryProgress(entry));
     }
     if (saved.status === "kept" || saved.status === "restored") {
-      await writeJsonAtomicallyCreateOnly(path.join(directory, "result.json"), saved);
+      await writeStoredJson(storageDirectory, path.join(directory, "result.json"), saved, { createOnly: true });
     } else {
-      await writeJsonAtomically(path.join(directory, "state.json"), { status: saved.status, ...(saved.restorationBaseline ? { restorationBaseline: saved.restorationBaseline } : {}) });
+      await writeStoredJson(storageDirectory, path.join(directory, "state.json"), { status: saved.status, ...(saved.restorationBaseline ? { restorationBaseline: saved.restorationBaseline } : {}) });
     }
   });
 }
@@ -255,18 +231,18 @@ export async function saveDeviceParameterProgress(storageDirectory: string, sess
   if (!isEntryProgress(progress)) throw new UiMessageError(uiMessage("Parameter application progress is invalid."));
   await withStorageTransaction(storageDirectory, async () => {
     const directory = path.join(await sessionDirectory(storageDirectory, sessionId), "applications", applicationId);
-    await assertDirectory(path.dirname(directory)); await assertDirectory(directory);
-    await writeJsonAtomically(path.join(directory, `parameter-${progress.index}.json`), progress);
+    const baseline = await readBaseline(storageDirectory, directory, sessionId, applicationId);
+    if (!baseline.application.entries.some(entry => entry.parameter.index === progress.index)) throw new UiMessageError(uiMessage("Parameter application progress has no baseline."));
+    await writeStoredJson(storageDirectory, path.join(directory, `parameter-${progress.index}.json`), progress);
   });
 }
 
 export async function deleteSessionDeviceParameters(storageDirectory: string | undefined, sessionId: string): Promise<void> {
   if (!storageDirectory) return;
-  await withStorageTransaction(storageDirectory, async () => removeDirectoryDurably(await sessionDirectory(storageDirectory, sessionId)));
+  await withStorageTransaction(storageDirectory, async () => { await removeStoredTree(storageDirectory, await sessionDirectory(storageDirectory, sessionId)); });
 }
 
 export async function listSessionDeviceParameterDirectoryIds(storageDirectory: string | undefined): Promise<string[]> {
   if (!storageDirectory) return [];
-  try { return (await fs.readdir(path.join(storageDirectory, rootName), { withFileTypes: true })).filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && isSafeStorageId(entry.name)).map((entry) => entry.name); }
-  catch (error) { if (isMissingFileError(error)) return []; throw error; }
+  return (await listStoredChildren(storageDirectory, rootName)).filter(isSafeStorageId);
 }

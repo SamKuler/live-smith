@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
-import mutableFs from "node:fs/promises";
-import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
@@ -21,6 +19,7 @@ import {
   type SkillStorageFaultPoint,
   type SkillCatalogTransaction,
 } from "../../src/storage/skills.js";
+import { listStoredChildren, readStoredBytes, removeStoredEntry, storedEntry, storedTreeExists, writeStoredBytes } from "../../src/storage/sqlite.js";
 import { StorageCommitOutcomeUnknownError } from "../../src/storage/persistence.js";
 
 function skillBytes(
@@ -81,7 +80,7 @@ test("installed skill first install is private, hashed, ordered, and readable", 
     updatedAt: installed.updatedAt,
   });
   assert.equal(new Date(installed.installedAt).toISOString(), installed.installedAt);
-  assert.deepEqual(await fs.readFile(definitionPath(directory, installed.id)), source);
+  assert.deepEqual(await readStoredBytes(directory, definitionPath(directory, installed.id)), source);
   assert.deepEqual(await listInstalledSkills(directory), [installed]);
   assert.deepEqual(await readInstalledSkill(directory, installed.id), {
     id: installed.id,
@@ -89,18 +88,8 @@ test("installed skill first install is private, hashed, ordered, and readable", 
     body: `# ${installed.id}\n\nUse existing Live Smith tools carefully.\n`,
   });
 
-  if (process.platform !== "win32") {
-    assert.equal(
-      (await fs.stat(path.join(directory, "live-smith-skills"))).mode & 0o777,
-      0o700,
-    );
-    assert.equal(
-      (await fs.stat(path.dirname(definitionPath(directory, installed.id)))).mode & 0o777,
-      0o700,
-    );
-    assert.equal((await fs.stat(catalogPath(directory))).mode & 0o777, 0o600);
-    assert.equal((await fs.stat(definitionPath(directory, installed.id))).mode & 0o777, 0o600);
-  }
+  await assert.rejects(fs.lstat(path.join(directory, "live-smith-skills")), { code: "ENOENT" });
+
 });
 
 test("installed skill replacement is explicit and retains its creation timestamp", async () => {
@@ -115,13 +104,13 @@ test("installed skill replacement is explicit and retains its creation timestamp
     installSkill(directory, replacementBytes),
     /already installed/i,
   );
-  assert.deepEqual(await fs.readFile(definitionPath(directory, original.id)), skillBytes("mixing-review"));
+  assert.deepEqual(await readStoredBytes(directory, definitionPath(directory, original.id)), skillBytes("mixing-review"));
 
   const replacement = await installSkill(directory, replacementBytes, { replace: true });
   assert.equal(replacement.installedAt, original.installedAt);
   assert.ok(replacement.updatedAt >= original.updatedAt);
   assert.notEqual(replacement.sha256, original.sha256);
-  assert.deepEqual(await fs.readFile(definitionPath(directory, original.id)), replacementBytes);
+  assert.deepEqual(await readStoredBytes(directory, definitionPath(directory, original.id)), replacementBytes);
 });
 
 test("repeated replacements retain only the committed SKILL.md bytes", async () => {
@@ -137,7 +126,7 @@ test("repeated replacements retain only the committed SKILL.md bytes", async () 
   }
 
   assert.deepEqual(
-    await fs.readdir(path.dirname(definitionPath(directory, "bounded-review"))),
+    await listStoredChildren(directory, path.dirname(definitionPath(directory, "bounded-review"))),
     ["SKILL.md"],
   );
 });
@@ -146,14 +135,14 @@ test("same-byte replacement retries are idempotent after verifying stored bytes"
   const directory = await temporaryDirectory();
   const source = skillBytes("retry-review");
   const original = await installSkill(directory, source);
-  const catalogBefore = await fs.readFile(catalogPath(directory));
+  const catalogBefore = await readStoredBytes(directory, catalogPath(directory));
 
   const retried = await installSkill(directory, source, { replace: true });
 
   assert.deepEqual(retried, original);
-  assert.deepEqual(await fs.readFile(catalogPath(directory)), catalogBefore);
+  assert.deepEqual(await readStoredBytes(directory, catalogPath(directory)), catalogBefore);
   assert.deepEqual(
-    await fs.readdir(path.dirname(definitionPath(directory, "retry-review"))),
+    await listStoredChildren(directory, path.dirname(definitionPath(directory, "retry-review"))),
     ["SKILL.md"],
   );
 });
@@ -221,76 +210,28 @@ test("skill catalog metadata corruption fails closed without rewriting bytes", a
     }),
   ]) {
     const original = Buffer.from(corrupt, "utf8");
-    await fs.writeFile(target, original);
+    await writeStoredBytes(directory, target, original);
     await assert.rejects(
       listInstalledSkills(directory),
       (error: unknown) => error instanceof SkillStorageCorruptionError,
     );
-    assert.deepEqual(await fs.readFile(target), original);
+    assert.deepEqual(await readStoredBytes(directory, target), original);
   }
 });
 
-test("skill catalog rejects missing, replaced, and symlinked definitions", async (context) => {
+test("skill catalog rejects missing and replaced stored definitions", async () => {
   const missingDirectory = await temporaryDirectory();
   await installSkill(missingDirectory, skillBytes("missing-review"));
-  await fs.unlink(definitionPath(missingDirectory, "missing-review"));
-  await assert.rejects(
-    listInstalledSkills(missingDirectory),
-    (error: unknown) => error instanceof SkillStorageCorruptionError,
-  );
+  await removeStoredEntry(missingDirectory, definitionPath(missingDirectory, "missing-review"));
+  await assert.rejects(listInstalledSkills(missingDirectory), SkillStorageCorruptionError);
 
   const mismatchDirectory = await temporaryDirectory();
   await installSkill(mismatchDirectory, skillBytes("mismatch-review"));
-  const mismatchTarget = definitionPath(mismatchDirectory, "mismatch-review");
-  const original = await fs.readFile(mismatchTarget);
-  await fs.writeFile(mismatchTarget, Buffer.alloc(original.byteLength, 0x78));
-  assert.deepEqual(
-    (await listInstalledSkills(mismatchDirectory)).map((entry) => entry.id),
-    ["mismatch-review"],
-  );
-  await assert.rejects(
-    readInstalledSkill(mismatchDirectory, "mismatch-review"),
-    (error: unknown) => error instanceof SkillStorageCorruptionError,
-  );
-
-  if (process.platform === "win32") {
-    context.skip("symlink permission behavior is platform-specific");
-    return;
-  }
-  const symlinkDirectory = await temporaryDirectory();
-  await installSkill(symlinkDirectory, skillBytes("symlink-review"));
-  const external = path.join(symlinkDirectory, "external.md");
-  await fs.writeFile(external, skillBytes("symlink-review"));
-  const target = definitionPath(symlinkDirectory, "symlink-review");
-  await fs.unlink(target);
-  await fs.symlink(external, target);
-  await assert.rejects(
-    listInstalledSkills(symlinkDirectory),
-    (error: unknown) => error instanceof SkillStorageCorruptionError,
-  );
-});
-
-test("skill catalog tightens overly broad persisted permissions on read", async (context) => {
-  if (process.platform === "win32") {
-    context.skip("POSIX permissions are unavailable");
-    return;
-  }
-  const directory = await temporaryDirectory();
-  await installSkill(directory, skillBytes("private-review"));
-  const root = path.join(directory, "live-smith-skills");
-  const skillDirectory = path.join(root, "private-review");
-  await fs.chmod(root, 0o777);
-  await fs.chmod(skillDirectory, 0o755);
-  await fs.chmod(catalogPath(directory), 0o644);
-  await fs.chmod(definitionPath(directory, "private-review"), 0o666);
-
-  await listInstalledSkills(directory);
-  await readInstalledSkill(directory, "private-review");
-
-  assert.equal((await fs.stat(root)).mode & 0o777, 0o700);
-  assert.equal((await fs.stat(skillDirectory)).mode & 0o777, 0o700);
-  assert.equal((await fs.stat(catalogPath(directory))).mode & 0o777, 0o600);
-  assert.equal((await fs.stat(definitionPath(directory, "private-review"))).mode & 0o777, 0o600);
+  const target = definitionPath(mismatchDirectory, "mismatch-review");
+  const original = await readStoredBytes(mismatchDirectory, target);
+  await writeStoredBytes(mismatchDirectory, target, Buffer.alloc(original.byteLength, 0x78));
+  assert.deepEqual((await listInstalledSkills(mismatchDirectory)).map((skill) => skill.id), ["mismatch-review"]);
+  await assert.rejects(readInstalledSkill(mismatchDirectory, "mismatch-review"), SkillStorageCorruptionError);
 });
 
 test("skill memory catalog owns bytes and isolates returned values", async () => {
@@ -316,16 +257,14 @@ test("skill memory catalog owns bytes and isolates returned values", async () =>
   await assert.rejects(readInstalledSkill(undefined, id), /does not exist/i);
 });
 
-test("installed skill deletion removes its private directory and is idempotently absent", async () => {
+test("installed skill deletion removes its stored definitions and is idempotently absent", async () => {
   const directory = await temporaryDirectory();
   await installSkill(directory, skillBytes("delete-review"));
 
   await deleteInstalledSkill(directory, "delete-review");
 
   assert.deepEqual(await listInstalledSkills(directory), []);
-  await assert.rejects(fs.stat(path.dirname(definitionPath(directory, "delete-review"))), {
-    code: "ENOENT",
-  });
+  assert.equal(await storedTreeExists(directory, path.dirname(definitionPath(directory, "delete-review"))), false);
   await assert.rejects(deleteInstalledSkill(directory, "delete-review"), /does not exist/i);
 });
 
@@ -414,48 +353,18 @@ test("detached catalog operations settle before the transaction releases", async
   assert.deepEqual(await listInstalledSkills(directory), []);
 });
 
-test("definition replacement rejects a swapped parent directory before any external write", async (context) => {
-  if (process.platform === "win32") {
-    context.skip("directory symlink race setup is POSIX-specific");
-    return;
-  }
+test("Skill replacement leaves a later filesystem symlink and its external target untouched", { skip: process.platform === "win32" }, async (t) => {
   const directory = await temporaryDirectory();
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await installSkill(directory, skillBytes("parent-race"));
-  const root = path.join(directory, "live-smith-skills");
-  const skillDirectory = path.join(root, "parent-race");
-  const displaced = path.join(root, "parent-race-displaced");
-  const externalDirectory = path.join(directory, "external-target");
-  const externalDefinition = path.join(externalDirectory, "SKILL.md");
-  const externalBytes = Buffer.from("external bytes must remain unchanged");
-  await fs.mkdir(externalDirectory);
-  await fs.writeFile(externalDefinition, externalBytes);
-  let swapped = false;
-
-  await assert.rejects(
-    withSkillCatalogTransaction(
-      directory,
-      (catalog) => catalog.installSkill(
-        skillBytes("parent-race", "# Replacement\n\nDo not redirect this.\n"),
-        { replace: true },
-      ),
-      {
-        fault: async (point) => {
-          if (swapped || point !== "before-definition-replace") return;
-          swapped = true;
-          await fs.rename(skillDirectory, displaced);
-          await fs.symlink(externalDirectory, skillDirectory);
-        },
-      },
-    ),
-    (error: unknown) => error instanceof SkillStorageCorruptionError,
-  );
-
-  assert.deepEqual(await fs.readFile(externalDefinition), externalBytes);
-  assert.equal(
-    (await fs.readFile(path.join(displaced, "SKILL.md"), "utf8"))
-      .includes("Do not redirect this"),
-    false,
-  );
+  const external = path.join(directory, "external-target");
+  await fs.mkdir(external);
+  const marker = path.join(external, "SKILL.md");
+  await fs.writeFile(marker, "external bytes");
+  await fs.symlink(external, path.join(directory, "live-smith-skills"));
+  await installSkill(directory, skillBytes("parent-race", "# Replacement\n"), { replace: true });
+  assert.equal((await readInstalledSkill(directory, "parent-race")).body, "# Replacement\n");
+  assert.equal(await fs.readFile(marker, "utf8"), "external bytes");
 });
 
 test("unknown pre-journal installs leave only bounded staging that the next open removes", async () => {
@@ -478,31 +387,23 @@ test("unknown pre-journal installs leave only bounded staging that the next open
     assert.deepEqual(await listInstalledSkills(directory), []);
   }
 
-  assert.deepEqual(await fs.readdir(path.join(directory, "live-smith-skills")), [
+  assert.deepEqual(await listStoredChildren(directory, path.join(directory, "live-smith-skills")), [
     "catalog.json",
   ]);
 });
 
-test("stable opens remove only regular internal catalog temporaries", async () => {
+test("stable opens remove internal temporary records and reject unrelated records", async () => {
   const directory = await temporaryDirectory();
   await installSkill(directory, skillBytes("catalog-temp-review"));
   const root = path.join(directory, "live-smith-skills");
   const stale = path.join(root, ".catalog.json.tmp_stale-safe-id");
-  await fs.writeFile(stale, "stale", { mode: 0o600 });
-
+  await writeStoredBytes(directory, stale, Buffer.from("stale"));
   await listInstalledSkills(directory);
-  await assert.rejects(fs.stat(stale), { code: "ENOENT" });
-
-  if (process.platform !== "win32") {
-    const external = path.join(directory, "external-temp");
-    await fs.writeFile(external, "external");
-    await fs.symlink(external, stale);
-    await assert.rejects(
-      listInstalledSkills(directory),
-      (error: unknown) => error instanceof SkillStorageCorruptionError,
-    );
-    assert.equal(await fs.readFile(external, "utf8"), "external");
-  }
+  assert.equal(await storedEntry(directory, stale), undefined);
+  const unrelated = path.join(root, "unexpected.md");
+  await writeStoredBytes(directory, unrelated, Buffer.from("unrelated"));
+  await assert.rejects(listInstalledSkills(directory), SkillStorageCorruptionError);
+  assert.equal((await readStoredBytes(directory, unrelated)).toString(), "unrelated");
 });
 
 test("skill catalog recovers first-install journal faults idempotently", async () => {
@@ -539,48 +440,17 @@ test("skill catalog recovers first-install journal faults idempotently", async (
   }
 });
 
-test("skill file reads reject lstat-open replacement and post-fstat growth", async () => {
-  const replacementDirectory = await temporaryDirectory();
-  const source = skillBytes("race-review");
-  await installSkill(replacementDirectory, source);
-  const target = definitionPath(replacementDirectory, "race-review");
-  let replaced = false;
-
-  await assert.rejects(
-    withSkillCatalogTransaction(
-      replacementDirectory,
-      (catalog) => catalog.listInstalledSkills(),
-      {
-        fault: async (point) => {
-          if (replaced || point !== "after-definition-lstat") return;
-          replaced = true;
-          const displaced = `${target}.displaced`;
-          await fs.rename(target, displaced);
-          await fs.writeFile(target, source, { mode: 0o600 });
-        },
-      },
-    ),
-    (error: unknown) => error instanceof SkillStorageCorruptionError,
-  );
-
-  const growthDirectory = await temporaryDirectory();
-  await installSkill(growthDirectory, skillBytes("growth-review"));
-  const growthTarget = definitionPath(growthDirectory, "growth-review");
-  let grown = false;
-  await assert.rejects(
-    withSkillCatalogTransaction(
-      growthDirectory,
-      (catalog) => catalog.readInstalledSkill("growth-review"),
-      {
-        fault: async (point) => {
-          if (grown || point !== "after-definition-fstat") return;
-          grown = true;
-          await fs.appendFile(growthTarget, "x");
-        },
-      },
-    ),
-    (error: unknown) => error instanceof SkillStorageCorruptionError,
-  );
+test("Skill reads detect changed or removed definitions after a catalog opens", async () => {
+  for (const mutation of ["replace", "remove"] as const) {
+    const directory = await temporaryDirectory();
+    await installSkill(directory, skillBytes("race-review"));
+    await assert.rejects(withSkillCatalogTransaction(directory, async (catalog) => {
+      const target = definitionPath(directory, "race-review");
+      if (mutation === "remove") await removeStoredEntry(directory, target);
+      else await writeStoredBytes(directory, target, skillBytes("race-review", "# Changed\n"));
+      await catalog.readInstalledSkill("race-review");
+    }), SkillStorageCorruptionError);
+  }
 });
 
 test("skill catalog recovers install and replacement journal faults idempotently", async () => {
@@ -633,7 +503,7 @@ test("skill catalog recovers install and replacement journal faults idempotently
     assert.equal(recovered.length, 1);
     if (point === "before-pending-catalog") {
       assert.equal(recovered[0]?.sha256, original.sha256);
-      assert.deepEqual(await fs.readFile(definitionPath(directory, "journal-review")), skillBytes("journal-review"));
+      assert.deepEqual(await readStoredBytes(directory, definitionPath(directory, "journal-review")), skillBytes("journal-review"));
     } else {
       assert.equal(
         recovered[0]?.sha256,
@@ -678,47 +548,66 @@ test("skill catalog recovers delete journal faults without a stable missing defi
 });
 
 
-test("failed initial staging leaves healthy Skills readable and permits a later install", async (t) => {
+test("failed pre-journal staging leaves healthy Skills readable and permits a later install", async (t) => {
   const directory = await temporaryDirectory();
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const healthy = await installSkill(directory, skillBytes("healthy"));
-  const originalOpen = mutableFs.open;
-  mutableFs.open = (async (target, ...args) => {
-    if (String(target).includes(`${path.sep}incomplete${path.sep}`) && args[0] === "wx") {
-      throw Object.assign(new Error("Injected staging write failure"), { code: "ENOSPC" });
-    }
-    return originalOpen(target, ...args);
-  }) as typeof mutableFs.open;
-  syncBuiltinESMExports();
-  try {
-    await assert.rejects(installSkill(directory, skillBytes("incomplete")), /Injected staging write failure/);
-  } finally {
-    mutableFs.open = originalOpen;
-    syncBuiltinESMExports();
-  }
-  await assert.rejects(fs.lstat(path.dirname(definitionPath(directory, "incomplete"))), { code: "ENOENT" });
+  await assert.rejects(withSkillCatalogTransaction(directory,
+    (catalog) => catalog.installSkill(skillBytes("incomplete")), {
+      fault: (point) => { if (point === "before-pending-catalog") throw new Error("Injected staging failure"); },
+    }), /Injected staging failure/);
+  assert.equal(await storedTreeExists(directory, path.dirname(definitionPath(directory, "incomplete"))), false);
   assert.deepEqual(await listInstalledSkills(directory), [healthy]);
-  assert.equal((await readInstalledSkill(directory, "healthy")).id, "healthy");
   await installSkill(directory, skillBytes("incomplete"));
   assert.deepEqual((await listInstalledSkills(directory)).map((skill) => skill.id), ["healthy", "incomplete"]);
 });
 
-test("startup recovers an empty pre-journal Skill directory but never follows an orphan symlink", async (t) => {
+test("legacy Skill pending mutations recover in the database and preserve their original files", async (t) => {
+  for (const kind of ["install", "replace", "delete"] as const) {
+    const directory = await temporaryDirectory();
+    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    const bytes = skillBytes("legacy-review");
+    const replacement = skillBytes("legacy-review", "# Legacy replacement\n");
+    const metadata = {
+      id: "legacy-review", description: "Workflow guidance for legacy-review.",
+      sha256: createHash("sha256").update(bytes).digest("hex"), byteLength: bytes.byteLength,
+      installedAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const next = { ...metadata, sha256: createHash("sha256").update(replacement).digest("hex"), byteLength: replacement.byteLength };
+    const stagingFile = ".SKILL.md.skill_legacy.next";
+    const definition = definitionPath(directory, metadata.id);
+    const staging = path.join(path.dirname(definition), stagingFile);
+    const original = JSON.stringify({schemaVersion: 1, skills: kind === "install" ? [] : [metadata],
+      pendingMutation: kind === "delete" ? { kind, skillId: metadata.id } : {
+        kind, skillId: metadata.id, next, stagingFile,
+      },
+    });
+    await fs.mkdir(path.dirname(definition), { recursive: true, mode: 0o700 });
+    if (kind !== "delete") await fs.writeFile(staging, replacement, { mode: 0o600 });
+    if (kind !== "install") await fs.writeFile(definition, bytes, { mode: 0o600 });
+    await fs.writeFile(catalogPath(directory), original, { mode: 0o600 });
+    assert.deepEqual(await listInstalledSkills(directory), kind === "delete" ? [] : [next]);
+    if (kind !== "delete") {
+      assert.equal((await readInstalledSkill(directory, metadata.id)).body, "# Legacy replacement\n");
+      await deleteInstalledSkill(directory, metadata.id);
+    }
+    assert.deepEqual(await listInstalledSkills(directory), []);
+    assert.equal(await fs.readFile(catalogPath(directory), "utf8"), original);
+    if (kind !== "delete") assert.deepEqual(await fs.readFile(staging), replacement);
+    if (kind !== "install") assert.deepEqual(await fs.readFile(definition), bytes);
+  }
+});
+
+
+test("relative Skill storage roots share catalog and definitions with their absolute path", async (t) => {
   const directory = await temporaryDirectory();
-  const outside = await temporaryDirectory();
-  t.after(async () => {
-    await fs.rm(directory, { recursive: true, force: true });
-    await fs.rm(outside, { recursive: true, force: true });
-  });
-  const healthy = await installSkill(directory, skillBytes("healthy"));
-  const orphan = path.dirname(definitionPath(directory, "incomplete"));
-  await fs.mkdir(orphan, { mode: 0o700 });
-  assert.deepEqual(await listInstalledSkills(directory), [healthy]);
-  await assert.rejects(fs.lstat(orphan), { code: "ENOENT" });
-  const sentinel = path.join(outside, "keep.txt");
-  await fs.writeFile(sentinel, "preserve me");
-  await fs.symlink(outside, orphan, "dir");
-  await assert.rejects(listInstalledSkills(directory), SkillStorageCorruptionError);
-  assert.equal(await fs.readFile(sentinel, "utf8"), "preserve me");
-  assert.equal((await fs.lstat(orphan)).isSymbolicLink(), true);
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const relative = path.relative(process.cwd(), directory);
+  const installed = await installSkill(relative, skillBytes("relative-review"));
+  assert.deepEqual(await listInstalledSkills(directory), [installed]);
+  assert.equal((await readInstalledSkill(relative, installed.id)).id, installed.id);
+  await installSkill(relative, skillBytes(installed.id, "# Replaced\n"), { replace: true });
+  assert.equal((await readInstalledSkill(directory, installed.id)).body, "# Replaced\n");
+  await deleteInstalledSkill(relative, installed.id);
+  assert.deepEqual(await listInstalledSkills(directory), []);
 });

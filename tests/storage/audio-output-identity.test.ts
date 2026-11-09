@@ -1,5 +1,5 @@
+import { readStoredText } from "../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 import { AudioStorageError, loadAudioJob, updateAudioJob } from "../../src/storage/audio-jobs.js";
@@ -15,7 +15,7 @@ test("remote output identities round-trip privately and cannot be replaced, swap
   assert.deepEqual((await loadAudioJob(h.storage, h.session.id, h.job.id)).expectedOutputs, identities);
   assert.equal(Object.hasOwn(saved, "expectedOutputRoles"), false);
   const target = path.join(h.directory, `${h.job.id}.job.json`);
-  const original = await fs.readFile(target, "utf8");
+  const original = await readStoredText(h.storage, target);
   for (const update of [
     { expectedOutputs: [{ ...identities[0], key: "replacement" }, identities[1]] },
     { expectedOutputs: [{ ...identities[0], key: "track-b" }, { ...identities[1], key: "track-a" }] },
@@ -25,7 +25,7 @@ test("remote output identities round-trip privately and cannot be replaced, swap
     { remoteTaskId: "different-task" },
   ]) {
     await assert.rejects(updateAudioJob(h.storage, h.session.id, h.job.id, update as never), AudioStorageError);
-    assert.equal(await fs.readFile(target, "utf8"), original);
+    assert.equal(await readStoredText(h.storage, target), original);
   }
   assert.deepEqual((await updateAudioJob(h.storage, h.session.id, h.job.id, patch)).expectedOutputs, identities);
 });

@@ -1,7 +1,7 @@
 import { throwIfAborted } from "../../runtime/host.js";
-import { loadSessionEvents } from "../../storage/events.js";
+import { loadSessionEventSummaries, searchSessionEvents } from "../../storage/events.js";
 import { listSessions } from "../../storage/sessions.js";
-import { lastSessionMessageAt, sessionActivityAt } from "./session-activity.js";
+import { sessionActivityAt } from "./session-activity.js";
 import { MAX_SEARCH_EXCERPT_LENGTH, MAX_SEARCH_QUERY_LENGTH, MAX_SESSION_SEARCH_RESULTS,
   normalizeSearchQuery, searchTextMatches, type SessionSearchInput, type SessionSearchMatch,
   type SessionSearchResult } from "./search-contracts.js";
@@ -23,6 +23,8 @@ export async function searchSessions(input: SessionSearchInput & {
   const query = normalizeSearchQuery(input.query);
   if (!query) return { query, offset: 0, matches: [], total: 0, unavailableCount: 0 };
   const sessions = await listSessions(input.storageDirectory);
+  const summaries = await loadSessionEventSummaries(input.storageDirectory, sessions.map(session => session.id), input.signal);
+  throwIfAborted(input.signal);
   const matches: { match: SessionSearchMatch; activityAt: string }[] = [];
   let unavailableCount = 0;
   for (const session of sessions) {
@@ -32,12 +34,14 @@ export async function searchSessions(input: SessionSearchInput & {
       ? { sessionId: session.id, excerpt: excerpt(title, query) } : undefined;
     let activityAt = sessionActivityAt(session);
     try {
-      const events = await loadSessionEvents(input.storageDirectory, session.id);
+      const summary = summaries.get(session.id);
+      if (!summary || summary instanceof Error) throw summary ?? new Error("Session summary is unavailable.");
       throwIfAborted(input.signal);
-      const lastMessageAt = lastSessionMessageAt(events);
+      const lastMessageAt = summary.lastMessageAt;
       activityAt = sessionActivityAt({ ...session, ...(lastMessageAt === undefined ? {} : { lastMessageAt }) });
       if (!match) {
-        const event = events.findLast(event => (event.kind === "user" || event.kind === "assistant") && searchTextMatches(event.content, query));
+        const event = await searchSessionEvents(input.storageDirectory, session.id, query);
+        throwIfAborted(input.signal);
         if (event) match = { sessionId: session.id, eventId: event.id, excerpt: excerpt(event.content, query) };
       }
     } catch {

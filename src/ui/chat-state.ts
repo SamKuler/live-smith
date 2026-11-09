@@ -28,7 +28,7 @@ import {
 import { cloneJsonValue } from "../model/json-clone.js";
 import type { ApprovalMode } from "../model/profile.js";
 import type { SessionEvent } from "../storage/events.js";
-import type { SessionAttachmentRef } from "../storage/attachments.js";
+import type { PersistedSessionAttachmentRef, SessionAttachmentRef } from "../storage/attachments.js";
 import type { AgentSession } from "../storage/sessions.js";
 import type { AgentSettings } from "../storage/settings.js";
 import type { AvailableSkillSummary } from "../skills/builtins.js";
@@ -95,6 +95,10 @@ export interface ChatDialogState {
   activeSessionId: string;
   approvalMode: ApprovalMode;
   events: ChatSessionEvent[];
+  eventHistory?: ChatEventHistory;
+  sessionAttachments?: PersistedSessionAttachmentRef[];
+  latestBriefProposal?: ChatSessionEvent | null;
+  latestCompactionId?: string | null;
   pendingAttachments: SessionAttachmentRef[];
   availableSkills: AvailableSkillSummary[];
   plugins: InstalledPluginView[];
@@ -130,7 +134,24 @@ export interface ChatDialogState {
   sessionActivities?: ChatSessionActivity[];
 }
 
-export interface ChatSessionEvent extends Omit<SessionEvent, "steeringReceipt"> {
+export interface ChatEventHistory {
+  historyId: string;
+  total: number;
+  latestSequence: number;
+  nextBefore?: number;
+  nextAfter?: number;
+}
+
+export interface ChatSessionEventPage extends ChatEventHistory {
+  sessionId: string;
+  events: ChatSessionEvent[];
+}
+
+export type ChatSendReceipt =
+  | { status: "accepted"; event: ChatSessionEvent }
+  | { status: "absent" | "conflict" };
+
+export interface ChatSessionEvent extends Omit<SessionEvent, "steeringReceipt" | "sendReceipt"> {
   /** Durable steering correlation projected without storage-only content hashes. */
   steeringAck?: {
     sendId: string;
@@ -141,7 +162,7 @@ export interface ChatSessionEvent extends Omit<SessionEvent, "steeringReceipt"> 
 export function chatSessionEvent(
   event: SessionEvent | ChatSessionEvent,
 ): ChatSessionEvent {
-  const { steeringReceipt, attachments, ...projected } = event as SessionEvent;
+  const { steeringReceipt, sendReceipt, attachments, ...projected } = event as SessionEvent;
   return {
     ...projected,
     ...(attachments === undefined
@@ -285,6 +306,9 @@ export function chatDialogStateForWire<State extends ChatDialogState>(
     ...(Array.isArray(state.events)
       ? { events: state.events.map(chatSessionEvent) }
       : {}),
+    ...(Array.isArray(state.sessionAttachments)
+      ? { sessionAttachments: state.sessionAttachments.map(attachmentForDisplay) } : {}),
+    ...(state.latestBriefProposal ? { latestBriefProposal: chatSessionEvent(state.latestBriefProposal) } : {}),
     ...(Array.isArray(state.pendingAttachments)
       ? {
           pendingAttachments: state.pendingAttachments.map(attachmentForDisplay),

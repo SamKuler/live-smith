@@ -1,5 +1,5 @@
+import { removeStoredEntry } from "../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 import type { AudioAsset, AudioJob } from "../../src/audio-services/contracts.js";
@@ -36,7 +36,7 @@ test("music siblings share a work without a derived chain; selected revisions an
 test("metadata receipts reserve version numbers before a missing blob is recovered", async (t) => {
   const h = await audioStorageHarness(t, music);
   const first = await h.save("music");
-  await fs.unlink(path.join(h.directory, `${first.id}.audio`));
+  await removeStoredEntry(h.storage, path.join(h.directory, `${first.id}.audio`));
   const second = await h.save("music_alternative");
   assert.deepEqual(second.version, { groupId: first.id, number: 2 });
   assert.deepEqual(await h.save("music"), first);

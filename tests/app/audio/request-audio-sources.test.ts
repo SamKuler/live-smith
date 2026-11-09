@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   saveSessionAttachment,
+  saveSessionAttachmentStream,
   sessionAttachmentRefFromStored,
   type AudioSessionAttachmentRef,
   type SessionAttachmentRef,
@@ -348,3 +349,48 @@ function mp3Bytes(): Uint8Array {
   bytes.set(frame, frameBytes);
   return bytes;
 }
+
+test("large attachment is imported to Live through a bounded stream", async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-large-import-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const size = 129 * 1024 * 1024;
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0); header.writeUInt32LE(size - 8, 4); header.write("WAVEfmt ", 8);
+  header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(8000, 24); header.writeUInt32LE(8000, 28); header.writeUInt16LE(1, 32); header.writeUInt16LE(8, 34);
+  header.write("data", 36); header.writeUInt32LE(size - 44, 40);
+  async function* chunks() {
+    yield header;
+    const chunk = Buffer.alloc(1024 * 1024, 128);
+    for (let remaining = size - 44; remaining > 0; remaining -= chunk.length) yield chunk.subarray(0, Math.min(remaining, chunk.length));
+  }
+  const saved = await saveSessionAttachmentStream(directory, "large-import", { fileName: "long.wav", chunks: chunks() }, { preSavePendingAttachmentRefs: [] });
+  assert.equal(saved.kind, "audio");
+  if (saved.kind !== "audio") return;
+  let importedBytes = 0;
+  const sources = createRequestAudioSampleSources({
+    context: requestContext(directory, async stagingPath => { importedBytes = (await fs.stat(stagingPath)).size; return "/project/long.wav"; }),
+    storageDirectory: directory, sessionId: "large-import", requestId: "request-large",
+    refs: [sessionAttachmentRefFromStored(saved) as AudioSessionAttachmentRef], signal: new AbortController().signal,
+  });
+  const source = [...sources.values()][0]!;
+  assert.equal(await source.prepare(), true);
+  assert.equal(importedBytes, size);
+});
+
+test("saved audio corruption prevents the Live import before dispatch", async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-corrupt-import-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const [ref] = await saveAudioRefs(directory, "corrupt-import", [waveBytes()]);
+  assert.ok(ref);
+  const media = await fs.open(path.join(directory, "live-smith-media", ref.sha256), "r+");
+  try { await media.write(Buffer.from([0]), 0, 1, 10); } finally { await media.close(); }
+  let dispatched = false;
+  const sources = createRequestAudioSampleSources({
+    context: requestContext(directory, async () => { dispatched = true; return "/project/invalid.wav"; }),
+    storageDirectory: directory, sessionId: "corrupt-import", requestId: "request-corrupt",
+    refs: [ref], signal: new AbortController().signal,
+  });
+  await assert.rejects([...sources.values()][0]!.prepare(), /could not import/i);
+  assert.equal(dispatched, false);
+});

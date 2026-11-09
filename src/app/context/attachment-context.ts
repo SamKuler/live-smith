@@ -19,7 +19,8 @@ import type {
 import type { RuntimeProfile } from "../../model/provider.js";
 import { inputTransportSupport } from "../../model/input-support.js";
 import { supportsAudioInputDelivery } from "../../model/tools.js";
-import { throwIfAborted } from "../../runtime/host.js";
+import { createHostAbortController, throwIfAborted } from "../../runtime/host.js";
+import { openVerifiedAttachmentForUse } from "../attachments/attachment-stream.js";
 import {
   isImageAttachmentMediaType,
   readSessionAttachmentBytes,
@@ -76,9 +77,8 @@ export async function resolveCurrentAttachmentParts(input: {
   for (const ref of input.refs) {
     throwIfAborted(input.signal);
     if (input.audioProcessingOnly && ref.kind === "audio") {
-      await readSessionAttachmentBytes(input.storageDirectory, input.sessionId, ref.id, {
-        expectedRef: ref, ...(input.signal ? { signal: input.signal } : {}),
-      });
+      const stream = await openVerifiedAttachmentForUse(input.storageDirectory, input.sessionId, ref, input.signal ?? createHostAbortController().signal);
+      stream.destroy();
       continue;
     }
     const part = await resolveCurrentAttachmentPart(
@@ -429,7 +429,7 @@ async function readAttachmentBytes(
     storageDirectory,
     sessionId,
     ref.id,
-    signal === undefined ? { expectedRef: ref } : { signal, expectedRef: ref },
+    signal === undefined ? { expectedRef: ref, maxBytes: MAX_REQUEST_BINARY_ATTACHMENT_BYTES } : { signal, expectedRef: ref, maxBytes: MAX_REQUEST_BINARY_ATTACHMENT_BYTES },
   );
   throwIfAborted(signal);
   return bytes;

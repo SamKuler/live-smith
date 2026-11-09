@@ -1,4 +1,4 @@
-import { MAX_AUDIO_ASSET_DURATION_SECONDS } from "../../../audio-services/contracts.js";
+import { MAX_AUDIO_ASSET_BYTES, MAX_AUDIO_ASSET_DURATION_SECONDS } from "../../../audio-services/contracts.js";
 import { isArtifactRef, isArtifactVersion, MAX_MIDI_ARTIFACT_OVERVIEW_NOTES } from "../../../agent/artifact-contracts.js";
 import type { MidiPartPreview, SessionArtifact, SessionArtifactDetail, SessionArtifacts } from "../../../app/session/session-artifacts.js";
 import { MAX_SEARCH_QUERY_LENGTH, normalizeSearchQuery } from "../../../app/session/search-contracts.js";
@@ -62,6 +62,7 @@ function isSessionArtifact(artifact: unknown, maximumMidiNotes: number): artifac
       (artifact.deviceParameters.parameters === undefined || isDeviceParameterSnapshot({ target: artifact.deviceParameters.target, parameters: artifact.deviceParameters.parameters }) &&
         (artifact.deviceParameters.parameters as unknown[]).length === artifact.deviceParameters.parameterCount)
       : ref.kind === "audio" ? record(artifact.audio) && finite(artifact.audio.durationSeconds) && artifact.audio.durationSeconds > 0 && artifact.audio.durationSeconds <= MAX_AUDIO_ASSET_DURATION_SECONDS &&
+      finite(artifact.audio.byteLength) && Number.isSafeInteger(artifact.audio.byteLength) && artifact.audio.byteLength > 0 && artifact.audio.byteLength <= MAX_AUDIO_ASSET_BYTES &&
       Number.isInteger(artifact.audio.sampleRate) && (artifact.audio.mediaType === "audio/mpeg"
         ? [16_000, 22_050, 24_000, 32_000, 44_100, 48_000].includes(Number(artifact.audio.sampleRate))
         : Number(artifact.audio.sampleRate) >= 8_000 && Number(artifact.audio.sampleRate) <= 192_000) &&

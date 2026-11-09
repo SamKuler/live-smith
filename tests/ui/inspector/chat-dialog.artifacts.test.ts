@@ -12,7 +12,7 @@ const artifacts: SessionArtifact[] = [
     midi: { durationBeats: 8, noteCount: 2, parts: [{ id: "track-0-channel-1", sourceTrackIndex: 0, channel: 1, sourceTrackName: "Piano", noteCount: 2, durationBeats: 8 }],
       notes: [{ partId: "track-0-channel-1", pitch: 60, startTime: 0, duration: 1 }, { partId: "track-0-channel-1", pitch: 64, startTime: 2, duration: 1 }], omittedNoteCount: 0 } },
   { ref: { kind: "audio", id: "audio-b" }, label: "Warm arrangement", createdAt: "2026-10-03T00:00:01Z", sourceLabel: "Music generator",
-    parent: { kind: "midi", id: "midi-a" }, audio: { durationSeconds: 32, mediaType: "audio/wav", sampleRate: 8000, channels: 1, jobId: "job-b" } },
+    parent: { kind: "midi", id: "midi-a" }, audio: { byteLength: 512_044, durationSeconds: 32, mediaType: "audio/wav", sampleRate: 8000, channels: 1, jobId: "job-b" } },
 ];
 
 async function setup(defer = false, entries: SessionArtifact[] = artifacts, language: "en" | "zh-CN" = "en") {
@@ -1029,25 +1029,66 @@ test("catalog navigation returns to the selected work heading and Escape closes 
   } finally { h.close(); }
 });
 
-test("saved audio uses its authenticated bytes for waveform, loop and volume and releases a switched player", async () => {
+test("saved WAV requests only its authenticated waveform and uses the original URL for playback", async () => {
   const s = await setup(); const { h } = s;
-  const { waveBytes } = await import('../../storage/support/audio-storage-test-helpers.js');
-  const bytes = waveBytes(); let loaded = '';
+  const reads: URL[] = [];
+  let byteReads = 0;
   const original = h.window.fetch;
   Object.defineProperty(h.window, 'fetch', { configurable: true, value: async (input: string, init?: RequestInit) => {
-    if (new URL(String(input)).pathname === '/audio-assets/audio-b') {
-      loaded = String(input); return { ok: true, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+    const url = new URL(String(input));
+    if (url.pathname === '/audio-assets/audio-b') {
+      reads.push(url);
+      assert.equal(url.searchParams.get('waveform'), '1');
+      const response = Response.json({ peaks: [0, .25, 1], durationSeconds: 32 });
+      const readBytes = response.arrayBuffer.bind(response);
+      response.arrayBuffer = async () => { byteReads++; return readBytes(); };
+      return response;
     }
     return original(input, init);
   } });
   try {
     await s.open(); h.click('[data-artifact-key="audio:audio-b"]');
-    await waitForCondition(() => Boolean(h.document.querySelector('.artifact-audio-player .attachment-waveform path')?.getAttribute('d')), 'Expected decoded saved waveform');
-    assert.match(loaded, /token=.*sessionId=session-1/);
+    await waitForCondition(() => Boolean(h.document.querySelector('.artifact-audio-player .attachment-waveform path')?.getAttribute('d')), 'Expected saved waveform summary');
     const media = h.document.querySelector<HTMLAudioElement>('.artifact-card audio')!;
+    const playback = new URL(media.src);
+    assert.equal(playback.searchParams.get('sessionId'), 'session-1');
+    assert.equal(playback.searchParams.get('token'), 'test-token');
+    assert.equal(playback.searchParams.has('waveform'), false);
+    const expectedRead = new URL(playback);
+    expectedRead.searchParams.set('waveform', '1');
+    assert.deepEqual(reads, [expectedRead]);
     h.input('.artifact-audio-options input[type="range"]', '0.3'); assert.equal(media.volume, 0.3);
     h.click('.artifact-audio-options input[type="checkbox"]'); assert.equal(media.loop, true);
     h.click('[data-artifact-key="midi:midi-a"]'); assert.equal(media.isConnected, false); assert.equal(media.hasAttribute('src'), false);
+    h.click('[data-artifact-key="audio:audio-b"]');
+    await waitForCondition(() => Boolean(h.document.querySelector('.artifact-audio-player .attachment-waveform path')?.getAttribute('d')), 'Expected cached waveform');
+    assert.deepEqual(reads, [expectedRead]);
+    assert.equal(byteReads, 0);
+    assert.deepEqual(h.errors, []);
+  } finally { h.close(); }
+});
+
+test("a malformed WAV summary leaves playback usable and a retry can load a valid waveform", async () => {
+  const s = await setup(false, [artifacts[1]!]); const { h } = s;
+  const original = h.window.fetch;
+  let reads = 0;
+  Object.defineProperty(h.window, 'fetch', { configurable: true, value: async (input: string, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname === '/audio-assets/audio-b' && url.searchParams.get('waveform') === '1') {
+      return Response.json({ peaks: ++reads === 1 ? [2] : [0, .25, 1], durationSeconds: 32 });
+    }
+    return original(input, init);
+  } });
+  try {
+    await s.open();
+    const retry = () => [...h.document.querySelectorAll<HTMLButtonElement>('.artifact-audio-player button')]
+      .find(button => button.textContent === 'Retry preview' && !button.hidden);
+    await waitForCondition(() => retry() !== undefined, 'Expected a retry for invalid waveform data');
+    assert.equal(h.document.querySelector('.attachment-waveform path')?.hasAttribute('d'), false);
+    h.click('.artifact-card .attachment-audio-toggle'); await h.settle(); assert.equal(s.playCount, 1);
+    retry()!.click();
+    await waitForCondition(() => Boolean(h.document.querySelector('.attachment-waveform path')?.getAttribute('d')), 'Expected the valid waveform after retry');
+    assert.equal(reads, 2);
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }
 });
@@ -1056,7 +1097,7 @@ for (const oversized of [false, true]) test(`artifact MP3 ${oversized ? 'refuses
   const durationSeconds = oversized ? 900 : 1, sampleRate = oversized ? 48000 : 24000, channels = oversized ? 2 : 1;
   const entry = { ...artifacts[1]!, audio: { ...artifacts[1]!.audio!, mediaType: 'audio/mpeg' as const, durationSeconds, sampleRate, channels } };
   const s = await setup(false, [entry]); const { h } = s;
-  let decodeCalls = 0; const rates: number[] = [];
+  let fetchCalls = 0, decodeCalls = 0; const rates: number[] = [];
   Object.defineProperty(h.window, 'AudioContext', { configurable: true, value: class {
     constructor(options: { sampleRate: number }) { rates.push(options.sampleRate); }
     async decodeAudioData() { decodeCalls++; return { sampleRate, numberOfChannels: channels, length: durationSeconds * sampleRate,
@@ -1065,7 +1106,10 @@ for (const oversized of [false, true]) test(`artifact MP3 ${oversized ? 'refuses
   } });
   const original = h.window.fetch;
   Object.defineProperty(h.window, 'fetch', { configurable: true, value: async (input: string, init?: RequestInit) => {
-    if (new URL(String(input)).pathname === '/audio-assets/audio-b') return { ok: true, arrayBuffer: async () => new ArrayBuffer(1) };
+    if (new URL(String(input)).pathname === '/audio-assets/audio-b') {
+      fetchCalls++;
+      return { ok: true, arrayBuffer: async () => new ArrayBuffer(1) };
+    }
     return original(input, init);
   } });
   try {
@@ -1073,6 +1117,7 @@ for (const oversized of [false, true]) test(`artifact MP3 ${oversized ? 'refuses
     await waitForCondition(() => oversized ? h.document.querySelector('.artifact-audio-player [role="status"]')?.textContent?.includes('unavailable') === true
       : Boolean(h.document.querySelector('.attachment-waveform path')?.getAttribute('d')), 'Expected bounded waveform outcome');
     assert.equal(decodeCalls, oversized ? 0 : 1); assert.deepEqual(rates, oversized ? [] : [sampleRate]);
+    assert.equal(fetchCalls, oversized ? 0 : 1);
     h.click('.attachment-audio-toggle'); await h.settle(); assert.equal(s.playCount, 1, 'Waveform admission keeps ordinary playback available');
     assert.deepEqual(h.errors, []);
   } finally { h.close(); }

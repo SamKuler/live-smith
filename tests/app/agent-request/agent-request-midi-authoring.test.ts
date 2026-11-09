@@ -1,3 +1,4 @@
+import { listStoredChildren } from "../../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -128,7 +129,7 @@ test("invalid authored MIDI returns tool failures without saving candidates or c
   const existing = await h.seed("Saved theme", 65);
   const before = await readMidiArtifact(h.directory, h.session.id, existing.id);
   const artifactDirectory = path.join(h.directory, "live-smith-midi", h.session.id);
-  const files = (await fs.readdir(artifactDirectory)).sort();
+  const files = (await listStoredChildren(h.directory, artifactDirectory)).sort();
   const invalidChannel = authored(); invalidChannel.tracks[0]!.channel = 17;
   let turn = 0;
   await h.run(async (request) => {
@@ -138,7 +139,7 @@ test("invalid authored MIDI returns tool failures without saving candidates or c
       assert.ok(modelMessageText(request.agentMessages.at(-1)).length > 0);
       assert.doesNotMatch(modelMessageText(request.agentMessages.at(-1)), /"artifacts"/);
       assert.deepEqual((await inspectMidiArtifacts(h.directory, h.session.id)).artifacts, [before.artifact]);
-      assert.deepEqual((await fs.readdir(artifactDirectory)).sort(), files);
+      assert.deepEqual((await listStoredChildren(h.directory, artifactDirectory)).sort(), files);
       if (turn === 2) return call("truncated-notes", "save_midi_artifact", { ...authored(), durationBeats: 1 });
       return call("read-preserved", "inspect_midi_artifact", { artifactRef: existing.id, partId: before.parsed.parts[0]!.id });
     }

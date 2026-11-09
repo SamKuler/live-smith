@@ -578,3 +578,41 @@ test("attaching saved audio does not bypass the active Profile's audio input pol
     assert.deepEqual((await pending(flow)).map((entry) => entry.id), [attachment.id]);
   });
 });
+
+test("paged production state preserves consumed files, proposal and exact send receipts beyond the latest window", async t => {
+  const {appendSessionEvent} = await import("../../../src/storage/events.js");
+  const {createSession} = await import("../../../src/storage/sessions.js");
+  await withFlow(t,async flow => {
+    const attachment = await upload(flow,"history.png");
+    await expectStatus(await send(flow,"Use this reference",[attachment.id],"send-history-receipt"),200);
+    const original = (await loadSessionEvents(flow.directory,flow.sessionId)).find(event => event.kind === "user")!;
+    const proposal = await appendSessionEvent(flow.directory,flow.sessionId,{kind:"tool_result",name:"propose_creative_brief",content:"{\"title\":\"Retained brief\"}"});
+    const compaction = await appendSessionEvent(flow.directory,flow.sessionId,{kind:"compaction",content:"Retained summary"});
+    for(let index=0;index<105;index++) await appendSessionEvent(flow.directory,flow.sessionId,{kind:"assistant",content:`history ${index}`});
+    const state = await (await fetch(endpoint(flow.url,"/state"))).json() as ChatDialogState;
+    assert.equal(state.events.length,100);
+    assert.equal(state.events.some(event => event.id === original.id),false);
+    assert.equal(state.eventHistory?.total,109);
+    assert.deepEqual(state.pendingAttachments,[]);
+    assert.deepEqual(state.sessionAttachments?.map(ref => ref.id),[attachment.id]);
+    assert.equal(state.latestBriefProposal?.id,proposal.id);
+    assert.equal(state.latestCompactionId,compaction.id);
+    const post = (route:string,body:unknown) => fetch(endpoint(flow.url,route),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const receiptInput = {sessionId:flow.sessionId,sendId:"send-history-receipt",prompt:"Use this reference",attachmentIds:[attachment.id]};
+    const receipt = JSON.parse(await expectStatus(await post("/send-receipt",receiptInput),200));
+    assert.equal(receipt.status,"accepted"); assert.equal(receipt.event.id,original.id);
+    assert.equal(receipt.event.sendReceipt,undefined); assert.equal(receipt.event.steeringReceipt,undefined);
+    const conflict = JSON.parse(await expectStatus(await post("/send-receipt",{...receiptInput,attachmentIds:[]}),200));
+    assert.equal(conflict.status,"conflict");
+    const anchored = JSON.parse(await expectStatus(await post("/session-events",{sessionId:flow.sessionId,historyId:state.eventHistory!.historyId,anchorEventId:original.id}),200));
+    assert.ok(anchored.events.some((event:{id:string}) => event.id === original.id));
+    assert.ok(anchored.events.length <=100); assert.ok(anchored.nextAfter);
+    const next = JSON.parse(await expectStatus(await post("/session-events",{sessionId:flow.sessionId,historyId:state.eventHistory!.historyId,after:anchored.nextAfter}),200));
+    assert.equal(next.events.at(-1).content,"history 104");
+    await expectStatus(await post("/session-events",{sessionId:flow.sessionId,historyId:"stale-history"}),409);
+    await expectStatus(await post("/session-events",{sessionId:flow.sessionId,anchorEventId:"missing-event"}),404);
+    const foreign = await createSession(flow.directory,{projectKey:"foreign-project",title:"Foreign",scope:{kind:"track",identity:"foreign",label:"Foreign"}});
+    await expectStatus(await post("/session-events",{sessionId:foreign.id}),404);
+    await expectStatus(await post("/send-receipt",{...receiptInput,sessionId:foreign.id}),404);
+  });
+});

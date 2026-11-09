@@ -1,3 +1,4 @@
+import { audioArtifactFileName } from "../storage/file-export.js";
 import { createNativeChatHost, type NativeChatHost, type NativeDragInput, type NativeDragFile } from "../runtime/native-chat-window.js";
 import { materializeArtifactExport } from "../storage/artifact-exports.js";
 import { midiArtifactExport } from "../storage/midi-artifacts.js";
@@ -7,7 +8,7 @@ import { decidePlanApproval } from "./tools/tool-approvals.js";
 import { sessionMutationFence,attachmentMutationFence,sessionIntentFence,globalSettingsMutationFence,requestConfigurationFence } from "./session/session-fences.js";
 import { createLiveSetGuard } from "../live/set-identity.js";
 import type { InterfaceMode } from "../model/interface-mode.js";
-import { Buffer } from "node:buffer";
+import { Readable } from "node:stream";
 import { readMidiArtifactFile } from "./midi/artifact-file.js";
 export { decidePlanApproval } from "./tools/tool-approvals.js";
 
@@ -50,7 +51,7 @@ import { openSunoPlatform,openSunoWebsite } from "../runtime/suno-website.js";
 import { openMediaDownload as openAudioDownload } from "../runtime/media-download-browser.js";
 import { createAttachmentOpener } from "./attachments/attachment-opener.js";
 import { integrationConnectionsView } from "../storage/settings.js";
-import { AudioArtifactNotFoundError,readSessionAudioArtifact } from "../storage/audio-artifacts.js";
+import { AudioArtifactNotFoundError,readSessionAudioArtifact,readSessionAudioArtifactWaveform } from "../storage/audio-artifacts.js";
 import { listAudioJobs } from "../storage/audio-jobs.js";
 import { hasSessionMidiContent } from "../storage/midi-artifacts.js";
 import { searchSessions } from "./session/session-search.js";
@@ -105,12 +106,25 @@ import {
   readSessionAttachment,
   sanitizedAttachmentFileName,
   saveSessionAttachment,
+  stageSessionAttachmentStream,
+  sessionAttachmentExport,
+  readSessionAttachmentMetadata,
+  readSessionAttachmentWaveform,
   sessionAttachmentRefFromStored,
   UnsupportedAttachmentError,
 } from "../storage/attachments.js";
 import {
   appendSessionEvent,
   loadSessionEvents,
+  loadSessionEventPage,
+  loadSessionEventSummary,
+  loadSessionContextEvents,
+  loadConsumedAttachmentIds,
+  loadSessionAttachmentRefs,
+  loadLatestSessionEvent,
+  loadSessionSendReceiptEvent,
+  SessionEventHistoryChangedError,
+  SessionEventAnchorNotFoundError,
 } from "../storage/events.js";
 import {
   isStorageCommitOutcomeUnknownError,
@@ -151,6 +165,7 @@ import {
 import { actionDiffGroups } from "../ui/action-diff.js";
 import {
   chatConfiguredModels,
+  chatSessionEvent,
   chatRuntimeSummary,
   modelStateSourceForProfile,
   type ChatBridgeState,
@@ -712,29 +727,31 @@ export async function createAgentRuntime(
         if (!activeSession) {
           return { kind: "missing" as const };
         }
-        const events = await (
-          dependencies.loadSessionEvents ?? loadSessionEvents
-        )(
-          storageDirectory,
-          activeSession.id,
-        );
+        const page = dependencies.loadSessionEvents ? undefined : await loadSessionEventPage(storageDirectory,activeSession.id,{limit:100});
+        const events = page?.events ?? await dependencies.loadSessionEvents!(storageDirectory,activeSession.id);
+        const eventHistory = page && {historyId:page.historyId,total:page.total,latestSequence:page.latestSequence,
+          ...(page.nextBefore === undefined ? {} : {nextBefore:page.nextBefore})};
+        const consumedIds = dependencies.loadSessionEvents ? consumedAttachmentIds(events) : await loadConsumedAttachmentIds(storageDirectory,activeSession.id);
+        const sessionAttachments = dependencies.loadSessionEvents ? events.flatMap(event => event.attachments ?? []) : await loadSessionAttachmentRefs(storageDirectory,activeSession.id);
+        const latestBriefProposal = (dependencies.loadSessionEvents ? events.findLast(event => event.kind === "tool_result" && event.name === "propose_creative_brief") : await loadLatestSessionEvent(storageDirectory,activeSession.id,{kind:"tool_result",name:"propose_creative_brief"})) ?? null;
+        const latestCompactionId = (dependencies.loadSessionEvents ? events.findLast(event => event.kind === "compaction") : await loadLatestSessionEvent(storageDirectory,activeSession.id,{kind:"compaction"}))?.id ?? null;
         throwIfAborted(signal);
         const pendingAttachments = (await listPendingSessionAttachments(
           storageDirectory,
           activeSession.id,
-          consumedAttachmentIds(events),
+          consumedIds,
         )).map(sessionAttachmentRefFromStored);
         throwIfAborted(signal);
         return {
           kind: "available" as const,
           activeSession,
-          events,
+          events, eventHistory, sessionAttachments, latestBriefProposal, latestCompactionId,
           pendingAttachments,
           signature: JSON.stringify([
             storageSnapshot.allSessions,
             storageSnapshot.availableSkills,
             storageSnapshot.plugins,
-            events,
+            eventHistory ?? events,
             pendingAttachments,
           ]),
           storageSnapshot,
@@ -765,7 +782,7 @@ export async function createAgentRuntime(
       }
       const {
         activeSession,
-        events,
+        events, eventHistory, sessionAttachments, latestBriefProposal, latestCompactionId,
         pendingAttachments,
         storageSnapshot,
       } = sessionStateSnapshot;
@@ -825,6 +842,8 @@ export async function createAgentRuntime(
         activeSessionId: activeSession.id,
         approvalMode: activeSession.approvalMode ?? "manual",
         events,
+        ...(eventHistory ? {eventHistory} : {}),
+        sessionAttachments, latestBriefProposal, latestCompactionId,
         pendingAttachments,
         ...(settings.integrationConnections ? { integrationConnections: integrationConnectionsView(settings.integrationConnections) } : {}),
         mcpOAuthStates: await mcpOAuthStates(storageDirectory),
@@ -2173,7 +2192,7 @@ export async function createAgentRuntime(
           assertLiveSetCurrent();
           const sessionInteraction = conversationContextForSession(session, resolveSessionInteraction(session));
           const events = await (
-            dependencies.loadSessionEvents ?? loadSessionEvents
+            dependencies.loadSessionEvents ?? loadSessionContextEvents
           )(storageDirectory, session.id);
           const latestCompactionIndex = events.findLastIndex(
             (event) => event.kind === "compaction",
@@ -2381,8 +2400,9 @@ export async function createAgentRuntime(
     }
 
     if (commandInput.kind === "open_attachment") {
-      const file = await readAttachment(commandInput.sessionId, commandInput.attachmentId, signal);
-      await (dependencies.openAttachment ?? attachmentOpener.open)(file, signal);
+      if (dependencies.openAttachment) {
+        await dependencies.openAttachment(await readAttachment(commandInput.sessionId,commandInput.attachmentId,signal),signal);
+      } else await attachmentOpener.open(await readAttachmentExport(commandInput.sessionId,commandInput.attachmentId,signal),signal);
       status = uiMessage("The attachment was opened in its default application.");
       return buildStateAfterCommandMutation(undefined, { signal });
     }
@@ -2758,10 +2778,10 @@ export async function createAgentRuntime(
               !current ||
               !isReusableEmptySessionMetadata(current, projectKey, scope)
             ) return undefined;
-            const events = await (
-              dependencies.loadSessionEvents ?? loadSessionEvents
-            )(storageDirectory, current.id);
-            if (events.length) return undefined;
+            const hasEvents = dependencies.loadSessionEvents
+              ? (await dependencies.loadSessionEvents(storageDirectory,current.id)).length > 0
+              : (await loadSessionEventSummary(storageDirectory,current.id)).hasEvents;
+            if (hasEvents) return undefined;
             if (storageDirectory !== undefined && (await listAudioJobs(storageDirectory, current.id)).length) return undefined;
             if (await hasSessionMidiContent(storageDirectory, current.id)) return undefined;
             const attachments = await listPendingSessionAttachments(
@@ -2801,6 +2821,48 @@ export async function createAgentRuntime(
     }
   };
 
+  const resourceSession = async (sessionId: string, signal: AbortSignal) => {
+    throwIfAborted(signal);
+    const session = (await listSessions(storageDirectory,projectKey)).find(entry => entry.id === sessionId && entry.projectKey === projectKey);
+    throwIfAborted(signal);
+    if (!session) throw new ChatBridgeResourceNotFoundError("That Session is unavailable in this Live Set.");
+    return session;
+  };
+  const readAttachmentExport = async (sessionId: string,attachmentId: string,signal: AbortSignal) => {
+    await resourceSession(sessionId,signal);
+    try {
+      const attachment = sessionAttachmentRefFromStored(await readSessionAttachmentMetadata(storageDirectory,sessionId,attachmentId));
+      const file = storageDirectory ? await sessionAttachmentExport(storageDirectory,sessionId,attachmentId) : {
+        fileName:attachment.fileName,mediaType:attachment.mediaType,byteLength:attachment.byteLength,
+        open:async (streamSignal:AbortSignal,range?: {offset:number;length:number}) => {
+          const result = await readAttachment(sessionId,attachmentId,streamSignal);
+          return Readable.from([range ? result.bytes.subarray(range.offset,range.offset+range.length) : result.bytes]);
+        },
+      };
+      await resourceSession(sessionId,signal);
+      return {attachment,file};
+    } catch (error) {
+      throwIfAborted(signal);
+      if (error instanceof AttachmentNotFoundError) throw new ChatBridgeResourceNotFoundError("This attachment is no longer available.");
+      throw error;
+    }
+  };
+  const readSessionEvents: NonNullable<ChatBridgeOptions["readSessionEvents"]> = async (input,signal) => {
+    await resourceSession(input.sessionId,signal);
+    try {
+      const page = await loadSessionEventPage(storageDirectory,input.sessionId,{...input,limit:100});
+      await resourceSession(input.sessionId,signal);
+      const summary = await loadSessionEventSummary(storageDirectory,input.sessionId);
+      if (summary.historyId !== page.historyId) throw new SessionEventHistoryChangedError();
+      await resourceSession(input.sessionId,signal);
+      return {...page,events:page.events.map(chatSessionEvent)};
+    } catch (error) {
+      if (error instanceof SessionEventHistoryChangedError) throw new ChatBridgeConflictError(error.message);
+      if (error instanceof SessionEventAnchorNotFoundError) throw new ChatBridgeResourceNotFoundError(error.message);
+      throw error;
+    }
+  };
+
   const attachmentSession = async (sessionId: string) => {
     const session = (await listSessions(
       storageDirectory,
@@ -2821,11 +2883,7 @@ export async function createAgentRuntime(
       if (error instanceof AudioArtifactNotFoundError) throw new ChatBridgeResourceNotFoundError(error.message);
       throw error;
     });
-    const label = Buffer.from(asset.label, "utf8").toString("utf8").normalize("NFC")
-      .replace(/[\\/:*?"<>|\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim();
-    const name = [...label].slice(0, 20).join("") || "Audio";
-    const extension = asset.mediaType === "audio/wav" ? "wav" : "mp3";
-    return { bytes, mediaType: asset.mediaType, fileName: `${name}-${asset.id}.${extension}` };
+    return { bytes, mediaType: asset.mediaType, fileName: audioArtifactFileName(asset) };
   };
 
   const buildStateAfterAttachmentMutation = async () => {
@@ -2855,14 +2913,11 @@ export async function createAgentRuntime(
     await withAttachmentMutation(input.sessionId, signal, async () => {
       throwIfAborted(signal);
       await attachmentSession(input.sessionId);
-      const events = await loadSessionEvents(
-        storageDirectory,
-        input.sessionId,
-      );
+      const consumedIds = await loadConsumedAttachmentIds(storageDirectory,input.sessionId);
       const pending = await listPendingSessionAttachments(
         storageDirectory,
         input.sessionId,
-        consumedAttachmentIds(events),
+        consumedIds,
       );
       const matchingFiles = pending.filter((attachment) => attachment.byteLength === input.bytes.byteLength
         && attachment.fileName === sanitizedAttachmentFileName(input.fileName, attachment.mediaType));
@@ -2911,12 +2966,30 @@ export async function createAgentRuntime(
     return buildStateAfterAttachmentMutation();
   };
 
+  const handleAttachmentStreamUpload: NonNullable<ChatBridgeOptions["handleAttachmentStreamUpload"]> = async (input,signal) => {
+    await attachmentSession(input.sessionId);
+    let staged: Awaited<ReturnType<typeof stageSessionAttachmentStream>> | undefined;
+    try {
+      staged = await stageSessionAttachmentStream(storageDirectory,input.sessionId,{...input,signal});
+      await withAttachmentMutation(input.sessionId,signal,async () => {
+        throwIfAborted(signal);
+        await attachmentSession(input.sessionId);
+        const consumedIds = await loadConsumedAttachmentIds(storageDirectory,input.sessionId);
+        const pending = await listPendingSessionAttachments(storageDirectory,input.sessionId,consumedIds);
+        await runSessionStateChange(input.sessionId,() => staged!.publish(
+          {preSavePendingAttachmentRefs:pending.map(sessionAttachmentRefFromStored),reuseMatchingPending:true}));
+      });
+    } catch (error) { throwMappedAttachmentError(error); }
+    finally { await staged?.dispose(); }
+    return buildStateAfterAttachmentMutation();
+  };
+
   const handleAttachmentSelection = async (input: ChatBridgeAttachmentSelectionInput, signal: AbortSignal) => {
     await withAttachmentMutation(input.sessionId, signal, async () => {
       throwIfAborted(signal);
       await attachmentSession(input.sessionId);
-      const events = await loadSessionEvents(storageDirectory, input.sessionId);
-      const pending = await listPendingSessionAttachments(storageDirectory, input.sessionId, consumedAttachmentIds(events));
+      const consumedIds = await loadConsumedAttachmentIds(storageDirectory,input.sessionId);
+      const pending = await listPendingSessionAttachments(storageDirectory, input.sessionId, consumedIds);
       try {
         await runSessionStateChange(input.sessionId, () => selectSavedAttachment(storageDirectory, input, pending, signal));
       } catch (error) { throwMappedAttachmentError(error); }
@@ -2931,13 +3004,8 @@ export async function createAgentRuntime(
     await withAttachmentMutation(input.sessionId, signal, async () => {
       throwIfAborted(signal);
       await attachmentSession(input.sessionId);
-      const events = await loadSessionEvents(
-        storageDirectory,
-        input.sessionId,
-      );
-      if (events.some((event) =>
-        event.attachments?.some((attachment) => attachment.id === input.attachmentId)
-      )) {
+      const consumedIds = await loadConsumedAttachmentIds(storageDirectory,input.sessionId);
+      if (consumedIds.includes(input.attachmentId)) {
         throw new ChatBridgeConflictError(
           "An attachment already referenced by a user event cannot be removed.",
         );
@@ -2945,7 +3013,7 @@ export async function createAgentRuntime(
       const target = (await listPendingSessionAttachments(
         storageDirectory,
         input.sessionId,
-        consumedAttachmentIds(events),
+        consumedIds,
       )).find((attachment) => attachment.id === input.attachmentId);
       if (!target) {
         throw new ChatBridgeResourceNotFoundError(
@@ -2953,7 +3021,7 @@ export async function createAgentRuntime(
         );
       }
       if (target.provenance?.replacedIds.length) {
-        const afterRemoval = await listPendingSessionAttachments(storageDirectory, input.sessionId, consumedAttachmentIds(events), input.attachmentId);
+        const afterRemoval = await listPendingSessionAttachments(storageDirectory, input.sessionId, consumedIds, input.attachmentId);
         if (afterRemoval.length && !attachmentQuotaIsWithinLimits(afterRemoval)) {
           throw new ChatBridgePayloadTooLargeError("Restoring the source would exceed pending attachment limits. Remove another draft file first.");
         }
@@ -3114,6 +3182,7 @@ export async function createAgentRuntime(
               ...(sendContext.attachmentIds === undefined ? {} : { attachmentIds: sendContext.attachmentIds }),
               withAttachmentMutation: (operation) => withAttachmentMutation(session.id, signal, operation),
               steeringSendId: sendContext.sendId,
+              sendId: sendContext.sendId,
               onDelta: (delta) => stream.assistantDelta(delta),
               onReasoningUpdate: (update) => stream.reasoningUpdate(update),
               onModelRequestStarted: () => stream.modelRequestStarted(),
@@ -3203,13 +3272,9 @@ export async function createAgentRuntime(
       entry.id === input.sessionId && entry.projectKey === projectKey
     );
     if (!session) return "absent";
-    const events = await (
-      dependencies.loadSessionEvents ?? loadSessionEvents
-    )(storageDirectory, session.id);
-    const event = events.find((candidate) =>
-      candidate.steeringReceipt?.sendId === input.sendId &&
-      candidate.steeringReceipt.id === input.steerId
-    );
+    const event = dependencies.loadSessionEvents
+      ? (await dependencies.loadSessionEvents(storageDirectory,session.id)).find(candidate => candidate.steeringReceipt?.sendId === input.sendId && candidate.steeringReceipt.id === input.steerId)
+      : await loadSessionSendReceiptEvent(storageDirectory,session.id,input.sendId,input.steerId);
     if (!event) return "absent";
     const expected = steeringReceiptFor(
       input.sendId,
@@ -3222,6 +3287,16 @@ export async function createAgentRuntime(
         event.steeringReceipt?.sha256 === expected.sha256
       ? "accepted"
       : "conflict";
+  };
+
+  const lookupSendReceipt: NonNullable<ChatBridgeOptions["lookupSendReceipt"]> = async (input,signal) => {
+    await resourceSession(input.sessionId,signal);
+    const event = await loadSessionSendReceiptEvent(storageDirectory,input.sessionId,input.sendId,input.steerId);
+    await resourceSession(input.sessionId,signal);
+    if (!event) return {status:"absent"};
+    if (event.kind !== "user" || event.content !== input.prompt ||
+        JSON.stringify(event.attachments?.map(ref => ref.id) ?? []) !== JSON.stringify(input.attachmentIds)) return {status:"conflict"};
+    return {status:"accepted",event:chatSessionEvent(event)};
   };
 
   const buildInvalidatedSessionState = (
@@ -3271,6 +3346,42 @@ export async function createAgentRuntime(
     });
     return {
       readAttachment,
+      readAttachmentExport,
+      readSessionEvents,
+      lookupSendReceipt,
+      readAttachmentWaveform: async (sessionId,attachmentId,signal) => {
+        await resourceSession(sessionId,signal);
+        const result = await readSessionAttachmentWaveform(storageDirectory,sessionId,attachmentId,{signal});
+        await resourceSession(sessionId,signal);
+        return result;
+      },
+      readAudioWaveform: async (sessionId,assetId,signal) => {
+        await resourceSession(sessionId,signal);
+        if (!storageDirectory) return undefined;
+        const result = await readSessionAudioArtifactWaveform(storageDirectory,sessionId,assetId,{signal}).catch((error: unknown) => {
+          if (error instanceof AudioArtifactNotFoundError) throw new ChatBridgeResourceNotFoundError(error.message);
+          throw error;
+        });
+        await resourceSession(sessionId,signal);
+        return result;
+      },
+      readAudioAssetExport: async (sessionId,assetId,signal) => {
+        await resourceSession(sessionId,signal);
+        if (!storageDirectory) throw new ChatBridgeResourceNotFoundError("Saved audio is unavailable.");
+        const result = await sessionAudioArtifactExport(storageDirectory,sessionId,assetId).catch((error: unknown) => {
+          if (error instanceof AudioArtifactNotFoundError) throw new ChatBridgeResourceNotFoundError(error.message);
+          throw error;
+        });
+        await resourceSession(sessionId,signal);
+        return result;
+      },
+      readMidiArtifactExport: async (sessionId,artifactRef,signal) => {
+        await resourceSession(sessionId,signal);
+        if (!storageDirectory) throw new ChatBridgeResourceNotFoundError("Saved MIDI is unavailable.");
+        const result = await midiArtifactExport(storageDirectory,sessionId,artifactRef);
+        await resourceSession(sessionId,signal);
+        return result;
+      },
       searchSessions: (input, signal) => searchSessions({ ...input, storageDirectory, signal }),
       handlePluginAppRequest: (input, signal) => pluginApps.request(input, signal),
       prepareMidiImport: async (input, signal) => {
@@ -3336,6 +3447,7 @@ export async function createAgentRuntime(
       lookupSteeringReceipt,
       preflightAttachmentUpload,
       handleAttachmentUpload,
+      handleAttachmentStreamUpload,
       handleAttachmentSelection,
       handleAttachmentDelete,
       handleSkillInstall,

@@ -1,3 +1,4 @@
+import { writeStoredBytes } from "../../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
@@ -572,7 +573,7 @@ test("historical image corruption degrades to an unavailable marker", async () =
     "session-corrupt-history",
     `${attachment.id}.bin`,
   );
-  await fs.writeFile(blob, new Uint8Array([1, 2, 3]));
+  await writeStoredBytes(directory, blob, new Uint8Array([1, 2, 3]));
 
   const [message] = await resolveConversationHistory({
     storageDirectory: directory,
@@ -770,7 +771,7 @@ test("current audio context requires compatible saved Chat capability evidence b
       audioEvidence: "unverified",
     }),
   ]) {
-    await fs.writeFile(blob, new Uint8Array([1, 2, 3]));
+    await writeStoredBytes(directory, blob, new Uint8Array([1, 2, 3]));
     await assert.rejects(
       resolveCurrentAttachmentParts({
         storageDirectory: directory,
@@ -785,7 +786,7 @@ test("current audio context requires compatible saved Chat capability evidence b
     );
   }
 
-  await fs.writeFile(blob, wavBytes());
+  await writeStoredBytes(directory, blob, wavBytes());
   const resolved = await resolveCurrentAttachmentParts({
     storageDirectory: directory,
     sessionId,
@@ -851,7 +852,7 @@ test("historical audio uses fixed incompatible, unavailable, and included outcom
     sessionId,
     `${stored.id}.bin`,
   );
-  await fs.writeFile(blob, new Uint8Array([1, 2, 3]));
+  await writeStoredBytes(directory, blob, new Uint8Array([1, 2, 3]));
 
   const incompatible = await resolveConversationHistory({
     storageDirectory: directory,
@@ -917,7 +918,7 @@ test("historical audio uses fixed incompatible, unavailable, and included outcom
     /"state":"unavailable"/,
   );
 
-  await fs.writeFile(blob, wavBytes());
+  await writeStoredBytes(directory, blob, wavBytes());
   const included = await resolveConversationHistory({
     storageDirectory: directory,
     sessionId,
@@ -1215,7 +1216,7 @@ test("unavailable newest history releases count and image-subtotal capacity for 
     fileName: "newer-corrupt.png",
     bytes: pngBytesAtSize(4 * 1024 * 1024),
   }, { preSavePendingAttachmentRefs: [] });
-  await fs.writeFile(
+  await writeStoredBytes(directory,
     path.join(directory, "live-smith-attachments", sessionId, `${newer.id}.bin`),
     new Uint8Array([1, 2, 3]),
   );
@@ -1276,7 +1277,7 @@ test("unavailable newest history releases raw capacity for an older small attach
     fileName: "newer-large-corrupt.png",
     bytes: pngBytesAtSize(5 * 1024 * 1024),
   }, { preSavePendingAttachmentRefs: [] });
-  await fs.writeFile(
+  await writeStoredBytes(directory,
     path.join(directory, "live-smith-attachments", sessionId, `${newer.id}.bin`),
     new Uint8Array([1, 2, 3]),
   );
@@ -1345,7 +1346,7 @@ test("history does not read blobs excluded by the raw attachment budget", async 
       attachments: [sessionAttachmentRefFromStored(stored)],
     });
   }
-  await fs.writeFile(
+  await writeStoredBytes(directory,
     path.join(directory, "live-smith-attachments", sessionId, `${oldestId}.bin`),
     new Uint8Array([1, 2, 3]),
   );
@@ -1378,7 +1379,7 @@ test("incompatible historical PDF becomes a fixed marker without reading its blo
     fileName: 'score".pdf',
     bytes: pdfBytes(),
   }, { preSavePendingAttachmentRefs: [] });
-  await fs.writeFile(
+  await writeStoredBytes(directory,
     path.join(directory, "live-smith-attachments", sessionId, `${stored.id}.bin`),
     new Uint8Array([1, 2, 3]),
   );
@@ -1515,4 +1516,18 @@ test("a size rejection stops older binary replay while preserving text and a new
   const reread = await resolveCurrentAttachmentParts({ storageDirectory: undefined, sessionId,
     refs: [original], runtimeProfile: profile });
   assert.equal(reread.parts[0]?.type, "audio");
+});
+
+test("processing-only audio verifies saved content and rejects corruption", async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "live-smith-audio-process-context-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const { waveBytes } = await import("../../storage/support/audio-storage-test-helpers.js");
+  const saved = await saveSessionAttachment(directory, "processing-audio", { fileName: "audio.wav", bytes: waveBytes() }, { preSavePendingAttachmentRefs: [] });
+  const ref = sessionAttachmentRefFromStored(saved);
+  const input = { storageDirectory: directory, sessionId: "processing-audio", refs: [ref], runtimeProfile: runtimeProfile(), audioProcessingOnly: true };
+  assert.deepEqual((await resolveCurrentAttachmentParts(input)).parts, []);
+  const media = path.join(directory, "live-smith-media", saved.sha256);
+  const handle = await fs.open(media, "r+");
+  try { await handle.write(Buffer.from([0]), 0, 1, 10); } finally { await handle.close(); }
+  await assert.rejects(resolveCurrentAttachmentParts(input), /integrity|verification/i);
 });

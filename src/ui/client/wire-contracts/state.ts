@@ -29,6 +29,9 @@ import {
 } from "./primitives.js";
 import {
   isWireAgentSession,
+  isWireEventHistory,
+  isWireSessionAttachment,
+  isWireLegacySessionAttachment,
   isWireLiveContext,
   isWireSessionActivity,
   isWireSessionAttachments,
@@ -58,6 +61,7 @@ export function createStateValidators({ isWireIntegrationConnections, isWireSuno
         "activeSessionId",
         "approvalMode",
         "events",
+        "eventHistory", "sessionAttachments", "latestBriefProposal", "latestCompactionId",
         "pendingAttachments",
         "availableSkills",
         "plugins",
@@ -116,6 +120,13 @@ export function createStateValidators({ isWireIntegrationConnections, isWireSuno
       !value.events.every((event) =>
         isWireSessionEvent(event, "persisted")
       ) ||
+      (value.eventHistory !== undefined && !isWireEventHistory(value.eventHistory)) ||
+      (value.sessionAttachments !== undefined && (!isWireArray(value.sessionAttachments) ||
+        !value.sessionAttachments.every(attachment => isWireSessionAttachment(attachment) || isWireLegacySessionAttachment(attachment)) ||
+        new Set(value.sessionAttachments.map(attachment => attachment.id)).size !== value.sessionAttachments.length)) ||
+      (value.latestBriefProposal !== undefined && value.latestBriefProposal !== null &&
+        (!isWireSessionEvent(value.latestBriefProposal, "persisted") || value.latestBriefProposal.kind !== "tool_result" || value.latestBriefProposal.name !== "propose_creative_brief")) ||
+      (value.latestCompactionId !== undefined && value.latestCompactionId !== null && !isWireStorageId(value.latestCompactionId)) ||
       !isWireArray(value.pendingAttachments) ||
       !(
         value.pendingAttachments.length === 0 ||
@@ -194,13 +205,16 @@ export function createStateValidators({ isWireIntegrationConnections, isWireSuno
       new Set(value.events.map((event) => event.id)).size !==
         value.events.length
     ) return false;
+    const historicalAttachmentIds = isWireArray(value.sessionAttachments)
+      ? new Set(value.sessionAttachments.map(attachment => wireField(attachment, "id"))) : new Set();
     const consumedAttachmentIds = value.events.flatMap((event) =>
       (event.attachments || []).map((attachment) => attachment.id)
     );
     if (
       new Set(consumedAttachmentIds).size !== consumedAttachmentIds.length ||
       value.pendingAttachments.some((attachment) =>
-        consumedAttachmentIds.includes(String(wireField(attachment, "id")))
+        consumedAttachmentIds.includes(String(wireField(attachment, "id"))) ||
+        historicalAttachmentIds.has(wireField(attachment, "id"))
       )
     ) return false;
     const steeringAckIds = value.events.flatMap((event) =>

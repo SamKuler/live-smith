@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout, clearTimeout } from "node:timers";
 import { isSessionTabs, type SessionShortcutId } from "../../model/session-tabs.js";
 import { UiMessageError, type UiMessage } from "../../i18n/ui-message.js";
-import { sendMediaAssetResponse } from "./media-response.js";
+import { sendMediaAssetResponse, sendStoredMediaResponse } from "./media-response.js";
 import type { IntegrationConnectionsView } from "../../plugins/integration-connections.js";
 import {
   createServer,
@@ -25,6 +25,8 @@ import { isArtifactRef, type ArtifactRef } from "../../agent/artifact-contracts.
 import type { MidiArtifactDiff } from "../midi/midi-artifact-diff.js";
 import type { MidiPartPreview, SessionArtifactDetail } from "../session/session-artifacts.js";
 import { MAX_SEARCH_QUERY_LENGTH, normalizeSearchQuery, type SessionSearchInput, type SessionSearchResult } from "../session/search-contracts.js";
+import type { SessionFileExport } from "../../storage/file-export.js";
+import { MAX_PENDING_ATTACHMENT_COUNT } from "../../attachments/contracts.js";
 import type { SessionAttachmentRef } from "../../storage/attachments.js";
 import type { SessionModelSelection } from "../../storage/sessions.js";
 import { isSafeStorageId } from "../../storage/id.js";
@@ -101,6 +103,7 @@ import {
   assertExactQueryParameters,
   assertJsonContentType,
   commandIdForRequest,
+  correlationIdPattern,
   attachmentIdsForRequest,
   parseAttachmentReferenceQuery,
   parseAttachmentSelectionQuery,
@@ -114,6 +117,7 @@ import {
   parseSteeringInput,
   readJsonBody,
   readRawAttachmentBody,
+  openAttachmentBodyStream,
   readRawSkillBody,
   readRawPluginBody,
   sendIdForRequest,
@@ -395,6 +399,13 @@ export interface ChatBridgeOptions {
   /** Test seam for disconnected-view cleanup; production retains a view for five minutes. */
   viewIdleTimeoutMs?: number;
   readMidiArtifact?(sessionId: string, artifactRef: string, signal: AbortSignal): Promise<{ bytes: Uint8Array; fileName: string }>;
+  readAttachmentExport?(sessionId: string, id: string, signal: AbortSignal): Promise<{ attachment: SessionAttachmentRef; file: SessionFileExport }>;
+  readAudioAssetExport?(sessionId: string, id: string, signal: AbortSignal): Promise<SessionFileExport>;
+  readMidiArtifactExport?(sessionId: string, id: string, signal: AbortSignal): Promise<SessionFileExport>;
+  readAttachmentWaveform?(sessionId: string, id: string, signal: AbortSignal): Promise<{ peaks: number[]; durationSeconds: number } | undefined>;
+  readAudioWaveform?(sessionId: string, id: string, signal: AbortSignal): Promise<{ peaks: number[]; durationSeconds: number } | undefined>;
+  readSessionEvents?(input: { sessionId: string; before?: number; after?: number; historyId?: string; anchorEventId?: string; afterEventId?: string }, signal: AbortSignal): Promise<unknown>;
+  handleAttachmentStreamUpload?(input: { sessionId: string; fileName: string; claimedMediaType?: string; chunks: AsyncIterable<Uint8Array>; expectedByteLength?: number }, signal: AbortSignal): Promise<ChatDialogState>;
   searchSessions?(input: SessionSearchInput, signal: AbortSignal): Promise<SessionSearchResult>;
   readSessionArtifacts?(input: { sessionId: string; offset: number; query?: string; kind?: ArtifactRef["kind"] }, signal: AbortSignal): Promise<unknown>;
   readDeviceParameters?(input: ParameterArtifactRead, signal: AbortSignal): Promise<unknown>;
@@ -428,6 +439,7 @@ export interface ChatBridgeOptions {
     steering: SteeringChannel,
     context: ChatBridgeSendContext,
   ): Promise<ChatDialogState | void>;
+  lookupSendReceipt?(input: { sessionId: string; sendId: string; prompt: string; attachmentIds: string[]; steerId?: string }, signal: AbortSignal): Promise<{ status: "accepted" | "absent" | "conflict"; event?: ChatSessionEvent }>;
   lookupSteeringReceipt?(
     input: ChatBridgeSteeringReceiptLookupInput,
   ): Promise<ChatBridgeSteeringReceiptLookupResult>;
@@ -780,6 +792,7 @@ export async function createChatBridge(
   const activeSendsById = new Map<string, ActiveSend>();
   const activeSendsBySession = new Map<string, ActiveSend>();
   const pendingSendAdmissions = new Map<string, PendingSendAdmission>();
+  let receiptActivityRevision = 0;
   const latestApprovalModeChanges = new Map<
     string,
     ApprovalModeChangedEventPayload
@@ -1676,6 +1689,8 @@ export async function createChatBridge(
         "/view-session",
         "/midi-import-preview",
         "/session-artifacts",
+        "/session-events",
+        "/send-receipt",
         "/session-search",
         "/session-artifact",
         "/midi-artifact-diff",
@@ -1712,12 +1727,17 @@ export async function createChatBridge(
           if (ticket?.expiresAt && ticket.expiresAt <= Date.now()) mediaDownloads.delete(key);
           response.writeHead(403).end("Forbidden"); return;
         }
-        if (kind === "audio" ? !options.readAudioAsset : !options.readMidiArtifact) { response.writeHead(404).end("Not found"); return; }
+        const streamRead = kind === "audio" ? options.readAudioAssetExport : options.readMidiArtifactExport;
+        const byteRead = kind === "audio" ? options.readAudioAsset : options.readMidiArtifact;
+        if (!streamRead && !byteRead) { response.writeHead(404).end("Not found"); return; }
         const signal = beginReadOnlyBuild(response, handlerTerminal);
-        const audio = kind === "audio" ? await options.readAudioAsset!(ticket.sessionId, ticket.assetId, signal)
-          : { ...await options.readMidiArtifact!(ticket.sessionId, ticket.assetId, signal), mediaType: "audio/midi" as const };
-        if (closing || response.destroyed) return;
-        sendMediaAssetResponse(response, audio, request.headers.range, request.method === "HEAD", true);
+        if (streamRead) {
+          const file = await streamRead(ticket.sessionId, ticket.assetId, signal);
+          if (!closing && !response.destroyed) await sendStoredMediaResponse(response, file, request.headers.range, signal, request.method === "HEAD", true);
+        } else {
+          const file = await byteRead!(ticket.sessionId, ticket.assetId, signal);
+          if (!closing && !response.destroyed) sendMediaAssetResponse(response, { ...file, mediaType: kind === "midi" ? "audio/midi" : (file as { mediaType: "audio/wav" | "audio/mpeg" }).mediaType }, request.headers.range, request.method === "HEAD", true);
+        }
         return;
       }
 
@@ -1769,9 +1789,23 @@ export async function createChatBridge(
       if (requestView) { retainView(requestView); requestView.requests++; }
 
       if ((request.method === "GET" || request.method === "HEAD") && url.pathname.startsWith("/attachments/")) {
-        if (!options.readAttachment) { response.writeHead(404).end("Not found"); return; }
-        const input = parseAttachmentReferenceQuery(request, url);
+        const referenceUrl = new URL(url); referenceUrl.searchParams.delete("waveform");
+        const input = parseAttachmentReferenceQuery(request, referenceUrl);
+        const waveforms = url.searchParams.getAll("waveform");
+        if (waveforms.length > 1 || waveforms.length === 1 && waveforms[0] !== "1" || waveforms.length && request.method !== "GET") throw new ChatBridgeRequestValidationError("Attachment waveform request is invalid.");
         const signal = beginReadOnlyBuild(response, handlerTerminal);
+        if (waveforms.length) {
+          if (!options.readAttachmentWaveform) { response.writeHead(404).end("Not found"); return; }
+          const waveform = await options.readAttachmentWaveform(input.sessionId, input.attachmentId, signal);
+          if (!closing && !response.destroyed) sendJson(response, waveform ?? null);
+          return;
+        }
+        if (options.readAttachmentExport) {
+          const result = await options.readAttachmentExport(input.sessionId, input.attachmentId, signal);
+          if (!closing && !response.destroyed) await sendStoredMediaResponse(response, result.file, request.headers.range, signal, request.method === "HEAD", result.attachment.kind === "document");
+          return;
+        }
+        if (!options.readAttachment) { response.writeHead(404).end("Not found"); return; }
         const file = await options.readAttachment(input.sessionId, input.attachmentId, signal);
         if (closing || response.destroyed) return;
         if (file.attachment.kind === "audio") {
@@ -1791,14 +1825,27 @@ export async function createChatBridge(
       }
 
       if ((request.method === "GET" || request.method === "HEAD") && url.pathname.startsWith("/audio-assets/")) {
-        assertExactQueryParameters(url, ["token", "sessionId"], "Audio asset request");
-        if (!options.readAudioAsset) { response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token", "sessionId", "waveform"], "Audio asset request");
         const assetId = url.pathname.slice("/audio-assets/".length);
         const sessionIds = url.searchParams.getAll("sessionId");
         if (!isSafeStorageId(assetId) || sessionIds.length !== 1 || !isSafeStorageId(sessionIds[0])) {
           throw new ChatBridgeRequestValidationError("Audio asset reference is invalid.");
         }
         const signal = beginReadOnlyBuild(response, handlerTerminal);
+        const waveforms = url.searchParams.getAll("waveform");
+        if (waveforms.length > 1 || waveforms.length === 1 && waveforms[0] !== "1" || waveforms.length && request.method !== "GET") throw new ChatBridgeRequestValidationError("Audio waveform request is invalid.");
+        if (waveforms.length) {
+          if (!options.readAudioWaveform) { response.writeHead(404).end("Not found"); return; }
+          const waveform = await options.readAudioWaveform(sessionIds[0], assetId, signal);
+          if (!closing && !response.destroyed) sendJson(response, waveform ?? null);
+          return;
+        }
+        if (options.readAudioAssetExport) {
+          const file = await options.readAudioAssetExport(sessionIds[0], assetId, signal);
+          if (!closing && !response.destroyed) await sendStoredMediaResponse(response, file, request.headers.range, signal, request.method === "HEAD");
+          return;
+        }
+        if (!options.readAudioAsset) { response.writeHead(404).end("Not found"); return; }
         const audio = await options.readAudioAsset(sessionIds[0], assetId, signal);
         if (closing || response.destroyed) return;
         sendMediaAssetResponse(response, audio, request.headers.range, request.method === "HEAD");
@@ -1923,7 +1970,7 @@ export async function createChatBridge(
       }
 
       if (request.method === "POST" && url.pathname === "/attachments") {
-        if (!options.preflightAttachmentUpload || !options.handleAttachmentUpload) {
+        if (!options.preflightAttachmentUpload || (!options.handleAttachmentUpload && !options.handleAttachmentStreamUpload)) {
           request.resume();
           response.writeHead(404).end("Not found");
           return;
@@ -1950,16 +1997,21 @@ export async function createChatBridge(
           controller.signal,
         );
         throwIfBridgeAborted(controller.signal);
-        const bytes = await readAttachmentRequestBody(request);
-        attachmentBodyMayBeUnread = false;
+        let uploaded: ChatDialogState;
+        if (options.handleAttachmentStreamUpload) {
+          const stream = openAttachmentBodyStream(request, controller.signal, options.attachmentBodyReadOptions);
+          try {
+            uploaded = await options.handleAttachmentStreamUpload({ ...query, chunks: stream.chunks, ...(stream.expectedByteLength === undefined ? {} : { expectedByteLength: stream.expectedByteLength }) }, controller.signal);
+            attachmentBodyMayBeUnread = false;
+          } finally { stream.close(); }
+        } else {
+          const bytes = await readAttachmentRequestBody(request);
+          attachmentBodyMayBeUnread = false;
+          throwIfBridgeAborted(controller.signal);
+          uploaded = await options.handleAttachmentUpload!({ ...query, bytes }, controller.signal);
+        }
         throwIfBridgeAborted(controller.signal);
-        const state = finalizeBridgeState(
-          await options.handleAttachmentUpload({
-            ...query,
-            bytes,
-          }, controller.signal),
-          stateSnapshotCutRevision,
-        );
+        const state = finalizeBridgeState(uploaded, stateSnapshotCutRevision);
         sendJson(response, state, 201);
         return;
       }
@@ -2127,6 +2179,50 @@ export async function createChatBridge(
         const preview = await options.readMidiPartPreview({ sessionId: input.sessionId, artifactRef: input.artifactRef, partId: input.partId }, signal);
         if (closing || response.destroyed) return;
         sendJson(response, preview);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/send-receipt") {
+        if (!options.lookupSendReceipt) { request.resume(); response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token"], "Send receipt");
+        assertJsonContentType(request);
+        const input = await readRequestBody(request) as Record<string, unknown>;
+        if (!input || typeof input !== "object" || Array.isArray(input) ||
+            Object.keys(input).some(key => !["sessionId", "sendId", "prompt", "attachmentIds", "steerId"].includes(key)) ||
+            !isSafeStorageId(input.sessionId) || typeof input.sendId !== "string" || !correlationIdPattern.test(input.sendId) ||
+            typeof input.prompt !== "string" || !Array.isArray(input.attachmentIds) || input.attachmentIds.length > MAX_PENDING_ATTACHMENT_COUNT ||
+            input.attachmentIds.some(id => !isSafeStorageId(id)) || new Set(input.attachmentIds).size !== input.attachmentIds.length ||
+            input.steerId !== undefined && (typeof input.steerId !== "string" || !correlationIdPattern.test(input.steerId))) {
+          throw new ChatBridgeRequestValidationError("Send receipt reference is invalid.");
+        }
+        const sendId = input.sendId as string;
+        const activityBefore = pendingSendAdmissions.has(sendId) || activeSendsById.has(sendId);
+        const revisionBefore = receiptActivityRevision;
+        const result = await options.lookupSendReceipt(input as { sessionId: string; sendId: string; prompt: string; attachmentIds: string[]; steerId?: string }, beginReadOnlyBuild(response, handlerTerminal));
+        if (result.status === "absent" && (activityBefore || pendingSendAdmissions.has(sendId) || activeSendsById.has(sendId) || receiptActivityRevision !== revisionBefore)) {
+          throw new ChatBridgeConflictError("The send receipt may still be committed. Retry the lookup.");
+        }
+        if (!closing && !response.destroyed) sendJson(response, result);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/session-events") {
+        if (!options.readSessionEvents) { request.resume(); response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token"], "Session events");
+        assertJsonContentType(request);
+        const input = await readRequestBody(request) as Record<string, unknown>;
+        if (!input || typeof input !== "object" || Array.isArray(input) ||
+            Object.keys(input).some(key => !["sessionId", "before", "after", "historyId", "anchorEventId", "afterEventId"].includes(key)) ||
+            !isSafeStorageId(input.sessionId) ||
+            input.historyId !== undefined && !isSafeStorageId(input.historyId) ||
+            input.anchorEventId !== undefined && !isSafeStorageId(input.anchorEventId) ||
+            input.afterEventId !== undefined && !isSafeStorageId(input.afterEventId) ||
+            [input.before, input.after].some(value => value !== undefined && (!Number.isSafeInteger(value) || (value as number) < 1)) ||
+            Number(input.before !== undefined) + Number(input.after !== undefined) + Number(input.anchorEventId !== undefined) + Number(input.afterEventId !== undefined) > 1) {
+          throw new ChatBridgeRequestValidationError("Session event page is invalid.");
+        }
+        const result = await options.readSessionEvents(input as { sessionId: string; before?: number; after?: number; historyId?: string; anchorEventId?: string; afterEventId?: string }, beginReadOnlyBuild(response, handlerTerminal));
+        if (!closing && !response.destroyed) sendJson(response, result);
         return;
       }
 
@@ -2485,6 +2581,7 @@ export async function createChatBridge(
         }
         sendAdmission = { sendId, stopRequested: false };
         pendingSendAdmissions.set(sendId, sendAdmission);
+        receiptActivityRevision++;
         const input = parseSendInput(await readRequestBody<unknown>(request));
         const attachmentIds = attachmentIdsForRequest(request);
         sendSessionId = input.sessionId;
@@ -2882,7 +2979,7 @@ export async function createChatBridge(
       if (pluginBodyMayBeUnread) request.resume();
       if (
         request.method === "POST" &&
-        ["/command", "/session-model-capabilities", "/session-tools", "/midi-import-preview", "/session-artifacts", "/session-search", "/session-artifact", "/midi-artifact-diff", "/midi-artifact-preview", "/confirm", "/send", "/steer", "/stop",
+        ["/command", "/session-model-capabilities", "/session-tools", "/midi-import-preview", "/session-artifacts", "/session-events", "/send-receipt", "/session-search", "/session-artifact", "/midi-artifact-diff", "/midi-artifact-preview", "/confirm", "/send", "/steer", "/stop",
           "/plugin-apps/open", "/plugin-apps/call", "/plugin-apps/resource", "/plugin-apps/close", "/plugin-apps/resources", "/plugin-apps/resource-templates"].includes(
           requestPath,
         )
@@ -3201,7 +3298,7 @@ export async function createChatBridge(
 
   const createMediaDownload = async (kind: "audio" | "midi", sessionId: string, assetId: string, signal: AbortSignal): Promise<string> => {
     throwIfAborted(signal);
-    const read = kind === "audio" ? options.readAudioAsset : options.readMidiArtifact;
+    const read = kind === "audio" ? (options.readAudioAssetExport ?? options.readAudioAsset) : (options.readMidiArtifactExport ?? options.readMidiArtifact);
     if (closing || !read || !isSafeStorageId(sessionId) || !isSafeStorageId(assetId)) {
       throw new ChatBridgeResourceNotFoundError("Saved media is unavailable.");
     }

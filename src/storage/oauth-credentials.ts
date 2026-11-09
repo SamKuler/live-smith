@@ -1,4 +1,4 @@
-import * as fs from "node:fs/promises";
+import { readStoredText, writeStoredJson, removeStoredEntry } from "./sqlite.js";
 import * as path from "node:path";
 
 import {
@@ -7,12 +7,9 @@ import {
 } from "../model/profile.js";
 import { isMissingFileError } from "./errors.js";
 import {
-  ensurePrivateFile,
   requireActiveStorageTransaction,
-  removeFileDurably,
   type StorageTransactionContext,
   withStorageTransaction,
-  writeJsonAtomically,
 } from "./persistence.js";
 
 const oauthProviders = ["openai", "anthropic", "google"] as const;
@@ -155,7 +152,7 @@ export async function saveOAuthCredential(
       [credential.provider]: { ...credential },
     };
     delete store.legacyCredentials[credential.provider];
-    await writeJsonAtomically(credentialsPath(storageDirectory), store);
+    await writeStoredJson(storageDirectory, credentialsPath(storageDirectory), store);
     return true;
   });
 }
@@ -222,18 +219,17 @@ async function persistOrRemoveStore(
     Object.keys(store.credentials).length === 0 &&
     Object.keys(store.legacyCredentials).length === 0
   ) {
-    await removeFileDurably(credentialsPath(storageDirectory));
+    await removeStoredEntry(storageDirectory, credentialsPath(storageDirectory));
     return;
   }
-  await writeJsonAtomically(credentialsPath(storageDirectory), store);
+  await writeStoredJson(storageDirectory, credentialsPath(storageDirectory), store);
 }
 
 async function readStore(storageDirectory: string): Promise<OAuthCredentialStoreV3> {
   const target = credentialsPath(storageDirectory);
   let parsed: unknown;
   try {
-    const raw = await fs.readFile(target, "utf8");
-    await ensurePrivateFile(target);
+    const raw = await readStoredText(storageDirectory, target);
     parsed = JSON.parse(raw) as unknown;
   } catch (error) {
     if (isMissingFileError(error)) return emptyStore();
@@ -402,7 +398,7 @@ function validateCredential(
 }
 
 function credentialsPath(storageDirectory: string): string {
-  return path.join(storageDirectory, "oauth", "credentials.json");
+  return path.resolve(storageDirectory, "oauth", "credentials.json");
 }
 
 function requireStorageDirectory(

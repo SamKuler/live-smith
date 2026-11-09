@@ -14,6 +14,7 @@
       let active = null;
       let activeAudio = null;
       const inlineMedia = new Set();
+      const wavWaveforms = new Map();
 
       function disposeInlineMedia(preview) {
         preview.media.onload = null;
@@ -146,15 +147,12 @@
             isCurrent: () => !disposed && !suspended && reading === view };
           reading = view; failed = false; status.hidden = false; retry.hidden = true; refreshLocale();
           try {
-            const response = await fetch(sourceUrl, { signal: view.controller.signal }); checkAudioView(view);
-            if (!response.ok) throw new Error(t("The saved audio could not be decoded."));
-            const bytes = await response.arrayBuffer(); checkAudioView(view);
-            const result = descriptor.mediaType === "audio/mpeg" ? await mp3Peaks(bytes, view, descriptor) : await wavePeaks(bytes, view);
+            const { peaks } = await readAudioWaveform(sourceUrl, view, descriptor);
             checkAudioView(view);
-            path.setAttribute("d", Array.from(result.peaks, (peak, index) => `M${index},${60 - Math.max(1, peak * 55)}v${Math.max(2, peak * 110)}`).join(""));
+            renderWaveform(path, peaks);
             loaded = true; status.hidden = true;
           } catch {
-            if (reading === view && !view.controller.signal.aborted) { failed = true; retry.hidden = false; refreshLocale(); }
+            if (audioViewIsCurrent(view)) { failed = true; retry.hidden = false; refreshLocale(); }
           } finally { view.decoded = null; if (reading === view) reading = null; }
         }
         retry.addEventListener("click", () => { void load(); }); refreshLocale(); void load();
@@ -430,10 +428,13 @@
         return Object.assign(new Error(message()), { localizedMessage: message });
       }
 
+      function audioViewIsCurrent(view) {
+        return (view.isCurrent ? view.isCurrent() : activeAudio === view) && !view.controller.signal.aborted &&
+          getState().activeSessionId === view.sessionId;
+      }
+
       function checkAudioView(view) {
-        if ((view.isCurrent ? !view.isCurrent() : activeAudio !== view) || view.controller.signal.aborted || getState().activeSessionId !== view.sessionId) {
-          throw audioSelectionError(m("Audio selection cancelled."));
-        }
+        if (!audioViewIsCurrent(view)) throw audioSelectionError(m("Audio selection cancelled."));
       }
 
       async function audioYield(view) {
@@ -441,50 +442,48 @@
         checkAudioView(view);
       }
 
-      async function wavePeaks(bytes, view) {
-        const data = new DataView(bytes);
-        const text = (offset, length) => String.fromCharCode(...new Uint8Array(bytes, offset, length));
-        if (text(0, 4) !== "RIFF" || text(8, 4) !== "WAVE") throw audioSelectionError(m("The saved audio could not be decoded."));
-        let format, audio;
-        for (let offset = 12; offset + 8 <= data.byteLength;) {
-          const size = data.getUint32(offset + 4, true);
-          if (offset + 8 + size > data.byteLength) throw audioSelectionError(m("The saved audio could not be decoded."));
-          if (text(offset, 4) === "fmt ") format = offset + 8;
-          if (text(offset, 4) === "data") audio = { offset: offset + 8, size };
-          offset += 8 + size + (size & 1);
-        }
-        if (!format || !audio) throw audioSelectionError(m("The saved audio could not be decoded."));
-        const code = data.getUint16(format, true);
-        const channels = data.getUint16(format + 2, true);
-        const rate = data.getUint32(format + 4, true);
-        const align = data.getUint16(format + 12, true);
-        const bits = data.getUint16(format + 14, true);
-        const frames = audio.size / align;
-        const peaks = new Float32Array(480);
-        for (let frame = 0; frame < frames; frame++) {
-          if (frame % 65536 === 0) await audioYield(view);
-          const bucket = Math.min(peaks.length - 1, Math.floor(frame * peaks.length / frames));
-          for (let channel = 0; channel < channels; channel++) {
-            const offset = audio.offset + frame * align + channel * bits / 8;
-            let sample;
-            if (code === 3) sample = bits === 64 ? data.getFloat64(offset, true) : data.getFloat32(offset, true);
-            else if (bits === 8) sample = (data.getUint8(offset) - 128) / 128;
-            else if (bits === 16) sample = data.getInt16(offset, true) / 32768;
-            else if (bits === 24) sample = ((data.getUint8(offset) | data.getUint8(offset + 1) << 8 | data.getUint8(offset + 2) << 16) << 8 >> 8) / 8388608;
-            else sample = data.getInt32(offset, true) / 2147483648;
-            if (Number.isFinite(sample)) peaks[bucket] = Math.max(peaks[bucket], Math.min(1, Math.abs(sample)));
-          }
-        }
-        return { peaks, duration: frames / rate };
+      function renderWaveform(path, peaks) {
+        path.setAttribute("d", Array.from(peaks, (peak, index) =>
+          `M${(index + .5) * 480 / peaks.length},${60 - Math.max(1, peak * 55)}v${Math.max(2, peak * 110)}`).join(""));
       }
 
-      async function mp3Peaks(bytes, view, attachment) {
-        const maxDecodedBytes = __MAX_AUDIO_ATTACHMENT_BYTES__;
-        if (attachment.durationSeconds * attachment.sampleRate * attachment.channels * 4 > maxDecodedBytes) {
+      async function readAudioWaveform(sourceUrl, view, attachment) {
+        checkAudioView(view);
+        if (attachment.mediaType === "audio/mpeg") return mp3Peaks(sourceUrl, view, attachment);
+        const cached = wavWaveforms.get(sourceUrl);
+        if (cached) return cached;
+        const url = new URL(sourceUrl);
+        url.searchParams.set("waveform", "1");
+        const response = await fetch(url.href, { signal: view.controller.signal });
+        checkAudioView(view);
+        if (!response.ok) throw audioSelectionError(m("The saved audio could not be decoded."));
+        const summary = await response.json().catch(() => null);
+        checkAudioView(view);
+        if (!Array.isArray(summary?.peaks) || summary.peaks.length < 1 || summary.peaks.length > 512 ||
+            !summary.peaks.every((peak) => Number.isFinite(peak) && peak >= 0 && peak <= 1) ||
+            !Number.isFinite(summary.durationSeconds) || summary.durationSeconds <= 0) {
+          throw audioSelectionError(m("The saved audio could not be decoded."));
+        }
+        const waveform = { peaks: summary.peaks, durationSeconds: summary.durationSeconds };
+        if (wavWaveforms.size >= 8) wavWaveforms.delete(wavWaveforms.keys().next().value);
+        wavWaveforms.set(sourceUrl, waveform);
+        return waveform;
+      }
+
+      async function mp3Peaks(sourceUrl, view, attachment) {
+        const maxProcessingBytes = __MAX_AUDIO_ATTACHMENT_BYTES__;
+        if (!Number.isSafeInteger(attachment.byteLength) || attachment.byteLength <= 0 ||
+            attachment.byteLength > maxProcessingBytes ||
+            attachment.durationSeconds * attachment.sampleRate * attachment.channels * 4 > maxProcessingBytes) {
           throw audioSelectionError(m("This audio cannot be trimmed here. Use the complete file or shorten it in an audio editor."));
         }
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         if (!AudioContext) throw audioSelectionError(m("MP3 waveform decoding is unavailable in this browser. Use the original file or export a WAV in an audio editor."));
+        const response = await fetch(sourceUrl, { signal: view.controller.signal });
+        checkAudioView(view);
+        if (!response.ok) throw audioSelectionError(m("The saved audio could not be decoded."));
+        const bytes = await response.arrayBuffer();
+        checkAudioView(view);
         const context = new AudioContext({ sampleRate: attachment.sampleRate });
         view.context = context;
         let timeout;
@@ -500,7 +499,7 @@
           ]);
           checkAudioView(view);
           const decoded = view.decoded;
-          if (decoded.length * decoded.numberOfChannels * 4 > maxDecodedBytes || decoded.sampleRate !== attachment.sampleRate || decoded.numberOfChannels !== attachment.channels) {
+          if (decoded.length * decoded.numberOfChannels * 4 > maxProcessingBytes || decoded.sampleRate !== attachment.sampleRate || decoded.numberOfChannels !== attachment.channels) {
             view.decoded = null;
             throw audioSelectionError(m("This audio cannot be trimmed here. Use the complete file or shorten it in an audio editor."));
           }
@@ -513,7 +512,7 @@
               peaks[bucket] = Math.max(peaks[bucket], Math.min(1, Math.abs(samples[frame]) || 0));
             }
           }
-          return { peaks, duration: Math.min(attachment.durationSeconds, decoded.duration) };
+          return { peaks, durationSeconds: Math.min(attachment.durationSeconds, decoded.duration) };
         } finally {
           window.clearTimeout(timeout);
           if (abort) view.controller.signal.removeEventListener("abort", abort);
@@ -583,7 +582,8 @@
         const endInput = input("End (seconds)", "attachment-selection-end");
         const loopLabel = make("label", "attachment-selection-loop-label");
         const loop = make("input", "attachment-selection-loop"); loop.type = "checkbox"; loop.checked = true; loopLabel.append(loop, make("span", "", "Loop selection")); fields.append(loopLabel);
-        const player = createAudioPlayer(sessionId, attachment, getAttachmentUrl(sessionId, attachment.id));
+        const sourceUrl = getAttachmentUrl(sessionId, attachment.id);
+        const player = createAudioPlayer(sessionId, attachment, sourceUrl);
         const media = player.media;
         media.classList.add("attachment-selection-audio");
         media.preload = "metadata";
@@ -676,14 +676,15 @@
         whole.addEventListener("click", () => { void apply(false); }); excerpt.addEventListener("click", () => { void apply(true); });
         document.body.append(dialog); if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", ""); closeButton.focus();
         try {
-          const blob = await loadAttachment(sessionId, attachment.id, view.controller.signal); checkAudioView(view);
-          const bytes = await blob.arrayBuffer(); checkAudioView(view);
-          const waveform = attachment.mediaType === "audio/mpeg" ? await mp3Peaks(bytes, view, attachment) : await wavePeaks(bytes, view);
-          checkAudioView(view); view.duration = waveform.duration;
-          path.setAttribute("d", Array.from(waveform.peaks, (peak, index) => `M${index},${60 - Math.max(1, peak * 55)}v${Math.max(2, peak * 110)}`).join(""));
+          const waveform = await readAudioWaveform(sourceUrl, view, attachment);
+          checkAudioView(view); view.duration = waveform.durationSeconds;
+          renderWaveform(path, waveform.peaks);
           startInput.value = "0"; endInput.value = String(view.duration); startInput.max = endInput.max = String(view.duration);
           startInput.disabled = endInput.disabled = false; view.ready = true; update();
-        } catch (error) { if (activeAudio === view) { view.decoded = null; audioLocale.text(status, error.localizedMessage ?? (error.message || String(error))); } }
+        } catch (error) {
+          view.decoded = null;
+          if (audioViewIsCurrent(view)) audioLocale.text(status, error.localizedMessage ?? (error.message || String(error)));
+        }
       }
 
       window.addEventListener("pagehide", (event) => {

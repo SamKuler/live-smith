@@ -131,6 +131,90 @@ export async function inspectAudioAttachment(input: {
   }
 }
 
+/** Inspects a seekable immutable source with reads bounded to 64 KiB. */
+export async function inspectAudioAttachmentRange(input: {
+  byteLength: number;
+  readRange(offset: number, length: number): Promise<Uint8Array>;
+  signal?: AbortSignal;
+  limits: AudioInspectionLimits;
+}): Promise<AudioAttachmentInspection> {
+  const { byteLength, limits, signal } = input;
+  if (!validInspectionLimits(limits)) throw new TypeError("Audio inspection limits are invalid.");
+  if (!Number.isSafeInteger(byteLength) || byteLength <= 0) throw invalidAudio();
+  if (byteLength > limits.maxBytes) throw new AttachmentProcessingError("archive_limit", `Audio attachments may not exceed ${limits.maxBytes / (1024 * 1024)} MiB.`);
+  let cachedOffset = -1;
+  let cached: Uint8Array = new Uint8Array();
+  const read = async (offset: number, length: number): Promise<Uint8Array> => {
+    throwIfAborted(signal);
+    if (offset < 0 || length < 0 || offset + length > byteLength || length > 64 * 1024) throw invalidAudio();
+    if (offset < cachedOffset || offset + length > cachedOffset + cached.length) {
+      cachedOffset = offset;
+      cached = await input.readRange(offset, Math.min(64 * 1024, byteLength - offset));
+      if (cached.length !== Math.min(64 * 1024, byteLength - offset)) throw invalidAudio();
+    }
+    return cached.subarray(offset - cachedOffset, offset - cachedOffset + length);
+  };
+  try {
+    const prefix = await read(0, Math.min(12, byteLength));
+    let inspection: AudioAttachmentInspection;
+    if (isWave(prefix)) {
+      if (unsigned32LittleEndian(prefix, 4) + 8 !== byteLength) throw invalidAudio();
+      let offset = 12, format: ReturnType<typeof waveFormat> | undefined, dataBytes: number | undefined;
+      while (offset < byteLength) {
+        const header = await read(offset, 8);
+        const id = ascii(header, 0, 4), size = unsigned32LittleEndian(header, 4);
+        const end = offset + 8 + size + (size & 1);
+        if (end > byteLength) throw invalidAudio();
+        if (id === "fmt ") {
+          if (format || (size !== 16 && size !== 18)) throw invalidAudio();
+          format = waveFormat(await read(offset + 8, size), 0, size);
+        } else if (id === "data") {
+          if (dataBytes !== undefined) throw invalidAudio();
+          dataBytes = size;
+        }
+        offset = end;
+      }
+      if (!format || !dataBytes || dataBytes % format.blockAlign !== 0) throw invalidAudio();
+      inspection = { mediaType: "audio/wav", durationSeconds: dataBytes / format.byteRate, sampleRate: format.sampleRate, channels: format.channels };
+    } else {
+      let offset = 0, audioEnd = byteLength;
+      if (byteLength >= 3 && ascii(prefix, 0, 3) === "ID3") {
+        const header = await read(0, 10);
+        const payload = (header[6]! << 21) | (header[7]! << 14) | (header[8]! << 7) | header[9]!;
+        if (payload > MAX_AUDIO_ID3V2_PAYLOAD_BYTES) throw invalidAudio();
+        const hasFooter = header[3] === 4 && (header[5]! & 0x10) !== 0;
+        const end = 10 + payload + (hasFooter ? 10 : 0);
+        if (end > byteLength) throw invalidAudio();
+        // Reuse the strict tag parser on a compact representation, preserving the declared length and footer.
+        const tag = new Uint8Array(end);
+        tag.set(header);
+        if (hasFooter) tag.set(await read(end - 10, 10), end - 10);
+        offset = id3v2End(tag);
+      }
+      if (audioEnd - offset >= 128 && ascii(await read(audioEnd - 128, 3), 0, 3) === "TAG") audioEnd -= 128;
+      let count = 0, samples = 0, version: 1 | 2 | undefined, rate: number | undefined, channels: 1 | 2 | undefined;
+      let nextYield = 256 * 1024;
+      while (offset < audioEnd) {
+        const header = await read(offset, Math.min(4, audioEnd - offset));
+        const frame = mp3FrameAt(header, 0, audioEnd - offset);
+        if (version !== undefined && (version !== frame.version || rate !== frame.sampleRate || channels !== frame.channels)) throw invalidAudio();
+        version ??= frame.version; rate ??= frame.sampleRate; channels ??= frame.channels;
+        count++; samples += frame.samples; offset += frame.byteLength;
+        if (offset >= nextYield) { await yieldToHost(signal); nextYield = offset + 256 * 1024; }
+      }
+      if (offset !== audioEnd || count < 2 || rate === undefined || channels === undefined) throw invalidAudio();
+      inspection = { mediaType: "audio/mpeg", durationSeconds: samples / rate, sampleRate: rate, channels };
+    }
+    throwIfAborted(signal);
+    if (inspection.durationSeconds > limits.maxDurationSeconds) throw new AttachmentProcessingError("audio_duration_limit", `Audio attachments may not exceed ${limits.maxDurationSeconds} seconds.`);
+    return inspection;
+  } catch (error) {
+    throwIfAborted(signal);
+    if (error instanceof AttachmentProcessingError) throw error;
+    throw invalidAudio();
+  }
+}
+
 function validInspectionLimits(limits: AudioInspectionLimits): boolean {
   return Number.isSafeInteger(limits.maxBytes) && limits.maxBytes > 0 &&
     Number.isFinite(limits.maxDurationSeconds) && limits.maxDurationSeconds > 0;
@@ -494,4 +578,98 @@ export async function sliceWaveAttachment(input: {
   }
   throwIfAborted(input.signal);
   return { bytes: result, startSeconds: startFrame / format.sampleRate, endSeconds: endFrame / format.sampleRate };
+}
+
+/** Extract a bounded WAV selection without loading unrelated original samples. */
+export async function sliceWaveAttachmentRange(input: {
+  byteLength: number;
+  readRange(offset: number, length: number): Promise<Uint8Array>;
+  startSeconds: number;
+  endSeconds: number;
+  signal?: AbortSignal;
+}): Promise<{ bytes: Uint8Array; startSeconds: number; endSeconds: number }> {
+  const inspection = await inspectAudioAttachmentRange({
+    byteLength: input.byteLength, readRange: input.readRange,
+    limits: { maxBytes: 2 * 1024 * 1024 * 1024, maxDurationSeconds: Number.MAX_SAFE_INTEGER },
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+  if (inspection.mediaType !== "audio/wav") throw new AttachmentProcessingError("invalid_audio", "MP3 excerpts require explicit WAV conversion.");
+  if (!Number.isFinite(input.startSeconds) || !Number.isFinite(input.endSeconds) ||
+      input.startSeconds < 0 || input.endSeconds <= input.startSeconds || input.endSeconds > inspection.durationSeconds) {
+    throw new AttachmentProcessingError("invalid_audio", "Select a valid start and end within the audio duration.");
+  }
+  let formatBytes: Uint8Array | undefined, dataOffset = 0;
+  for (let offset = 12; offset < input.byteLength;) {
+    const header = await input.readRange(offset, 8);
+    const length = unsigned32LittleEndian(header, 4), id = ascii(header, 0, 4);
+    if (id === "fmt ") formatBytes = await input.readRange(offset + 8, length);
+    if (id === "data") dataOffset = offset + 8;
+    offset += 8 + length + (length & 1);
+  }
+  if (!formatBytes || !dataOffset) throw invalidAudio();
+  const format = waveFormat(formatBytes, 0, formatBytes.length);
+  const startFrame = Math.round(input.startSeconds * format.sampleRate), endFrame = Math.round(input.endSeconds * format.sampleRate);
+  if (endFrame <= startFrame) throw new AttachmentProcessingError("invalid_audio", "The selection must contain at least one sample.");
+  const dataLength = (endFrame - startFrame) * format.blockAlign;
+  const total = 28 + formatBytes.length + dataLength + (dataLength & 1);
+  if (total > MAX_AUDIO_ATTACHMENT_BYTES || (endFrame - startFrame) / format.sampleRate > MAX_AUDIO_DURATION_SECONDS) {
+    throw new AttachmentProcessingError("archive_limit", "The selected audio exceeds the processing limit.");
+  }
+  const result = new Uint8Array(total), view = new DataView(result.buffer);
+  const put = (offset: number, text: string) => { for (let i = 0; i < text.length; i++) result[offset + i] = text.charCodeAt(i); };
+  put(0, "RIFF"); view.setUint32(4, result.length - 8, true); put(8, "WAVE");
+  put(12, "fmt "); view.setUint32(16, formatBytes.length, true); result.set(formatBytes, 20);
+  put(20 + formatBytes.length, "data"); view.setUint32(24 + formatBytes.length, dataLength, true);
+  for (let copied = 0; copied < dataLength; copied += 64 * 1024) {
+    throwIfAborted(input.signal);
+    result.set(await input.readRange(dataOffset + startFrame * format.blockAlign + copied, Math.min(64 * 1024, dataLength - copied)), 28 + formatBytes.length + copied);
+  }
+  return { bytes: result, startSeconds: startFrame / format.sampleRate, endSeconds: endFrame / format.sampleRate };
+}
+
+/** Sample each time bucket for a bounded-cost waveform preview. */
+export async function previewWaveformRange(input: {
+  byteLength: number; readRange(offset: number, length: number): Promise<Uint8Array>;
+  buckets?: number; signal?: AbortSignal;
+}): Promise<{ peaks: number[]; durationSeconds: number } | undefined> {
+  const buckets = input.buckets ?? 480;
+  if (!Number.isInteger(buckets) || buckets < 1 || buckets > 512) throw new RangeError("Waveform bucket count must be between 1 and 512.");
+  const inspection = await inspectAudioAttachmentRange({ byteLength: input.byteLength, readRange: input.readRange,
+    limits: { maxBytes: 2 * 1024 * 1024 * 1024, maxDurationSeconds: Number.MAX_SAFE_INTEGER },
+    ...(input.signal === undefined ? {} : { signal: input.signal }) });
+  if (inspection.mediaType !== "audio/wav") return undefined;
+  let fmt: Uint8Array | undefined, dataOffset = 0, dataLength = 0;
+  for (let offset = 12; offset < input.byteLength;) {
+    const header = await input.readRange(offset, 8);
+    const length = unsigned32LittleEndian(header, 4), id = ascii(header, 0, 4);
+    if (id === "fmt ") fmt = await input.readRange(offset + 8, length);
+    if (id === "data") { dataOffset = offset + 8; dataLength = length; }
+    offset += 8 + length + (length & 1);
+  }
+  if (!fmt || !dataOffset) throw invalidAudio();
+  const format = waveFormat(fmt, 0, fmt.length), sampleBits = unsigned16LittleEndian(fmt, 14);
+  const floating = unsigned16LittleEndian(fmt, 0) === 3, sampleBytes = sampleBits / 8;
+  const totalFrames = dataLength / format.blockAlign;
+  const peaks: number[] = [];
+  for (let bucket = 0; bucket < buckets; bucket++) {
+    throwIfAborted(input.signal);
+    const first = Math.floor(bucket * totalFrames / buckets), end = Math.floor((bucket + 1) * totalFrames / buckets);
+    const frames = Math.min(256, end - first);
+    if (!frames) { peaks.push(0); continue; }
+    const bytes = await input.readRange(dataOffset + first * format.blockAlign, frames * format.blockAlign);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let peak = 0;
+    for (let frame = 0; frame < frames; frame++) for (let channel = 0; channel < format.channels; channel++) {
+      const offset = frame * format.blockAlign + channel * sampleBytes;
+      let value: number;
+      if (floating) value = sampleBits === 32 ? view.getFloat32(offset, true) : view.getFloat64(offset, true);
+      else if (sampleBits === 8) value = (view.getUint8(offset) - 128) / 128;
+      else if (sampleBits === 16) value = view.getInt16(offset, true) / 32768;
+      else if (sampleBits === 24) { const raw = view.getUint8(offset) | view.getUint8(offset + 1) << 8 | view.getInt8(offset + 2) << 16; value = raw / 8388608; }
+      else value = view.getInt32(offset, true) / 2147483648;
+      if (Number.isFinite(value)) peak = Math.max(peak, Math.min(1, Math.abs(value)));
+    }
+    peaks.push(peak);
+  }
+  return { peaks, durationSeconds: inspection.durationSeconds };
 }

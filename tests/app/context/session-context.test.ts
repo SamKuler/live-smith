@@ -1,3 +1,4 @@
+import { storedEntry, writeStoredJson } from "../../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -88,13 +89,10 @@ test("concurrent default Session resolution shares one transient scope Session",
   assert.equal(new Set(resolved.map((session) => session.id)).size, 1);
   assert.equal((await listSessions(directory, "project-a")).length, 1);
   assert.deepEqual((await listSessions(directory, "project-a"))[0]?.editScopes, EDIT_SCOPES);
-  await assert.rejects(
-    fs.stat(path.join(directory, "live-smith-sessions.json")),
-    { code: "ENOENT" },
-  );
+  assert.equal(await storedEntry(directory, "live-smith-sessions.json"), undefined);
 });
 
-test("default resolution keeps its preferred Session during transient promotion", async (t) => {
+test("default resolution keeps its preferred Session during transient promotion", { timeout: 5_000 }, async (t) => {
   const directory = await fs.mkdtemp(
     path.join(os.tmpdir(), "live-smith-session-promotion-race-"),
   );
@@ -113,18 +111,17 @@ test("default resolution keeps its preferred Session during transient promotion"
     scope: { kind: "track", identity: "track-1", label: "Lead" },
   };
   const session = await getOrCreateDefaultSession(directory, interaction, "project-a");
-  const target = path.join(directory, "live-smith-sessions.json");
-  await fs.writeFile(target, "[]");
-  const readFile = fs.readFile;
+  await writeStoredJson(directory, "live-smith-sessions.json", []);
+  const mkdir = fs.mkdir;
   let paused = false;
-  t.mock.method(fs, "readFile", async (...args: Parameters<typeof readFile>) => {
-    const contents = await readFile(...args);
-    if (!paused && args[0] === target) {
+  t.mock.method(fs, "mkdir", async (...args: Parameters<typeof mkdir>) => {
+    const result = await mkdir(...args);
+    if (!paused && args[0] === directory) {
       paused = true;
       captured.resolve();
       await resume.promise;
     }
-    return contents;
+    return result;
   });
   syncBuiltinESMExports();
 

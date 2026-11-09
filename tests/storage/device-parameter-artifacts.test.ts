@@ -1,3 +1,5 @@
+import { writeStoredTestFile } from "./support/stored-media-test-helpers.js";
+import { readStoredText, removeStoredEntry, storedEntry } from "../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -47,14 +49,13 @@ test("parameter storage rejects malformed values, duplicate handles, wrong layou
   assert.equal((await listDeviceParameterArtifacts(h.directory, h.session.id)).length, 1);
 });
 
-test("corrupt or symlinked parameter data cannot be read or silently replaced", async (t) => {
+test("corrupt or missing parameter data cannot be read or silently replaced", async (t) => {
   const h = await setup(t); const base = await h.save();
   const file = path.join(h.directory, "live-smith-device-parameters", h.session.id, `${base.id}.json`);
-  await fs.writeFile(file, "{}");
+  await writeStoredTestFile(h.directory, file, "{}");
   await assert.rejects(h.save(), /invalid/);
-  assert.equal(await fs.readFile(file, "utf8"), "{}");
-  await fs.unlink(file); const outside = path.join(h.directory, "outside.json");
-  await fs.writeFile(outside, JSON.stringify(base)); await fs.symlink(outside, file);
+  assert.equal(await readStoredText(h.directory, file), "{}");
+  await removeStoredEntry(h.directory, file);
   await assert.rejects(readDeviceParameterArtifact(h.directory, h.session.id, base.id));
 });
 
@@ -80,11 +81,11 @@ test("per-write progress stays small and leaves the complete baseline file untou
   await saveDeviceParameterApplication(h.directory, receipt);
   const root = path.join(h.directory, "live-smith-device-parameters", h.session.id, "applications");
   const baseline = path.join(root, `${receipt.id}.json`);
-  const initial = await fs.stat(baseline, { bigint: true });
+  const initial = await storedEntry(h.directory, baseline);
   await saveDeviceParameterProgress(h.directory, h.session.id, receipt.id, { index: 1, state: "applying" });
   await saveDeviceParameterProgress(h.directory, h.session.id, receipt.id, { index: 1, state: "applied", after: 0.8 });
-  assert.equal((await fs.stat(baseline, { bigint: true })).mtimeNs, initial.mtimeNs);
-  assert.ok((await fs.stat(path.join(root, receipt.id, "parameter-1.json"))).size < 128);
+  assert.equal((await storedEntry(h.directory, baseline))!.revision, initial!.revision);
+  assert.ok((await storedEntry(h.directory, path.join(root, receipt.id, "parameter-1.json")))!.byteLength < 128);
   const loaded = (await listDeviceParameterApplications(h.directory, h.session.id))[0]!;
   assert.deepEqual(loaded.entries.map((entry) => entry.state), ["pending", "applied", "pending"]);
   assert.deepEqual(loaded.entries[0]!.parameter, h.snapshot.parameters[0]);

@@ -1,3 +1,5 @@
+import { interceptStoredWrites } from "../../storage/support/sqlite-fault-test-helpers.js";
+import { setStoredTestLength } from "../../storage/support/stored-media-test-helpers.js";
 import { formatUiMessage } from "../../../src/i18n/ui-message.js";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -167,20 +169,14 @@ test("music duration is rejected against the selected provider before creating a
 
 test("complete paid audio survives one failed job-record commit without regenerating", async (t) => {
   const h = await harness(t);
-  const probe = await fs.open(h.directory);
-  const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
-  const original = prototype.writeFile;
-  await probe.close();
   let failed = false;
   h.adapter.submit = async () => {
-    t.mock.method(prototype, "writeFile", async function (this: fs.FileHandle, ...args: Parameters<fs.FileHandle["writeFile"]>) {
-      const [data] = args;
-      if (!failed && typeof data === "string" && data.includes('"outputAssets"')) {
+    interceptStoredWrites(t, { beforeWrite: ({ key }) => {
+      if (!failed && key.endsWith(".job.json")) {
         failed = true;
         throw new Error("one-time job write failed");
       }
-      return original.apply(this, args);
-    });
+    } });
     return { kind: "audio", outputs: [{ role: "music", bytes: waveBytes() }] };
   };
   const job = await generateAudio(h.context, "music-a", { operation: "generate_music", prompt: "Piano", instrumental: true });
@@ -189,24 +185,18 @@ test("complete paid audio survives one failed job-record commit without regenera
   assert.equal(job.outputAssets.length, 1);
 });
 
-test("complete paid audio reconciles its receipted blob after a one-time directory-sync failure", async (t) => {
+test("complete paid audio reconciles its receipted blob after a one-time commit acknowledgement failure", async (t) => {
   const h = await harness(t);
-  const probe = await fs.open(h.directory);
-  const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
-  const original = prototype.sync;
-  await probe.close();
   let failed = false;
   h.adapter.submit = async () => {
-    t.mock.method(prototype, "sync", async function (this: fs.FileHandle) {
-      const directory = `${h.directory}/live-smith-audio/${h.session.id}`;
-      const names = await fs.readdir(directory);
-      if (!failed && (await this.stat()).isDirectory() && names.some((name) => name.endsWith(".audio"))) {
-        assert.ok(names.some((name) => name.endsWith(".asset.json")), "the receipt must precede its committed blob");
+    interceptStoredWrites(t, { afterCommit: (writes, database) => {
+      const blob = writes.find(write => write.key.endsWith(".audio"));
+      if (!failed && blob) {
+        assert.ok(database.prepare("SELECT path FROM entries WHERE path=?").get(blob.key.replace(/\.audio$/u, ".asset.json")), "the receipt precedes the committed blob");
         failed = true;
-        throw new Error("one-time blob directory sync failed");
+        throw new Error("one-time blob commit acknowledgement failed");
       }
-      return original.call(this);
-    });
+    } });
     return { kind: "audio", outputs: [{ role: "music", bytes: waveBytes() }] };
   };
   const job = await generateAudio(h.context, "music-a", { operation: "generate_music", prompt: "Piano", instrumental: true });
@@ -219,10 +209,8 @@ test("complete paid audio reconciles its receipted blob after a one-time directo
 test("known exhausted local audio capacity blocks paid generation before submission", async (t) => {
   const h = await harness(t);
   const directory = `${h.directory}/live-smith-audio/${h.session.id}`;
-  await fs.mkdir(directory, { recursive: true });
   for (let index = 0; index < 8; index++) {
-    const file = await fs.open(`${directory}/quota-${index}.audio`, "wx");
-    try { await file.truncate(MAX_AUDIO_ASSET_BYTES); } finally { await file.close(); }
+    await setStoredTestLength(h.directory, `${directory}/quota-${index}.audio`, MAX_AUDIO_ASSET_BYTES);
   }
   await assert.rejects(generateAudio(h.context, "music-a", { operation: "generate_music", prompt: "Piano", instrumental: true }), /capacity|storage limit/i);
   assert.equal(h.submissions(), 0);

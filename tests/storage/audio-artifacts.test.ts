@@ -1,5 +1,6 @@
+import { writeStoredTestFile, setStoredTestLength } from "./support/stored-media-test-helpers.js";
+import { removeStoredEntry } from "../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 
@@ -61,9 +62,9 @@ test("Plugin audio inspection rejects mismatched formats, invalid bytes, cancell
   const saved = await save(waveBytes(), "wav");
   const blob = path.join(directory(h.storage, h.session.id), `${saved.id}.audio`);
   const changed = waveBytes(); changed[changed.length - 1] = 1;
-  await fs.writeFile(blob, changed);
+  await writeStoredTestFile(h.storage, blob, changed);
   await assert.rejects(readPluginAudioArtifact(h.storage, h.session.id, saved.id));
-  await fs.rm(blob); await fs.symlink(path.join(h.directory, "other.audio"), blob);
+  await removeStoredEntry(h.storage, blob);
   await assert.rejects(readPluginAudioArtifact(h.storage, h.session.id, saved.id));
 });
 
@@ -74,7 +75,7 @@ test("audio revisions join Plugin groups while MIDI provenance remains a separat
   const first = await save();
   const second = await save({ kind: "audio", id: first.id });
   assert.deepEqual(second.version, { groupId: first.id, number: 2, derivedFromId: first.id });
-  await fs.rm(path.join(directory(h.storage, h.session.id), `${second.id}.audio`));
+  await removeStoredEntry(h.storage, path.join(directory(h.storage, h.session.id), `${second.id}.audio`));
   const third = await save({ kind: "audio", id: first.id });
   assert.equal(third.version.number, 3);
   assert.equal((await listPluginAudioArtifacts(h.storage, h.session.id)).length, 2);
@@ -104,21 +105,12 @@ test("Plugin and job audio share one byte budget including interrupted blobs", a
   const h = await audioStorageHarness(t);
   const saved = await savePluginAudioArtifact(h.storage, h.session.id, { ...source, bytes: waveBytes(), format: "wav", signal: h.signal });
   for (let index = 0; index < 7; index++) {
-    const handle = await fs.open(path.join(h.directory, `asset_orphan_${index}.audio`), "wx");
-    await handle.truncate(MAX_AUDIO_ASSET_BYTES); await handle.close();
+    await setStoredTestLength(h.storage, path.join(h.directory, `asset_orphan_${index}.audio`), MAX_AUDIO_ASSET_BYTES);
   }
   await assert.rejects(assertAudioOutputCapacity(h.storage, h.session.id, 1), /storage limit/);
   const partial = path.join(directory(h.storage, h.session.id), `.audio_artifact_interrupted.audio.tmp_pending`);
-  const handle = await fs.open(partial, "wx"); await handle.truncate(MAX_AUDIO_ASSET_BYTES - saved.byteLength); await handle.close();
+  await setStoredTestLength(h.storage, partial, MAX_AUDIO_ASSET_BYTES - saved.byteLength);
   await assert.rejects(savePluginAudioArtifact(h.storage, h.session.id, { ...source, bytes: waveBytes(), format: "wav", signal: h.signal }), /storage limit/);
   await assert.rejects(h.save("vocals"), /storage limit/);
   assert.deepEqual((await listPluginAudioArtifacts(h.storage, h.session.id)).map((entry) => entry.id), [saved.id]);
-});
-
-test("Plugin audio storage refuses symlinked roots before writing bytes", async (t) => {
-  const h = await audioStorageHarness(t);
-  const before = await fs.readdir(h.directory);
-  await fs.symlink(h.directory, path.join(h.storage, "live-smith-audio-artifacts"));
-  await assert.rejects(savePluginAudioArtifact(h.storage, h.session.id, { ...source, bytes: waveBytes(), format: "wav", signal: h.signal }));
-  assert.deepEqual(await fs.readdir(h.directory), before);
 });

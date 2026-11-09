@@ -40,7 +40,7 @@ export interface SessionArtifact {
   versions?: ArtifactVersionSummary[];
   primary?: ArtifactRef;
   history?: ArtifactOperationRecord[];
-  audio?: { durationSeconds: number; mediaType: "audio/wav" | "audio/mpeg"; sampleRate: number; channels: number; jobId?: string };
+  audio?: { byteLength: number; durationSeconds: number; mediaType: "audio/wav" | "audio/mpeg"; sampleRate: number; channels: number; jobId?: string };
   midi?: { durationBeats: number; noteCount: number; parts: MidiArtifactPartSummary[];
     notes: (MidiPreviewNote & { partId: string })[]; omittedNoteCount: number };
   deviceParameters?: { parameterCount: number; target: DeviceParameterSnapshot["target"]; source: "captured" | "model" | "mcp"; parameters?: DeviceParameterSnapshot["parameters"] };
@@ -205,14 +205,14 @@ export async function readSessionArtifactCatalog(input: SessionInput & { include
         ...generationAt(`job:${job.id}`, job.createdAt),
         ...(job.artifactSource ? { parent: { ...job.artifactSource } } : {}),
         version: { ...artifactVersion(asset), groupLabel: job.title || asset.label },
-        audio: { durationSeconds: asset.durationSeconds, mediaType: asset.mediaType, sampleRate: asset.sampleRate, channels: asset.channels, jobId: job.id } };
+        audio: { byteLength: asset.byteLength, durationSeconds: asset.durationSeconds, mediaType: asset.mediaType, sampleRate: asset.sampleRate, channels: asset.channels, jobId: job.id } };
     }),
     ...pluginAudio.map((artifact): SessionArtifact => ({ ref: { kind: "audio", id: artifact.id }, label: artifact.label,
       createdAt: artifact.createdAt, sourceLabel: "Plugin-generated audio",
       ...generationAt(`audio:${artifact.id}`, artifact.createdAt),
       ...(artifact.sourceArtifact ? { parent: artifact.sourceArtifact } : {}),
       version: { ...artifact.version, groupLabel: artifact.label },
-      audio: { durationSeconds: artifact.durationSeconds, mediaType: artifact.mediaType, sampleRate: artifact.sampleRate, channels: artifact.channels } })),
+      audio: { byteLength: artifact.byteLength, durationSeconds: artifact.durationSeconds, mediaType: artifact.mediaType, sampleRate: artifact.sampleRate, channels: artifact.channels } })),
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || artifactKey(a.ref).localeCompare(artifactKey(b.ref)));
   const artifacts = summaries;
   const groups = new Map<string, SessionArtifact[]>();

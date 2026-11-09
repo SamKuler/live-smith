@@ -1,10 +1,9 @@
+import { interceptStoredWrites } from "../../../storage/support/sqlite-fault-test-helpers.js";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
 import test from "node:test";
 import { retrievalHarness, connection, clipIds } from "../support/audio-retrieval-test-helpers.js";
 import { captureIntegrationConnections, integrationConnectionFingerprint } from "../../../../src/app/plugins/integration-connections.js";
-import { createAudioJob, updateAudioJob, bindAudioDirectory, listAudioJobs } from "../../../../src/storage/audio-jobs.js";
+import { createAudioJob, updateAudioJob, listAudioJobs } from "../../../../src/storage/audio-jobs.js";
 import { saveAudioAsset } from "../../../../src/storage/audio-assets.js";
 import { loadSessionEvents } from "../../../../src/storage/events.js";
 import { waveBytes } from "../../../storage/support/audio-storage-test-helpers.js";
@@ -21,15 +20,14 @@ for (const phase of ["before-dispatch", "after-initialize"] as const) test(`manu
   const asset = await saveAudioAsset(h.directory, h.session.id, { jobId: seed.id, role: "music", label: "Reference",
     bytes: waveBytes(6), origin: { kind: "generated" }, signal: h.controller.signal });
   await updateAudioJob(h.directory, h.session.id, seed.id, { status: "completed", outputAssets: [asset] });
-  const directory = (await bindAudioDirectory(h.directory, h.session.id))!.directory;
-  let blockedPath: string | undefined;
+  let restoreWriteFailure = () => {};
   let savedStage: string | undefined;
   const blockJobWrite = async () => {
     const job = (await listAudioJobs(h.directory, h.session.id)).find((job) => job.operation === "upload_music")!;
     savedStage = job.upload?.pendingStage;
-    blockedPath = path.join(directory, `${job.id}.job.json`);
-    await fs.rename(blockedPath, `${blockedPath}.backup`);
-    await fs.mkdir(blockedPath);
+    restoreWriteFailure = interceptStoredWrites(t, { beforeWrite: ({ key }) => {
+      if (key.endsWith(`/${job.id}.job.json`)) throw new Error("Receipt storage unavailable");
+    } });
   };
   const calls: string[] = [];
   const adapter: SunoUploadAdapter = {
@@ -44,17 +42,12 @@ for (const phase of ["before-dispatch", "after-initialize"] as const) test(`manu
     .find((tool) => tool.name.endsWith("upload_music"))!.audioPanel!;
   let markerWriteFailed = false;
   if (phase === "before-dispatch") {
-    const probe = await fs.open(path.join(h.directory, "write-probe"), "w");
-    const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
-    const original = prototype.writeFile;
-    await probe.close();
-    t.mock.method(prototype, "writeFile", async function (this: fs.FileHandle, ...args: Parameters<fs.FileHandle["writeFile"]>) {
-      if (typeof args[0] === "string" && args[0].includes('"pendingStage": "creating"')) {
+    interceptStoredWrites(t, { beforeWrite: ({ key, bytes }) => {
+      if (key.endsWith(".job.json") && bytes.toString("utf8").includes('"pendingStage": "creating"')) {
         markerWriteFailed = true;
         throw new Error("Synthetic mutation marker write failure");
       }
-      return original.apply(this, args);
-    });
+    } });
   }
   const run = () => runAudioParameterTool({ assertLiveSetCurrent: () => {}, ...{ context: {} as never, storageDirectory: h.directory, sessionId: h.session.id,
     target: {}, signal: h.controller.signal, onProgress() {}, onAssets() {},
@@ -67,7 +60,7 @@ for (const phase of ["before-dispatch", "after-initialize"] as const) test(`manu
     if (phase === "before-dispatch") assert.deepEqual(await run(), { failed: true });
     else await assert.rejects(run(), ChatBridgeCommandOutcomeUnknownError);
   } finally {
-    if (blockedPath) { await fs.rmdir(blockedPath); await fs.rename(`${blockedPath}.backup`, blockedPath); }
+    restoreWriteFailure();
   }
   const events = await loadSessionEvents(h.directory, h.session.id);
   assert.deepEqual(events.map((event) => event.kind), ["tool_call", "tool_result"]);

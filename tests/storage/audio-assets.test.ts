@@ -1,10 +1,10 @@
+import { writeStoredTestFile, setStoredTestLength } from "./support/stored-media-test-helpers.js";
+import { storedEntry, listStoredChildren, removeStoredEntry } from "../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { platform } from "node:process";
 import test from "node:test";
 
 import { inspectAudioAttachment, isAudioAttachmentInspection } from "../../src/attachments/audio.js";
@@ -24,11 +24,11 @@ import {
 import {
   audioStorageHarness, generationJobCases, mp3Bytes, overwriteJson, separationJobInput, sessionInput, waveBytes,
 } from "./support/audio-storage-test-helpers.js";
-import { isStorageCommitOutcomeUnknownError, withStorageTransaction } from "../../src/storage/persistence.js";
+import { withStorageTransaction } from "../../src/storage/persistence.js";
 import { createStorageId } from "../../src/storage/id.js";
 import { createSession, deleteSession } from "../../src/storage/sessions.js";
 
-test("WAV and MP3 assets persist verified inspection, hashes and private permissions", async (t) => {
+test("WAV and MP3 assets persist verified inspection, hashes and immutable records", async (t) => {
   const h = await audioStorageHarness(t);
   for (const [role, bytes, mediaType] of [
     ["source", waveBytes(), "audio/wav"], ["vocals", mp3Bytes(), "audio/mpeg"],
@@ -38,15 +38,10 @@ test("WAV and MP3 assets persist verified inspection, hashes and private permiss
     assert.equal(asset.sha256, createHash("sha256").update(bytes).digest("hex"));
     assert.deepEqual(await readAudioAsset(h.storage, h.session.id, asset.id), { asset, bytes });
     assert.deepEqual(await readExpectedAudioAsset(h.storage, h.session.id, asset), bytes);
-    if (platform !== "win32") {
-      for (const suffix of [".audio", ".asset.json"]) assert.equal((await fs.stat(path.join(h.directory, asset.id + suffix))).mode & 0o777, 0o600);
-    }
+
   }
   assert.equal((await listAudioAssets(h.storage, h.session.id, h.job.id)).length, 2);
-  if (platform !== "win32") {
-    assert.equal((await fs.stat(h.directory)).mode & 0o777, 0o700);
-    assert.equal((await fs.stat(path.dirname(h.directory))).mode & 0o777, 0o700);
-  }
+
 });
 
 test("concurrent exact retries reuse the same immutable role asset even before job output metadata commits", async (t) => {
@@ -57,11 +52,11 @@ test("concurrent exact retries reuse the same immutable role asset even before j
   assert.deepEqual((await loadAudioJob(h.storage, h.session.id, h.job.id)).outputAssets, []);
   assert.deepEqual(await listAudioAssets(h.storage, h.session.id, h.job.id), [assets[0]]);
   const asset = assets[0]!;
-  const initialStat = await fs.stat(path.join(h.directory, `${asset.id}.audio`));
+  const initialStat = await storedEntry(h.storage, path.join(h.directory, `${asset.id}.audio`));
   await updateAudioJob(h.storage, h.session.id, h.job.id, { outputAssets: [asset] });
   await h.save("vocals");
-  assert.equal((await fs.stat(path.join(h.directory, `${asset.id}.audio`))).ino, initialStat.ino);
-  assert.equal((await fs.readdir(h.directory)).filter((name) => name.endsWith(".audio")).length, 1);
+  assert.equal((await storedEntry(h.storage, path.join(h.directory, `${asset.id}.audio`)))!.revision, initialStat!.revision);
+  assert.equal((await listStoredChildren(h.storage, h.directory)).filter((name) => name.endsWith(".audio")).length, 1);
   const changed = waveBytes(); changed[changed.length - 1] = 9;
   await assert.rejects(h.save("vocals", changed), /differs/);
   await assert.rejects(saveAudioAsset(h.storage, h.session.id, {
@@ -73,57 +68,25 @@ test("concurrent exact retries reuse the same immutable role asset even before j
 test("a committed blob without metadata can recover only exact bytes without creating another file", async (t) => {
   const h = await audioStorageHarness(t);
   const asset = await h.save("vocals");
-  await fs.unlink(path.join(h.directory, `${asset.id}.asset.json`));
-  const original = await fs.stat(path.join(h.directory, `${asset.id}.audio`));
+  await removeStoredEntry(h.storage, path.join(h.directory, `${asset.id}.asset.json`));
+  const original = await storedEntry(h.storage, path.join(h.directory, `${asset.id}.audio`));
   const changed = waveBytes(); changed[changed.length - 1] = 1;
   await assert.rejects(h.save("vocals", changed), AudioStorageError);
   assert.deepEqual(await h.save("vocals"), asset);
-  assert.equal((await fs.stat(path.join(h.directory, `${asset.id}.audio`))).ino, original.ino);
-  assert.equal((await fs.readdir(h.directory)).length, 3);
+  assert.equal((await storedEntry(h.storage, path.join(h.directory, `${asset.id}.audio`)))!.revision, original!.revision);
+  assert.equal((await listStoredChildren(h.storage, h.directory)).length, 3);
 });
 
-test("unknown blob or asset commit outcomes retain durable data for exact retry", async (t) => {
-  for (const failureAtDirectorySync of [1, 2]) {
-    const h = await audioStorageHarness(t);
-    const probe = await fs.open(path.join(h.directory, `${h.job.id}.job.json`));
-    const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
-    const originalSync = prototype.sync;
-    await probe.close();
-    let directorySyncs = 0;
-    const mocked = t.mock.method(prototype, "sync", async function (this: fs.FileHandle) {
-      if ((await this.stat()).isDirectory() && ++directorySyncs === failureAtDirectorySync) {
-        throw new Error("simulated directory sync failure");
-      }
-      return originalSync.call(this);
-    });
-    try { await assert.rejects(h.save("vocals"), isStorageCommitOutcomeUnknownError); }
-    finally { mocked.mock.restore(); }
-    const names = await fs.readdir(h.directory);
-    assert.equal(names.filter((name) => name.endsWith(".asset.json")).length, 1);
-    assert.equal(names.filter((name) => name.endsWith(".audio")).length, failureAtDirectorySync === 1 ? 0 : 1);
-    const asset = await h.save("vocals");
-    assert.deepEqual(await readExpectedAudioAsset(h.storage, h.session.id, asset), waveBytes());
-    assert.equal((await fs.readdir(h.directory)).length, 3);
-    assert.deepEqual((await loadAudioJob(h.storage, h.session.id, h.job.id)).outputAssets, []);
-  }
-});
-
-test("audio metadata requires valid UTF-8 and reads restore private file permissions", async (t) => {
+test("audio metadata requires valid UTF-8 and preserves valid receipts", async (t) => {
   const h = await audioStorageHarness(t);
   const asset = await h.save();
   const target = path.join(h.directory, `${asset.id}.asset.json`);
   const raw = Buffer.from(JSON.stringify(asset));
   raw[raw.indexOf('"label":"') + 9] = 0xff;
-  await fs.writeFile(target, raw);
+  await writeStoredTestFile(h.storage, target, raw);
   await assert.rejects(readAudioAsset(h.storage, h.session.id, asset.id), AudioStorageError);
   await overwriteJson(target, asset);
-  if (platform !== "win32") {
-    await fs.chmod(target, 0o644);
-    await fs.chmod(path.join(h.directory, `${asset.id}.audio`), 0o644);
-    await readAudioAsset(h.storage, h.session.id, asset.id);
-    assert.equal((await fs.stat(target)).mode & 0o777, 0o600);
-    assert.equal((await fs.stat(path.join(h.directory, `${asset.id}.audio`))).mode & 0o777, 0o600);
-  }
+
 });
 
 test("asset operations reject missing storage, foreign IDs, foreign origin references, and deleted owners", async (t) => {
@@ -155,11 +118,11 @@ test("asset reads reject bytes, inspection, metadata and hash tampering; immutab
   const blobPath = path.join(h.directory, `${asset.id}.audio`);
   const metadataPath = path.join(h.directory, `${asset.id}.asset.json`);
   const changed = waveBytes(); changed[changed.length - 1] = 1;
-  await fs.writeFile(blobPath, changed);
+  await writeStoredTestFile(h.storage, blobPath, changed);
   await assert.rejects(readAudioAsset(h.storage, h.session.id, asset.id), AudioStorageError);
   await overwriteJson(metadataPath, { ...asset, sha256: createHash("sha256").update(changed).digest("hex") });
   await assert.rejects(readExpectedAudioAsset(h.storage, h.session.id, asset), /changed since/);
-  await fs.writeFile(blobPath, waveBytes());
+  await writeStoredTestFile(h.storage, blobPath, waveBytes());
   for (const patch of [
     { durationSeconds: 2 }, { sampleRate: 16000 }, { channels: 2 }, { byteLength: asset.byteLength - 1 },
     { mediaType: "audio/mpeg" }, { sessionId: "other" }, { id: "other" }, { apiKey: "not-a-real-key" },
@@ -168,48 +131,11 @@ test("asset reads reject bytes, inspection, metadata and hash tampering; immutab
     await overwriteJson(metadataPath, { ...asset, ...patch });
     await assert.rejects(readAudioAsset(h.storage, h.session.id, asset.id));
   }
-  await fs.writeFile(metadataPath, " ".repeat(MAX_AUDIO_ASSET_METADATA_BYTES + 1));
+  await writeStoredTestFile(h.storage, metadataPath, " ".repeat(MAX_AUDIO_ASSET_METADATA_BYTES + 1));
   await assert.rejects(readAudioAsset(h.storage, h.session.id, asset.id), AudioStorageError);
   await overwriteJson(metadataPath, asset);
-  await fs.truncate(blobPath, MAX_AUDIO_ASSET_BYTES + 1);
+  await setStoredTestLength(h.storage, blobPath, MAX_AUDIO_ASSET_BYTES + 1);
   await assert.rejects(readAudioAsset(h.storage, h.session.id, asset.id), AudioStorageError);
-});
-
-test("symlinked blobs, metadata, and Session directories never resolve outside audio storage", async (t) => {
-  const h = await audioStorageHarness(t);
-  const asset = await h.save();
-  for (const suffix of [".audio", ".asset.json"]) {
-    const target = path.join(h.directory, asset.id + suffix);
-    await fs.rename(target, target + ".original");
-    await fs.symlink(target + ".original", target);
-    await assert.rejects(readAudioAsset(h.storage, h.session.id, asset.id), AudioStorageError);
-    await fs.unlink(target);
-    await fs.rename(target + ".original", target);
-  }
-  const displaced = path.join(h.storage, "displaced-audio");
-  await fs.rename(h.directory, displaced);
-  await fs.symlink(displaced, h.directory);
-  await assert.rejects(readAudioAsset(h.storage, h.session.id, asset.id), AudioStorageError);
-  await assert.rejects(h.save("vocals"), AudioStorageError);
-  await assert.rejects(deleteSessionAudio(h.storage, h.session.id), AudioStorageError);
-  await assert.rejects(listSessionAudioDirectoryIds(h.storage), AudioStorageError);
-  assert.deepEqual(await fs.readFile(path.join(displaced, `${asset.id}.audio`)), Buffer.from(waveBytes()));
-});
-
-test("directory replacement during byte reads is rejected even when the replacement contains identical bytes", async (t) => {
-  const h = await audioStorageHarness(t);
-  const asset = await h.save();
-  const displaced = path.join(h.storage, "displaced");
-  let checks = 0;
-  const signal = { get aborted() {
-    checks += 1;
-    if (checks === 3) {
-      fsSync.renameSync(h.directory, displaced);
-      fsSync.cpSync(displaced, h.directory, { recursive: true });
-    }
-    return false;
-  } } as AbortSignal;
-  await assert.rejects(readAudioAsset(h.storage, h.session.id, asset.id, signal), AudioStorageError);
 });
 
 test("1 GiB quota includes atomic remnants, orphan blobs, inputs, and outputs and admits exactly one concurrent final asset", async (t) => {
@@ -222,8 +148,7 @@ test("1 GiB quota includes atomic remnants, orphan blobs, inputs, and outputs an
     const size = Math.min(MAX_AUDIO_ASSET_BYTES, remaining);
     const name = index === 0 ? `.${source.id}.audio.${createStorageId("tmp")}` : `orphan_${index}.audio`;
     index += 1;
-    const handle = await fs.open(path.join(h.directory, name), "wx");
-    await handle.truncate(size); await handle.close();
+    await setStoredTestLength(h.storage, path.join(h.directory, name), size);
     remaining -= size;
   }
   const results = await Promise.allSettled([h.save("vocals"), h.save("drums")]);
@@ -238,35 +163,32 @@ test("a zero-byte recognized atomic audio remnant permits a new asset save", asy
   const h = await audioStorageHarness(t);
   const source = await h.save();
   const remnant = path.join(h.directory, `.${source.id}.audio.${createStorageId("tmp")}`);
-  await fs.writeFile(remnant, new Uint8Array(), { flag: "wx", mode: 0o600 });
+  await writeStoredTestFile(h.storage, remnant, new Uint8Array(), { flag: "wx", mode: 0o600 });
 
   const output = await h.save("vocals");
   assert.deepEqual(await readExpectedAudioAsset(h.storage, h.session.id, output), waveBytes());
-  assert.equal((await fs.stat(remnant)).size, 0);
+  assert.equal((await storedEntry(h.storage, remnant))!.byteLength, 0);
 });
 
 test("a zero-byte committed audio blob still rejects reads and new asset saves", async (t) => {
   const h = await audioStorageHarness(t);
   const source = await h.save();
-  await fs.truncate(path.join(h.directory, `${source.id}.audio`), 0);
+  await setStoredTestLength(h.storage, path.join(h.directory, `${source.id}.audio`), 0);
 
   await assert.rejects(h.save("vocals"), AudioStorageError);
   await assert.rejects(readAudioAsset(h.storage, h.session.id, source.id), AudioStorageError);
   await assert.rejects(listAudioAssets(h.storage, h.session.id), AudioStorageError);
 });
 
-test("atomic audio remnant names and symlinks retain the storage safety checks", async (t) => {
+test("atomic audio remnant names retain the storage validation checks", async (t) => {
   const h = await audioStorageHarness(t);
   const source = await h.save();
   for (const name of [`.${source.id}.audio.tmp_`, `.${source.id}.audio.tmp_invalid.name`, "unsafe name.audio"]) {
     const target = path.join(h.directory, name);
-    await fs.writeFile(target, new Uint8Array());
+    await writeStoredTestFile(h.storage, target, new Uint8Array());
     await assert.rejects(h.save("vocals"), AudioStorageError);
-    await fs.unlink(target);
+    await removeStoredEntry(h.storage, target);
   }
-  const target = path.join(h.directory, `.${source.id}.audio.${createStorageId("tmp")}`);
-  await fs.symlink(path.join(h.directory, `${source.id}.audio`), target);
-  await assert.rejects(h.save("vocals"), AudioStorageError);
 });
 
 test("audio assets and attachments preserve 15-minute originals while explicit read budgets still apply", async (t) => {
@@ -295,7 +217,7 @@ test("asset saves admit exactly 128 MiB of verified WAV and reject one extra byt
   bytes.writeUInt32LE(192000, 28);
   const asset = await h.save("source", bytes);
   assert.equal(asset.byteLength, MAX_AUDIO_ASSET_BYTES);
-  assert.equal((await fs.stat(path.join(h.directory, `${asset.id}.audio`))).size, MAX_AUDIO_ASSET_BYTES);
+  assert.equal((await storedEntry(h.storage, path.join(h.directory, `${asset.id}.audio`)))!.byteLength, MAX_AUDIO_ASSET_BYTES);
   await assert.rejects(h.save("vocals", new Uint8Array(MAX_AUDIO_ASSET_BYTES + 1)), /128 MiB/);
 });
 
@@ -320,7 +242,7 @@ test("startup directory listing finds orphan Sessions; durable Session cleanup p
   await h.save();
   const other = await createSession(h.storage, sessionInput);
   const peer = path.join(h.storage, "live-smith-audio", other.id);
-  await fs.mkdir(peer);
+  await writeStoredTestFile(h.storage, path.join(peer, "orphan.audio"), waveBytes());
   const liveCopy = path.join(h.storage, "live-owned.wav");
   await fs.writeFile(liveCopy, waveBytes());
   await deleteSession(h.storage, h.session.id);
@@ -346,18 +268,18 @@ test("generated WAV and MP3 assets retain deterministic IDs, hashes and immutabl
       assert.deepEqual((await loadAudioJob(h.storage, h.session.id, h.job.id)).outputAssets, []);
       const metadata = path.join(h.directory, `${asset!.id}.asset.json`);
       const blob = path.join(h.directory, `${asset!.id}.audio`);
-      const before = await fs.stat(blob);
-      await fs.unlink(metadata);
+      const before = await storedEntry(h.storage, blob);
+      await removeStoredEntry(h.storage, metadata);
       await assert.rejects(h.save(role, role === "sound_effect" ? mp3Bytes() : waveBytes()), AudioStorageError);
       assert.deepEqual(await h.save(role, bytes), asset);
-      assert.equal((await fs.stat(blob)).ino, before.ino);
+      assert.equal((await storedEntry(h.storage, blob))!.revision, before!.revision);
       assert.deepEqual(await readExpectedAudioAsset(h.storage, h.session.id, asset!), bytes);
       const peer = await createSession(h.storage, sessionInput);
       await assert.rejects(readAudioAsset(h.storage, peer.id, asset!.id), AudioStorageError);
       await assert.rejects(readExpectedAudioAsset(h.storage, peer.id, asset!), AudioStorageError);
-      await fs.writeFile(blob, new Uint8Array(bytes.length));
+      await writeStoredTestFile(h.storage, blob, new Uint8Array(bytes.length));
       await assert.rejects(readAudioAsset(h.storage, h.session.id, asset!.id), AudioStorageError);
-      await fs.writeFile(blob, bytes);
+      await writeStoredTestFile(h.storage, blob, bytes);
     }
     const assets = await listAudioAssets(h.storage, h.session.id, h.job.id);
     assert.deepEqual(assets.map((asset) => asset.role).sort(), [...roles].sort());
@@ -378,15 +300,15 @@ test("every asset boundary rejects roles owned by another operation or provider,
     for (const role of allRoles.filter((role) => !roles.includes(role))) {
       const origin = { kind: ["music", "music_alternative", "sound_effect"].includes(role) ? "generated" : "attachment" } as const;
       const asset: AudioAsset = { ...original, role, origin, id: audioAssetId(h.job.id, role) };
-      const existingNames = await fs.readdir(h.directory);
+      const existingNames = await listStoredChildren(h.storage, h.directory);
       await assert.rejects(saveAudioAsset(h.storage, h.session.id, {
         jobId: h.job.id, role, label: role, bytes: waveBytes(), origin, signal: h.signal,
       }), AudioStorageError);
-      assert.deepEqual(await fs.readdir(h.directory), existingNames);
+      assert.deepEqual(await listStoredChildren(h.storage, h.directory), existingNames);
       const metadata = path.join(h.directory, `${asset.id}.asset.json`);
       const blob = path.join(h.directory, `${asset.id}.audio`);
       await overwriteJson(metadata, asset);
-      await fs.writeFile(blob, waveBytes());
+      await writeStoredTestFile(h.storage, blob, waveBytes());
       await assert.rejects(readAudioAsset(h.storage, h.session.id, asset.id), AudioStorageError);
       await assert.rejects(readExpectedAudioAsset(h.storage, h.session.id, asset), AudioStorageError);
       await assert.rejects(listAudioAssets(h.storage, h.session.id, h.job.id), AudioStorageError);
@@ -394,8 +316,8 @@ test("every asset boundary rejects roles owned by another operation or provider,
       await overwriteJson(jobPath, { ...h.job, outputAssets: [asset] });
       await assert.rejects(loadAudioJob(h.storage, h.session.id, h.job.id), AudioStorageError);
       await overwriteJson(jobPath, h.job);
-      await fs.unlink(metadata);
-      await fs.unlink(blob);
+      await removeStoredEntry(h.storage, metadata);
+      await removeStoredEntry(h.storage, blob);
     }
     assert.deepEqual(await listAudioAssets(h.storage, h.session.id), [original]);
   }

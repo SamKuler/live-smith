@@ -1,3 +1,5 @@
+import { writeStoredBytes } from "../../../src/storage/sqlite.js";
+import { Buffer } from "node:buffer";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -66,11 +68,10 @@ test("unreadable histories are reported without hiding healthy matches or readin
   const h = await setup(t);
   const healthy = await h.create("Conversation"); const broken = await h.create("Damaged conversation");
   await appendSessionEvent(h.storageDirectory, healthy.id, { kind: "assistant", content: "Needle is here" });
-  await appendSessionEvent(h.storageDirectory, broken.id, { kind: "user", content: "Needle was here" });
-  await fs.writeFile(`${h.storageDirectory}/live-smith-events/${broken.id}.json`, "{");
-  await fs.writeFile(`${h.storageDirectory}/live-smith-events/orphan.json`, JSON.stringify([
+  await writeStoredBytes(h.storageDirectory, `${h.storageDirectory}/live-smith-events/${broken.id}.json`, Buffer.from("{"));
+  await writeStoredBytes(h.storageDirectory, `${h.storageDirectory}/live-smith-events/orphan.json`, Buffer.from(JSON.stringify([
     { id: "orphan-event", kind: "user", content: "needle", createdAt: new Date().toISOString() },
-  ]), { mode: 0o600 });
+  ])));
   const result = await h.search("needle");
   assert.equal(result.unavailableCount, 1); assert.equal(result.total, 1);
   assert.equal(result.matches[0]?.sessionId, healthy.id);
@@ -115,8 +116,7 @@ test("continued named Sessions use saved chat activity for display and search wi
 test("a matching name remains searchable when its activity history is unreadable", async (t) => {
   const h = await setup(t);
   const session = await h.create("Needle named conversation");
-  await appendSessionEvent(h.storageDirectory, session.id, { kind: "assistant", content: "Saved message" });
-  await fs.writeFile(`${h.storageDirectory}/live-smith-events/${session.id}.json`, "{");
+  await writeStoredBytes(h.storageDirectory, `${h.storageDirectory}/live-smith-events/${session.id}.json`, Buffer.from("{"));
   const result = await h.search("needle");
   assert.equal(result.unavailableCount, 1);
   assert.equal(result.matches[0]?.sessionId, session.id);

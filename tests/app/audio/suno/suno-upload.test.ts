@@ -1,6 +1,8 @@
+import { Buffer } from "node:buffer";
+import { interceptStoredWrites } from "../../../storage/support/sqlite-fault-test-helpers.js";
+import { writeStoredTestFile } from "../../../storage/support/stored-media-test-helpers.js";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import test from "node:test";
 import { retrievalHarness, connection } from "../support/audio-retrieval-test-helpers.js";
@@ -168,30 +170,24 @@ async function interruptCommit(
   t: Parameters<typeof fixture>[0], h: Awaited<ReturnType<typeof fixture>>, stage: SunoUploadMutationStage,
   mode: "stop" | "sync" | "sync-stop", boundary: "marker" | "receipt" = "marker",
 ) {
-  const probe = await fs.open(path.join(h.directory, "commit-probe"), "w");
-  const prototype = Object.getPrototypeOf(probe) as fs.FileHandle;
-  const originalWrite = prototype.writeFile, originalSync = prototype.sync;
-  await probe.close();
-  let armed = false, interrupted = false;
-  t.mock.method(prototype, "writeFile", async function (this: fs.FileHandle, ...args: Parameters<fs.FileHandle["writeFile"]>) {
-    const result = await originalWrite.apply(this, args);
-    if (typeof args[0] === "string" && !interrupted) {
-      const value = JSON.parse(args[0]) as { operation?: string; upload?: SunoUploadReceipt };
-      if (value.operation === "upload_music" && (boundary === "marker" ? value.upload?.pendingStage === stage
-        : value.upload?.stage === SUNO_UPLOAD_MUTATIONS[stage].to && value.upload.pendingStage === undefined)) {
-        if (mode === "stop") { interrupted = true; h.controller.abort(); }
-        else armed = true;
+  let interrupted = false;
+  const matches = (key: string, bytes: Uint8Array) => {
+    if (!key.endsWith(".job.json")) return false;
+    const value = JSON.parse(Buffer.from(bytes).toString("utf8")) as { operation?: string; upload?: SunoUploadReceipt };
+    return value.operation === "upload_music" && (boundary === "marker" ? value.upload?.pendingStage === stage
+      : value.upload?.stage === SUNO_UPLOAD_MUTATIONS[stage].to && value.upload.pendingStage === undefined);
+  };
+  interceptStoredWrites(t, {
+    beforeWrite: ({ key, bytes }) => {
+      if (mode === "stop" && !interrupted && matches(key, bytes)) { interrupted = true; h.controller.abort(); }
+    },
+    afterCommit: writes => {
+      if (mode !== "stop" && !interrupted && writes.some(write => matches(write.key, write.bytes))) {
+        interrupted = true;
+        if (mode === "sync-stop") h.controller.abort();
+        throw new Error("Synthetic commit acknowledgement failure");
       }
-    }
-    return result;
-  });
-  t.mock.method(prototype, "sync", async function (this: fs.FileHandle) {
-    if (armed && !interrupted && (await this.stat()).isDirectory()) {
-      interrupted = true;
-      if (mode === "sync-stop") h.controller.abort();
-      throw new Error("Synthetic directory sync failure after replacement");
-    }
-    return originalSync.call(this);
+    },
   });
   return () => interrupted;
 }
@@ -261,7 +257,7 @@ test("an unresolved legacy upload marker remains readable and cannot be resumed"
   const unknown = await h.run();
   const { pendingStage: _pending, ...receipt } = unknown.upload!;
   const bound = await bindAudioDirectory(h.directory, h.session.id);
-  await fs.writeFile(path.join(bound!.directory, `${unknown.id}.job.json`), JSON.stringify({
+  await writeStoredTestFile(h.directory, path.join(bound!.directory, `${unknown.id}.job.json`), JSON.stringify({
     ...unknown, upload: { ...receipt, stage: "initializing" },
   }));
   const saved = await loadAudioJob(h.directory, h.session.id, unknown.id);

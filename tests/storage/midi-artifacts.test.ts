@@ -1,3 +1,5 @@
+import { writeStoredTestFile } from "./support/stored-media-test-helpers.js";
+import { listStoredChildren, readStoredText, removeStoredEntry } from "../../src/storage/sqlite.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -217,7 +219,7 @@ test("MIDI provenance requires exactly one valid Plugin or standalone Connection
   const metadata = path.join(h.directory, "live-smith-midi", h.session.id, `${artifact.id}.midi.json`);
   for (const source of sources) {
     const { connectionId: _connection, ...rest } = artifact;
-    await fs.writeFile(metadata, JSON.stringify({ ...rest, ...source }));
+    await writeStoredTestFile(h.directory, metadata, JSON.stringify({ ...rest, ...source }));
     await assert.rejects(readMidiArtifact(h.directory, h.session.id, artifact.id), MidiArtifactStorageError);
   }
 });
@@ -235,17 +237,17 @@ test("incomplete MIDI writes do not poison a Session or hide committed artifacts
   });
   const root = path.join(h.directory, "live-smith-midi", h.session.id);
   const incompleteId = "midi_incomplete";
-  await fs.writeFile(path.join(root, `${incompleteId}.midi.json`), JSON.stringify({
+  await writeStoredTestFile(h.directory, path.join(root, `${incompleteId}.midi.json`), JSON.stringify({
     ...committed,
     id: incompleteId,
     version: { groupId: incompleteId, number: 1 },
     label: "Interrupted metadata-first save",
   }), { mode: 0o600 });
-  await fs.writeFile(path.join(root, "midi_orphan.mid"), bytes, { mode: 0o600 });
-  await fs.writeFile(path.join(root, ".midi_orphan.mid.tmp_interrupted"), bytes, { mode: 0o600 });
+  await writeStoredTestFile(h.directory, path.join(root, "midi_orphan.mid"), bytes, { mode: 0o600 });
+  await writeStoredTestFile(h.directory, path.join(root, ".midi_orphan.mid.tmp_interrupted"), bytes, { mode: 0o600 });
   assert.deepEqual(await listMidiArtifacts(h.directory, h.session.id), [committed]);
   assert.equal((await inspectMidiArtifacts(h.directory, h.session.id)).unavailableCount, 1);
-  assert.deepEqual((await fs.readdir(root)).sort(), [
+  assert.deepEqual((await listStoredChildren(h.directory, root)).sort(), [
     `${committed.id}.mid`, `${committed.id}.midi.json`,
     `${incompleteId}.midi.json`, "midi_orphan.mid", ".midi_orphan.mid.tmp_interrupted",
   ].sort());
@@ -261,7 +263,7 @@ test("incomplete MIDI writes do not poison a Session or hide committed artifacts
     [committed.id, next.id]);
 });
 
-test("fresh incomplete MIDI files remain untouched while another process may be writing", async (t) => {
+test("incomplete MIDI records retain orphan blobs and version receipts during listings", async (t) => {
   const h = await harness(t);
   const bytes = midiFile();
   const committed = await saveMidiArtifact(h.directory, h.session.id, {
@@ -270,32 +272,30 @@ test("fresh incomplete MIDI files remain untouched while another process may be 
   });
   const root = path.join(h.directory, "live-smith-midi", h.session.id);
   const incomplete = "midi_incomplete";
-  await fs.writeFile(path.join(root, `${incomplete}.midi.json`), JSON.stringify({ ...committed, id: incomplete, version: { groupId: incomplete, number: 1 } }),
-    { mode: 0o600 });
-  await fs.writeFile(path.join(root, "midi_orphan.mid"), bytes, { mode: 0o600 });
-  await fs.writeFile(path.join(root, ".midi_orphan.mid.tmp_writing"), bytes, { mode: 0o600 });
+  await writeStoredTestFile(h.directory, path.join(root, `${incomplete}.midi.json`), JSON.stringify({ ...committed, id: incomplete, version: { groupId: incomplete, number: 1 } }), { mode: 0o600 });
+  await writeStoredTestFile(h.directory, path.join(root, "midi_orphan.mid"), bytes, { mode: 0o600 });
+  await writeStoredTestFile(h.directory, path.join(root, ".midi_orphan.mid.tmp_writing"), bytes, { mode: 0o600 });
   assert.deepEqual(await listMidiArtifacts(h.directory, h.session.id), [committed]);
-  assert.ok((await fs.readdir(root)).includes(`${incomplete}.midi.json`));
-  assert.ok((await fs.readdir(root)).includes("midi_orphan.mid"));
-  assert.ok((await fs.readdir(root)).includes(".midi_orphan.mid.tmp_writing"));
+  assert.ok((await listStoredChildren(h.directory, root)).includes(`${incomplete}.midi.json`));
+  assert.ok((await listStoredChildren(h.directory, root)).includes("midi_orphan.mid"));
+  assert.ok((await listStoredChildren(h.directory, root)).includes(".midi_orphan.mid.tmp_writing"));
 });
 
 test("legacy continuation files coexist with readable and newly saved MIDI artifacts", async (t) => {
   const h = await harness(t);
   const root = path.join(h.directory, "live-smith-midi", h.session.id);
-  await fs.mkdir(root, { recursive: true, mode: 0o700 });
   const temporary = path.join(root, ".continuation.json.tmp_interrupted");
-  await fs.writeFile(temporary, "{}", { mode: 0o600 });
+  await writeStoredTestFile(h.directory, temporary, "{}", { mode: 0o600 });
   assert.equal(await hasSessionMidiContent(h.directory, h.session.id), false);
   const legacyFile = path.join(root, "continuation.json");
-  await fs.writeFile(legacyFile, "{}", { mode: 0o600 });
+  await writeStoredTestFile(h.directory, legacyFile, "{}", { mode: 0o600 });
   assert.equal(await hasSessionMidiContent(h.directory, h.session.id), true);
 
   const input = { source: { kind: "model" as const, profileId: "profile", model: "test" },
     serverId: "host", toolName: "save_midi_artifact", label: "Melody", bytes: midiFile(), signal: h.signal };
   const original = await saveMidiArtifact(h.directory, h.session.id, input);
   const historical = { ...original, generationKind: "continuation" as const };
-  await fs.writeFile(path.join(root, `${original.id}.midi.json`), JSON.stringify(historical), { mode: 0o600 });
+  await writeStoredTestFile(h.directory, path.join(root, `${original.id}.midi.json`), JSON.stringify(historical), { mode: 0o600 });
   const revision = await saveMidiArtifact(h.directory, h.session.id, {
     ...input, label: "Melody revision", revisionOf: original.id,
   });
@@ -304,25 +304,11 @@ test("legacy continuation files coexist with readable and newly saved MIDI artif
   assert.deepEqual(new Map((await listMidiArtifacts(h.directory, h.session.id)).map((artifact) => [artifact.id, artifact])),
     new Map([[historical.id, historical], [revision.id, revision]]));
   assert.equal(revision.generationKind, undefined);
-  assert.equal(await fs.readFile(legacyFile, "utf8"), "{}");
-  assert.equal(await fs.readFile(temporary, "utf8"), "{}");
+  assert.equal(await readStoredText(h.directory, legacyFile), "{}");
+  assert.equal(await readStoredText(h.directory, temporary), "{}");
 });
 
-test("MIDI recovery never follows or removes an orphan symlink target", async (t) => {
-  const h = await harness(t);
-  const root = path.join(h.directory, "live-smith-midi", h.session.id);
-  await saveMidiArtifact(h.directory, h.session.id, {
-    pluginId: "audio-to-midi", serverId: "local", toolName: "transcribe",
-    label: "Committed", bytes: midiFile(), signal: h.signal,
-  });
-  const outside = path.join(h.directory, "outside.mid");
-  await fs.writeFile(outside, midiFile());
-  await fs.symlink(outside, path.join(root, "midi_orphan.mid"));
-  await assert.rejects(listMidiArtifacts(h.directory, h.session.id), MidiArtifactStorageError);
-  assert.deepEqual(new Uint8Array(await fs.readFile(outside)), midiFile());
-});
-
-test("MIDI artifact reads reject cross-Session IDs, tampered bytes and symlinks", async (t) => {
+test("MIDI artifact reads reject cross-Session IDs, tampered bytes and missing blobs", async (t) => {
   const h = await harness(t);
   const other = await createSession(h.directory, {
     title: "Other",
@@ -339,11 +325,10 @@ test("MIDI artifact reads reject cross-Session IDs, tampered bytes and symlinks"
   });
   await assert.rejects(readMidiArtifact(h.directory, other.id, saved.id), MidiArtifactStorageError);
   const blob = path.join(h.directory, "live-smith-midi", h.session.id, `${saved.id}.mid`);
-  await fs.writeFile(blob, midiFile({ pitch: 61 }));
+  await writeStoredTestFile(h.directory, blob, midiFile({ pitch: 61 }));
   await assert.rejects(readMidiArtifact(h.directory, h.session.id, saved.id), MidiArtifactStorageError);
-  await fs.rm(blob);
-  await fs.symlink("/dev/null", blob);
-  await assert.rejects(readMidiArtifact(h.directory, h.session.id, saved.id), MidiArtifactStorageError);
+  await removeStoredEntry(h.directory, blob);
+  await assert.rejects(readMidiArtifact(h.directory, h.session.id, saved.id), { code: "ENOENT" });
 });
 
 test("invalid Plugin output never creates a MIDI artifact directory", async (t) => {
@@ -404,7 +389,7 @@ test("concurrent MIDI siblings reserve unique versions and missing blobs retain 
   assert.deepEqual(siblings.map((artifact) => artifact.version!.number).sort(), [2, 3, 4, 5]);
   assert.ok(siblings.every((artifact) => artifact.version!.groupId === original.id && artifact.version!.derivedFromId === undefined));
   const latest = siblings.find((artifact) => artifact.version!.number === 5)!;
-  await fs.rm(path.join(h.directory, "live-smith-midi", h.session.id, `${latest.id}.mid`));
+  await removeStoredEntry(h.directory, path.join(h.directory, "live-smith-midi", h.session.id, `${latest.id}.mid`));
   const revision = await save({ revisionOf: siblings[0]!.id });
   assert.deepEqual(revision.version, { groupId: original.id, number: 6, derivedFromId: siblings[0]!.id });
   assert.equal((await inspectMidiArtifacts(h.directory, h.session.id)).unavailableCount, 1);

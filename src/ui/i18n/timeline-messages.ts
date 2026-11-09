@@ -1,4 +1,9 @@
 export const timelineMessages: Record<string, string> = {
+  "The request outcome could not be confirmed. Retry Stop before continuing.": "暂时无法确认请求结果，请重试停止后再继续。",
+  "Load earlier messages": "加载更早的消息",
+  "Load newer messages": "加载较新的消息",
+  "Return to latest": "返回最新消息",
+  "Session history is unavailable. Try again.": "暂时无法读取会话历史，请重试。",
   "Selected for bulk actions.": "已选中，可批量操作。",
   "Not selected for bulk actions.": "未选中，无法批量操作。",
   "PDF · Native PDF": "PDF · 原生 PDF",

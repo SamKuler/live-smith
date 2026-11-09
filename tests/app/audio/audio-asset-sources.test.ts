@@ -75,7 +75,7 @@ test("asset registration and exact storage reads reject foreign Session ownershi
   await assert.rejects(addAudioAssetSampleSources({ ...h.input, storageDirectory: undefined }, new Map(), [asset]), /Persistent storage/);
 });
 
-test("asset import revalidates the expected hash and complete metadata before staging", async (t) => {
+test("asset import revalidates the expected hash and complete metadata before Live mutation", async (t) => {
   const h = await assetHarness(t);
   const asset = await h.save();
   const changes: Partial<AudioAsset>[] = [
@@ -88,8 +88,14 @@ test("asset import revalidates the expected hash and complete metadata before st
   for (const change of changes) {
     const sources = new Map();
     await addAudioAssetSampleSources(h.input, sources, [{ ...asset, ...change }]);
-    await assert.rejects(prepareRequestAudioSampleSources(sourceBindings(...sources.values()), h.controller.signal), /changed/);
+    await assert.rejects(prepareRequestAudioSampleSources(sourceBindings(...sources.values()), h.controller.signal), error => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message,"Live Smith could not import the audio asset into the Live project.");
+      assert.equal(error.cause,undefined);
+      return true;
+    });
   }
+  assert.deepEqual(h.operations,[]);
   assert.equal(h.staged.length, 0);
   assert.deepEqual(await fs.readdir(h.directory), filesBefore);
 });
