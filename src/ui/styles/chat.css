@@ -1171,7 +1171,6 @@ details.timeline-item.reasoning > summary {
   border: 1px solid currentColor; border-radius: 50%; pointer-events: none;
 }
 .inline-help:hover, .inline-help[aria-expanded="true"] { @apply text-text bg-surface-hover; }
-.inline-help:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
 .inline-help-content {
   position: fixed; z-index: 1000; top: 0; left: 0; box-sizing: border-box;
   width: max-content; max-width: min(320px, calc(100vw - 16px));

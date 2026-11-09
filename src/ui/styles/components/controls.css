@@ -58,6 +58,8 @@
   button:focus-visible,
   summary:focus-visible {
     @apply bg-surface-hover;
+    outline: 2px solid var(--color-focus);
+    outline-offset: 1px;
   }
 
   a:focus-visible {
