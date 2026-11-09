@@ -2,6 +2,9 @@ import { audioArtifactFileName } from "../storage/file-export.js";
 import { createNativeChatHost, type NativeChatHost, type NativeDragInput, type NativeDragFile } from "../runtime/native-chat-window.js";
 import { materializeArtifactExport } from "../storage/artifact-exports.js";
 import { midiArtifactExport } from "../storage/midi-artifacts.js";
+import { clearStorageBackups, compactStorage, readStorageUsage, StorageCleanupChangedError } from "../storage/management.js";
+import { readSessionStorageUsage } from "../storage/session-usage.js";
+import { createSystemOpener } from "../runtime/system-open.js";
 import { sessionAudioArtifactExport } from "../storage/audio-artifacts.js";
 import type { McpService } from "./mcp/service.js";
 import { decidePlanApproval } from "./tools/tool-approvals.js";
@@ -1043,6 +1046,30 @@ export async function createAgentRuntime(
         });
       },
     );
+    if (commandInput.kind === "clear_storage_backups" || commandInput.kind === "compact_storage" || commandInput.kind === "open_storage_directory") {
+      if (!storageDirectory) throw new ChatBridgeRequestValidationError(uiMessage("Storage management requires persistent storage."));
+      if (commandInput.kind === "open_storage_directory") {
+        try { await createSystemOpener("storage folder")(storageDirectory, signal); }
+        catch { throwIfAborted(signal); throw new UiMessageError(uiMessage("The storage folder could not be opened.")); }
+        return buildState();
+      }
+      try {
+        if (commandInput.kind === "clear_storage_backups") {
+          await clearStorageBackups(storageDirectory, commandInput.revision, signal);
+          status = uiMessage("Old backups cleared.");
+        } else {
+          await compactStorage(storageDirectory, signal);
+          status = uiMessage("Database space reclaimed.");
+        }
+      } catch (error) {
+        throwIfAborted(signal);
+        if (error instanceof StorageCleanupChangedError) throw new ChatBridgeConflictError(uiMessage(error.message));
+        throw new UiMessageError(uiMessage(commandInput.kind === "clear_storage_backups"
+          ? "Old backup cleanup could not be completed. Refresh storage usage and try again."
+          : "Database space could not be reclaimed. Try again."));
+      } finally { notifyGlobalStateChanged({ target: "all" }); }
+      return buildStateAfterCommandMutation();
+    }
     if (commandInput.kind === "create_mcp_client" || commandInput.kind === "rotate_mcp_client" || commandInput.kind === "revoke_mcp_client" || commandInput.kind === "resolve_mcp_approval" || commandInput.kind === "cancel_mcp_operation") {
       const service = dependencies.mcpService;
       if (!service) throw new ChatBridgeRequestValidationError("MCP service requires the Extension host and private storage.");
@@ -2855,7 +2882,7 @@ export async function createAgentRuntime(
       const summary = await loadSessionEventSummary(storageDirectory,input.sessionId);
       if (summary.historyId !== page.historyId) throw new SessionEventHistoryChangedError();
       await resourceSession(input.sessionId,signal);
-      return {...page,events:page.events.map(chatSessionEvent)};
+      return {sessionId: input.sessionId,...page,events:page.events.map(chatSessionEvent)};
     } catch (error) {
       if (error instanceof SessionEventHistoryChangedError) throw new ChatBridgeConflictError(error.message);
       if (error instanceof SessionEventAnchorNotFoundError) throw new ChatBridgeResourceNotFoundError(error.message);
@@ -3348,6 +3375,8 @@ export async function createAgentRuntime(
       readAttachment,
       readAttachmentExport,
       readSessionEvents,
+      readStorageUsage: (signal) => readStorageUsage(storageDirectory, signal),
+      readSessionStorageUsage: (signal) => readSessionStorageUsage(storageDirectory, signal),
       lookupSendReceipt,
       readAttachmentWaveform: async (sessionId,attachmentId,signal) => {
         await resourceSession(sessionId,signal);

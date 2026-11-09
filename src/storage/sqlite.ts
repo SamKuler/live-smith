@@ -120,6 +120,7 @@ function schema(db: DatabaseSync) {
     CREATE INDEX entries_media_object ON entries(media_object) WHERE media_object IS NOT NULL;
     CREATE TABLE chunks(path TEXT NOT NULL REFERENCES entries(path) ON DELETE CASCADE, chunk_index INTEGER NOT NULL CHECK(chunk_index>=0),
       bytes BLOB NOT NULL CHECK(length(bytes)<=${STORAGE_CHUNK_BYTES}), PRIMARY KEY(path,chunk_index)) WITHOUT ROWID;
+    CREATE TABLE legacy_sources(path TEXT PRIMARY KEY, fingerprint TEXT NOT NULL);
     PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${SCHEMA_VERSION};
   `);
 }
@@ -140,7 +141,7 @@ function insertEntry(db: DatabaseSync, key: string, bytes: Uint8Array, createOnl
 function sourceSignature(files: LegacyFile[]): string {
   return files.map(({key,stat}) => [key,stat.dev,stat.ino,stat.size,stat.mtimeMs,stat.ctimeMs].join(":" )).join("\n");
 }
-async function legacyFiles(root: string): Promise<LegacyFile[]> {
+async function legacyFiles(root: string, includePluginData = true): Promise<LegacyFile[]> {
   const output: LegacyFile[] = [];
   const visit = async (file: string, key: string, preserved = false, expected?: "file" | "directory"): Promise<void> => {
     let stat;
@@ -162,9 +163,78 @@ async function legacyFiles(root: string): Promise<LegacyFile[]> {
     if (!plugins.isDirectory() || plugins.isSymbolicLink() || !owned(plugins)) throw new StorageDatabaseError();
     await visit(path.join(root,"live-smith-plugins/catalog.json"),"live-smith-plugins/catalog.json",false,"file");
     await visit(path.join(root,"live-smith-plugins/packages"),"live-smith-plugins/packages",false,"directory");
-    await visit(path.join(root,"live-smith-plugins/data"),"live-smith-plugins/data",true,"directory");
+    if (includePluginData) await visit(path.join(root,"live-smith-plugins/data"),"live-smith-plugins/data",true,"directory");
   } catch (error) { if (!isMissingFileError(error)) throw error; }
   return output.sort((a,b)=>a.key.localeCompare(b.key,"en"));
+}
+
+async function legacyBackupCandidates(root: string): Promise<LegacyFile[]> {
+  const files = await legacyFiles(root, false);
+  const file = path.join(root, STORAGE_V1_BACKUP_NAME);
+  try {
+    const stat = await fs.lstat(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || !owned(stat)) throw new StorageDatabaseError();
+    files.push({ key: STORAGE_V1_BACKUP_NAME, file, stat, preserved: false });
+  } catch (error) { if (!isMissingFileError(error)) throw error; }
+  return files.sort((a,b) => a.key.localeCompare(b.key,"en"));
+}
+
+function legacySourceFingerprint(file: LegacyFile): string { return sourceSignature([file]); }
+
+async function indexVerifiedLegacySources(db: DatabaseSync, files: LegacyFile[]): Promise<void> {
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_sources'").get()) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec("CREATE TABLE legacy_sources(path TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)");
+    const save = db.prepare("INSERT INTO legacy_sources VALUES(?,?)");
+    for (const file of files) {
+      if (file.key === STORAGE_V1_BACKUP_NAME) {
+        let snapshot: DatabaseSync | undefined;
+        let verified = false;
+        try {
+          snapshot = new DatabaseSync(file.file, { readOnly: true });
+          if (Number(snapshot.prepare("PRAGMA user_version").get()?.user_version) !== 1 || !readInfo(snapshot)) continue;
+          const records = "SELECT path,byte_length,sha256,revision,preserved FROM entries ORDER BY path";
+          verified = JSON.stringify(snapshot.prepare(records).all()) === JSON.stringify(db.prepare(records).all());
+        } catch { /* Unverified historical files remain outside managed cleanup. */ }
+        finally { snapshot?.close(); }
+        if (verified) save.run(file.key, legacySourceFingerprint(file));
+        continue;
+      }
+      const entry = db.prepare("SELECT byte_length,sha256 FROM entries WHERE path=? AND preserved=0").get(file.key);
+      if (!entry || entry.byte_length !== file.stat.size) continue;
+      const handle = await fs.open(file.file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)).catch(() => undefined);
+      if (!handle) continue;
+      let verified = false;
+      try {
+        const before = await handle.stat();
+        if (legacySourceFingerprint({ ...file, stat: before }) !== legacySourceFingerprint(file)) continue;
+        const digest = createHash("sha256");
+        for (let offset = 0; offset < before.size;) {
+          const bytes = Buffer.allocUnsafe(Math.min(STORAGE_CHUNK_BYTES, before.size - offset));
+          const read = await handle.read(bytes, 0, bytes.length, offset);
+          if (!read.bytesRead) throw new StorageDatabaseError();
+          digest.update(bytes.subarray(0, read.bytesRead)); offset += read.bytesRead;
+        }
+        verified = digest.digest("hex") === entry.sha256 && legacySourceFingerprint({ ...file, stat: await handle.stat() }) === legacySourceFingerprint(file);
+      } catch { /* An unreadable source has no deletion proof. */ }
+      finally { await handle.close(); }
+      if (verified) save.run(file.key, legacySourceFingerprint(file));
+    }
+    try { db.exec("COMMIT"); } catch (error) { throw new StorageCommitOutcomeUnknownError(error); }
+  } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
+}
+
+/** Only unchanged files with persisted proof of import are eligible for cleanup. */
+export async function listLegacyBackupFiles(directory: string): Promise<LegacyFile[]> {
+  await initializeSqliteStorage(directory);
+  const root = await privateRoot(directory), files = await legacyBackupCandidates(root);
+  const db = connect(await privateDatabase(root));
+  try {
+    await indexVerifiedLegacySources(db, files);
+    const source = db.prepare("SELECT fingerprint FROM legacy_sources WHERE path=?");
+    return files.filter(file => source.get(file.key)?.fingerprint === legacySourceFingerprint(file));
+  } finally { db.close(); }
 }
 async function importLegacy(db: DatabaseSync, root: string): Promise<StorageMigrationInfo> {
   const files = await legacyFiles(root);
@@ -201,6 +271,7 @@ async function importLegacy(db: DatabaseSync, root: string): Promise<StorageMigr
         if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) throw new StorageDatabaseError();
         const hash = digest.digest("hex");
         db.prepare("UPDATE entries SET sha256=? WHERE path=?").run(hash,source.key);
+        if (!source.preserved) db.prepare("INSERT INTO legacy_sources VALUES(?,?)").run(source.key, legacySourceFingerprint(source));
         if (stage) {
           const identity = await stage.finish();
           if (identity.sha256 !== hash) throw new StorageDatabaseError();
@@ -550,4 +621,7 @@ async function upgradeMedia(db:DatabaseSync,root:string):Promise<void> {
     db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
     try {db.exec("COMMIT");}catch(error){throw new StorageCommitOutcomeUnknownError(error);}
   }catch(error){try{db.exec("ROLLBACK");}catch{}throw error;}
+  const candidates: LegacyFile[] = await legacyBackupCandidates(root).catch(() => []);
+  if (!candidates.some(file => file.key === STORAGE_V1_BACKUP_NAME)) candidates.push({ key: STORAGE_V1_BACKUP_NAME, file: backup, stat: await fs.lstat(backup), preserved: false });
+  await indexVerifiedLegacySources(db, candidates);
 }

@@ -2359,6 +2359,7 @@ settings, and do not change the approval mode.
 | 表 | 职责 |
 | --- | --- |
 | `storage_state` | 存储格式迁移状态、导入统计和通用记录 revision |
+| `legacy_sources` | 已迁移原文件的身份记录，用于核定旧副本清理范围 |
 | `entries`、`chunks` | 按逻辑路径保存记录；`entries` 保存长度、摘要、revision 和媒体对象引用，`chunks` 保存内联 JSON、文本及 Plugin ZIP |
 | `session_event_logs`、`session_event_records` | 会话历史摘要和逐条事件，支持按 Session 与序号分页 |
 | `session_event_attachments`、`session_event_consumed_attachments`、`session_event_send_receipts` | 历史附件元数据、已消费附件标识和发送回执索引 |
@@ -2412,6 +2413,26 @@ Plugin 的后续运行可修改当前 data 目录，显式卸载按目录记录�
 Session 删除先提交元数据移除，再清理数据库中的事件与关联记录。提交结果未知或
 清理失败进入已有的 pending-cleanup 流程；重试前确认 Session 已删除，启动协调
 继续处理孤立记录。面向 WebView 的错误保持固定类型和脱敏信息。
+
+`storage/management.ts` 在应用设置打开或显式刷新时统计文件长度，按文件身份去重，
+通过 SQLite 空闲页信息报告可回收数据库空间。迁移在同一事务保存旧源的文件身份；
+旧备份候选取受管理清单与该来源记录的交集，排除可变 Plugin data。v1 升级及缺少
+来源记录的数据库通过一次性校验补录来源。旧普通文件的路径、长度和 SHA-256 必须
+与已保存记录匹配，v1 数据库备份的记录清单必须与当前库匹配。未确认或后来改变的
+文件保持原路径，占用归入对应的文件类别。
+清理命令携带已展示清单的 revision；
+执行前复核清单、数据库完整性和每个文件的身份，逐项删除旧源并回收空目录。
+文件变化会要求重新读取清单，部分删除后的失败保留剩余文件供刷新后重试。
+
+`storage/session-usage.ts` 在存储区打开会话管理或显式刷新时读取会话用量。内容大小按
+已保存的会话元数据、事件 payload、私有记录和会话内去重文件计算；媒体清单包含引用
+归属与保留标记。浏览器按选中会话的并集估算最终失去全部引用的文件大小。SQLite 页与
+索引开销由整体存储统计报告，空闲页通过既有压缩命令回收。
+`/session-storage-usage` 通过本地桥接提供跨工程的用量清单，沿用认证、请求取消与参数
+校验。聊天历史由 `/session-events` 分页读取，按当前工程校验会话归属。
+存储列表的批量删除逐项调用 `delete_session`，沿用 Session mutation fence、任务协调
+与清理恢复；部分失败后刷新清单，保留剩余选择。
+清理及 `VACUUM` 使用现有存储队列。
 
 备份、恢复、首次迁移前的停机要求与旧版兼容边界由
 [开发数据指南](DEVELOPMENT.md#development-data)说明。

@@ -286,6 +286,18 @@
           return;
         }
 
+        const storageManagement = factories.createStorageManagement({
+          i18n,
+          readStorageUsage: bridgeClient.readStorageUsage,
+          readSessionStorageUsage: bridgeClient.readSessionStorageUsage,
+          runCommand: bridgeClient.runCommand,
+          confirmAction,
+        });
+        window.addEventListener("pagehide", () => storageManagement.setVisible(false));
+        window.addEventListener("pageshow", (event) => {
+          if (event.persisted) syncInspectorPanelVisibility();
+        });
+
         const attachmentViewer = factories.createAttachmentViewer({
           getState,
           getComposerAttachments: bridgeClient.getComposerAttachments,
@@ -488,7 +500,7 @@
           isConfirmationLocked: bridgeClient.isConfirmationLocked,
           resolveConfirm: bridgeClient.resolveConfirm,
           revealTimeline,
-          onInspectorTabChange: syncArtifactSummaryVisibility,
+          onInspectorTabChange: syncInspectorPanelVisibility,
           runCommand: bridgeClient.runCommand,
           showStatus: bridgeClient.showStatus,
         });
@@ -987,8 +999,10 @@
           synchronizeInspectorIsolation();
         }
 
-        function syncArtifactSummaryVisibility() {
-          artifactSummary.setVisible(!document.getElementById("inspectorPane").hidden && !document.getElementById("artifactsPanel").hidden);
+        function syncInspectorPanelVisibility() {
+          const inspectorOpen = !document.getElementById("inspectorPane").hidden;
+          artifactSummary.setVisible(inspectorOpen && !document.getElementById("artifactsPanel").hidden);
+          storageManagement.setVisible(inspectorOpen && !document.getElementById("appPanel").hidden);
         }
 
         function openAllArtifacts() {
@@ -1030,7 +1044,7 @@
           const settingsButton = document.getElementById("settingsButton");
           if (focusWasInside) settingsButton.focus({ preventScroll: true });
           factories.setPaneOpen(inspector, open, "right");
-          syncArtifactSummaryVisibility();
+          syncInspectorPanelVisibility();
           settingsButton.setAttribute("aria-expanded", String(open));
           settingsButton.setAttribute(
             "aria-label",
@@ -1399,6 +1413,7 @@
             profileEditor.refreshLocale?.();
             composerInput.refreshLocale();
             pluginResults.refreshLocale();
+            storageManagement.refreshLocale();
             window.LiveSmithNativeDrag?.refreshLocale();
             setInspectorOpen(!document.getElementById("inspectorPane").hidden);
             setSessionsPaneCollapsed(sessionsPaneCollapsed);
@@ -1765,6 +1780,7 @@
           const settingsLockChanged = profileSettingsLocked !== settingsBusy;
           const commandAdmissionChanged = profileCommandAdmissionLocked !==
             commandAdmissionBusy;
+          storageManagement.setCommandBlocked(commandAdmissionBusy || anySendInProgress);
           updateCommandFeedback(commandKind);
           const sessionsPane = document.querySelector(".sessions-pane");
           sessionsPane?.classList.toggle("command-busy", sessionControlsBusy);
@@ -1994,6 +2010,7 @@
 
         window.addEventListener("DOMContentLoaded", () => {
           initializeAppConfirmation();
+          storageManagement.initialize();
           creativeBriefEditor.initialize();
           initializeEditScopes();
           composerInput.initialize();

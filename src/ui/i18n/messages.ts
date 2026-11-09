@@ -7,6 +7,7 @@ import { audioToolHelpMessages } from "./audio-tool-help.js";
 import { audioMessages } from "./audio-messages.js";
 import { connectionsMessages } from "./connections-messages.js";
 import { toolMessages } from "./tool-messages.js";
+import { storageMessages } from "./storage-messages.js";
 import { DEFAULT_UI_LOCALE, UI_LANGUAGES, type UiLocale } from "../../i18n/languages.js";
 
 const zhCNMessages: Readonly<Record<string, string>> = Object.freeze({
@@ -19,6 +20,7 @@ const zhCNMessages: Readonly<Record<string, string>> = Object.freeze({
   ...audioToolHelpMessages,
   ...connectionsMessages,
   ...toolMessages,
+  ...storageMessages,
 });
 
 export const uiCatalogs: Readonly<Record<UiLocale, Readonly<Record<string, string>>>> = {

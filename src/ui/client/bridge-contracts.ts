@@ -1,5 +1,6 @@
 import { hashFileContent } from "./file-hash.js";
 import { createSessionHistory } from "./session-history.js";
+import { createStorageManagement } from "./storage-management.js";
 import { installDisclosureMotion } from "./disclosure-motion.js";
 import { setPaneOpen } from "./pane-motion.js";
 import { isImeKeyboardEvent } from "./ime-keyboard.js";
@@ -41,3 +42,4 @@ browser.LiveSmithFactories.sessionShortcutIds = sessionShortcutIds;
 browser.LiveSmithFactories.createSessionHistory = createSessionHistory;
 
 browser.LiveSmithFactories.hashFileContent = hashFileContent;
+browser.LiveSmithFactories.createStorageManagement = createStorageManagement;

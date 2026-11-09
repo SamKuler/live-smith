@@ -516,6 +516,7 @@
           <div id="appPanel" class="tab-panel app-panel" role="tabpanel" aria-labelledby="appTab" tabindex="0" hidden>
             <div class="settings">
               <section id="appPreferencesSettings" class="settings-scope settings-scope-app settings-sections" aria-labelledby="appPreferencesSettingsHeading">
+                <div id="appPreferencesOverview" class="settings-sections">
                 <div class="inspector-scope-header">
                   <h2 id="appPreferencesSettingsHeading" data-i18n="App Preferences">App Preferences</h2>
                 </div>
@@ -612,6 +613,87 @@
                     </div>
                     <button id="applyNetworkProxyButton" class="network-proxy-apply" type="button" data-busy-label="Applying…" onclick="LiveSmithUI.saveNetworkProxySettings()" disabled data-i18n="Apply Proxy">Apply Proxy</button>
                     <span id="networkProxyUrlHint" class="field-hint network-proxy-url-hint" hidden data-i18n="HTTP(S) or SOCKS(5), without credentials.">HTTP(S) or SOCKS(5), without credentials.</span>
+                  </div>
+                </div>
+              </section>
+                </div>
+              <section id="storageSettingsSection" class="settings-section" aria-labelledby="storageSettingsHeading" aria-busy="false">
+                <div class="storage-settings-header">
+                  <div class="field-label-row">
+                    <h3 id="storageSettingsHeading" data-i18n="Storage">Storage</h3>
+                    <button type="button" class="inline-help" aria-label="Storage help" data-i18n-aria-label="Storage help" data-tooltip="Clear old backups to remove restore copies from earlier versions. Free space releases storage left behind after deleting data. Exported files may be linked to Live Sets." data-i18n-data-tooltip="Clear old backups to remove restore copies from earlier versions. Free space releases storage left behind after deleting data. Exported files may be linked to Live Sets.">?</button>
+                  </div>
+                  <div class="storage-summary">
+                    <span class="visually-hidden" data-i18n="Total on disk">Total on disk</span>
+                    <strong id="storage-totalBytes" hidden></strong>
+                    <button id="refreshStorageUsageButton" class="icon-button storage-refresh" type="button" aria-label="Refresh storage usage" data-i18n-aria-label="Refresh storage usage" data-tooltip="Refresh storage usage" data-i18n-data-tooltip="Refresh storage usage">
+                      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.5 8a6.5 6.5 0 1 0-.7 5.6M16.5 3.5V8H12" /></svg>
+                    </button>
+                  </div>
+                </div>
+                <p id="storageUsageStatus" class="field-hint storage-usage-status" role="status" hidden></p>
+                <div id="storageOverview" class="storage-overview">
+                <div class="storage-action-list">
+                  <div class="storage-action-row">
+                    <div class="storage-action-copy">
+                      <span class="storage-action-title" data-i18n="Conversations">Conversations</span>
+                      <span id="storage-sessionCount" class="storage-action-value" hidden></span>
+                    </div>
+                    <button id="manageStorageConversationsButton" class="secondary" type="button" aria-label="Manage conversations" data-i18n-aria-label="Manage conversations" data-i18n="Manage">Manage</button>
+                  </div>
+                  <div class="storage-action-row">
+                    <div class="storage-action-copy">
+                      <span class="storage-action-title" data-i18n="Old backups">Old backups</span>
+                      <span id="storage-backupBytes" class="storage-action-value" hidden></span>
+                    </div>
+                    <button id="clearStorageBackupsButton" class="secondary" type="button" aria-label="Clean up old backups" data-i18n-aria-label="Clean up old backups" data-i18n="Clean up" disabled>Clean up</button>
+                  </div>
+                  <div class="storage-action-row">
+                    <div class="storage-action-copy">
+                      <span class="storage-action-title" data-i18n="Reclaimable space">Reclaimable space</span>
+                      <span id="storage-databaseFreeBytes" class="storage-action-value" hidden></span>
+                    </div>
+                    <button id="compactStorageButton" class="secondary" type="button" aria-label="Free up space" data-i18n-aria-label="Free up space" data-i18n="Free up" disabled>Free up</button>
+                  </div>
+                </div>
+                <details id="storageUsageBreakdown" class="section-disclosure storage-details" hidden>
+                  <summary><span data-i18n="Usage details">Usage details</span><svg class="section-disclosure-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="m4.5 2.5 3.5 3.5-3.5 3.5" /></svg></summary>
+                  <div class="section-disclosure-body storage-details-body">
+                    <dl class="storage-usage-breakdown">
+                      <dt data-i18n="Database">Database</dt><dd id="storage-databaseBytes"></dd>
+                      <dt data-i18n="Media files">Media files</dt><dd id="storage-mediaBytes"></dd>
+                      <dt data-i18n="Exported files">Exported files</dt><dd id="storage-exportBytes"></dd>
+                      <dt data-i18n="Plugin files">Plugin files</dt><dd id="storage-pluginBytes"></dd>
+                      <dt data-i18n="Other files">Other files</dt><dd id="storage-otherBytes"></dd>
+                    </dl>
+                    <button id="openStorageDirectoryButton" class="secondary" type="button" data-i18n="Open storage folder" disabled>Open storage folder</button>
+                  </div>
+                </details>
+                </div>
+                <div id="storageConversations" class="storage-conversations" hidden>
+                  <div class="storage-view-heading">
+                    <button id="storageConversationsBackButton" class="secondary storage-back" type="button" aria-label="Back to storage overview" data-i18n-aria-label="Back to storage overview"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m11.5 5-5 5 5 5M7 10h9" /></svg></button>
+                    <h4 data-i18n="Conversations">Conversations</h4>
+                    <button type="button" class="inline-help" aria-label="Conversation storage help" data-i18n-aria-label="Conversation storage help" data-tooltip="Size includes messages, attachments and artifacts. Shared files count toward each conversation. Files to free counts each removable file once. After deleting conversations, use Free up space to finish reclaiming storage." data-i18n-data-tooltip="Size includes messages, attachments and artifacts. Shared files count toward each conversation. Files to free counts each removable file once. After deleting conversations, use Free up space to finish reclaiming storage.">?</button>
+                  </div>
+                  <div class="storage-conversation-filters">
+                    <label class="visually-hidden" for="storageConversationSearch" data-i18n="Search conversations">Search conversations</label>
+                    <input id="storageConversationSearch" type="search" autocomplete="off" placeholder="Search conversations…" data-i18n-placeholder="Search conversations…" />
+                    <label class="visually-hidden" for="storageConversationSort" data-i18n="Sort conversations">Sort conversations</label>
+                    <select id="storageConversationSort">
+                      <option value="size" data-i18n="Largest first">Largest first</option>
+                      <option value="updated" data-i18n="Recently updated">Recently updated</option>
+                    </select>
+                  </div>
+                  <div id="storageConversationSelection" class="storage-conversation-selection" hidden>
+                    <label class="storage-select-visible"><input id="storageSelectVisible" type="checkbox" /><span data-i18n="Select visible">Select visible</span></label>
+                    <span id="storageSelectionSummary" class="storage-selection-summary" role="status"></span>
+                  </div>
+                  <p id="storageConversationsEmpty" class="field-hint" hidden></p>
+                  <ul id="storageConversationList" class="storage-conversation-list" aria-label="Conversation storage" data-i18n-aria-label="Conversation storage"></ul>
+                  <div class="storage-selection-actions">
+                    <span id="storageReclaimEstimate" class="field-hint" role="status" hidden></span>
+                    <button id="deleteStorageConversationsButton" class="secondary danger-action" type="button" data-i18n="Delete selected" disabled>Delete selected</button>
                   </div>
                 </div>
               </section>

@@ -5,11 +5,12 @@ import * as models from "./wire-contracts/models.js";
 import * as session from "./wire-contracts/session.js";
 import { createPluginValidators } from "./wire-contracts/plugins.js";
 import { createStateValidators } from "./wire-contracts/state.js";
+import { isWireStorageUsage, isWireSessionStorageUsage } from "./wire-contracts/storage.js";
 import { isUiLanguage } from "../../i18n/languages.js";
 import { isEditScopes as isWireEditScopes } from "../../agent/edit-scopes.js";
 import { sessionToolCatalogOwner } from "../tool-catalog-owner.js";
 
 export function createWireValidators(dependencies: Parameters<typeof createPluginValidators>[0]) {
   const plugins = createPluginValidators(dependencies);
-  return { ...primitives, ...models, ...session, ...plugins, ...createStateValidators(plugins), isInterfaceMode, isUiLanguage, isSessionTabs, isWireEditScopes, sessionToolCatalogOwner };
+  return { ...primitives, ...models, ...session, ...plugins, ...createStateValidators(plugins), isWireStorageUsage, isWireSessionStorageUsage, isInterfaceMode, isUiLanguage, isSessionTabs, isWireEditScopes, sessionToolCatalogOwner };
 }

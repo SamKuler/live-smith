@@ -394,6 +394,8 @@ export interface ChatBridge {
 }
 
 export interface ChatBridgeOptions {
+  readStorageUsage?(signal: AbortSignal): Promise<unknown>;
+  readSessionStorageUsage?(signal: AbortSignal): Promise<unknown>;
   /** Each page owns its selection and presentation caches; jobs remain bridge-owned. */
   createView?(viewId: string, initialSessionId?: string): ChatBridgeOptions;
   /** Test seam for disconnected-view cleanup; production retains a view for five minutes. */
@@ -2202,6 +2204,15 @@ export async function createChatBridge(
         if (result.status === "absent" && (activityBefore || pendingSendAdmissions.has(sendId) || activeSendsById.has(sendId) || receiptActivityRevision !== revisionBefore)) {
           throw new ChatBridgeConflictError("The send receipt may still be committed. Retry the lookup.");
         }
+        if (!closing && !response.destroyed) sendJson(response, result);
+        return;
+      }
+
+      if (request.method === "GET" && ["/storage-usage", "/session-storage-usage"].includes(url.pathname)) {
+        const read = url.pathname === "/storage-usage" ? options.readStorageUsage : options.readSessionStorageUsage;
+        if (!read) { response.writeHead(404).end("Not found"); return; }
+        assertExactQueryParameters(url, ["token", "viewId"], "Storage usage");
+        const result = await read(beginReadOnlyBuild(response, handlerTerminal));
         if (!closing && !response.destroyed) sendJson(response, result);
         return;
       }

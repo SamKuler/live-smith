@@ -1,5 +1,6 @@
 import { normalizeMcpServerConfig, type McpServerConfig } from "../../model/mcp-server.js";
 import { isInterfaceMode, type InterfaceMode } from "../../model/interface-mode.js";
+import { UiMessageError, type UiMessage } from "../../i18n/ui-message.js";
 import { isSessionTabs, type SessionShortcutId } from "../../model/session-tabs.js";
 import { MAX_AGENT_PLAN_ACTIONS } from "../../agent/actions.js";
 import { isLiveObjectId } from "../../live/object-id.js";
@@ -322,6 +323,9 @@ export type ChatBridgeCommandInput =
   | { kind: "start_mcp_oauth"; connectionId: string }
   | { kind: "logout_mcp_oauth"; connectionId: string }
   | { kind: "new_session" }
+  | { kind: "clear_storage_backups"; revision: string }
+  | { kind: "compact_storage" }
+  | { kind: "open_storage_directory" }
   | { kind: "compact_session"; sessionId: string; instructions?: string }
   | { kind: "select_session"; sessionId: string }
   | { kind: "restore_session"; sessionId: string }
@@ -338,10 +342,10 @@ export type ChatBridgeCommandInput =
   | { kind: "delete_plugin"; pluginId: string }
   | { kind: "discover_models"; profile: DraftProfile };
 
-export class ChatBridgeConflictError extends Error {
+export class ChatBridgeConflictError extends UiMessageError {
   readonly status = 409;
 
-  constructor(message: string) {
+  constructor(message: UiMessage) {
     super(message);
     this.name = "ChatBridgeConflictError";
   }
@@ -356,11 +360,11 @@ export class ChatBridgePayloadTooLargeError extends Error {
   }
 }
 
-export class ChatBridgeRequestValidationError extends Error {
+export class ChatBridgeRequestValidationError extends UiMessageError {
   readonly field?: string;
 
   constructor(
-    message: string,
+    message: UiMessage,
     options?: ErrorOptions & { field?: string },
   ) {
     super(message, options);
@@ -1166,6 +1170,15 @@ export function parseSteeringInput(value: unknown): ChatBridgeSteeringInput {
 export function parseCommandInput(value: unknown): ChatBridgeCommandInput {
   const input = inputRecord(value);
   const kind = inputString(input, "kind");
+  if (kind === "compact_storage" || kind === "open_storage_directory") {
+    assertOnlyInputKeys(input, ["kind"], `${kind} command`);
+    return { kind };
+  }
+  if (kind === "clear_storage_backups") {
+    assertOnlyInputKeys(input, ["kind", "revision"], `${kind} command`);
+    if (typeof input.revision !== "string" || !/^[a-f0-9]{64}$/u.test(input.revision)) throw new ChatBridgeRequestValidationError("Storage backup revision is invalid.");
+    return { kind, revision: input.revision };
+  }
   if (kind === "create_mcp_client") {
     assertOnlyInputKeys(input, ["kind", "name", "sessionId"], kind);
     if (typeof input.name !== "string" || !input.name.trim() || input.name.length > 120 || /[\u0000-\u001f\u007f]/u.test(input.name) ||
